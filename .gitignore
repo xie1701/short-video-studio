@@ -1,0 +1,35 @@
+# macOS / Windows system files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Python caches & virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Node / Remotion / HyperFrames caches
+node_modules/
+.npm/
+
+# Runtime outputs & test projects
+output_project/
+test_output/
+demo_project/
+content-log/
+pipeline/
+_render_preview/
+_render_final/
+*.mp4
+*.mov
+*.mkv
+!short-video-studio/assets/**
+
+# Editors & logs
+.vscode/
+.idea/
+*.log
