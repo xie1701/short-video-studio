@@ -35,12 +35,22 @@ fi
 # 3. 运行一键环境检查、隔离依赖安装与内置 CC0 资产初始化
 python3 "${SKILL_SRC}/scripts/check_and_setup.py" --init-assets --install-deps
 
-# 4. 复刻/软链部署到 Claude Code skills 目录 (~/.claude/skills/short-video-studio)
+# 4. 复刻/软链部署到 Claude Code & Gemini/Antigravity skills 目录
 mkdir -p "${TARGET_ROOT}"
 if [ -L "${TARGET_LINK}" ] || [ -e "${TARGET_LINK}" ]; then
   rm -rf "${TARGET_LINK}"
 fi
 ln -s "${SKILL_SRC}" "${TARGET_LINK}"
+
+GEMINI_SKILLS_ROOT="${HOME}/.gemini/config/skills"
+if [ -d "${GEMINI_SKILLS_ROOT}" ]; then
+  GEMINI_LINK="${GEMINI_SKILLS_ROOT}/short-video-studio"
+  if [ -L "${GEMINI_LINK}" ] || [ -e "${GEMINI_LINK}" ]; then
+    rm -rf "${GEMINI_LINK}"
+  fi
+  ln -s "${SKILL_SRC}" "${GEMINI_LINK}"
+  echo "[OK] 已同步软链至 Gemini/Antigravity skills: ${GEMINI_LINK}"
+fi
 
 echo ""
 echo "[OK] short-video-studio 已安装至: ${TARGET_LINK}"

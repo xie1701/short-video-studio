@@ -1,0 +1,967 @@
+{
+  "version": "1.0.0",
+  "archetypes": [
+    {
+      "archetype_id": "arch_01_tech_ui_console",
+      "name": "暗黑科技 / AI 工作流控制台风",
+      "members": [
+        "style_01",
+        "style_09",
+        "style_10",
+        "style_15",
+        "style_17"
+      ],
+      "best_for": "AI 工具测评、Agent 工作流演示、SaaS 产品教程、极客硬核拆解",
+      "color_signature": "暗黑低亮度基底 (Y=36~84) + 琥珀金/科技蓝强调色 + 高对比卡片边框",
+      "rhythm_signature": "顶部章节步骤条常驻 + 画面内部 UI/卡片高频切换 + 强节拍/事件对齐 (60%~90%)",
+      "subtitle_signature": "克制小号居中底字 (36~46px)，重在让渡主视觉区给界面与卡片演示"
+    },
+    {
+      "archetype_id": "arch_02_high_contrast_story",
+      "name": "强反差财经 / 深度人物叙事拼贴风",
+      "members": [
+        "style_03",
+        "style_16",
+        "style_19"
+      ],
+      "best_for": "商业案例揭秘、创始人深度访谈、剪辑思维干货、高信息量长视频",
+      "color_signature": "中性电影对比调或暖人物肤色 + 亮黄/翠绿/报刊米白强视觉冲击块",
+      "rhythm_signature": "高速切镜 (med 1.25s~2.20s，全片 118~290 镜) + 高频音效推动 (63~90 SFX/min)",
+      "subtitle_signature": "常规底部小字兜底 + 情绪/数字爆点处全屏或半屏巨型花字/色块炸裂"
+    },
+    {
+      "archetype_id": "arch_03_editorial_matte_depth",
+      "name": "高级感杂志排版 / 人物前景遮罩风",
+      "members": [
+        "style_11",
+        "style_12",
+        "style_18",
+        "style_20"
+      ],
+      "best_for": "审美/设计评论、个人IP方法论教学、Notion/极简白底知识拆解",
+      "color_signature": "极净极简白底或深红/书墙反差色 + 少而精的无衬线黑体层级",
+      "rhythm_signature": "前 3 秒用人物遮罩大字或实物定格瞬间抓眼，中段结构化清单与快切案例交替",
+      "subtitle_signature": "干净双语或粗黑体无底框排版，字距行距克制，严控花哨字体数量 ≤2 种"
+    },
+    {
+      "archetype_id": "arch_04_punch_talking_head",
+      "name": "高密口播卡点 / 干货大字冲击风",
+      "members": [
+        "style_02",
+        "style_04",
+        "style_07",
+        "style_14"
+      ],
+      "best_for": "创始人认知口播、实体商家/建材家居老板IP、认知颠覆与痛点科普",
+      "color_signature": "暖肤色高透或暖琥珀书桌调 + 亮黄(#FFD54F)/珊瑚红强反差重点高亮",
+      "rhythm_signature": "口播句间紧剪 + 景别推拉跳剪 + 卡片弹窗音效卡点 (对齐率 79%~92%)",
+      "subtitle_signature": "大号粗黑体 (52~76px) + 整句/半句亮黄变色放大，首帧高信息密度大字封面"
+    },
+    {
+      "archetype_id": "arch_05_cinema_slow_space",
+      "name": "电影感空间漫游 / 人文宋体金句风",
+      "members": [
+        "style_06",
+        "style_08",
+        "style_13"
+      ],
+      "best_for": "高端室内设计/建筑展厅实拍、心理学/哲学金句、深度真实生活随拍访谈",
+      "color_signature": "暖木质感色温或冷青电影灰调，拒绝廉价高饱和滤镜",
+      "rhythm_signature": "尊重呼吸感与空间尺度（空镜缓推或随拍微跳剪），少音效或零花字干扰",
+      "subtitle_signature": "思源宋体 (SourceHanSerifCN) 或极简细黑投影，呈现杂志书卷气与高级克制感"
+    },
+    {
+      "archetype_id": "arch_06_paper_stopmotion",
+      "name": "纸张拼贴定格 / 工程图解科普风",
+      "members": [
+        "style_05"
+      ],
+      "best_for": "收纳改造、家居尺寸科普、产品结构拆解、强动手感实物教程",
+      "color_signature": "低饱和褶皱白纸底纹 (sat=9.1%) + 暖木纹理 + 红线尺寸标尺",
+      "rhythm_signature": "前 3 秒手部模型定格 3 连切，全片依靠纸片元件位移与定格帧节奏驱动",
+      "subtitle_signature": "底部极简白字黑描边，画面主体留给纸雕模型与红色尺寸标注线"
+    }
+  ],
+  "presets": {
+    "style_01": {
+      "style_id": "style_01",
+      "name": "复古胶片控制台 · AI 模板展示风",
+      "archetype_id": "arch_01_tech_ui_console",
+      "canvas": {
+        "width": 1080,
+        "height": 1920,
+        "ratio": "9:16"
+      },
+      "fps": 30.0,
+      "rhythm": {
+        "bpm": 103.4,
+        "target_median_shot_sec": 6.55,
+        "j_cut_lead_us": 0
+      },
+      "text_style": {
+        "font_name": "Source Han Sans CN",
+        "font_candidates": [
+          "SourceHanSansCN-Medium.otf",
+          "NotoSansSC-Medium.ttf",
+          "STHeiti Medium.ttc"
+        ],
+        "font_size_jy": 6.7,
+        "primary_color_hex": "#FBFAEE",
+        "keyword_color_hex": "#D2BB8C",
+        "stroke_color_hex": "#0D0C0D",
+        "stroke_width_jy": 0.04,
+        "transform_y": -0.6,
+        "animation_name": "fade_slide_up"
+      },
+      "color_grade": {
+        "lut_file": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/style_spectrum/luts/style_01.cube",
+        "lut_intensity": 0.85,
+        "tone_mood": "深沉低饱和质感调",
+        "warmth_index": 6.86
+      },
+      "cover_layout": {
+        "layout_id": "film_reel_console",
+        "layout_name": "复古胶片齿孔放映控制台",
+        "grid_desc": "深黑底色嵌双侧胶片齿孔，顶部常驻 REEL 进度与黄黑胶囊场次条，左侧场次巨数字 `01`，右侧速度表盘 `SPEED 1x`，片尾弹白底评分意见卡",
+        "main_sub_ratio": 1.85,
+        "highlight_style": "金黄金属渐变大字 + 胶片黄黑胶囊状态标签"
+      }
+    },
+    "style_02": {
+      "style_id": "style_02",
+      "name": "极简硬核口播 · 书法炸裂封面风",
+      "archetype_id": "arch_04_punch_talking_head",
+      "canvas": {
+        "width": 1080,
+        "height": 1920,
+        "ratio": "9:16"
+      },
+      "fps": 30.0,
+      "rhythm": {
+        "bpm": 157.9,
+        "target_median_shot_sec": 1.167,
+        "j_cut_lead_us": 0
+      },
+      "text_style": {
+        "font_name": "Alimama ShuHeiTi",
+        "font_candidates": [
+          "AlimamaShuHeiTi-Bold.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansSC-Bold.ttf"
+        ],
+        "font_size_jy": 12.3,
+        "primary_color_hex": "#FFFFFF",
+        "keyword_color_hex": "#EFD45F",
+        "stroke_color_hex": "#111111",
+        "stroke_width_jy": 0.1,
+        "transform_y": -0.56,
+        "animation_name": "hard_cut"
+      },
+      "color_grade": {
+        "lut_file": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/style_spectrum/luts/style_02.cube",
+        "lut_intensity": 0.85,
+        "tone_mood": "均衡自然高通透调",
+        "warmth_index": 9.69
+      },
+      "cover_layout": {
+        "layout_id": "calligraphy_contrast_bottom",
+        "layout_name": "下方双行毛笔撞色金句封面",
+        "grid_desc": "人物占上 60% 画面，下 40% 压黑色半透渐变衬底，两行毛笔手写大字（首行纯白、次行亮金黄#EFD45F）形成强冲突",
+        "main_sub_ratio": 1.05,
+        "highlight_style": "全句/半句整段变亮黄并放大 1.24x + 硬切零拖沓"
+      }
+    },
+    "style_03": {
+      "style_id": "style_03",
+      "name": "十亿访谈长片 · 顶部时间节点进度条风",
+      "archetype_id": "arch_02_high_contrast_story",
+      "canvas": {
+        "width": 1920,
+        "height": 1080,
+        "ratio": "16:9"
+      },
+      "fps": 24.0,
+      "rhythm": {
+        "bpm": 111.1,
+        "target_median_shot_sec": 1.583,
+        "j_cut_lead_us": 0
+      },
+      "text_style": {
+        "font_name": "Source Han Sans CN",
+        "font_candidates": [
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansSC-Bold.ttf",
+          "STHeiti Medium.ttc"
+        ],
+        "font_size_jy": 7.7,
+        "primary_color_hex": "#FFFFFF",
+        "keyword_color_hex": "#F8E731",
+        "stroke_color_hex": "#141414",
+        "stroke_width_jy": 0.08,
+        "transform_y": -0.78,
+        "animation_name": "hard_cut"
+      },
+      "color_grade": {
+        "lut_file": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/style_spectrum/luts/style_03.cube",
+        "lut_intensity": 0.85,
+        "tone_mood": "暖色高饱和门店/人物调",
+        "warmth_index": 16.37
+      },
+      "cover_layout": {
+        "layout_id": "top_milestone_bar_interview",
+        "layout_name": "顶部金线里程碑进度条 + 双机位花字冲击",
+        "grid_desc": "正片顶部横贯金线时间轴（4000→300万→3亿→10亿→显化心法）并随播放推进头像游标；重音时居中弹出占屏 1/3 的巨型白黄黑描边花字",
+        "main_sub_ratio": 2.1,
+        "highlight_style": "巨型亮黄#F8E731重黑描边花字 + 顶部里程碑节点亮起"
+      }
+    },
+    "style_04": {
+      "style_id": "style_04",
+      "name": "质感拟物纸片 · AI 框架科普风",
+      "archetype_id": "arch_04_punch_talking_head",
+      "canvas": {
+        "width": 1080,
+        "height": 1920,
+        "ratio": "9:16"
+      },
+      "fps": 24.0,
+      "rhythm": {
+        "bpm": 84.5,
+        "target_median_shot_sec": 4.083,
+        "j_cut_lead_us": 100000
+      },
+      "text_style": {
+        "font_name": "Source Han Sans CN",
+        "font_candidates": [
+          "SourceHanSansCN-Medium.otf",
+          "NotoSansSC-Medium.ttf",
+          "PingFang.ttc"
+        ],
+        "font_size_jy": 8.0,
+        "primary_color_hex": "#FFFFFF",
+        "keyword_color_hex": "#FFFA87",
+        "stroke_color_hex": "#262B24",
+        "stroke_width_jy": 0.06,
+        "transform_y": -0.52,
+        "animation_name": "hard_cut"
+      },
+      "color_grade": {
+        "lut_file": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/style_spectrum/luts/style_04.cube",
+        "lut_intensity": 0.85,
+        "tone_mood": "暖色高饱和门店/人物调",
+        "warmth_index": 21.39
+      },
+      "cover_layout": {
+        "layout_id": "center_dual_stroke_badge",
+        "layout_name": "居中红黄撞色圆角双行封面 + 拟物纸片卡",
+        "grid_desc": "首帧居中红底白描边大字配下排金黄黑描边标题；正片频繁使用倾斜便签纸片、折角卡片、全屏米白模拟微信/AI对话窗+左上角圆形人物PIP",
+        "main_sub_ratio": 1.25,
+        "highlight_style": "红底黄字胶囊 + 米白纸张折角卡片 + 打勾清单贴纸"
+      }
+    },
+    "style_05": {
+      "style_id": "style_05",
+      "name": "皱纹纸拼贴定格 · 工程图解科普风",
+      "archetype_id": "arch_06_paper_stopmotion",
+      "canvas": {
+        "width": 1080,
+        "height": 1920,
+        "ratio": "9:16"
+      },
+      "fps": 24.0,
+      "rhythm": {
+        "bpm": 96.8,
+        "target_median_shot_sec": 1.5,
+        "j_cut_lead_us": 100000
+      },
+      "text_style": {
+        "font_name": "Source Han Sans CN",
+        "font_candidates": [
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansSC-Bold.ttf",
+          "STHeiti Medium.ttc"
+        ],
+        "font_size_jy": 8.0,
+        "primary_color_hex": "#FFFFFF",
+        "keyword_color_hex": "#FFD54F",
+        "stroke_color_hex": "#1E1E1E",
+        "stroke_width_jy": 0.08,
+        "transform_y": -0.76,
+        "animation_name": "fade_slide_up"
+      },
+      "color_grade": {
+        "lut_file": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/style_spectrum/luts/style_05.cube",
+        "lut_intensity": 0.85,
+        "tone_mood": "暖色高饱和门店/人物调",
+        "warmth_index": 12.51
+      },
+      "cover_layout": {
+        "layout_id": "paper_cutout_hero",
+        "layout_name": "褶皱纸面立体模型 + 红色工程标注线",
+        "grid_desc": "浅灰褶皱纸纹贯穿全片，顶部粗黑/红底白描边大字标题，左侧标尺红字标注尺寸(11/15/18/24cm)，底部极简白字字幕",
+        "main_sub_ratio": 1.45,
+        "highlight_style": "红字工程尺寸标注线 + 立体纸模抽拉动效"
+      }
+    },
+    "style_06": {
+      "style_id": "style_06",
+      "name": "10秒情感金句 · 衬线宋体剪影大片风",
+      "archetype_id": "arch_05_cinema_slow_space",
+      "canvas": {
+        "width": 1080,
+        "height": 1920,
+        "ratio": "9:16"
+      },
+      "fps": 30.0,
+      "rhythm": {
+        "bpm": 146.3,
+        "target_median_shot_sec": 2.317,
+        "j_cut_lead_us": 0
+      },
+      "text_style": {
+        "font_name": "Source Han Serif CN",
+        "font_candidates": [
+          "SourceHanSerifCN-Bold.otf",
+          "NotoSerifSC-Bold.ttf",
+          "STHeiti Medium.ttc"
+        ],
+        "font_size_jy": 13.0,
+        "primary_color_hex": "#FFFFFF",
+        "keyword_color_hex": "#F7CE77",
+        "stroke_color_hex": "#1A1A1A",
+        "stroke_width_jy": 0.08,
+        "transform_y": -0.38,
+        "animation_name": "hard_cut"
+      },
+      "color_grade": {
+        "lut_file": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/style_spectrum/luts/style_06.cube",
+        "lut_intensity": 0.85,
+        "tone_mood": "均衡自然高通透调",
+        "warmth_index": 10.63
+      },
+      "cover_layout": {
+        "layout_id": "minimal_serif_title_top",
+        "layout_name": "置顶红白衬线主题 + 剪影高光句中大小字错落",
+        "grid_desc": "首帧居中大字后，0.6s 起顶部常驻双行衬线红字/白字主题；正文金句采用同一行内大小字混排（核心名词放大 1.38x 如「父母」「普通」「真实」）",
+        "main_sub_ratio": 1.38,
+        "highlight_style": "行内关键词字号突增 1.38x + 朱红渐变「第N次」角标"
+      }
+    },
+    "style_07": {
+      "style_id": "style_07",
+      "name": "商业导师书桌 · 暗金波点全屏花字风",
+      "archetype_id": "arch_04_punch_talking_head",
+      "canvas": {
+        "width": 1080,
+        "height": 1920,
+        "ratio": "9:16"
+      },
+      "fps": 24.0,
+      "rhythm": {
+        "bpm": 153.8,
+        "target_median_shot_sec": 4.083,
+        "j_cut_lead_us": 0
+      },
+      "text_style": {
+        "font_name": "Source Han Sans CN",
+        "font_candidates": [
+          "SourceHanSansCN-Heavy.otf",
+          "AlimamaShuHeiTi-Bold.otf",
+          "NotoSansSC-Black.ttf"
+        ],
+        "font_size_jy": 10.7,
+        "primary_color_hex": "#FFFFFF",
+        "keyword_color_hex": "#FBDE51",
+        "stroke_color_hex": "#1F1B18",
+        "stroke_width_jy": 0.1,
+        "transform_y": -0.66,
+        "animation_name": "pop_spring"
+      },
+      "color_grade": {
+        "lut_file": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/style_spectrum/luts/style_07.cube",
+        "lut_intensity": 0.85,
+        "tone_mood": "深沉低饱和质感调",
+        "warmth_index": 63.9
+      },
+      "cover_layout": {
+        "layout_id": "warm_desk_keynote_pop",
+        "layout_name": "暖琥珀书桌中景 + 全屏波点黑板关键词卡",
+        "grid_desc": "主体固定在书堆后方（强烈橙黄品牌识别色），重点金句直接以 110px 双行巨字砸在画面中央，并频繁切全屏暗金波点剪影插画与白底工具箱表格",
+        "main_sub_ratio": 1.7,
+        "highlight_style": "屏中巨型双行花字 + 暗金波点剪影全屏转场 + 结构化白底表格"
+      }
+    },
+    "style_08": {
+      "style_id": "style_08",
+      "name": "真实生活随拍 · 文艺双语宋体微跳剪风",
+      "archetype_id": "arch_05_cinema_slow_space",
+      "canvas": {
+        "width": 1080,
+        "height": 1920,
+        "ratio": "9:16"
+      },
+      "fps": 24.0,
+      "rhythm": {
+        "bpm": 107.1,
+        "target_median_shot_sec": 5.333,
+        "j_cut_lead_us": 0
+      },
+      "text_style": {
+        "font_name": "Source Han Serif CN",
+        "font_candidates": [
+          "SourceHanSerifCN-Medium.otf",
+          "SourceHanSerifCN-Bold.otf",
+          "NotoSerifSC-Medium.ttf"
+        ],
+        "font_size_jy": 8.3,
+        "primary_color_hex": "#F6F9F7",
+        "keyword_color_hex": "#FFD54F",
+        "stroke_color_hex": "#1E2221",
+        "stroke_width_jy": 0.04,
+        "transform_y": -0.34,
+        "animation_name": "fade_slide_up"
+      },
+      "color_grade": {
+        "lut_file": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/style_spectrum/luts/style_08.cube",
+        "lut_intensity": 0.85,
+        "tone_mood": "清透冷中性/极简白调",
+        "warmth_index": -4.52
+      },
+      "cover_layout": {
+        "layout_id": "candid_serif_no_cover",
+        "layout_name": "无包装封面直入 · 双语宋体电影感版式",
+        "grid_desc": "零花字贴纸、零彩色底框，仅在极少数核心拆解处用左中偏上竖排纯白宋体双语词条（如「人群 crowd / 生活方式 Lifestyle」）",
+        "main_sub_ratio": 1.1,
+        "highlight_style": "中英双语思源宋体 + 零特效音克制呼吸感"
+      }
+    },
+    "style_09": {
+      "style_id": "style_09",
+      "name": "电影剪辑工作站 · 3D 胶片墙极客风",
+      "archetype_id": "arch_01_tech_ui_console",
+      "canvas": {
+        "width": 1920,
+        "height": 1080,
+        "ratio": "16:9"
+      },
+      "fps": 30.0,
+      "rhythm": {
+        "bpm": 120.0,
+        "target_median_shot_sec": 2.117,
+        "j_cut_lead_us": 100000
+      },
+      "text_style": {
+        "font_name": "Source Han Sans CN",
+        "font_candidates": [
+          "SourceHanSansCN-Regular.otf",
+          "NotoSansSC-Regular.ttf",
+          "STHeiti Medium.ttc"
+        ],
+        "font_size_jy": 6.0,
+        "primary_color_hex": "#FCFCF6",
+        "keyword_color_hex": "#FFD54F",
+        "stroke_color_hex": "#050505",
+        "stroke_width_jy": 0.04,
+        "transform_y": -0.8,
+        "animation_name": "hard_cut"
+      },
+      "color_grade": {
+        "lut_file": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/style_spectrum/luts/style_09.cube",
+        "lut_intensity": 0.85,
+        "tone_mood": "深沉低饱和质感调",
+        "warmth_index": 10.79
+      },
+      "cover_layout": {
+        "layout_id": "cyber_film_workstation",
+        "layout_name": "暗黑极客剪辑室 · 2.39:1 宽幅画中画版式",
+        "grid_desc": "深黑高反差基底，穿插时间线音轨波形放大镜、右侧 5 步任务清单面板、2.39:1 电影遮幅暗场画中画与黑底绿字终端 CHANGELOG 卡片",
+        "main_sub_ratio": 2.2,
+        "highlight_style": "取景器 HUD 细线角标 + 等宽数字计时 + 衬线主标题"
+      }
+    },
+    "style_10": {
+      "style_id": "style_10",
+      "name": "暗黑幕后工作室 · 右下固定画中画教程风",
+      "archetype_id": "arch_01_tech_ui_console",
+      "canvas": {
+        "width": 1920,
+        "height": 1080,
+        "ratio": "16:9"
+      },
+      "fps": 24.0,
+      "rhythm": {
+        "bpm": 93.8,
+        "target_median_shot_sec": 17.76,
+        "j_cut_lead_us": 0
+      },
+      "text_style": {
+        "font_name": "Source Han Sans CN",
+        "font_candidates": [
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansSC-Bold.ttf",
+          "STHeiti Medium.ttc"
+        ],
+        "font_size_jy": 7.3,
+        "primary_color_hex": "#FFFEFB",
+        "keyword_color_hex": "#FFD54F",
+        "stroke_color_hex": "#080406",
+        "stroke_width_jy": 0.06,
+        "transform_y": -0.82,
+        "animation_name": "hard_cut"
+      },
+      "color_grade": {
+        "lut_file": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/style_spectrum/luts/style_10.cube",
+        "lut_intensity": 0.85,
+        "tone_mood": "深沉低饱和质感调",
+        "warmth_index": 5.18
+      },
+      "cover_layout": {
+        "layout_id": "dark_studio_pip_bottom_right",
+        "layout_name": "暗黑工作台 + 右下角常驻主播画中画",
+        "grid_desc": "主画面区（左/中 80%）专门用来展示音频波形、三栏字体对照卡、深色对话气泡窗口，右下角锚定主播陪伴感",
+        "main_sub_ratio": 2.4,
+        "highlight_style": "背后巨型白字「幕后」+ 三栏蓝色卡片对照"
+      }
+    },
+    "style_11": {
+      "style_id": "style_11",
+      "name": "人物前景遮罩巨字 · 高级感杂志教程风",
+      "archetype_id": "arch_03_editorial_matte_depth",
+      "canvas": {
+        "width": 1920,
+        "height": 1080,
+        "ratio": "16:9"
+      },
+      "fps": 24.0,
+      "rhythm": {
+        "bpm": 130.4,
+        "target_median_shot_sec": 1.354,
+        "j_cut_lead_us": 100000
+      },
+      "text_style": {
+        "font_name": "Source Han Sans CN",
+        "font_candidates": [
+          "SourceHanSansCN-Medium.otf",
+          "AlimamaShuHeiTi-Bold.otf",
+          "NotoSansSC-Medium.ttf"
+        ],
+        "font_size_jy": 6.3,
+        "primary_color_hex": "#FFFFFF",
+        "keyword_color_hex": "#F4AB09",
+        "stroke_color_hex": "#1E1E1E",
+        "stroke_width_jy": 0.04,
+        "transform_y": -0.8,
+        "animation_name": "hard_cut"
+      },
+      "color_grade": {
+        "lut_file": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/style_spectrum/luts/style_11.cube",
+        "lut_intensity": 0.85,
+        "tone_mood": "均衡自然高通透调",
+        "warmth_index": 5.02
+      },
+      "cover_layout": {
+        "layout_id": "depth_matte_behind_subject",
+        "layout_name": "人物前景遮罩穿插巨字 + 极简高反差全屏卡",
+        "grid_desc": "利用人物抠像遮罩将巨字压在人物背后；中段穿插深红渐变留白大字卡（左上「到底」+ 底部极小字罗列对比）、9宫格网页墙、2.39:1电影片断",
+        "main_sub_ratio": 3.0,
+        "highlight_style": "珊瑚红#E57373与琥珀黄#F4AB09巨型无描边净字 + 极简负空间"
+      }
+    },
+    "style_12": {
+      "style_id": "style_12",
+      "name": "Apple/Notion 极简白底 · 人像抠像卡片风",
+      "archetype_id": "arch_03_editorial_matte_depth",
+      "canvas": {
+        "width": 1080,
+        "height": 1920,
+        "ratio": "9:16"
+      },
+      "fps": 24.0,
+      "rhythm": {
+        "bpm": 146.3,
+        "target_median_shot_sec": 65.812,
+        "j_cut_lead_us": 0
+      },
+      "text_style": {
+        "font_name": "Source Han Sans CN",
+        "font_candidates": [
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansSC-Bold.ttf",
+          "STHeiti Medium.ttc"
+        ],
+        "font_size_jy": 9.0,
+        "primary_color_hex": "#FFFFFF",
+        "keyword_color_hex": "#FFD54F",
+        "stroke_color_hex": "#2A2A2A",
+        "stroke_width_jy": 0.08,
+        "transform_y": -0.54,
+        "animation_name": "hard_cut"
+      },
+      "color_grade": {
+        "lut_file": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/style_spectrum/luts/style_12.cube",
+        "lut_intensity": 0.85,
+        "tone_mood": "均衡自然高通透调",
+        "warmth_index": 0.97
+      },
+      "cover_layout": {
+        "layout_id": "apple_notion_light_top",
+        "layout_name": "极净浅灰白底 · 上方结构化 Notion 卡片 + 下方人像抠像",
+        "grid_desc": "画幅上下严密分区：Y:[0.10, 0.48] 为动态卡片舞台（红竖线分类眉标 + 黑粗标题 + 圆点要点表 + 左右对比卡`过去vs现在`），Y:[0.48, 1.0] 为半身抠像口播",
+        "main_sub_ratio": 1.6,
+        "highlight_style": "朱红竖线眉标(#D9383A) + 红色胶囊状态徽章 + 白底微阴影方卡"
+      }
+    },
+    "style_13": {
+      "style_id": "style_13",
+      "name": "建筑空间漫游 · 电影感慢调奢享风",
+      "archetype_id": "arch_05_cinema_slow_space",
+      "canvas": {
+        "width": 1080,
+        "height": 1920,
+        "ratio": "9:16"
+      },
+      "fps": 30.0,
+      "rhythm": {
+        "bpm": 95.2,
+        "target_median_shot_sec": 1.567,
+        "j_cut_lead_us": 0
+      },
+      "text_style": {
+        "font_name": "Source Han Sans CN",
+        "font_candidates": [
+          "SourceHanSansCN-Regular.otf",
+          "PingFang.ttc",
+          "NotoSansSC-Regular.ttf"
+        ],
+        "font_size_jy": 7.7,
+        "primary_color_hex": "#FAFFFA",
+        "keyword_color_hex": "#FFD54F",
+        "stroke_color_hex": "#26251C",
+        "stroke_width_jy": 0.04,
+        "transform_y": -0.44,
+        "animation_name": "hard_cut"
+      },
+      "color_grade": {
+        "lut_file": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/style_spectrum/luts/style_13.cube",
+        "lut_intensity": 0.85,
+        "tone_mood": "深沉低饱和质感调",
+        "warmth_index": 26.52
+      },
+      "cover_layout": {
+        "layout_id": "architectural_no_overlay",
+        "layout_name": "零遮挡实景长镜 · 电影字幕极简版式",
+        "grid_desc": "全片无封面大字板、无弹幕花字，所有视觉空间留给暖木石材光影与慢推运镜；字幕小号细字投影居下，不挡空间结构",
+        "main_sub_ratio": 1.0,
+        "highlight_style": "暖木温润调色(warmth=26.5) + 极简无框细投影字幕"
+      }
+    },
+    "style_14": {
+      "style_id": "style_14",
+      "name": "毛玻璃卡片叠映 · 居家创始人信任风",
+      "archetype_id": "arch_04_punch_talking_head",
+      "canvas": {
+        "width": 1080,
+        "height": 1920,
+        "ratio": "9:16"
+      },
+      "fps": 24.0,
+      "rhythm": {
+        "bpm": 120.0,
+        "target_median_shot_sec": 8.708,
+        "j_cut_lead_us": 0
+      },
+      "text_style": {
+        "font_name": "Source Han Sans CN",
+        "font_candidates": [
+          "SourceHanSansCN-Medium.otf",
+          "NotoSansSC-Medium.ttf",
+          "STHeiti Medium.ttc"
+        ],
+        "font_size_jy": 8.3,
+        "primary_color_hex": "#FFFFFF",
+        "keyword_color_hex": "#FFD54F",
+        "stroke_color_hex": "#2B3242",
+        "stroke_width_jy": 0.06,
+        "transform_y": -0.48,
+        "animation_name": "fade_slide_up"
+      },
+      "color_grade": {
+        "lut_file": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/style_spectrum/luts/style_14.cube",
+        "lut_intensity": 0.85,
+        "tone_mood": "均衡自然高通透调",
+        "warmth_index": 0.9
+      },
+      "cover_layout": {
+        "layout_id": "frosted_top_cards_founder",
+        "layout_name": "顶部渐显宋体主题 + 半屏毛玻璃实拍对比图卡",
+        "grid_desc": "利用人物上方大片干净窗帘留白作为实拍B-roll卡片展示舞台，结合深灰毛玻璃背景大数字章节页（如 `02 能力二`）做结构清晰分段",
+        "main_sub_ratio": 1.65,
+        "highlight_style": "圆角横向对比图条 + 毛玻璃叠层大数字章节卡"
+      }
+    },
+    "style_15": {
+      "style_id": "style_15",
+      "name": "AI Agent 流程导航 · 工牌/账单小票风",
+      "archetype_id": "arch_01_tech_ui_console",
+      "canvas": {
+        "width": 1920,
+        "height": 1080,
+        "ratio": "16:9"
+      },
+      "fps": 24.0,
+      "rhythm": {
+        "bpm": 162.2,
+        "target_median_shot_sec": 11.708,
+        "j_cut_lead_us": 0
+      },
+      "text_style": {
+        "font_name": "Source Han Sans CN",
+        "font_candidates": [
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansSC-Bold.ttf",
+          "STHeiti Medium.ttc"
+        ],
+        "font_size_jy": 6.7,
+        "primary_color_hex": "#FBFFFE",
+        "keyword_color_hex": "#FBE088",
+        "stroke_color_hex": "#1E221D",
+        "stroke_width_jy": 0.06,
+        "transform_y": -0.8,
+        "animation_name": "pop_spring"
+      },
+      "color_grade": {
+        "lut_file": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/style_spectrum/luts/style_15.cube",
+        "lut_intensity": 0.85,
+        "tone_mood": "暗黑高对比科技调",
+        "warmth_index": 6.84
+      },
+      "cover_layout": {
+        "layout_id": "agent_workflow_step_bar",
+        "layout_name": "顶部步骤条进度导航 + 拟物工牌与制片小票 UI",
+        "grid_desc": "顶部全时展示工作流当前进度胶囊，中段左下方固定方框口播画中画，主区展示深色终端卡片、高亮流程表格与结尾白底`制片小票`账单清单",
+        "main_sub_ratio": 2.6,
+        "highlight_style": "亮黄#FBE088粗字黑描边 + 挂绳工牌卡 + 制片账单小票"
+      }
+    },
+    "style_16": {
+      "style_id": "style_16",
+      "name": "商业悬疑纪实 · 撕纸拍立得拼贴风",
+      "archetype_id": "arch_02_high_contrast_story",
+      "canvas": {
+        "width": 1080,
+        "height": 1920,
+        "ratio": "9:16"
+      },
+      "fps": 30.0,
+      "rhythm": {
+        "bpm": 109.1,
+        "target_median_shot_sec": 2.2,
+        "j_cut_lead_us": 100000
+      },
+      "text_style": {
+        "font_name": "Source Han Sans CN",
+        "font_candidates": [
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansSC-Bold.ttf",
+          "STHeiti Medium.ttc"
+        ],
+        "font_size_jy": 8.0,
+        "primary_color_hex": "#FFF8F3",
+        "keyword_color_hex": "#E1A187",
+        "stroke_color_hex": "#26150E",
+        "stroke_width_jy": 0.06,
+        "transform_y": -0.68,
+        "animation_name": "hard_cut"
+      },
+      "color_grade": {
+        "lut_file": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/style_spectrum/luts/style_16.cube",
+        "lut_intensity": 0.85,
+        "tone_mood": "深沉低饱和质感调",
+        "warmth_index": 7.45
+      },
+      "cover_layout": {
+        "layout_id": "polaroid_torn_paper_finance",
+        "layout_name": "拍立得画中画 + 报刊撕纸拼贴",
+        "grid_desc": "混合使用复古棕色拍立得边框、白边锯齿撕纸上下分拼贴、米白报刊衬线章节卡（`四面楚歌 UNDER SIEGE`）与红色数据柱条",
+        "main_sub_ratio": 2.4,
+        "highlight_style": "超大白色数字`360亿` + 朱红报刊衬线标题 + 锯齿撕纸分割线"
+      }
+    },
+    "style_17": {
+      "style_id": "style_17",
+      "name": "深蓝 SaaS 演示 · 右下圆角画中画风",
+      "archetype_id": "arch_01_tech_ui_console",
+      "canvas": {
+        "width": 1080,
+        "height": 1920,
+        "ratio": "9:16"
+      },
+      "fps": 24.0,
+      "rhythm": {
+        "bpm": 93.8,
+        "target_median_shot_sec": 1.75,
+        "j_cut_lead_us": 100000
+      },
+      "text_style": {
+        "font_name": "Source Han Sans CN",
+        "font_candidates": [
+          "SourceHanSansCN-Medium.otf",
+          "NotoSansSC-Medium.ttf",
+          "STHeiti Medium.ttc"
+        ],
+        "font_size_jy": 7.7,
+        "primary_color_hex": "#F9FFFF",
+        "keyword_color_hex": "#F1E1B3",
+        "stroke_color_hex": "#0E172B",
+        "stroke_width_jy": 0.04,
+        "transform_y": -0.4,
+        "animation_name": "hard_cut"
+      },
+      "color_grade": {
+        "lut_file": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/style_spectrum/luts/style_17.cube",
+        "lut_intensity": 0.85,
+        "tone_mood": "暗黑高对比科技调",
+        "warmth_index": -13.98
+      },
+      "cover_layout": {
+        "layout_id": "dark_navy_saas_pip",
+        "layout_name": "深海蓝科技面板 · 上2/3演示区 + 右下真人PIP",
+        "grid_desc": "深蓝(#0E172B -> #17264B)渐变面板贯穿全片；上半区切换横/竖成片窗、机器人架构流程图、蓝色微信气泡对话；左下角呈现 `STEP 01` 衬线+黑体混排标卡",
+        "main_sub_ratio": 1.8,
+        "highlight_style": "深蓝微边框卡片 + 暖金胶囊标(`#F1E1B3`) + 衬线混排步骤卡"
+      }
+    },
+    "style_18": {
+      "style_id": "style_18",
+      "name": "白板方法论 · 手写字纸片反差条风",
+      "archetype_id": "arch_03_editorial_matte_depth",
+      "canvas": {
+        "width": 1080,
+        "height": 1920,
+        "ratio": "9:16"
+      },
+      "fps": 24.0,
+      "rhythm": {
+        "bpm": 111.1,
+        "target_median_shot_sec": 2.708,
+        "j_cut_lead_us": 0
+      },
+      "text_style": {
+        "font_name": "QingSongShouXieTi / Source Han Sans CN",
+        "font_candidates": [
+          "QingSongShouXieTi1.ttf",
+          "AlimamaShuHeiTi-Bold.otf",
+          "SourceHanSansCN-Bold.otf"
+        ],
+        "font_size_jy": 10.7,
+        "primary_color_hex": "#1E1E1E",
+        "keyword_color_hex": "#FFD54F",
+        "stroke_color_hex": "#FFFFFF",
+        "stroke_width_jy": 0.0,
+        "transform_y": -0.5,
+        "animation_name": "hard_cut"
+      },
+      "color_grade": {
+        "lut_file": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/style_spectrum/luts/style_18.cube",
+        "lut_intensity": 0.85,
+        "tone_mood": "深沉低饱和质感调",
+        "warmth_index": 7.62
+      },
+      "cover_layout": {
+        "layout_id": "whiteboard_matte_sticky",
+        "layout_name": "浅灰手写水印底板 + 黑白反差条 + 暗调白板清单",
+        "grid_desc": "三段式质感切换：白板抠像开场 → 浅灰底(上方实拍花絮小窗 + 黑色反白条 + 手写黑字字幕) → 暗调白板透明黑底压出白色/亮黄竖排结构清单",
+        "main_sub_ratio": 1.5,
+        "highlight_style": "纯黑底白字矩形反差块 + 手写字体亲和力 + 暗调亮黄关键句"
+      }
+    },
+    "style_19": {
+      "style_id": "style_19",
+      "name": "专业剪辑大师课 · 顶部细条章节 + 绿块冲击风",
+      "archetype_id": "arch_02_high_contrast_story",
+      "canvas": {
+        "width": 1920,
+        "height": 1080,
+        "ratio": "16:9"
+      },
+      "fps": 24.0,
+      "rhythm": {
+        "bpm": 146.3,
+        "target_median_shot_sec": 1.25,
+        "j_cut_lead_us": 100000
+      },
+      "text_style": {
+        "font_name": "Source Han Sans CN",
+        "font_candidates": [
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansSC-Bold.ttf",
+          "STHeiti Medium.ttc"
+        ],
+        "font_size_jy": 7.7,
+        "primary_color_hex": "#FFFFFF",
+        "keyword_color_hex": "#2ECC71",
+        "stroke_color_hex": "#111111",
+        "stroke_width_jy": 0.06,
+        "transform_y": -0.8,
+        "animation_name": "hard_cut"
+      },
+      "color_grade": {
+        "lut_file": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/style_spectrum/luts/style_19.cube",
+        "lut_intensity": 0.85,
+        "tone_mood": "暗黑高对比科技调",
+        "warmth_index": 0.56
+      },
+      "cover_layout": {
+        "layout_id": "pro_editor_chapter_nav",
+        "layout_name": "顶部极细章节导航条 + 亮绿圆角方块与左右竖排巨字",
+        "grid_desc": "顶部 32px 高灰黑导航条全片高亮当前章节；关键重音用高饱和翠绿方框单字排列或黑底双侧竖排超大白字(`音 效 / 设 计`)夹击中间工程软件画面",
+        "main_sub_ratio": 2.5,
+        "highlight_style": "高饱和亮绿渐变方框单字块(#10B981) + 双侧竖排巨型白字"
+      }
+    },
+    "style_20": {
+      "style_id": "style_20",
+      "name": "模型盒悬念开篇 · 书墙双语毛玻璃金句风",
+      "archetype_id": "arch_03_editorial_matte_depth",
+      "canvas": {
+        "width": 1920,
+        "height": 1080,
+        "ratio": "16:9"
+      },
+      "fps": 24.0,
+      "rhythm": {
+        "bpm": 90.9,
+        "target_median_shot_sec": 1.271,
+        "j_cut_lead_us": 100000
+      },
+      "text_style": {
+        "font_name": "Source Han Sans CN",
+        "font_candidates": [
+          "SourceHanSansCN-Medium.otf",
+          "NotoSansSC-Medium.ttf",
+          "STHeiti Medium.ttc"
+        ],
+        "font_size_jy": 7.0,
+        "primary_color_hex": "#FFFFFF",
+        "keyword_color_hex": "#E6D267",
+        "stroke_color_hex": "#120B01",
+        "stroke_width_jy": 0.06,
+        "transform_y": -0.74,
+        "animation_name": "fade_slide_up"
+      },
+      "color_grade": {
+        "lut_file": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/style_spectrum/luts/style_20.cube",
+        "lut_intensity": 0.85,
+        "tone_mood": "深沉低饱和质感调",
+        "warmth_index": 22.32
+      },
+      "cover_layout": {
+        "layout_id": "physical_prop_bookshelf_highlight",
+        "layout_name": "实物道具开篇 + 毛玻璃编号清单 + 荧光黄绿底块金句",
+        "grid_desc": "高密度书墙暖调背景，中段用半透明暗色毛玻璃左对齐罗列 1~5.5 条思考清单，高潮金句用荧光黄绿底块(`#D9E35B`)衬托加粗黑字横向铺满画面",
+        "main_sub_ratio": 1.8,
+        "highlight_style": "中英同步关键词高亮 + 荧光黄绿底块黑字金句条"
+      }
+    }
+  }
+}

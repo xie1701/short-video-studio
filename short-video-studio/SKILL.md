@@ -1,6 +1,6 @@
 ---
 name: short-video-studio
-description: 面向零拍摄剪辑基础用户的全流程短视频生产智能体技能。支持实体店老板「门店轨」（同城获客/咨询/私信/到店）与个人创作者「博主轨」（3秒留存/完播/涨粉），严格以《建立可循环的内容系统》为唯一选题与文案方法论，支持从零创作（定位+4周5A日历+文案分镜+带简笔示意拍摄卡）与带素材进来（盘点+反推选题）双入口，执行「先音后画，以音定画」9步确定性剪辑流水线（含代码生成补镜、J-cut、前3秒多切点、-14 LUFS 混音）、9项强制自动质检、MP4与剪映草稿双出片、以及 content-log 周复盘闭环。当用户要规划短视频账号、生成内容日历/口播脚本、做拍摄任务卡、盘点或剪辑口播/门店短视频、做音频驱动自动粗剪/精剪、或做每周短视频数据复盘时触发。
+description: 面向零拍摄剪辑基础用户的全流程短视频生产智能体技能。支持实体店老板「门店轨」（同城获客/咨询/私信/到店）与个人创作者「博主轨」（3秒留存/完播/涨粉），严格以《建立可循环的内容系统》为唯一选题与文案方法论，支持从零创作（定位+4周5A日历+文案分镜+带简笔示意拍摄卡）与带素材进来（盘点+反推选题）双入口，执行「先音后画，以音定画」9步确定性剪辑流水线（含代码生成补镜、J-cut、前3秒多切点、-14 LUFS 混音）、9项强制自动质检、MP4与剪映草稿双出片、以及 content-log 周复盘闭环；内置基于 20 条标杆视频逐帧提炼的 6 大包装流派与 20 套「风格谱 (Style Spectrum)」复刻库（支持 --style-id 一键套用及导出至 Remotion / HyperFrames / 剪映专业版）。当用户要规划短视频账号、生成内容日历/口播脚本、做拍摄任务卡、盘点或剪辑口播/门店短视频、做音频驱动自动粗剪/精剪、套用或提取参考视频包装风格谱、或做每周短视频数据复盘时触发。
 ---
 
 # short-video-studio 短视频制片工作室
@@ -74,9 +74,9 @@ description: 面向零拍摄剪辑基础用户的全流程短视频生产智能�
 
 所有中间文件数据结构见 [references/pipeline-schemas.md](references/pipeline-schemas.md)，安全区与预算规范见 [references/platform-safe-zones.md](references/platform-safe-zones.md)。
 
-一键完整跑通流水线（Step 1–9 + 渲染 MP4 + 剪映草稿 + 9 项强制质检 + 生成《我替你做的决定》）：
+一键完整跑通流水线（Step 1–9 + 渲染 MP4 + 剪映草稿 + 9 项强制质检 + 生成《我替你做的决定》；支持 `--style-id` 一键挂载风格谱）：
 ```bash
-python3 scripts/run_pipeline.py --project-dir <项目目录> --track <store|creator> --mode full [--benchmark <对标视频.mp4>]
+python3 scripts/run_pipeline.py --project-dir <项目目录> --track <store|creator> --mode full [--style-id style_02] [--benchmark <对标视频.mp4>]
 ```
 
 各单步脚本均支持独立重跑：
@@ -84,9 +84,9 @@ python3 scripts/run_pipeline.py --project-dir <项目目录> --track <store|crea
 2. `step2_transcribe.py`：提取逐字时间戳（无口播则自动走 TTS 配音生成）。
 3. `step3_lock_audio.py`：按字去废话/气口/口误，句间停顿统一 `0.15–0.30s`；BGM 节拍检测并将钩子首字对齐强拍；标注全部音频事件。**此后绝不再改声音。**
 4. `step4_build_edl.py`：以 `03_audio_events.json` 为唯一骨架出剪辑表（JSON + 可读表格）；切点全落音频事件；同期声音画强绑定，盖 B-roll 只换画面；句间默认 2–4 帧 J-cut；前 3 秒 ≥ 2 次画面变化；画面不足自动补 B-roll / 代码补镜 / 定格。
-5. `step5_subtitles.py`：直读逐字时间戳，关键词高亮，选用 4 套可商用字体模板之一。
+5. `step5_subtitles.py`：直读逐字时间戳，关键词高亮，支持 4 套基础模板或 20 套「风格谱」模板 (`style_01` ~ `style_20`)。
 6. `step6_packaging.py`：音效先行落轨，花字贴纸 ±1 帧对齐重音/音效，仅置于情绪/信息点并执行预算上限。
-7. `step7_color_grade.py`：基础白平衡与曝光校色后套用内置 3D `.cube` LUT。
+7. `step7_color_grade.py`：基础白平衡与曝光校色后套用内置或风格谱 3D `.cube` LUT（自动识别 `assets/luts/` 与 `assets/style_spectrum/luts/`）。
 8. `step8_mix_audio.py`：人声降噪 + BGM 自动闪避 + 统一响度到 **-14.0 LUFS**。
 9. `step9_title_cover.py`：生成高点击标题与高信息密度封面帧 `09_cover.jpg`。
 
@@ -111,3 +111,38 @@ python3 scripts/content_log_review.py --log-dir <项目目录>/content-log --add
 
 - 所有内置字体、CC0 BGM、音效、SVG 贴纸与 LUT 的商用授权清单见 [references/assets-attribution.md](references/assets-attribution.md)。
 - 首次使用或排查依赖缺失时运行：`python3 scripts/check_and_setup.py --init-assets --install-deps`。
+
+---
+
+## 七、 「风格谱 (Style Spectrum)」参考包装复刻库
+
+已内置基于 20 条标杆视频（103,981 帧）逐帧提炼的 **6 大包装流派母版** 与 **20 套「风格谱 (`style_01` ~ `style_20`)」**（详尽拆解见 [STYLE_SPECTRUM_REPORT.md](assets/style_spectrum/STYLE_SPECTRUM_REPORT.md)，主数据库见 [style_spectrum_library.json](assets/style_spectrum/style_spectrum_library.json)）：
+
+| 流派 ID | 流派名称 | 代表风格 ID | 典型场景 |
+| :--- | :--- | :--- | :--- |
+| `arch_01_tech_ui_console` | 暗黑科技 / AI 工作流控制台风 | `style_01`, `09`, `10`, `15`, `17` | AI 工具、SaaS 演示、Agent 工作流教程 |
+| `arch_02_high_contrast_story` | 强反差财经 / 深度叙事拼贴风 | `style_03`, `16`, `19` | 商业案例、人物访谈、高能快切思维干货 |
+| `arch_03_editorial_matte_depth` | 高级感杂志 / 人物前景遮罩风 | `style_11`, `12`, `18`, `20` | 审美评论、Notion 白底拆解、白板教学 |
+| `arch_04_punch_talking_head` | 高密口播卡点 / 干货大字冲击风 | `style_02`, `04`, `07`, `14` | 创始人认知口播、实体商家 IP、痛点科普 |
+| `arch_05_cinema_slow_space` | 电影感空间漫游 / 人文宋体金句风 | `style_06`, `08`, `13` | 建筑/展厅探店、人文心理学金句、实景访谈 |
+| `arch_06_paper_stopmotion` | 纸张拼贴定格 / 工程图解科普风 | `style_05` | 收纳改造、尺寸科普、手工拼贴演示 |
+
+常用指令：
+```bash
+# 1. 列出全库 6 大母版与 20 套风格谱摘要
+python3 scripts/apply_style_spectrum.py --list
+
+# 2. 在流水线中直接套用任一风格谱（自动绑定字幕模板 + 3D LUT + J-cut）
+python3 scripts/run_pipeline.py --project-dir <项目目录> --track creator --mode full --style-id style_02
+
+# 3. 绑定风格谱至已有流水线目录，或一键导出至 剪映草稿 / HyperFrames / Remotion
+python3 scripts/apply_style_spectrum.py --style-id style_16 --apply-pipeline <项目目录>/pipeline
+python3 scripts/apply_style_spectrum.py --style-id style_16 \
+  --export-jianying-template <草稿目录> \
+  --export-hyperframes <html路径> \
+  --export-remotion-props <json路径>
+
+# 4. 针对新的参考视频目录重新提取「风格谱」并更新资产库
+python3 scripts/analyze_style_spectrum.py --input-dir <参考视频目录>
+python3 scripts/build_style_spectrum_assets.py
+```

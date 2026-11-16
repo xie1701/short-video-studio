@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HyperFrames 风格谱复刻母版 · Style Spectrum Pack</title>
+  <link rel="stylesheet" href="./style-spectrum-presets.css" />
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.12.5/dist/gsap.min.js"></script>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    html, body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #0b0d12;
+    }
+    .composition-root {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: var(--sp-bg-canvas, #0f172a);
+      color: var(--sp-sub-color, #ffffff);
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+    .backdrop-grade {
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(circle at 50% 30%, rgba(255, 255, 255, 0.08), rgba(0, 0, 0, 0.72));
+      filter: var(--sp-color-filter, none);
+    }
+    .chapter-nav {
+      position: absolute;
+      top: 64px;
+      left: 64px;
+      right: 64px;
+      display: flex;
+      gap: 10px;
+      padding: 10px 14px;
+      border-radius: 14px;
+      background: rgba(15, 23, 42, 0.78);
+    }
+    .chapter-pill {
+      flex: 1;
+      text-align: center;
+      padding: 8px 6px;
+      border-radius: 8px;
+      font-size: 22px;
+      font-weight: 700;
+      color: #cbd5e1;
+    }
+    .chapter-pill.is-active {
+      background: var(--sp-kw-color, #ffd54f);
+      color: #111827;
+    }
+    .clip {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+    .cover-wrap {
+      position: absolute;
+      left: 76px;
+      right: 160px;
+      top: 290px;
+    }
+    .cover-inner {
+      padding: 30px 36px;
+      border-radius: 24px;
+      background: rgba(15, 23, 42, 0.84);
+      border-left: 8px solid var(--sp-kw-color, #ffd54f);
+    }
+    .cover-badge {
+      display: inline-block;
+      padding: 6px 18px;
+      border-radius: 999px;
+      background: var(--sp-kw-color, #ffd54f);
+      color: #111827;
+      font-size: 26px;
+      font-weight: 800;
+      margin-bottom: 18px;
+    }
+    .cover-title {
+      font-size: 76px;
+      font-weight: 900;
+      line-height: 1.18;
+      color: var(--sp-sub-color, #ffffff);
+      text-shadow: 0 4px 16px var(--sp-stroke-color, #111111);
+    }
+    .cover-sub {
+      margin-top: 14px;
+      font-size: 38px;
+      font-weight: 700;
+      color: var(--sp-kw-color, #ffd54f);
+    }
+    .card-wrap {
+      position: absolute;
+      left: 76px;
+      right: 160px;
+      top: 520px;
+    }
+    .card-inner {
+      padding: 28px 32px;
+      border-radius: 20px;
+      background: rgba(17, 24, 39, 0.86);
+      border: 2px solid var(--sp-kw-color, #ffd54f);
+    }
+    .card-heading {
+      font-size: 36px;
+      font-weight: 800;
+      color: var(--sp-kw-color, #ffd54f);
+      margin-bottom: 18px;
+    }
+    .card-list {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .card-item {
+      padding: 12px 16px;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.08);
+      border-left: 6px solid var(--sp-kw-color, #ffd54f);
+      font-size: 30px;
+      font-weight: 600;
+      color: #f8fafc;
+    }
+    .sub-wrap {
+      position: absolute;
+      left: 80px;
+      right: 140px;
+      top: var(--sp-sub-y, 78%);
+      text-align: center;
+    }
+    .sub-inner {
+      display: inline-block;
+      padding: 8px 20px;
+      border-radius: 12px;
+      background: var(--sp-bg-box, transparent);
+      font-size: var(--sp-sub-size, 56px);
+      font-weight: 800;
+      line-height: 1.25;
+      color: var(--sp-sub-color, #ffffff);
+      text-shadow: 0 3px 10px var(--sp-stroke-color, #111111);
+    }
+    .sub-kw {
+      color: var(--sp-kw-color, #ffd54f);
+      font-weight: 900;
+    }
+  </style>
+</head>
+<body>
+  <div
+    id="root"
+    class="composition-root style-02"
+    data-composition-id="style-spectrum-pack"
+    data-width="1080"
+    data-height="1920"
+    data-fps="30"
+    data-duration="9"
+  >
+    <div class="backdrop-grade"></div>
+
+    <div class="clip" data-track-index="1" data-start="0" data-duration="9">
+      <div class="chapter-nav">
+        <div class="chapter-pill is-active" id="ch-1">01 开篇钩子</div>
+        <div class="chapter-pill" id="ch-2">02 节奏拆解</div>
+        <div class="chapter-pill" id="ch-3">03 包装复刻</div>
+      </div>
+    </div>
+
+    <div class="clip" data-track-index="2" data-start="0" data-duration="3">
+      <div class="cover-wrap">
+        <div class="cover-inner" id="cover-card">
+          <div class="cover-badge" id="cover-badge">STYLE-02 风格谱模板</div>
+          <div class="cover-title" id="cover-title">没上过大学不丢人</div>
+          <div class="cover-sub" id="cover-sub">没文化才可怕 · 3秒三切强反差</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="clip" data-track-index="2" data-start="3" data-duration="6">
+      <div class="card-wrap">
+        <div class="card-inner" id="info-card">
+          <div class="card-heading" id="card-heading">核心包装参数复刻</div>
+          <div class="card-list">
+            <div class="card-item" id="item-1">镜头中位时长 1.17s · 前3秒 3次切换</div>
+            <div class="card-item" id="item-2">切点与音频事件对齐率 79.4%</div>
+            <div class="card-item" id="item-3">字幕无底框纯描边 · 重音全句亮黄放大</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="clip" data-track-index="3" data-start="0.4" data-duration="4.2">
+      <div class="sub-wrap">
+        <div class="sub-inner" id="sub-1">
+          <span>这是你身上的一个 </span><span class="sub-kw">核心特质</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="clip" data-track-index="3" data-start="4.6" data-duration="4.4">
+      <div class="sub-wrap">
+        <div class="sub-inner" id="sub-2">
+          <span>真正拉开差距的其实是 </span><span class="sub-kw">审美与节奏</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      var params = new URLSearchParams(window.location.search);
+      var styleParam = params.get("style");
+      var root = document.getElementById("root");
+      if (styleParam && /^style_\d{2}$/.test(styleParam)) {
+        root.className = "composition-root " + styleParam.replace("_", "-");
+        document.getElementById("cover-badge").textContent = styleParam.toUpperCase() + " 风格谱模板";
+      }
+
+      var tl = gsap.timeline({ paused: true });
+      tl.fromTo("#cover-card", { y: 40, opacity: 0 }, { y: 0, opacity: 1, duration: 0.45, ease: "power3.out" }, 0);
+      tl.fromTo("#sub-1", { y: 18, opacity: 0, scale: 0.92 }, { y: 0, opacity: 1, scale: 1, duration: 0.22, ease: "back.out(1.7)" }, 0.4);
+      tl.fromTo("#info-card", { y: 36, opacity: 0 }, { y: 0, opacity: 1, duration: 0.40, ease: "power2.out" }, 3.0);
+      tl.fromTo("#item-1", { x: -24, opacity: 0 }, { x: 0, opacity: 1, duration: 0.25 }, 3.2);
+      tl.fromTo("#item-2", { x: -24, opacity: 0 }, { x: 0, opacity: 1, duration: 0.25 }, 3.45);
+      tl.fromTo("#item-3", { x: -24, opacity: 0 }, { x: 0, opacity: 1, duration: 0.25 }, 3.7);
+      tl.fromTo("#sub-2", { y: 18, opacity: 0, scale: 0.92 }, { y: 0, opacity: 1, scale: 1, duration: 0.22, ease: "back.out(1.7)" }, 4.6);
+
+      window.__timelines = window.__timelines || {};
+      window.__timelines["style-spectrum-pack"] = tl;
+    })();
+  </script>
+</body>
+</html>

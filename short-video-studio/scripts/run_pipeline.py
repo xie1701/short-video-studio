@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from common import maybe_reexec_in_venv, read_json
+from common import ASSETS_DIR, maybe_reexec_in_venv, read_json
 
 maybe_reexec_in_venv()
 
@@ -119,13 +119,37 @@ def main() -> None:
     parser.add_argument("--force-tts", action="store_true", help="强制使用文案生成 TTS 配音")
     parser.add_argument("--bgm", help="自定义 BGM 文件路径")
     parser.add_argument("--pause-sec", type=float, default=0.20, help="句间停顿 (0.15-0.30s)")
-    parser.add_argument("--j-cut-frames", type=int, default=3, help="句间 J-cut 声先入帧数 (2-4)")
+    parser.add_argument("--j-cut-frames", type=int, default=None, help="句间 J-cut 声先入帧数 (默认 3，或由 --style-id 决定)")
+    parser.add_argument("--style-id", help="可选：套用风格谱模板 ID (style_01 ~ style_20)，自动绑定字幕/LUT/J-cut")
     parser.add_argument("--subtitle-template", help="字幕模板 ID")
     parser.add_argument("--lut", help="调色 LUT 文件名")
     parser.add_argument("--prefer-broll-only", action="store_true", help="改画模式：尽量切换为纯 B-roll/代码补镜")
     parser.add_argument("--benchmark", help="可选：对标视频路径")
     parser.add_argument("--simulate-jy-fail", action="store_true", help="测试剪映草稿失效降级保护")
     args = parser.parse_args()
+
+    # 若传入 --style-id，自动从风格谱主库加载默认字幕模板、3D LUT 与 J-cut 参数
+    j_cut_frames = 3 if args.j_cut_frames is None else args.j_cut_frames
+    subtitle_template = args.subtitle_template
+    lut_name = args.lut
+    if args.style_id:
+        lib_path = ASSETS_DIR / "style_spectrum" / "style_spectrum_library.json"
+        if not lib_path.exists():
+            raise FileNotFoundError(f"未找到风格谱数据库: {lib_path}")
+        lib = read_json(lib_path)
+        entry = next((s for s in lib.get("styles", []) if s["style_id"] == args.style_id), None)
+        if not entry:
+            raise KeyError(f"风格谱 ID 不存在: {args.style_id}（可选 style_01 ~ style_20）")
+        if not subtitle_template:
+            subtitle_template = args.style_id
+        if not lut_name:
+            lut_name = f"{args.style_id}.cube"
+        if args.j_cut_frames is None:
+            j_cut_frames = int(entry.get("beat_alignment", {}).get("recommended_j_cut_frames", 3))
+        print(
+            f"[pipeline] 已挂载风格谱 {args.style_id} ({entry['style_name_cn']}) -> "
+            f"字幕={subtitle_template}, LUT={lut_name}, J-cut={j_cut_frames}帧"
+        )
 
     project_dir = Path(args.project_dir)
     raw_dir = Path(args.raw_dir) if args.raw_dir else (project_dir / "raw_media")
@@ -160,9 +184,9 @@ def main() -> None:
     res = run_visual_to_delivery(
         pipeline_dir=pipeline_dir,
         track=args.track,
-        j_cut_frames=args.j_cut_frames,
-        subtitle_template=args.subtitle_template,
-        lut_name=args.lut,
+        j_cut_frames=j_cut_frames,
+        subtitle_template=subtitle_template,
+        lut_name=lut_name,
         prefer_broll_only=args.prefer_broll_only,
         benchmark=bench_p,
         simulate_jy_fail=args.simulate_jy_fail,

@@ -59,3 +59,11 @@
 ## 五、 代码生成补镜模板
 
 - `assets/remotion_templates/`：本项目原创 MIT/CC0 模板，支持在 Remotion / HyperFrames 或本地 Pillow+FFmpeg 引擎中无限制商用渲染。
+
+---
+
+## 六、 「风格谱 (Style Spectrum)」参考包装资产库
+
+- `assets/style_spectrum/luts/style_01.cube` ~ `style_20.cube`（`33³` 3D LUT）：由 `scripts/analyze_style_spectrum.py` 基于公开参考样片色彩统计分布程序化逆向生成的数学色彩映射矩阵，**CC0 1.0 可商用**。
+- `assets/style_spectrum/remotion/`、`assets/style_spectrum/hyperframes/`、`assets/style_spectrum/jianying/`：本项目原创跨平台代码模板与 JSON 参数配置，**MIT / CC0 可商用**；所有字幕样式优先绑定「思源黑体 / 思源宋体 / 阿里妈妈数黑体 / 清松手写体」等开源/免费可商用字体链。
+- `assets/style_spectrum/keyframes/style_01_contact.jpg` ~ `style_20_contact.jpg`：用于本地视觉复核与参数比对的关键帧采样图谱（仅作教学与参考研究用途，请勿直接截取原片人物肖像用于商业投放）。

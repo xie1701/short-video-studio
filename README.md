@@ -1,6 +1,6 @@
 # short-video-studio 短视频制片工作室
 
-> **面向零拍摄与零剪辑基础用户的端到端 Claude Code Agent Skill**：以 **「先音后画，以音定画」** 为核心工程铁律，打通「账号定位与 4 周 5A 日历策划 → 带简笔构图示意的拍摄任务卡 / 素材盘点反推 → 9 步确定性音视频后期流水线 → 9 项客观自动质检 → 本地 1080×1920 高清成片与剪映专业版草稿双出片 → 发布后数据周复盘」全流程。
+> **面向零拍摄与零剪辑基础用户的端到端 Agent Skill（支持 Claude Code / Gemini Antigravity）**：以 **「先音后画，以音定画」** 为核心工程铁律，打通「账号定位与 4 周 5A 日历策划 → 带简笔构图示意的拍摄任务卡 / 素材盘点反推 → 9 步确定性音视频后期流水线 → 基于 20 条标杆视频的「风格谱」一键包装（Remotion / HyperFrames / 剪映 / 3D LUT）→ 9 项客观自动质检 → 本地 1080×1920 高清成片与剪映专业版草稿双出片 → 发布后数据周复盘」全流程。
 
 ---
 
@@ -18,6 +18,8 @@
    - **仅 3 次交互打断**：① 确认选题 → ② 确认拍摄卡或素材 → ③ 确认锁定音轨与低清粗剪预览（支持**只改画面不动音轨**与**改词重锁音轨**两条分支）；其余剪辑细节自动推进并在交付时呈报《我替你做的决定》。
 4. **「先音后画，以音定画」不可逆流水线**
    - Step 3 锁定纯语音 + BGM 节拍后生成 `03_audio_events.json` 骨架，后续一切切镜、J-cut、花字弹出与特效音均严格绑定音频事件帧。
+5. **「风格谱 (Style Spectrum)」20 套标杆包装库与跨平台复刻**
+   - 逐帧分析 20 条真实参考视频（累计 4034.8 秒 / 103,981 帧），提炼 6 大包装流派与 20 套量化「风格谱」（镜头分布、节拍对齐、字幕规范、33³ 3D LUT、开头结构、封面版式），支持 `--style-id` 一键注入流水线，或导出为 **Remotion / HyperFrames / 剪映专业版草稿**。
 
 ---
 
@@ -30,13 +32,32 @@ short-video-studio/
 ├── install.ps1                        # Windows PowerShell 一键安装与部署脚本
 ├── BRIEF.md                           # 原始需求说明文档
 ├── 建立可循环的内容系统.md             # 方法论原稿留档
-└── short-video-studio/                # Claude Code Skill 本体目录（安装后挂载至 ~/.claude/skills/short-video-studio）
+└── short-video-studio/                # Agent Skill 本体目录（安装后挂载至 ~/.claude/skills/short-video-studio 等）
     ├── SKILL.md                       # Skill 主控编排与硬性规则
     ├── references/                    # 方法论原文、公式速查、JSON Schema、平台安全区与资产授权清单
-    ├── assets/                        # 内置 CC0 资产（BGM、SFX、3D LUT、SVG 贴纸、字幕/Remotion 模板）
-    └── scripts/                       # 17 个 Python 确定性工程脚本
+    ├── assets/                        # 内置 CC0 资产与 20 套「风格谱」跨平台复刻库
+    │   ├── bgm/                       # CC0 程序化背景音乐（100 / 120 BPM）
+    │   ├── sfx/                       # CC0 瞬态转场与提示音效
+    │   ├── luts/                      # 基础 3D LUT (warm_store / clean_creator / high_contrast)
+    │   ├── stickers/                  # 原创可商用 SVG 矢量贴纸
+    │   ├── subtitle_templates/        # templates.json（4 套基础模板 + style_01~style_20 共 24 套）
+    │   ├── remotion_templates/        # Remotion 根入口与代码补镜模板
+    │   └── style_spectrum/            # 20 条参考视频「风格谱」全量资产库
+    │       ├── STYLE_SPECTRUM_REPORT.md      # 20 条参考视频 9 维逐帧拆解总报告
+    │       ├── style_spectrum_library.json   # 6 大流派母版 + 20 套风格谱主数据库
+    │       ├── style_spectrum_raw.json       # 逐帧物理扫描原始统计数据
+    │       ├── luts/                         # 20 套逆向 33³ 3D .cube LUT (style_01~20.cube)
+    │       ├── keyframes/                    # 20 张 3×3 高清关键帧采样图谱 (*_contact.jpg)
+    │       ├── remotion/                     # StyleSpectrumPresets.ts + StyleSpectrumPack.tsx
+    │       ├── hyperframes/                  # style-spectrum-presets.css + style-spectrum-template.html
+    │       └── jianying/                     # jianying_style_presets.json（剪映样式/调色/节奏预设）
+    └── scripts/                       # 23 个 Python 确定性工程脚本
+        ├── common.py                  # 公共工具模块（路径、venv、FFmpeg、字体、安全区与 JSON 读写）
         ├── check_and_setup.py         # 环境检测、隔离 venv 依赖安装与 CC0 资产生成
         ├── generate_builtin_assets.py # 程序化生成零版权风险 CC0 BGM/SFX/LUT/贴纸
+        ├── analyze_style_spectrum.py  # 逐帧特征提取引擎（镜头/BPM/对齐率/色彩LUT/OCR字幕/图谱）
+        ├── build_style_spectrum_assets.py # 合并视觉精校并构建主库与三端预设文件
+        ├── apply_style_spectrum.py    # 风格谱一键导出 (Remotion/HyperFrames/剪映) 与流水线应用
         ├── inventory_media.py         # 入口 2：素材盘点与选题公式反推
         ├── generate_shot_card.py      # 入口 1：生成带 SVG 简笔构图的拍摄任务卡
         ├── generate_code_broll.py     # 代码生成叙事补镜（动效文字 / 数据柱状图 / 流程图）
@@ -44,7 +65,7 @@ short-video-studio/
         ├── step2_transcribe.py        # Step 2：逐字时间戳对齐（无口播自动切换 Edge-TTS 配音）
         ├── step3_lock_audio.py        # Step 3：去废话停顿、对齐强拍并锁定音轨事件
         ├── step4_build_edl.py         # Step 4：以音定画生成 EDL（J-cut、前 3 秒多切点、自动补镜）
-        ├── step5_subtitles.py         # Step 5：逐字关键词高亮字幕（平台安全区内）
+        ├── step5_subtitles.py         # Step 5：逐字关键词高亮字幕（支持基础 4 套 + style_01~20）
         ├── step6_packaging.py         # Step 6：SFX 先行与 ±1 帧同步花字贴纸（含预算上限控制）
         ├── step7_color_grade.py       # Step 7：基础曝光白平衡校色 + 3D .cube LUT
         ├── step8_mix_audio.py         # Step 8：人声降噪 + BGM 自动闪避 + -14.0 LUFS 闭环混音
@@ -53,7 +74,7 @@ short-video-studio/
         ├── export_jianying.py         # 出片 2：剪映专业版草稿导出（异常自动降级保护）
         ├── qa_inspector.py            # 9 项强制自动质检 + 对标视频逐秒对比
         ├── content_log_review.py      # 发布数据沉淀与每周一页结构化复盘
-        └── run_pipeline.py            # 端到端一键编排入口（full / lock-preview / reedit-visuals / relock-voice）
+        └── run_pipeline.py            # 端到端一键编排入口（full / lock-preview / reedit-visuals / relock-voice，支持 --style-id）
 ```
 
 ---
@@ -80,7 +101,7 @@ cd short-video-studio
 1. 检查 `ffmpeg`、`ffprobe`、`node`、`uv` 与开源可商用字体环境；
 2. 创建独立虚拟环境 `~/.short-video-studio/venv`（安装 `pillow`、`numpy`、`soundfile`、`edge-tts` 等依赖）；
 3. 确定性生成全套 CC0 BGM、音效、3D LUT 与 SVG 贴纸；
-4. 将 `short-video-studio/` 软链/部署至 `~/.claude/skills/short-video-studio`（Windows 为 `%USERPROFILE%\.claude\skills\short-video-studio`）。
+4. 将 `short-video-studio/` 软链/部署至 `~/.claude/skills/short-video-studio`（Windows 为 `%USERPROFILE%\.claude\skills\short-video-studio`）；macOS/Linux 若检测到 `~/.gemini/config/skills` 存在，还会同步创建软链。
 
 ---
 
@@ -134,10 +155,10 @@ cd short-video-studio
      python3 short-video-studio/scripts/run_pipeline.py \
        --project-dir ./my_video --track creator --mode relock-voice --script-json ./new_script.json
      ```
-   - **端到端全链路出片 + 剪映草稿 + 9 项强检**（可选对标逐秒对比）：
+   - **端到端全链路出片 + 剪映草稿 + 9 项强检**（支持 `--style-id` 套用 20 套参考风格谱及 `--benchmark` 逐秒对比）：
      ```bash
      python3 short-video-studio/scripts/run_pipeline.py \
-       --project-dir ./my_video --track store --mode full --benchmark ./benchmark.mp4
+       --project-dir ./my_video --track store --mode full --style-id style_02 --benchmark ./benchmark.mp4
      ```
 5. **独立校验与导出**
    - 自动质检：`python3 short-video-studio/scripts/qa_inspector.py --pipeline-dir ./my_video/pipeline`
@@ -177,3 +198,72 @@ cd short-video-studio
 - **背景音乐 & 音效**：由 `generate_builtin_assets.py` 纯数字信号合成（48kHz 16-bit WAV），**CC0 1.0 公共领域可商用**。
 - **SVG 贴纸 & 3D LUTs & Remotion/代码补镜模板**：项目原创绘制与生成，**CC0 1.0 / MIT 可商用**。
 - **字幕字体**：优先加载 **思源黑体 / 思源宋体 / 得意黑（SIL OFL 1.1）** 及 **阿里妈妈数黑体（免费可商用）**，并在缺失特定生僻/方言字符时单字回退以保障成片视觉完整性。
+- **风格谱 3D LUT 与三端预设**：`assets/style_spectrum/luts/` 下的 20 套 `33³` `.cube` LUT 与 Remotion/HyperFrames/剪映模板均由本项目脚本原创生成，**CC0 1.0 / MIT 可商用**。
+
+---
+
+## 七、 参考包装「风格谱 (Style Spectrum)」跨平台复刻库
+
+已基于 **20 条**参考视频（竖屏 9:16 13 条 / 横屏 16:9 7 条，累计 **4034.8 秒 / 67.2 分钟**，全帧扫描 **103,981 帧**）完成逐帧解析与视觉图谱复核，提炼出 **6 大包装流派母版**与 **20 套可直接复刻的「风格谱」资产**。完整逐条 9 维拆解（含关键帧图谱预览）见 [STYLE_SPECTRUM_REPORT.md](short-video-studio/assets/style_spectrum/STYLE_SPECTRUM_REPORT.md)。
+
+### 1. 六大包装流派母版 (Archetypes)
+
+| 流派 ID | 流派名称 | 包含样本 | 适用场景 | 色彩与字幕特征 | 节奏与对齐公式 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `arch_01_tech_ui_console` | **暗黑科技 / AI 工作流控制台风** | `style_01`, `style_09`, `style_10`, `style_15`, `style_17` | AI 工具测评、Agent 工作流演示、SaaS 产品教程、极客硬核拆解 | 暗黑低亮度基底 (`Y=36~84`) + 琥珀金/科技蓝强调色 + 克制小号居中底字 (`36~46px`) | 顶部章节步骤条常驻 + 内部 UI/卡片高频切换 + 强事件对齐 (`60%~90%`) |
+| `arch_02_high_contrast_story` | **强反差财经 / 深度人物叙事拼贴风** | `style_03`, `style_16`, `style_19` | 商业案例揭秘、创始人深度访谈、剪辑思维干货、高信息量长视频 | 中性电影对比调或暖肤色 + 亮黄/翠绿/报刊米白强视觉冲击块 | 高速切镜 (`med 1.25s~2.20s`，全片 `118~290` 镜) + 高频音效 (`63~90 SFX/min`) |
+| `arch_03_editorial_matte_depth` | **高级感杂志排版 / 人物前景遮罩风** | `style_11`, `style_12`, `style_18`, `style_20` | 审美/设计评论、个人IP方法论教学、Notion/极简白底知识拆解 | 极净白底或深红/书墙反差色 + 少而精的无衬线黑体层级 (`≤2` 种字体) | 前 3 秒人物遮罩大字或实物定格抓眼，中段结构化清单与快切案例交替 |
+| `arch_04_punch_talking_head` | **高密口播卡点 / 干货大字冲击风** | `style_02`, `style_04`, `style_07`, `style_14` | 创始人认知口播、实体商家/建材家居老板IP、认知颠覆与痛点科普 | 暖肤色高透或暖琥珀书桌调 + 大号粗黑体 (`48~74px`) 亮黄变色放大 | 口播句间紧剪 + 推拉跳剪 + 卡片弹窗音效卡点 (对齐率 `79%~92%`) |
+| `arch_05_cinema_slow_space` | **电影感空间漫游 / 人文宋体金句风** | `style_06`, `style_08`, `style_13` | 高端室内设计/建筑展厅实拍、心理学/哲学金句、深度真实生活随拍访谈 | 暖木质感色温或冷青电影灰调；思源宋体 (`SourceHanSerifCN`) 或极简细黑投影 | 尊重呼吸感与空间尺度（空镜缓推或随拍微跳剪），少音效或零花字 |
+| `arch_06_paper_stopmotion` | **纸张拼贴定格 / 工程图解科普风** | `style_05` | 收纳改造、家居尺寸科普、产品结构拆解、强动手感实物教程 | 低饱和褶皱白纸底纹 (`sat=9.1%`) + 暖木纹理 + 红线尺寸标尺 | 前 3 秒手部模型定格 3 连切，全片依靠纸片元件位移与定格节奏驱动 |
+
+### 2. 20 套「风格谱」速查总表 (`style_01` ~ `style_20`)
+
+| ID | 风格名称 | 画幅 / 帧率 | 时长 | 总镜数 (硬切/跳剪) | 中位镜长 (`<1s`快切) | 事件对齐 (`≤1f`/`≤3f`) | BPM (响度) | 音效密度 | 字幕字号 / 位置 / 动效 | LUT 与调性 |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :--- | :--- |
+| `style_01` | 复古胶片控制台 · AI 模板展示风 | 9:16 / 30p | 150.0s | 16 (8/7) | 6.55s (0.0%) | 26.7% / 53.3% | 103.4 (-12.6 LUFS) | 59.6/min | 40px · Y=0.80 · `fade_slide_up` | `style_01.cube` (深沉低饱和质感调) |
+| `style_02` | 极简硬核口播 · 书法炸裂封面风 | 9:16 / 30p | 56.1s | 35 (23/11) | 1.17s (37.1%) | 44.1% / 79.4% | 157.9 (-11.1 LUFS) | 70.6/min | 74px · Y=0.78 · `hard_cut` | `style_02.cube` (均衡自然高通透调) |
+| `style_03` | 十亿访谈长片 · 顶部时间节点进度条风 | 16:9 / 24p | 552.7s | 290 (200/89) | 1.58s (23.8%) | 27.3% / 68.9% | 111.1 (-14.2 LUFS) | 80.7/min | 46px · Y=0.89 · `hard_cut` | `style_03.cube` (暖色高饱和门店/人物调) |
+| `style_04` | 质感拟物纸片 · AI 框架科普风 | 9:16 / 24p | 46.9s | 12 (10/1) | 4.08s (16.7%) | 36.4% / 81.8% | 84.5 (-13.2 LUFS) | 75.4/min | 48px · Y=0.76 · `hard_cut` | `style_04.cube` (暖色高饱和门店/人物调) |
+| `style_05` | 皱纹纸拼贴定格 · 工程图解科普风 | 9:16 / 24p | 169.9s | 11 (5/5) | 1.50s (36.4%) | 30.0% / 80.0% | 96.8 (-10.9 LUFS) | 78.1/min | 48px · Y=0.88 · `fade_slide_up` | `style_05.cube` (暖色高饱和门店/人物调) |
+| `style_06` | 10秒情感金句 · 衬线宋体剪影大片风 | 9:16 / 30p | 10.0s | 4 (3/0) | 2.32s (25.0%) | 0.0% / 66.7% | 146.3 (-14.4 LUFS) | 72.1/min | 78px · Y=0.69 · `hard_cut` | `style_06.cube` (均衡自然高通透调) |
+| `style_07` | 商业导师书桌 · 暗金波点全屏花字风 | 9:16 / 24p | 126.6s | 27 (16/10) | 4.08s (22.2%) | 57.7% / 80.8% | 153.8 (-15.0 LUFS) | 75.8/min | 64px · Y=0.83 · `pop_spring` | `style_07.cube` (深沉低饱和质感调) |
+| `style_08` | 真实生活随拍 · 文艺双语宋体微跳剪风 | 9:16 / 24p | 278.2s | 29 (7/21) | 5.33s (13.8%) | 46.4% / 85.7% | 107.1 (-11.3 LUFS) | 89.1/min | 50px · Y=0.67 · `fade_slide_up` | `style_08.cube` (清透冷中性/极简白调) |
+| `style_09` | 电影剪辑工作站 · 3D 胶片墙极客风 | 16:9 / 30p | 151.3s | 24 (20/3) | 2.12s (20.8%) | 30.4% / 60.9% | 120.0 (-11.2 LUFS) | 69.0/min | 36px · Y=0.90 · `hard_cut` | `style_09.cube` (深沉低饱和质感调) |
+| `style_10` | 暗黑幕后工作室 · 右下固定画中画教程风 | 16:9 / 25p | 229.3s | 11 (8/2) | 17.76s (9.1%) | 10.0% / 60.0% | 93.8 (-13.7 LUFS) | 78.2/min | 44px · Y=0.91 · `hard_cut` | `style_10.cube` (深沉低饱和质感调) |
+| `style_11` | 人物前景遮罩巨字 · 高级感杂志教程风 | 16:9 / 24p | 156.3s | 90 (80/9) | 1.35s (35.6%) | 34.8% / 77.5% | 130.4 (-14.9 LUFS) | 70.2/min | 38px · Y=0.90 · `hard_cut` | `style_11.cube` (均衡自然高通透调) |
+| `style_12` | Apple/Notion 极简白底 · 人像抠像卡片风 | 9:16 / 24p | 224.8s | 4 (0/3) | 65.81s (25.0%) | 66.7% / 100.0% | 146.3 (-14.5 LUFS) | 30.4/min | 54px · Y=0.77 · `hard_cut` | `style_12.cube` (均衡自然高通透调) |
+| `style_13` | 建筑空间漫游 · 电影感慢调奢享风 | 9:16 / 30p | 473.4s | 34 (28/5) | 1.57s (11.8%) | 27.3% / 72.7% | 95.2 (-14.9 LUFS) | 76.9/min | 46px · Y=0.72 · `hard_cut` | `style_13.cube` (深沉低饱和质感调) |
+| `style_14` | 毛玻璃卡片叠映 · 居家创始人信任风 | 9:16 / 24p | 259.3s | 25 (16/8) | 8.71s (0.0%) | 37.5% / 91.7% | 120.0 (-12.9 LUFS) | 94.6/min | 50px · Y=0.74 · `fade_slide_up` | `style_14.cube` (均衡自然高通透调) |
+| `style_15` | AI Agent 流程导航 · 工牌/账单小票风 | 16:9 / 24p | 123.3s | 11 (10/0) | 11.71s (18.2%) | 80.0% / 90.0% | 162.2 (-13.0 LUFS) | 72.0/min | 40px · Y=0.90 · `pop_spring` | `style_15.cube` (暗黑高对比科技调) |
+| `style_16` | 商业悬疑纪实 · 撕纸拍立得拼贴风 | 9:16 / 30p | 313.8s | 118 (95/22) | 2.20s (10.2%) | 37.6% / 76.1% | 109.1 (-12.3 LUFS) | 89.7/min | 48px · Y=0.84 · `hard_cut` | `style_16.cube` (深沉低饱和质感调) |
+| `style_17` | 深蓝 SaaS 演示 · 右下圆角画中画风 | 9:16 / 24p | 79.8s | 15 (8/6) | 1.75s (26.7%) | 21.4% / 78.6% | 93.8 (-14.5 LUFS) | 75.2/min | 46px · Y=0.70 · `hard_cut` | `style_17.cube` (暗黑高对比科技调) |
+| `style_18` | 白板方法论 · 手写字纸片反差条风 | 9:16 / 24p | 190.1s | 39 (19/19) | 2.71s (12.8%) | 44.7% / 71.1% | 111.1 (-14.0 LUFS) | 49.5/min | 64px · Y=0.75 · `hard_cut` | `style_18.cube` (深沉低饱和质感调) |
+| `style_19` | 专业剪辑大师课 · 顶部细条章节 + 绿块冲击风 | 16:9 / 24p | 233.1s | 137 (122/14) | 1.25s (35.8%) | 44.1% / 82.4% | 146.3 (-15.3 LUFS) | 63.3/min | 46px · Y=0.90 · `hard_cut` | `style_19.cube` (暗黑高对比科技调) |
+| `style_20` | 模型盒悬念开篇 · 书墙双语毛玻璃金句风 | 16:9 / 24p | 210.0s | 88 (66/21) | 1.27s (38.6%) | 27.6% / 75.9% | 90.9 (-14.7 LUFS) | 89.2/min | 42px · Y=0.87 · `fade_slide_up` | `style_20.cube` (深沉低饱和质感调) |
+
+### 3. 跨平台复刻命令行速查
+
+```bash
+# 1. 列出 6 大流派母版与 20 套风格谱摘要
+python3 short-video-studio/scripts/apply_style_spectrum.py --list
+
+# 2. 在流水线中直接套用 style_02 出片（自动绑定字幕模板 + 3D LUT + J-cut）
+python3 short-video-studio/scripts/run_pipeline.py --project-dir ./my_video --track creator --mode full --style-id style_02
+
+# 3. 一键导出至 剪映专业版样板草稿 / Remotion Props / 独立 HyperFrames HTML
+python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_16 \
+  --title "360亿大佬的真实困局" \
+  --subtitle "看懂商业底层的现金流真相" \
+  --export-jianying-template ./out_style_16/jianying_draft \
+  --export-remotion-props ./out_style_16/remotion_props.json \
+  --export-hyperframes ./out_style_16/hyperframes_comp.html
+
+# 4. 针对自己的参考视频库重新逐帧提取「风格谱」并更新资产
+python3 short-video-studio/scripts/analyze_style_spectrum.py --input-dir /path/to/reference_videos --workers 6
+python3 short-video-studio/scripts/build_style_spectrum_assets.py
+```
+
+- **Remotion 组件入口**：在 [Root.tsx](short-video-studio/assets/remotion_templates/Root.tsx) 中已注册 `StyleSpectrumShowcase`，并可单独复用 [StyleSpectrumPack.tsx](short-video-studio/assets/style_spectrum/remotion/StyleSpectrumPack.tsx) 中的 `StyleCoverCard`、`StyleSubtitleBar`、`StyleChapterBar`、`StyleGraphicCard`。
+- **HyperFrames 母版入口**：打开 [style-spectrum-template.html](short-video-studio/assets/style_spectrum/hyperframes/style-spectrum-template.html)`?style=style_02` 即可按风格 ID 切换预览，或用 `--export-hyperframes` 导出单文件交由 `npx hyperframes check && npx hyperframes render` 渲染。
+- **剪映专业版预设库**：`short-video-studio/assets/style_spectrum/jianying/jianying_style_presets.json` 及 `short-video-studio/assets/style_spectrum/luts/style_01.cube` ~ `style_20.cube`。

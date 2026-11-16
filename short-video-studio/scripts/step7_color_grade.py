@@ -67,7 +67,8 @@ def run_step7(
         lut_name = "warm_store.cube" if track == "store" else "clean_creator.cube"
     lut_path = ASSETS_DIR / "luts" / lut_name
     if not lut_path.exists():
-        lut_path = ASSETS_DIR / "luts" / "clean_creator.cube"
+        style_lut_path = ASSETS_DIR / "style_spectrum" / "luts" / lut_name
+        lut_path = style_lut_path if style_lut_path.exists() else (ASSETS_DIR / "luts" / "clean_creator.cube")
 
     unique_media_stats: Dict[str, Dict[str, float]] = {}
     clip_plans: List[Dict[str, Any]] = []
