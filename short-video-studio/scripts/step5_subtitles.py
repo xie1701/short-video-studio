@@ -31,8 +31,10 @@ def fmt_ass_time(sec: float) -> str:
     return f"{h}:{m:02d}:{s:05.2f}"
 
 
-def split_sentence_into_chunks(sent: Dict[str, Any], max_chars: int = 12) -> List[Dict[str, Any]]:
-    """把长句按 8-12 字切分为适合手机竖屏单行阅读的字幕块，并精确继承首尾字时间码。"""
+def split_sentence_into_chunks(sent: Dict[str, Any], max_chars: int = 14) -> List[Dict[str, Any]]:
+    """把长句按语义与均衡长度切分为适合手机竖屏单行阅读的字幕块（绝不切出<5字残句），并精确继承首尾字时间码。"""
+    import math
+
     words = sent.get("words") or []
     if not words:
         return [{
@@ -43,26 +45,28 @@ def split_sentence_into_chunks(sent: Dict[str, Any], max_chars: int = 12) -> Lis
             "keywords": sent.get("keywords", []),
         }]
 
+    n_words = len(words)
+    # 15 字以内单句完整展示（由 render_mp4.py 自适应缩号确保不超框），避免硬切出“都冇嘅店”等残句
+    if n_words <= max_chars + 1:
+        return [{
+            "text": "".join(x["word"] for x in words),
+            "start_sec": words[0]["start_sec"],
+            "end_sec": words[-1]["end_sec"],
+            "words": list(words),
+            "keywords": sent.get("keywords", []),
+        }]
+
+    # 超过 15 字则按均等块数切分，保证每块 >= 6 字
+    n_parts = max(2, math.ceil(n_words / float(max_chars)))
+    base_len = n_words // n_parts
+    rem = n_words % n_parts
     chunks: List[Dict[str, Any]] = []
-    cur: List[Dict[str, Any]] = []
-    for w in words:
-        cur.append(w)
-        if len(cur) >= max_chars:
-            chunks.append({
-                "text": "".join(x["word"] for x in cur),
-                "start_sec": cur[0]["start_sec"],
-                "end_sec": cur[-1]["end_sec"],
-                "words": list(cur),
-                "keywords": sent.get("keywords", []),
-            })
-            cur = []
-    if cur:
-        # 避免末尾只有 1-2 个字的“孤儿行”：合并到前一块（只要总字数 <= 15）
-        if chunks and len(cur) <= 3 and len(chunks[-1]["words"]) + len(cur) <= 15:
-            chunks[-1]["words"].extend(cur)
-            chunks[-1]["text"] = "".join(x["word"] for x in chunks[-1]["words"])
-            chunks[-1]["end_sec"] = cur[-1]["end_sec"]
-        else:
+    pos = 0
+    for i in range(n_parts):
+        part_len = base_len + (1 if i < rem else 0)
+        cur = words[pos : pos + part_len]
+        pos += part_len
+        if cur:
             chunks.append({
                 "text": "".join(x["word"] for x in cur),
                 "start_sec": cur[0]["start_sec"],

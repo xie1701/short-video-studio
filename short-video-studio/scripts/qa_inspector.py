@@ -168,27 +168,43 @@ def inspect_video(
         "threshold": "≤ 1 帧",
     })
 
-    # 7. 字幕和贴纸是否进入平台 UI 遮挡区
+    # 7. 字幕和贴纸是否进入平台 UI 遮挡区 + 代码卡零碰撞 + 字幕零残句
     ui_violations: List[str] = []
+    short_subs = 0
     for sub in subs.get("entries", []):
         ok, msg = check_bbox_in_safe_zone(sub["bbox"])
         if not ok:
             ui_violations.append(f"{sub['id']}: {msg}")
+        if len(str(sub.get("text", "")).strip()) < 5:
+            short_subs += 1
+            ui_violations.append(f"{sub['id']}: 孤立短残句 '{sub.get('text', '')}'")
+
+    code_ranges = [
+        (int(c["timeline_in_frame"]), int(c["timeline_out_frame"]))
+        for c in edl.get("clips", [])
+        if c.get("track_role") == "code_broll"
+    ]
+    code_collisions = 0
     for elem in pkg.get("visual_elements", []):
         ok, msg = check_bbox_in_safe_zone(elem["bbox"])
         if not ok:
             ui_violations.append(f"{elem['id']}: {msg}")
+        sf_e, ef_e = int(elem["start_frame"]), int(elem["end_frame"])
+        if any(sf_e < ce and ef_e > cs for cs, ce in code_ranges):
+            code_collisions += 1
+            ui_violations.append(f"{elem['id']}: 与代码补镜卡重叠")
+
     # 同时核验包装元素 ±1 帧对齐
     pkg_sync_err = max([abs(int(e["start_frame"]) - int(e["aligned_sfx_or_accent_frame"])) for e in pkg.get("visual_elements", [])] or [0])
     checks.append({
         "id": "ui_safe_zone",
-        "name": "平台 UI 遮挡区 & 包装帧对齐",
+        "name": "平台 UI 安全区 / 代码卡互斥 / 零残句",
         "passed": len(ui_violations) == 0 and pkg_sync_err <= 1,
-        "measured": f"遮挡区违规 {len(ui_violations)} 处, 包装对齐最大误差 {pkg_sync_err} 帧",
-        "threshold": "0 违规且包装误差 ≤ 1 帧",
+        "measured": f"安全区违规 {len(ui_violations)} 处 (代码卡碰撞 {code_collisions}, 残句 {short_subs}), 包装对齐最大误差 {pkg_sync_err} 帧",
+        "threshold": "0 违规/0 碰撞/0 残句且包装误差 ≤ 1 帧",
     })
 
-    # 8. 镜头时长分布
+    # 8. 镜头时长分布 + 零同源倒带复读 + A-Roll 叙事占比与结尾收口
     durs = [float(c["duration_sec"]) for c in edl["clips"]]
     min_d, max_d = min(durs), max(durs)
     mean_d = statistics.mean(durs)
@@ -196,16 +212,35 @@ def inspect_video(
     b_short = sum(1 for d in durs if d < 1.0)
     b_mid = sum(1 for d in durs if 1.0 <= d <= 2.5)
     b_long = sum(1 for d in durs if d > 2.5)
-    dist_ok = min_d >= 0.30 and max_d <= 8.0
+
+    rewind_count = 0
+    clips_list = edl.get("clips", [])
+    for ci in range(1, len(clips_list)):
+        c0, c1 = clips_list[ci - 1], clips_list[ci]
+        if str(c0.get("media_path")) == str(c1.get("media_path")):
+            if c1.get("track_role") == "code_broll":
+                rewind_count += 1
+            elif float(c1["source_in_sec"]) < float(c0["source_out_sec"]) - 0.05:
+                rewind_count += 1
+
+    total_edl_dur = max(0.1, float(edl.get("total_duration_sec", sum(durs))))
+    aroll_clips = [c for c in clips_list if c.get("track_role") == "a_roll"]
+    aroll_ratio = sum(float(c["duration_sec"]) for c in aroll_clips) / total_edl_dur if aroll_clips else 1.0
+    aroll_tail_ok = True
+    if aroll_clips:
+        aroll_tail_ok = any(float(c["timeline_out_sec"]) >= total_edl_dur - 10.0 for c in aroll_clips)
+    aroll_ok = (aroll_ratio >= 0.18 and aroll_tail_ok) if aroll_clips else True
+
+    dist_ok = (min_d >= 0.30 and max_d <= 8.0 and rewind_count == 0 and aroll_ok)
     checks.append({
         "id": "shot_duration_dist",
-        "name": "镜头时长分布",
+        "name": "镜头分布 / 零同源倒带 / A-Roll 占比",
         "passed": dist_ok,
         "measured": (
-            f"共{len(durs)}镜 | min={min_d:.2f}s, med={med_d:.2f}s, mean={mean_d:.2f}s, max={max_d:.2f}s "
-            f"(<1s:{b_short}, 1-2.5s:{b_mid}, >2.5s:{b_long})"
+            f"共{len(durs)}镜 | min={min_d:.2f}s, med={med_d:.2f}s, max={max_d:.2f}s "
+            f"| 同源倒带={rewind_count}处, A-roll占比={aroll_ratio*100:.1f}%, 结尾出镜={'是' if aroll_tail_ok else '否'}"
         ),
-        "threshold": "0.30s ≤ 单镜 ≤ 8.0s",
+        "threshold": "0.30s ≤ 单镜 ≤ 8.0s 且 0 倒带, A-roll ≥ 18% 且结尾出镜",
     })
 
     # 9. 前 3 秒画面变化次数

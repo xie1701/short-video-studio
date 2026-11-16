@@ -174,10 +174,27 @@ def render_packaging_png(elem: Dict[str, Any], font_path: str | None, out_png: P
     kind = elem["kind"]
 
     if kind == "flower_text":
-        font_size = min(50, max(28, int(h * 0.44)))
-        fnt = ImageFont.truetype(font_path, font_size) if font_path else ImageFont.load_default()
-        draw.rounded_rectangle([2, 2, w - 3, h - 3], radius=20, fill=(245, 158, 11, 232), outline=(255, 255, 255, 255), width=4)
-        draw.text((w // 2, h // 2), elem["text_or_asset"][:14], font=fnt, fill=(15, 23, 42, 255), anchor="mm")
+        text_val = str(elem["text_or_asset"]).strip()[:18]
+        # style_14 深色毛玻璃金边胶囊 + 左侧高亮竖条 + 自适应字号与字体回退
+        fb_path = _get_fallback_font_path()
+        use_font = font_path
+        if font_path and fb_path:
+            f_probe = ImageFont.truetype(font_path, 38)
+            if any(_char_is_tofu(f_probe, str(font_path), ch) for ch in text_val):
+                use_font = fb_path
+
+        font_size = min(44, max(26, int(h * 0.46)))
+        fnt = ImageFont.truetype(use_font, font_size) if use_font else ImageFont.load_default()
+        while font_size > 22:
+            fnt = ImageFont.truetype(use_font, font_size) if use_font else ImageFont.load_default()
+            bb = draw.textbbox((0, 0), text_val, font=fnt)
+            if (bb[2] - bb[0]) <= w - 58:
+                break
+            font_size -= 2
+
+        draw.rounded_rectangle([2, 2, w - 3, h - 3], radius=18, fill=(15, 23, 42, 220), outline=(255, 213, 79, 245), width=3)
+        draw.rounded_rectangle([14, 18, 22, h - 18], radius=4, fill=(255, 213, 79, 255))
+        draw.text(((w + 14) // 2, h // 2), text_val, font=fnt, fill=(255, 255, 255, 255), anchor="mm")
     else:
         name = Path(elem["text_or_asset"]).name
         fnt = ImageFont.truetype(font_path, 36) if font_path else ImageFont.load_default()
