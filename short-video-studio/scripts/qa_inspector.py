@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 [自动质检与对标逐秒结构对比]
-对每条成片执行 9 项硬性检查，任何一项未通过则判定为 FAIL 并退出码非 0（未通过绝不交付）：
+对每条成片执行 10 项硬性检查，任何一项未通过则判定为 FAIL 并退出码非 0（未通过绝不交付）：
 1. 响度 (-14.0 ± 1.0 LUFS)
 2. 黑帧 (0 个黑帧区间)
 3. 超过 0.8s 的静音段 (0 段)
@@ -11,6 +11,7 @@
 7. 字幕和贴纸是否进入平台 UI 遮挡区 (0 次越界)
 8. 镜头时长分布 (统计分布并校验无 <0.3s 碎镜头或 >8s 死镜头)
 9. 前 3 秒画面变化次数 (≥ 2 次且均对应音频事件)
+10. A-Roll 句界严锁与口型同步检测 (无跨句尾帧闪跳/半句突兀切入)
 
 可选：传入 --benchmark <对标视频>，额外输出逐秒结构对比报告 10_benchmark_comparison.md。
 """
@@ -255,6 +256,65 @@ def inspect_video(
         "threshold": "≥ 2 次且均对齐音频事件",
     })
 
+    # 10. A-Roll 句界严锁与口型同步检测 (无跨句尾帧闪跳 & 无半句过晚切入)
+    accepted_path = pipeline_dir / "02_Accepted_Cuts.json"
+    if not accepted_path.exists():
+        accepted_path = pipeline_dir.parent / "02_Accepted_Cuts.json"
+    accepted_by_id: Dict[str, Dict[str, Any]] = {}
+    if accepted_path.exists():
+        acc_raw = read_json(accepted_path)
+        acc_list = acc_raw.get("sentences", acc_raw) if isinstance(acc_raw, dict) else acc_raw
+        if isinstance(acc_list, list):
+            for it in acc_list:
+                if isinstance(it, dict) and it.get("id"):
+                    accepted_by_id[str(it["id"])] = it
+
+    aroll_boundary_violations: List[str] = []
+    max_overrun_sec = 0.0
+    max_late_in_sec = 0.0
+    sents_all = audio_events.get("sentences", [])
+    sents_by_id = {s["id"]: s for s in sents_all}
+    for c in aroll_clips:
+        c_in = float(c["timeline_in_sec"])
+        c_out = float(c["timeline_out_sec"])
+        overlapping = [
+            s for s in sents_all
+            if min(c_out, float(s["end_sec"])) - max(c_in, float(s["start_sec"])) > 0.04
+        ]
+        if not overlapping and c.get("sentence_id") in sents_by_id:
+            overlapping = [sents_by_id[c["sentence_id"]]]
+        if not overlapping:
+            continue
+        first_s = overlapping[0]
+        last_s = overlapping[-1]
+
+        acc_last = accepted_by_id.get(last_s["id"], {})
+        cut_end_limit = float(acc_last.get("cut_end_sec") or (float(last_s["end_sec"]) + 0.08))
+        # 若是全片最末句的结尾收口（后无下一镜头），允许保留片尾呼吸停顿帧 (cut_buffer_end_sec / total_edl_dur)
+        if last_s["id"] == sents_all[-1]["id"] and c is clips_list[-1]:
+            cut_end_limit = max(cut_end_limit, float(acc_last.get("cut_buffer_end_sec") or total_edl_dur))
+        overrun = c_out - cut_end_limit
+        max_overrun_sec = max(max_overrun_sec, max(0.0, overrun))
+        if overrun > 0.04:
+            aroll_boundary_violations.append(
+                f"{c['clip_id']} ({last_s['id']}): 句尾超界 +{overrun:.2f}s (c_out={c_out:.2f}s > limit={cut_end_limit:.2f}s)"
+            )
+
+        late_in = c_in - float(first_s["start_sec"])
+        max_late_in_sec = max(max_late_in_sec, max(0.0, late_in))
+        if late_in > 1.20:
+            aroll_boundary_violations.append(
+                f"{c['clip_id']} ({first_s['id']}): 句中切入过晚 +{late_in:.2f}s (c_in={c_in:.2f}s vs sent_in={float(first_s['start_sec']):.2f}s)"
+            )
+
+    checks.append({
+        "id": "aroll_sentence_lock",
+        "name": "A-Roll 句界严锁与口型同步",
+        "passed": len(aroll_boundary_violations) == 0,
+        "measured": f"违规 {len(aroll_boundary_violations)} 处 (最大尾界超限 {max_overrun_sec:.2f}s, 最大晚入 {max_late_in_sec:.2f}s)",
+        "threshold": "0 违规 (尾界超限 ≤ 0.04s, 入点晚偏 ≤ 1.20s)",
+    })
+
     all_passed = all(c["passed"] for c in checks)
     report = {
         "step": "10_qa_inspector",
@@ -281,6 +341,8 @@ def inspect_video(
 
     if ui_violations:
         md_lines += ["", "## UI 遮挡越界详情"] + [f"- {u}" for u in ui_violations]
+    if aroll_boundary_violations:
+        md_lines += ["", "## A-Roll 句界严锁违规详情"] + [f"- {u}" for u in aroll_boundary_violations]
 
     (pipeline_dir / "10_qa_report.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
 

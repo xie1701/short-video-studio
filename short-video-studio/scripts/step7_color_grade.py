@@ -24,7 +24,7 @@ def probe_clip_color_stats(media_path: Path) -> Dict[str, float]:
         return {"yavg": 128.0, "uavg": 128.0, "vavg": 128.0}
     cmd = [
         ffmpeg, "-v", "info", "-t", "3.0", "-i", str(media_path),
-        "-vf", "select='not(mod(n,15))',signalstats,metadata=print",
+        "-vf", "select='not(mod(n,15))',format=yuv420p,signalstats,metadata=print",
         "-f", "null", "-",
     ]
     res = run_cmd(cmd, check=False)

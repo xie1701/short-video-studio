@@ -29,7 +29,12 @@ def build_jianying_draft_payload(pipeline_dir: Path) -> Dict[str, Any]:
     subs = read_json(pipeline_dir / "05_subtitles.json")
     audio_events = read_json(pipeline_dir / "03_audio_events.json")
     mix_metrics = read_json(pipeline_dir / "08_mix_metrics.json")
+    pkg_path = pipeline_dir / "06_packaging.json"
+    pkg = read_json(pkg_path) if pkg_path.exists() else {}
+    color_path = pipeline_dir / "07_color_plan.json"
+    color_plan = read_json(color_path) if color_path.exists() else {}
 
+    fps = float(edl.get("fps", 30))
     total_us = sec_to_us(float(edl["total_duration_sec"]))
     draft_id = str(uuid.uuid4()).upper()
 
@@ -55,10 +60,10 @@ def build_jianying_draft_payload(pipeline_dir: Path) -> Dict[str, Any]:
             "volume": 0.0,
         })
 
-    # 锁定音轨与混音母带
+    # 锁定音轨与混音母带 + SFX 独立音效轨
     voice_mat_id = str(uuid.uuid4()).upper()
     bgm_mat_id = str(uuid.uuid4()).upper()
-    materials_audios = [
+    materials_audios: List[Dict[str, Any]] = [
         {"id": voice_mat_id, "path": mix_metrics["master_wav"], "name": "08_mixed_master.wav", "duration": total_us},
         {"id": bgm_mat_id, "path": audio_events["locked_bgm_wav"], "name": "03_locked_bgm.wav", "duration": total_us},
     ]
@@ -71,8 +76,48 @@ def build_jianying_draft_payload(pipeline_dir: Path) -> Dict[str, Any]:
             "volume": 1.0,
         }
     ]
+    sfx_segments: List[Dict[str, Any]] = []
+    for cue in pkg.get("sfx_cues", []):
+        sfx_id = str(uuid.uuid4()).upper()
+        cue_dur_us = 600_000  # 默认 0.6s 音效包络窗口
+        gain_db = float(cue.get("gain_db", -14.0))
+        lin_vol = round(min(1.0, max(0.05, 10.0 ** (gain_db / 20.0))), 3)
+        materials_audios.append({
+            "id": sfx_id,
+            "path": cue.get("file", ""),
+            "name": cue.get("sfx_name", cue.get("id", "sfx")),
+            "type": "sound",
+            "duration": cue_dur_us,
+        })
+        sfx_segments.append({
+            "id": str(uuid.uuid4()).upper(),
+            "material_id": sfx_id,
+            "source_timerange": {"start": 0, "duration": cue_dur_us},
+            "target_timerange": {"start": sec_to_us(float(cue.get("time_sec", 0.0))), "duration": cue_dur_us},
+            "volume": lin_vol,
+        })
 
-    # 字幕轨
+    # LUT 调色滤镜材质与特效轨 (读取 07_color_plan.json)
+    materials_effects: List[Dict[str, Any]] = []
+    effect_segments: List[Dict[str, Any]] = []
+    if color_plan.get("lut_path") or color_plan.get("lut_name"):
+        lut_mat_id = str(uuid.uuid4()).upper()
+        materials_effects.append({
+            "id": lut_mat_id,
+            "type": "filter",
+            "name": str(color_plan.get("lut_name", "custom_lut")),
+            "path": str(color_plan.get("lut_path", "")),
+            "value": 0.85,
+            "clip_grades_count": len(color_plan.get("clip_plans", [])),
+        })
+        effect_segments.append({
+            "id": str(uuid.uuid4()).upper(),
+            "material_id": lut_mat_id,
+            "target_timerange": {"start": 0, "duration": total_us},
+        })
+
+    # 主字幕轨 + 独立花字胶囊轨 (sticker_text)
+    tcfg = subs.get("template_config", {})
     materials_texts: List[Dict[str, Any]] = []
     text_segments: List[Dict[str, Any]] = []
     for sub in subs.get("entries", []):
@@ -83,6 +128,9 @@ def build_jianying_draft_payload(pipeline_dir: Path) -> Dict[str, Any]:
             "type": "subtitle",
             "content": sub["text"],
             "font_path": subs.get("font_path") or "",
+            "font_size": tcfg.get("font_size", 54),
+            "text_color": tcfg.get("primary_color", "#FFFFFF"),
+            "keyword_color": tcfg.get("keyword_color", "#FFD54F"),
         })
         text_segments.append({
             "id": str(uuid.uuid4()).upper(),
@@ -90,22 +138,53 @@ def build_jianying_draft_payload(pipeline_dir: Path) -> Dict[str, Any]:
             "target_timerange": {"start": sec_to_us(float(sub["start_sec"])), "duration": dur_us},
         })
 
+    sticker_text_segments: List[Dict[str, Any]] = []
+    for elem in pkg.get("visual_elements", []):
+        stid = str(uuid.uuid4()).upper()
+        sf = int(elem.get("start_frame", 0))
+        ef = int(elem.get("end_frame", sf + int(fps)))
+        start_sec = sf / fps
+        dur_us = max(200_000, sec_to_us((ef - sf) / fps))
+        materials_texts.append({
+            "id": stid,
+            "type": "sticker_text",
+            "style_id": elem.get("style_id", tcfg.get("style_id", "style_14")),
+            "kind": elem.get("kind", "flower_text"),
+            "content": elem.get("text_or_asset", ""),
+            "sub_text": elem.get("sub_text", ""),
+            "bbox": elem.get("bbox", {}),
+        })
+        sticker_text_segments.append({
+            "id": str(uuid.uuid4()).upper(),
+            "material_id": stid,
+            "target_timerange": {"start": sec_to_us(start_sec), "duration": dur_us},
+        })
+
+    tracks: List[Dict[str, Any]] = [
+        {"id": str(uuid.uuid4()).upper(), "type": "video", "name": "main_video", "segments": video_segments},
+        {"id": str(uuid.uuid4()).upper(), "type": "audio", "name": "mixed_master", "segments": audio_segments},
+        {"id": str(uuid.uuid4()).upper(), "type": "text", "name": "main_subtitles", "segments": text_segments},
+    ]
+    if sfx_segments:
+        tracks.append({"id": str(uuid.uuid4()).upper(), "type": "audio", "name": "sfx_audio", "segments": sfx_segments})
+    if effect_segments:
+        tracks.append({"id": str(uuid.uuid4()).upper(), "type": "effect", "name": "color_lut_grade", "segments": effect_segments})
+    if sticker_text_segments:
+        tracks.append({"id": str(uuid.uuid4()).upper(), "type": "text", "name": "sticker_text", "segments": sticker_text_segments})
+
     draft_content = {
         "id": draft_id,
         "version": 360000,
-        "fps": float(edl.get("fps", 30)),
+        "fps": fps,
         "duration": total_us,
         "canvas_config": {"width": 1080, "height": 1920, "ratio": "9:16"},
         "materials": {
             "videos": materials_videos,
             "audios": materials_audios,
+            "effects": materials_effects,
             "texts": materials_texts,
         },
-        "tracks": [
-            {"id": str(uuid.uuid4()).upper(), "type": "video", "segments": video_segments},
-            {"id": str(uuid.uuid4()).upper(), "type": "audio", "segments": audio_segments},
-            {"id": str(uuid.uuid4()).upper(), "type": "text", "segments": text_segments},
-        ],
+        "tracks": tracks,
     }
 
     now_us = int(time.time() * 1_000_000)

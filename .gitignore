@@ -33,3 +33,6 @@ _render_final/
 .vscode/
 .idea/
 *.log
+
+# Runtime copies of Style Spectrum LUTs (masters live under assets/style_spectrum/luts/)
+short-video-studio/assets/luts/style_*.cube

@@ -26,10 +26,10 @@ def analyze_video_quality(path: Path, duration: float) -> Dict[str, Any]:
         return {"exposure": "unknown", "avg_luma": None, "silence_ratio": 0.0, "issues": []}
 
     issues: List[str] = []
-    # 采样检测亮度（最多抽前 15 秒，每 10 帧抽 1 帧保证极速）
+    # 采样检测亮度（最多抽前 15 秒，每 10 帧抽 1 帧并归一化到 8-bit yuv420p，避免 10-bit 素材 YAVG 溢出 >255）
     cmd = [
         ffmpeg, "-v", "info", "-t", str(min(duration, 15.0)), "-i", str(path),
-        "-vf", "select='not(mod(n,10))',signalstats,metadata=print",
+        "-vf", "select='not(mod(n,10))',format=yuv420p,signalstats,metadata=print",
         "-f", "null", "-",
     ]
     res = run_cmd(cmd, check=False)

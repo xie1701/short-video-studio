@@ -156,7 +156,7 @@ def run_step4(
             chosen_cuts.append(cand)
             last_cut_sec = cand["time_sec"]
 
-    # 构建从帧 0 到 total_frames 的切点区间，并在句间边界应用 J-cut (画面延后 j_cut_frames 帧切换)
+    # 构建从帧 0 到 total_frames 的切点区间：切点严锁在音频事件帧上，绝不将 A-Roll 尾帧推过句界造成跨句闪跳
     cut_points: List[Dict[str, Any]] = [
         {
             "cut_frame": 0,
@@ -165,14 +165,11 @@ def run_step4(
         }
     ]
     for ev in chosen_cuts:
-        # 句间停顿结束 / 下一句开始应用 J-cut（声音先于画面 2-4 帧进入）
-        is_sentence_boundary = ev["type"] in ("pause_end", "sentence_start")
-        j_lead = j_cut_frames if is_sentence_boundary else 0
+        raw_frame = int(ev["frame"])
+        j_lead = 0
         # 保证前 3 秒内的切点依然严格处于 < 3.0s (frame < 90)
-        raw_frame = int(ev["frame"]) + j_lead
         if ev["time_sec"] <= 2.85:
             raw_frame = min(raw_frame, 3 * fps - 2)
-            j_lead = max(0, raw_frame - int(ev["frame"]))
         if raw_frame - cut_points[-1]["cut_frame"] >= 12 and total_frames - raw_frame >= 10:
             cut_points.append({
                 "cut_frame": raw_frame,
@@ -202,14 +199,18 @@ def run_step4(
         use_aroll = bool(arolls) and not prefer_broll_only and (idx == 0 or idx % 3 == 0)
         if use_aroll:
             ar = arolls[0]
-            # 如果同期声源视频与被剪后音轨同步，尽量取该句对应的源时间，确保口型对齐 <= 1帧
+            # 如果同期声源视频与被剪后音轨同步，取该句对应的源时间并严格钳制在当前句源结束时间以内，防跨句闪跳
             if sent.get("source_media") == ar["normalized_mp4"]:
                 offset_in_sent = max(0.0, t_start - sent["start_sec"])
                 src_in = round(float(sent.get("source_in_sec", 0.0)) + offset_in_sent, 4)
+                sent_src_end = float(sent.get("source_out_sec", ar["duration_sec"]))
+                max_src_out = min(ar["duration_sec"], sent_src_end)
             else:
                 src_in = round(t_start % max(0.5, ar["duration_sec"] - seg_dur), 4) if ar["duration_sec"] > seg_dur else 0.0
-            need_freeze = src_in + seg_dur > ar["duration_sec"]
-            src_out = round(min(ar["duration_sec"], src_in + seg_dur), 4)
+                max_src_out = ar["duration_sec"]
+            src_in = min(src_in, max(0.0, max_src_out - 0.05))
+            need_freeze = src_in + seg_dur > max_src_out + 0.01
+            src_out = round(min(max_src_out, src_in + seg_dur), 4)
             clips.append({
                 "clip_id": f"clip_{idx+1:03d}",
                 "track_role": "a_roll",
