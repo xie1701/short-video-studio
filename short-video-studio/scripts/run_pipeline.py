@@ -2,7 +2,7 @@
 """
 short-video-studio 统一流水线编排器
 支持 4 种工作模式：
-1. full           : 跑通 Step 1 -> Step 9 -> 渲染预览与成片 -> 导出剪映草稿 -> 9项自动质检 -> 生成《我替你做的决定》
+1. full           : 跑通 Step 1 -> Step 9 -> 渲染预览与成片 -> 导出剪映草稿 -> 10项自动质检 -> 生成《我替你做的决定》
 2. lock-preview   : 停在打断#3，输出锁定音轨与低清粗剪预览 (output_preview.mp4)
 3. reedit-visuals : [打断#3 分支A] 用户只改画面 -> 严格保持 Step 3 锁定音轨不变，重排 Step 4-9 + 出片 + 质检
 4. relock-voice   : [打断#3 分支B] 用户改口播词 -> 回到 Step 2/3 重新锁定音轨，再自动重排 Step 4-9 + 出片 + 质检
@@ -194,7 +194,7 @@ def main() -> None:
     )
 
     if args.mode != "lock-preview" and not res["qa_report"]["all_passed"]:
-        print("[ERROR] 成片未通过 9 项自动质检，已阻断交付！请查看 10_qa_report.md")
+        print("[ERROR] 成片未通过 10 项自动质检，已阻断交付！请查看 10_qa_report.md")
         sys.exit(2)
 
     print("\n[OK] 流水线执行完毕。")

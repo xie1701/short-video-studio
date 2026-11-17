@@ -12,7 +12,7 @@ from __future__ import annotations
 import argparse
 import re
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from common import find_bin, ffprobe_media, maybe_reexec_in_venv, parse_fps, run_cmd, write_json
 

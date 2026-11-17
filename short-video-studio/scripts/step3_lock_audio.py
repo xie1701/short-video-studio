@@ -183,7 +183,14 @@ def run_step3(
         return eid
 
     pause_samples = int(round(pause_sec * SR))
-    pause_buf = np.zeros((pause_samples, 2), dtype=np.float32)
+    # 生成极微弱的 -56 dBFS 自然空气房底噪缓冲，杜绝 -inf dB 绝对死零导致的底噪悬崖抽吸 (pumping) 与降噪器震荡
+    rng = np.random.default_rng(42)
+    raw_rt = rng.normal(0.0, 0.0015, (max(pause_samples, int(0.25 * SR)), 2)).astype(np.float32)
+    # 轻微低通柔和化，听感如温和环境空气声
+    k_rt = np.ones(6, dtype=np.float32) / 6.0
+    raw_rt[:, 0] = np.convolve(raw_rt[:, 0], k_rt, mode="same")
+    raw_rt[:, 1] = np.convolve(raw_rt[:, 1], k_rt, mode="same")
+    pause_buf = raw_rt[:pause_samples]
 
     for s_idx, seg in enumerate(valid_segments, start=1):
         sid = f"sent_{s_idx:03d}"
@@ -194,7 +201,18 @@ def run_step3(
         orig_end = float(seg["end_sec"])
         s0 = max(0, int(round(orig_start * SR)))
         s1 = min(len(src_arr), int(round(orig_end * SR)))
-        chunk = apply_micro_fade(src_arr[s0:s1])
+        cont_prev = bool(valid_segments[s_idx - 2].get("continuous_next", False)) if s_idx >= 2 else False
+        cont_next = bool(seg.get("continuous_next", False)) and (s_idx < len(valid_segments))
+
+        raw_slice = src_arr[s0:s1].copy()
+        n_fade = min(len(raw_slice) // 4, int(SR * 0.010))
+        if n_fade > 1:
+            ramp = np.linspace(0.0, 1.0, n_fade, dtype=np.float32)[:, None]
+            if not cont_prev:
+                raw_slice[:n_fade] *= ramp
+            if not cont_next:
+                raw_slice[-n_fade:] *= ramp[::-1]
+        chunk = raw_slice
         chunk_dur = len(chunk) / float(SR)
 
         new_start_sec = round(cursor_samples / float(SR), 4)
@@ -219,6 +237,7 @@ def run_step3(
             if w.get("is_keyword") and (not keyword_anchors or ws - keyword_anchors[-1] > 0.55):
                 keyword_anchors.append(ws)
 
+        cur_pause_sec = 0.0 if cont_next else (pause_sec if s_idx < len(valid_segments) else 0.0)
         sent_obj = {
             "id": sid,
             "text": seg["text"],
@@ -229,7 +248,8 @@ def run_step3(
             "end_sec": new_end_sec,
             "start_frame": sec_to_frames(new_start_sec, fps),
             "end_frame": sec_to_frames(new_end_sec, fps),
-            "pause_after_sec": pause_sec if s_idx < len(valid_segments) else 0.0,
+            "pause_after_sec": cur_pause_sec,
+            "continuous_next": cont_next,
             "emotion_or_info": seg.get("emotion", "info"),
             "keywords": seg.get("keywords", []),
             "words": new_words,
@@ -262,7 +282,7 @@ def run_step3(
         voice_chunks.append(chunk)
         cursor_samples += len(chunk)
 
-        if s_idx < len(valid_segments):
+        if s_idx < len(valid_segments) and not cont_next:
             add_event("pause_start", new_end_sec, f"句间停顿开始({pause_sec}s)", sid)
             voice_chunks.append(pause_buf)
             cursor_samples += pause_samples
@@ -271,7 +291,7 @@ def run_step3(
 
     # 拼出锁定人声主干，末尾保留 0.25s 呼吸尾音（< 0.8s 静音限制）
     tail_samples = int(0.25 * SR)
-    voice_chunks.append(np.zeros((tail_samples, 2), dtype=np.float32))
+    voice_chunks.append(raw_rt[:tail_samples])
     locked_voice = np.concatenate(voice_chunks, axis=0)
     total_samples = len(locked_voice)
     total_dur = round(total_samples / float(SR), 4)

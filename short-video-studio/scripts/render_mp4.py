@@ -228,9 +228,11 @@ def build_base_video_track(
     edl_p = pipeline_dir / "04_edl.json"
     color_p = pipeline_dir / "07_color_plan.json"
     if base_mp4.exists() and base_mp4.stat().st_size > 1_000_000:
+        media_mtimes = [Path(c["media_path"]).stat().st_mtime for c in edl.get("clips", []) if Path(c["media_path"]).exists()]
         latest_dep = max(
             edl_p.stat().st_mtime if edl_p.exists() else 0.0,
             color_p.stat().st_mtime if color_p.exists() else 0.0,
+            max(media_mtimes) if media_mtimes else 0.0,
         )
         if base_mp4.stat().st_mtime >= latest_dep:
             print(f"[render] 复用已就绪的基础视频轨 -> {base_mp4}")
@@ -291,11 +293,11 @@ def build_base_video_track(
     concat_list = work_dir / "concat.txt"
     concat_list.write_text("\n".join(f"file '{p.resolve()}'" for p in seg_files) + "\n", encoding="utf-8")
     base_mp4 = work_dir / "base_video.mp4"
+    # 各段 seg_xxx.mp4 均已精确按 1080x1920 CFR 30fps yuv420p 编码完成，直接 -c:v copy 无损合流，避免多代有损重编码
     run_cmd([
         ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
         "-f", "concat", "-safe", "0", "-i", str(concat_list),
-        "-c:v", "libx264", "-preset", "fast", "-crf", "17", "-pix_fmt", "yuv420p",
-        "-r", str(fps), "-fps_mode", "cfr",
+        "-c:v", "copy",
         str(base_mp4),
     ])
     return base_mp4

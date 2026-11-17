@@ -57,12 +57,12 @@ def run_step8(
     bgm_in = Path(audio_events["locked_bgm_wav"])
     sfx_in = pipeline_dir / "06_sfx_track.wav"
 
-    # 1. 人声高通滤波(80Hz) + FFT 轻度降噪，保存中间降噪人声
+    # 1. 人声高通滤波(80Hz) + 稳态轻度降噪(tn=0，防止自适应追踪被句间停顿底噪扰动)，保存中间降噪人声
     voice_clean_wav = pipeline_dir / "08_voice_denoised.wav"
     run_cmd([
         ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
         "-i", str(voice_in),
-        "-af", "highpass=f=80,afftdn=nf=-25:tn=1",
+        "-af", "highpass=f=80,afftdn=nf=-26:tn=0",
         "-ar", str(SR), "-ac", "2", "-acodec", "pcm_s16le",
         str(voice_clean_wav),
     ])
@@ -85,17 +85,37 @@ def run_step8(
     else:
         sfx_arr = np.zeros_like(voice_arr)
 
-    # 2. 基于人声短时 RMS 包络计算平滑 Ducking 曲线（50ms 起音 / 220ms 释放）
+    # 2. 基于前瞻峰值 + 指数型非对称起音/释放包络计算平滑 Ducking 曲线（35ms 前瞻快压 / 280ms 顺滑慢放）
     mono_v = np.abs(voice_arr).mean(axis=1)
-    win = int(0.04 * SR)
+    win = int(0.025 * SR)
     kernel = np.ones(win, dtype=np.float32) / win
     env = np.convolve(mono_v, kernel, mode="same")
-    # 平滑阈值判定是否有人声（> 0.012）
-    speech_active = np.clip((env - 0.008) / 0.025, 0.0, 1.0)
-    # 再做一次 180ms 移动平均让闪避过渡如丝般顺滑
-    smooth_win = int(0.18 * SR)
-    smooth_k = np.ones(smooth_win, dtype=np.float32) / smooth_win
-    duck_factor_curve = np.convolve(speech_active, smooth_k, mode="same")
+    # 提前 35ms (lookahead) 捕获人声起音并映射至 [0, 1] 激活度
+    lookahead = int(0.035 * SR)
+    shifted_env = np.concatenate([env[lookahead:], env[-lookahead:]]) if len(env) > lookahead else env
+    raw_active = np.clip((shifted_env - 0.008) / 0.025, 0.0, 1.0).astype(np.float32)
+
+    # 采用 10ms 步进控制率做真非对称一阶 IIR 包络（起音 τ=35ms 快速压低，释放 τ=280ms 丝滑回升）
+    hop = max(1, int(0.010 * SR))
+    n_hops = (len(raw_active) + hop - 1) // hop
+    pad_len = n_hops * hop - len(raw_active)
+    padded_act = np.concatenate([raw_active, np.zeros(pad_len, dtype=np.float32)]) if pad_len else raw_active
+    hop_peaks = padded_act.reshape(n_hops, hop).max(axis=1)
+
+    dt_hop = hop / float(SR)
+    alpha_atk = 1.0 - float(np.exp(-dt_hop / 0.035))
+    alpha_rel = 1.0 - float(np.exp(-dt_hop / 0.280))
+    duck_ctrl = np.zeros(n_hops, dtype=np.float32)
+    cur_d = 0.0
+    for hi in range(n_hops):
+        tgt = float(hop_peaks[hi])
+        alpha = alpha_atk if tgt > cur_d else alpha_rel
+        cur_d = cur_d + alpha * (tgt - cur_d)
+        duck_ctrl[hi] = cur_d
+
+    # 线性插值回采样点级曲线（零阶梯噪声）
+    t_hops = (np.arange(n_hops, dtype=np.float32) + 0.5) * hop
+    duck_factor_curve = np.interp(np.arange(n_samples, dtype=np.float32), t_hops, duck_ctrl).astype(np.float32)
 
     base_gain = 10.0 ** (bgm_base_gain_db / 20.0)
     duck_gain = 10.0 ** ((bgm_base_gain_db + duck_depth_db) / 20.0)
