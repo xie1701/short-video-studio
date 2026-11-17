@@ -133,7 +133,8 @@ def render_subtitle_png(entry: Dict[str, Any], tpl: Dict[str, Any], font_path: s
     draw = ImageDraw.Draw(img)
 
     bg_rgba = parse_hex_rgba(tpl.get("bg_box_color", "#00000099"), 165)
-    draw.rounded_rectangle([0, 0, img_w - 1, img_h - 1], radius=int(tpl.get("bg_radius", 16)), fill=bg_rgba)
+    if bg_rgba[3] > 0:
+        draw.rounded_rectangle([0, 0, img_w - 1, img_h - 1], radius=int(tpl.get("bg_radius", 16)), fill=bg_rgba)
 
     c_primary = parse_hex_rgba(tpl.get("primary_color", "#FFFFFF"))
     c_kw = parse_hex_rgba(tpl.get("keyword_color", "#FFD54F"))
@@ -163,8 +164,30 @@ def render_subtitle_png(entry: Dict[str, Any], tpl: Dict[str, Any], font_path: s
     return place_x, place_y
 
 
-def render_packaging_png(elem: Dict[str, Any], font_path: str | None, out_png: Path) -> Tuple[int, int]:
-    """渲染花字或矢量贴纸为透明 PNG，严格遵循 elem['bbox'] 坐标（确保与安全区校验一致）。"""
+def _resolve_packaging_theme(style_id: str) -> str:
+    """将 20 套风格谱 ID 映射到对应的包装视觉皮肤主题。"""
+    if style_id in ("style_01", "style_09", "style_10", "style_15", "style_17"):
+        return "tech_console"
+    if style_id in ("style_03", "style_16", "style_19"):
+        return "story_emerald" if style_id == "style_19" else "story_yellow_punch"
+    if style_id in ("style_11", "style_12", "style_18", "style_20"):
+        return "editorial_white" if style_id in ("style_12", "style_18") else "editorial_dark"
+    if style_id == "style_02":
+        return "hardcore_raw_stroke"
+    if style_id in ("style_06", "style_08", "style_13"):
+        return "cinema_serif"
+    if style_id == "style_05":
+        return "paper_stopmotion"
+    return "glass_founder"
+
+
+def render_packaging_png(
+    elem: Dict[str, Any],
+    font_path: str | None,
+    out_png: Path,
+    default_style_id: str = "style_14",
+) -> Tuple[int, int]:
+    """渲染花字、顶部节点条或矢量贴纸为透明 PNG，按风格谱主题动态换肤，并严格遵循 elem['bbox']。"""
     from PIL import Image, ImageDraw, ImageFont
 
     bbox = elem["bbox"]
@@ -172,29 +195,91 @@ def render_packaging_png(elem: Dict[str, Any], font_path: str | None, out_png: P
     img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     kind = elem["kind"]
+    style_id = str(elem.get("style_id") or default_style_id or "style_14")
+    theme = _resolve_packaging_theme(style_id)
 
-    if kind == "flower_text":
-        text_val = str(elem["text_or_asset"]).strip()[:18]
-        # style_14 深色毛玻璃金边胶囊 + 左侧高亮竖条 + 自适应字号与字体回退
-        fb_path = _get_fallback_font_path()
+    fb_path = _get_fallback_font_path()
+
+    def _safe_font(sz: int, text_sample: str) -> Any:
         use_font = font_path
         if font_path and fb_path:
-            f_probe = ImageFont.truetype(font_path, 38)
-            if any(_char_is_tofu(f_probe, str(font_path), ch) for ch in text_val):
+            f_probe = ImageFont.truetype(font_path, sz)
+            if any(_char_is_tofu(f_probe, str(font_path), ch) for ch in text_sample):
                 use_font = fb_path
+        return ImageFont.truetype(use_font, sz) if use_font else ImageFont.load_default()
 
-        font_size = min(44, max(26, int(h * 0.46)))
-        fnt = ImageFont.truetype(use_font, font_size) if use_font else ImageFont.load_default()
-        while font_size > 22:
-            fnt = ImageFont.truetype(use_font, font_size) if use_font else ImageFont.load_default()
+    if kind == "milestone_bar":
+        # 适用于 style_03 金线里程碑进度条 & style_15 极客顶部步骤导航条
+        nodes = elem.get("nodes") or ["300万开店", "600平布局", "200平明厨", "早茶/桑拿鸡"]
+        active_idx = int(elem.get("active_index", 0))
+        is_tech = theme == "tech_console"
+        bg_col = (10, 14, 22, 228) if is_tech else (18, 16, 14, 210)
+        accent = (103, 232, 249, 255) if is_tech else (248, 231, 49, 255)
+        draw.rounded_rectangle([1, 1, w - 2, h - 2], radius=12, fill=bg_col, outline=(*accent[:3], 170), width=2)
+        n_nodes = max(2, len(nodes))
+        pad_x = min(96, max(72, w // 10))
+        step_x = (w - 2 * pad_x) / float(n_nodes - 1)
+        line_y = h // 2 + 8
+        draw.line([(pad_x, line_y), (w - pad_x, line_y)], fill=(148, 163, 184, 140), width=3)
+        prog_x = pad_x + int(step_x * min(active_idx, n_nodes - 1))
+        draw.line([(pad_x, line_y), (prog_x, line_y)], fill=accent, width=4)
+        f_node = _safe_font(18, "".join(nodes))
+        for ni, label in enumerate(nodes):
+            nx = pad_x + int(step_x * ni)
+            is_act = ni <= active_idx
+            col_dot = accent if is_act else (100, 116, 139, 220)
+            r_dot = 7 if ni == active_idx else 5
+            draw.ellipse([nx - r_dot, line_y - r_dot, nx + r_dot, line_y + r_dot], fill=col_dot, outline=(255, 255, 255, 230), width=2)
+            t_col = (255, 255, 255, 255) if is_act else (180, 190, 205, 220)
+            draw.text((nx, line_y - 18), str(label)[:8], font=f_node, fill=t_col, anchor="mm")
+    elif kind == "flower_text":
+        text_val = str(elem["text_or_asset"]).strip()[:18]
+        font_size = min(46, max(24, int(h * 0.46)))
+        while font_size > 20:
+            fnt = _safe_font(font_size, text_val)
             bb = draw.textbbox((0, 0), text_val, font=fnt)
             if (bb[2] - bb[0]) <= w - 58:
                 break
             font_size -= 2
+        fnt = _safe_font(font_size, text_val)
 
-        draw.rounded_rectangle([2, 2, w - 3, h - 3], radius=18, fill=(15, 23, 42, 220), outline=(255, 213, 79, 245), width=3)
-        draw.rounded_rectangle([14, 18, 22, h - 18], radius=4, fill=(255, 213, 79, 255))
-        draw.text(((w + 14) // 2, h // 2), text_val, font=fnt, fill=(255, 255, 255, 255), anchor="mm")
+        if theme == "hardcore_raw_stroke":
+            # style_02: 无底框硬核炸裂亮金黄大字 + 厚黑描边
+            draw.text((w // 2, h // 2), text_val, font=fnt, fill=(239, 212, 95, 255), stroke_width=5, stroke_fill=(12, 12, 14, 255), anchor="mm")
+        elif theme == "story_yellow_punch":
+            # style_03: 强对比半透炭黑横条 + 亮黄#F8E731重描边大字
+            draw.rounded_rectangle([2, 6, w - 3, h - 6], radius=10, fill=(14, 14, 16, 185), outline=(248, 231, 49, 210), width=2)
+            draw.text((w // 2, h // 2), text_val, font=fnt, fill=(248, 231, 49, 255), stroke_width=3, stroke_fill=(15, 15, 15, 255), anchor="mm")
+        elif theme == "story_emerald":
+            # style_19: 翠绿实心冲击块 + 深黑粗字
+            draw.rounded_rectangle([2, 4, w - 3, h - 4], radius=14, fill=(46, 204, 113, 240), outline=(255, 255, 255, 235), width=2)
+            draw.text((w // 2, h // 2), text_val, font=fnt, fill=(10, 15, 12, 255), anchor="mm")
+        elif theme == "editorial_white":
+            # style_12/18: Apple/Notion 极简白底浅灰卡片 + 深墨灰细框 + 黑色细边左竖条
+            draw.rounded_rectangle([2, 2, w - 3, h - 3], radius=16, fill=(248, 250, 252, 242), outline=(203, 213, 225, 255), width=3)
+            draw.rounded_rectangle([14, 16, 22, h - 16], radius=4, fill=(15, 23, 42, 255))
+            draw.text(((w + 14) // 2, h // 2), text_val, font=fnt, fill=(15, 23, 42, 255), anchor="mm")
+        elif theme == "cinema_serif":
+            # style_06/08/13: 电影感宋体金句条 —— 无重边框，细黑渐变底带装饰短金线
+            draw.rounded_rectangle([4, 10, w - 5, h - 10], radius=8, fill=(10, 10, 12, 125))
+            draw.line([(20, h // 2), (44, h // 2)], fill=(247, 206, 119, 220), width=2)
+            draw.line([(w - 44, h // 2), (w - 20, h // 2)], fill=(247, 206, 119, 220), width=2)
+            draw.text((w // 2, h // 2), text_val, font=fnt, fill=(250, 244, 228, 255), stroke_width=2, stroke_fill=(18, 16, 14, 255), anchor="mm")
+        elif theme == "paper_stopmotion":
+            # style_05: 皱纹米白纸片 + 红色工程标注线 + 红色铆钉点
+            draw.rounded_rectangle([4, 4, w - 5, h - 5], radius=6, fill=(247, 243, 234, 242), outline=(220, 38, 38, 235), width=3)
+            draw.ellipse([16, h // 2 - 7, 30, h // 2 + 7], fill=(220, 38, 38, 255))
+            draw.text(((w + 18) // 2, h // 2), text_val, font=fnt, fill=(28, 25, 23, 255), anchor="mm")
+        elif theme == "tech_console":
+            # style_15/01/09/10/17: 暗黑极客终端胶囊
+            draw.rounded_rectangle([2, 2, w - 3, h - 3], radius=10, fill=(10, 14, 23, 235), outline=(56, 189, 248, 220), width=2)
+            draw.rounded_rectangle([14, 18, 22, h - 18], radius=3, fill=(251, 224, 136, 255))
+            draw.text(((w + 14) // 2, h // 2), text_val, font=fnt, fill=(251, 224, 136, 255), anchor="mm")
+        else:
+            # 默认 style_14: 深色毛玻璃金边胶囊 + 左侧高亮竖条
+            draw.rounded_rectangle([2, 2, w - 3, h - 3], radius=18, fill=(15, 23, 42, 220), outline=(255, 213, 79, 245), width=3)
+            draw.rounded_rectangle([14, 18, 22, h - 18], radius=4, fill=(255, 213, 79, 255))
+            draw.text(((w + 14) // 2, h // 2), text_val, font=fnt, fill=(255, 255, 255, 255), anchor="mm")
     else:
         name = Path(elem["text_or_asset"]).name
         fnt = ImageFont.truetype(font_path, 36) if font_path else ImageFont.load_default()
@@ -230,6 +315,7 @@ def build_base_video_track(
     if base_mp4.exists() and base_mp4.stat().st_size > 1_000_000:
         media_mtimes = [Path(c["media_path"]).stat().st_mtime for c in edl.get("clips", []) if Path(c["media_path"]).exists()]
         latest_dep = max(
+            Path(__file__).stat().st_mtime,
             edl_p.stat().st_mtime if edl_p.exists() else 0.0,
             color_p.stat().st_mtime if color_p.exists() else 0.0,
             max(media_mtimes) if media_mtimes else 0.0,
@@ -274,9 +360,17 @@ def build_base_video_track(
         if cp and cp.get("apply_color_grade") and cp.get("vf_filter"):
             filters.append(cp["vf_filter"])
 
-        filters.append("format=yuv420p")
+        filters.extend([
+            "scale=out_color_matrix=bt709:out_range=tv",
+            "format=yuv420p",
+            "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709",
+        ])
         vf_str = ",".join(filters)
 
+        bt709_args = [
+            "-pix_fmt", "yuv420p", "-color_range", "tv",
+            "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+        ]
         run_cmd([
             ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
             "-ss", f"{src_in:.4f}",
@@ -285,7 +379,7 @@ def build_base_video_track(
             "-vf", vf_str,
             "-frames:v", str(clip_frames),
             "-r", str(fps), "-fps_mode", "cfr",
-            "-c:v", "libx264", "-preset", "fast", "-crf", "17",
+            "-c:v", "libx264", *bt709_args, "-preset", "fast", "-crf", "17",
             str(seg_out),
         ])
         seg_files.append(seg_out)
@@ -328,11 +422,12 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
     # 2. 预渲染透明字幕层与包装层 PNG
     font_path = subs.get("font_path") or find_commercial_font()
     tpl = subs["template_config"]
+    cur_style_id = str(subs.get("template_id") or pkg.get("style_id") or "style_14")
     overlays: List[Tuple[Path, int, int, int, int]] = []
 
     for elem in pkg.get("visual_elements", []):
         png_p = work_dir / f"{elem['id']}.png"
-        px, py = render_packaging_png(elem, font_path, png_p)
+        px, py = render_packaging_png(elem, font_path, png_p, default_style_id=cur_style_id)
         overlays.append((png_p, px, py, int(elem["start_frame"]), int(elem["end_frame"])))
 
     for sub in subs.get("entries", []):
@@ -371,7 +466,9 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
         "-filter_complex", ";".join(fc_parts),
         "-map", "[vout]",
         "-map", f"{audio_input_idx}:a",
-        "-c:v", "libx264", "-preset", v_preset, "-crf", crf_val,
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-color_range", "tv",
+        "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+        "-preset", v_preset, "-crf", crf_val,
         "-r", str(fps), "-fps_mode", "cfr",
         "-frames:v", str(target_frames),
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
