@@ -45,12 +45,26 @@ def measure_lufs_ebur128(wav_path: Path) -> Dict[str, float]:
 def run_step8(
     pipeline_dir: Path,
     target_lufs: float = TARGET_LUFS,
-    bgm_base_gain_db: float = -15.0,
-    duck_depth_db: float = -10.0,
+    bgm_base_gain_db: float | None = None,
+    duck_depth_db: float | None = None,
 ) -> Dict[str, Any]:
     ffmpeg = find_bin("ffmpeg")
     if not ffmpeg:
         raise RuntimeError("需要 ffmpeg 执行降噪与混音。")
+
+    spec_p = pipeline_dir / "style_spectrum_applied.json"
+    style_id = read_json(spec_p).get("style_id") if spec_p.exists() else None
+    vibe_prof = None
+    if style_id:
+        try:
+            from vibe_sound import get_style_sound_profile
+            vibe_prof = get_style_sound_profile(str(style_id))
+        except Exception:
+            vibe_prof = None
+    if bgm_base_gain_db is None:
+        bgm_base_gain_db = float(vibe_prof.get("bgm_base_db", -15.0)) if vibe_prof else -15.0
+    if duck_depth_db is None:
+        duck_depth_db = float(vibe_prof.get("duck_depth_db", -10.0)) if vibe_prof else -10.0
 
     audio_events = read_json(pipeline_dir / "03_audio_events.json")
     voice_in = Path(audio_events["locked_voice_wav"])

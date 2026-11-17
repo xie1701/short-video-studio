@@ -35,14 +35,30 @@ from step3_lock_audio import SR, load_stereo_wav_np, save_stereo_wav_np
 def run_step6(
     pipeline_dir: Path,
     fps: int = DEFAULT_FPS,
+    style_id: str | None = None,
 ) -> Dict[str, Any]:
     audio_events = read_json(pipeline_dir / "03_audio_events.json")
     edl = read_json(pipeline_dir / "04_edl.json")
 
+    if not style_id:
+        spec_p = pipeline_dir / "style_spectrum_applied.json"
+        if spec_p.exists():
+            style_id = read_json(spec_p).get("style_id")
+    style_id = str(style_id or "style_14")
+
+    # 优先加载基于 vibe-motion/sound 清洗的 CC0 真实物理音效配置
+    vibe_prof = None
+    try:
+        from vibe_sound import get_style_sound_profile
+        vibe_prof = get_style_sound_profile(style_id)
+    except Exception:
+        vibe_prof = None
+
     total_dur = float(audio_events["locked_duration_sec"])
     total_samples = int(round(total_dur * SR))
     max_visual_budget = max(3, math.ceil(total_dur / 10.0))
-    max_sfx_budget = max(4, math.ceil(total_dur / 8.0))
+    # 电影慢调少音效，快切/科技适当微调，上限比以前更克制以防烦扰人声
+    max_sfx_budget = 8 if style_id == "style_06" else max(4, math.ceil(total_dur / 9.5))
 
     sentences_map = {s["id"]: s for s in audio_events["sentences"]}
     events = audio_events["events"]
@@ -55,29 +71,80 @@ def run_step6(
     def overlaps_code(sf_f: int, ef_f: int) -> bool:
         return any(sf_f < ce and ef_f > cs for cs, ce in code_ranges)
 
-    # 1. 克制化 SFX 先行落点（高光转场与重音点，柔和增益不抢人声）
+    # 1. 流派物理材质 SFX 先行落点（优先放在切镜点与视觉/气口切换处，轻柔不压口播）
     sfx_cues: List[Dict[str, Any]] = []
+    if vibe_prof and vibe_prof.get("sfx"):
+        v_sfx = {k: Path(v) for k, v in vibe_prof["sfx"].items() if Path(v).exists()}
+        base_gain_db = float(vibe_prof.get("sfx_gain_db", -10.5))
+        min_sfx_gap = int(float(vibe_prof.get("sfx_min_gap_sec", 7.0)) * fps)
+    else:
+        v_sfx = {}
+        base_gain_db = -16.0
+        min_sfx_gap = int(6.5 * fps)
+
     sfx_files = {
-        "hook": ASSETS_DIR / "sfx" / "bass_drop.wav",
-        "info": ASSETS_DIR / "sfx" / "ding.wav",
-        "twist": ASSETS_DIR / "sfx" / "bass_drop.wav",
-        "detail": ASSETS_DIR / "sfx" / "pop.wav",
-        "persona": ASSETS_DIR / "sfx" / "ding.wav",
-        "cta": ASSETS_DIR / "sfx" / "pop.wav",
-        "cut": ASSETS_DIR / "sfx" / "whoosh.wav",
+        "hook": v_sfx.get("accent") or (ASSETS_DIR / "sfx" / "whoosh.wav"),
+        "info": v_sfx.get("ui") or v_sfx.get("accent") or (ASSETS_DIR / "sfx" / "pop.wav"),
+        "twist": v_sfx.get("accent") or (ASSETS_DIR / "sfx" / "whoosh.wav"),
+        "detail": v_sfx.get("ui") or (ASSETS_DIR / "sfx" / "pop.wav"),
+        "persona": v_sfx.get("ui") or v_sfx.get("transition") or (ASSETS_DIR / "sfx" / "pop.wav"),
+        "cta": v_sfx.get("receipt") or v_sfx.get("ui") or (ASSETS_DIR / "sfx" / "pop.wav"),
+        "cut": v_sfx.get("transition") or (ASSETS_DIR / "sfx" / "whoosh.wav"),
     }
 
     used_frames: List[int] = []
-    min_sfx_gap = int(4.5 * fps)
 
     def can_place_sfx(frame: int) -> bool:
         return len(sfx_cues) < max_sfx_budget and all(abs(frame - f) >= min_sfx_gap for f in used_frames)
 
+    # 先优先保证 code_broll 与末尾 receipt 等关键材质点位落位，再按交替材质丰富全片转场音色
+    for clip in edl["clips"][1:]:
+        role = clip.get("track_role", "b_roll")
+        ev_frame = int(clip["cut_event_frame"])
+        is_end_receipt = (clip is edl["clips"][-1]) and ("receipt" in v_sfx)
+        if role != "code_broll" and not is_end_receipt:
+            continue
+        if not can_place_sfx(ev_frame):
+            continue
+        sf = v_sfx["receipt"] if is_end_receipt else sfx_files["info"]
+        sfx_cues.append({
+            "id": f"sfx_{len(sfx_cues)+1:03d}",
+            "file": str(sf.resolve()),
+            "sfx_name": sf.name,
+            "time_sec": frames_to_sec(ev_frame, fps),
+            "frame": ev_frame,
+            "gain_db": round(base_gain_db + 1.0, 1),
+            "event_id": clip["cut_event_id"],
+            "reason": f"{style_id} 账单小票收尾提示" if is_end_receipt else f"{style_id} 信息卡片物理提示",
+        })
+        used_frames.append(ev_frame)
+
+    cut_palette = [sfx_files["cut"], sfx_files["info"], sfx_files["hook"]]
+    cut_rot = 0
+    for clip in edl["clips"][1:]:
+        ev_frame = int(clip["cut_event_frame"])
+        if not can_place_sfx(ev_frame):
+            continue
+        sf = cut_palette[cut_rot % len(cut_palette)]
+        cut_rot += 1
+        sfx_cues.append({
+            "id": f"sfx_{len(sfx_cues)+1:03d}",
+            "file": str(sf.resolve()),
+            "sfx_name": sf.name,
+            "time_sec": frames_to_sec(ev_frame, fps),
+            "frame": ev_frame,
+            "gain_db": round(base_gain_db - 1.5, 1),
+            "event_id": clip["cut_event_id"],
+            "reason": f"{style_id} 流派物理材质转场",
+        })
+        used_frames.append(ev_frame)
+
+    # 仅在稀疏空白的句首转换点（sentence_start）补充极少量流派点缀，绝不在句子正中突兀“叮”一声
     for ev in events:
-        if ev["type"] == "keyword_accent" and can_place_sfx(ev["frame"]):
+        if ev["type"] == "sentence_start" and can_place_sfx(ev["frame"]):
             sent = sentences_map.get(ev.get("sentence_id", ""), {})
             emo = sent.get("emotion_or_info", "info")
-            if emo not in ("hook", "twist", "persona", "cta", "info"):
+            if emo not in ("hook", "twist", "cta"):
                 continue
             sf = sfx_files.get(emo, sfx_files["info"])
             sfx_cues.append({
@@ -86,27 +153,11 @@ def run_step6(
                 "sfx_name": sf.name,
                 "time_sec": ev["time_sec"],
                 "frame": ev["frame"],
-                "gain_db": -14.0,
+                "gain_db": round(base_gain_db - 2.0, 1),
                 "event_id": ev["id"],
-                "reason": f"{emo} 信息/情绪重音",
+                "reason": f"{emo} 句首节点轻量提示",
             })
             used_frames.append(ev["frame"])
-
-    for clip in edl["clips"][1:]:
-        ev_frame = int(clip["cut_event_frame"])
-        if can_place_sfx(ev_frame):
-            sf = sfx_files["cut"]
-            sfx_cues.append({
-                "id": f"sfx_{len(sfx_cues)+1:03d}",
-                "file": str(sf.resolve()),
-                "sfx_name": sf.name,
-                "time_sec": frames_to_sec(ev_frame, fps),
-                "frame": ev_frame,
-                "gain_db": -15.0,
-                "event_id": clip["cut_event_id"],
-                "reason": "关键转场 Whoosh 过渡",
-            })
-            used_frames.append(ev_frame)
 
     sfx_cues.sort(key=lambda x: x["frame"])
 

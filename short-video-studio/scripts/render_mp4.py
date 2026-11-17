@@ -116,15 +116,16 @@ def render_subtitle_png(entry: Dict[str, Any], tpl: Dict[str, Any], font_path: s
         return boxes, tot_w, m_h
 
     char_boxes, total_w, max_h = _measure_with_sizes(font_size, kw_size, stroke_w)
+    min_fnt = min(28, max(24, int(tpl.get("font_size", 54))))
     if total_w > max_content_w:
         scale = (max_content_w / float(total_w)) * 0.97
-        font_size = max(34, int(font_size * scale))
-        kw_size = max(38, int(kw_size * scale))
-        stroke_w = max(3, int(round(stroke_w * scale)))
+        font_size = max(min_fnt, int(font_size * scale))
+        kw_size = max(min_fnt + 4, int(kw_size * scale))
+        stroke_w = max(2, int(round(stroke_w * scale)))
         char_boxes, total_w, max_h = _measure_with_sizes(font_size, kw_size, stroke_w)
-        while total_w > max_content_w and font_size > 30:
+        while total_w > max_content_w and font_size > min_fnt:
             font_size -= 2
-            kw_size = max(32, kw_size - 2)
+            kw_size = max(min_fnt + 2, kw_size - 2)
             char_boxes, total_w, max_h = _measure_with_sizes(font_size, kw_size, stroke_w)
 
     img_w = min(760, max(total_w + pad_x * 2, 120))
@@ -158,9 +159,9 @@ def render_subtitle_png(entry: Dict[str, Any], tpl: Dict[str, Any], font_path: s
 
     out_png.parent.mkdir(parents=True, exist_ok=True)
     img.save(out_png)
-    # 水平保持在安全区 [100, 860] 中轴，垂直居于 safe_y_center
-    place_x = max(80, min(860 - img_w, 480 - img_w // 2))
-    place_y = max(1200, min(1460 - img_h, int(tpl.get("safe_y_center", 1340)) - img_h // 2))
+    # 水平保持在安全区 [80, 860] 中轴，垂直严格位于平台底部安全窗内 [1160, 1476]
+    place_x = max(80, min(860 - img_w, int(tpl.get("center_x", 470)) - img_w // 2))
+    place_y = max(1160, min(1476 - img_h, int(tpl.get("safe_y_center", 1340)) - img_h // 2))
     return place_x, place_y
 
 
@@ -192,6 +193,14 @@ def render_packaging_png(
 
     bbox = elem["bbox"]
     w, h = int(bbox["w"]), int(bbox["h"])
+    custom_p = elem.get("custom_png")
+    if custom_p and Path(custom_p).exists():
+        import shutil
+        out_png.parent.mkdir(parents=True, exist_ok=True)
+        if Path(custom_p).resolve() != out_png.resolve():
+            shutil.copy2(custom_p, out_png)
+        return int(bbox["x"]), int(bbox["y"])
+
     img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     kind = elem["kind"]
@@ -231,7 +240,7 @@ def render_packaging_png(
             r_dot = 7 if ni == active_idx else 5
             draw.ellipse([nx - r_dot, line_y - r_dot, nx + r_dot, line_y + r_dot], fill=col_dot, outline=(255, 255, 255, 230), width=2)
             t_col = (255, 255, 255, 255) if is_act else (180, 190, 205, 220)
-            draw.text((nx, line_y - 18), str(label)[:8], font=f_node, fill=t_col, anchor="mm")
+            draw.text((nx, line_y - 18), str(label)[:12], font=f_node, fill=t_col, anchor="mm")
     elif kind == "flower_text":
         text_val = str(elem["text_or_asset"]).strip()[:18]
         font_size = min(46, max(24, int(h * 0.46)))
@@ -346,9 +355,13 @@ def build_base_video_track(
         src_in = float(clip["source_in_sec"])
         src_avail = max(0.1, float(clip["source_out_sec"]) - src_in)
 
+        fc = clip.get("frame_canvas")
+        tw = int(fc["w"]) if fc else CANVAS_WIDTH
+        th = int(fc["h"]) if fc else CANVAS_HEIGHT
+        crop_expr = f"crop={tw}:{th}:(iw-ow)/2:(ih-oh)*0.32" if fc else f"crop={tw}:{th}"
         filters: List[str] = [
-            f"scale={CANVAS_WIDTH}:{CANVAS_HEIGHT}:force_original_aspect_ratio=increase",
-            f"crop={CANVAS_WIDTH}:{CANVAS_HEIGHT}",
+            f"scale={tw}:{th}:force_original_aspect_ratio=increase",
+            crop_expr,
             f"fps={fps}",
         ]
         # 若源片段不足该镜头时长，末帧定格补齐 (绝不黑帧)
@@ -360,7 +373,16 @@ def build_base_video_track(
         if cp and cp.get("apply_color_grade") and cp.get("vf_filter"):
             filters.append(cp["vf_filter"])
 
+        if clip.get("vf_extra"):
+            filters.append(str(clip["vf_extra"]))
+
+        if fc:
+            bx, by = int(fc["x"]), int(fc["y"])
+            bg_hex = str(fc.get("bg_hex", "0x0F172A"))
+            filters.append(f"pad={CANVAS_WIDTH}:{CANVAS_HEIGHT}:{bx}:{by}:{bg_hex}")
+
         filters.extend([
+            "setsar=1",
             "scale=out_color_matrix=bt709:out_range=tv",
             "format=yuv420p",
             "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709",
@@ -424,6 +446,12 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
     tpl = subs["template_config"]
     cur_style_id = str(subs.get("template_id") or pkg.get("style_id") or "style_14")
     overlays: List[Tuple[Path, int, int, int, int]] = []
+
+    # 先叠底层全局舞台画布框/分屏卡片，再叠浮动花字/贴纸，最顶层铺字幕确保永不被遮挡
+    for elem in pkg.get("stage_overlays", []):
+        png_p = work_dir / f"{elem['id']}.png"
+        px, py = render_packaging_png(elem, font_path, png_p, default_style_id=cur_style_id)
+        overlays.append((png_p, px, py, int(elem["start_frame"]), int(elem["end_frame"])))
 
     for elem in pkg.get("visual_elements", []):
         png_p = work_dir / f"{elem['id']}.png"

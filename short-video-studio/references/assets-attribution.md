@@ -67,3 +67,19 @@
 - `assets/style_spectrum/luts/style_01.cube` ~ `style_20.cube`（`33³` 3D LUT）：由 `scripts/analyze_style_spectrum.py` 基于公开参考样片色彩统计分布程序化逆向生成的数学色彩映射矩阵，**CC0 1.0 可商用**。
 - `assets/style_spectrum/remotion/`、`assets/style_spectrum/hyperframes/`、`assets/style_spectrum/jianying/`：本项目原创跨平台代码模板与 JSON 参数配置，**MIT / CC0 可商用**；所有字幕样式优先绑定「思源黑体 / 思源宋体 / 阿里妈妈数黑体 / 清松手写体」等开源/免费可商用字体链。
 - `assets/style_spectrum/keyframes/style_01_contact.jpg` ~ `style_20_contact.jpg`：用于本地视觉复核与参数比对的关键帧采样图谱（仅作教学与参考研究用途，请勿直接截取原片人物肖像用于商业投放）。
+
+---
+
+## 七、 Vibe Sound CC0 真实物理音效与流派背景音乐 (`assets/sound_vibe/`)
+
+由 [scripts/vibe_sound.py](file:///Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/scripts/vibe_sound.py) 基于 [vibe-motion/sound](https://github.com/vibe-motion/sound) 检索框架从 Freesound 筛选 **Creative Commons 0 (CC0)** 商业免版税真实录音素材并执行静音裁切与 LUFS 归一化清洗生成：
+
+| 流派样式 | 真实 BGM 来源 (Freesound ID · CC0) | 物理材质 SFX 来源 (Freesound ID · CC0) |
+| :--- | :--- | :--- |
+| `style_14` | `fs:680113` Pop Guitar Loop Thing | `fs:585257` Swoosh-1 / `fs:704935` Wooden Tap / `fs:411462` Bubble Pop |
+| `style_02` | `fs:69195` Mix05 90BPM Hip-Hop Loop | `fs:585257` Swoosh-1 / `fs:512389` Bass Impact / `fs:878248` Micro Swish |
+| `style_03` | `fs:713517` Perspire Guitar & Piano Loop | `fs:623709` Soft Ambience Swoosh / `fs:369710` Wood Knock / `fs:704935` Wooden Tap |
+| `style_12` | `fs:629153` Dusty Lofi Melody Loop 75 BPM | `fs:878248` Micro Swish / `fs:411462` Bubble Pop / `fs:528561` Soft UI Click |
+| `style_06` | `fs:668907` Cinematic Emotional Piano (92bpm) | `fs:623709` Soft Ambience Swoosh / `fs:676375` Minolta Film Camera Shutter |
+| `style_05` | `fs:347815` Warm Breeze Loop | `fs:82379` Paper Flip (Olympus LS-10) / `fs:369710` Wood Knock |
+| `style_15` | `fs:531463` Waterfall Synth Loop | `fs:378085` Mechanical Key / `fs:528561` Soft UI Click / `fs:217181` Till Receipt Printer |

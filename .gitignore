@@ -34,5 +34,6 @@ _render_final/
 .idea/
 *.log
 
-# Runtime copies of Style Spectrum LUTs (masters live under assets/style_spectrum/luts/)
+# Runtime copies of Style Spectrum LUTs & uncleaned vibe_sound downloads
 short-video-studio/assets/luts/style_*.cube
+short-video-studio/assets/sound_vibe/raw/

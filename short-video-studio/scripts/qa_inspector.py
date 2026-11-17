@@ -315,6 +315,51 @@ def inspect_video(
         "threshold": "0 违规 (尾界超限 ≤ 0.04s, 入点晚偏 ≤ 1.20s)",
     })
 
+    # 11. 零风格名/开发代号露馅审计（禁止任何系统内部风格编号/模板词出现在观众可视文字中）
+    forbidden_re = re.compile(
+        r"(?:\bstyle[_\s-]?\d+\b|STYLE\s*\d+|风格谱|Style\s+Spectrum|\bNotion\b|"
+        r"AI\s*控制台|硬核数黑|宋体映画|工程纸拼贴|毛玻璃叠层|访谈里程碑|"
+        r"极简白底卡片|模板展示风|创始人信任风|archetype)",
+        re.IGNORECASE,
+    )
+    meta_leaks: List[str] = []
+
+    def _scan_text(src_tag: str, txt: Any) -> None:
+        s = str(txt or "").strip()
+        if not s:
+            return
+        m = forbidden_re.search(s)
+        if m:
+            meta_leaks.append(f"{src_tag}: 命中禁用词 '{m.group(0)}' (文本='{s[:28]}')")
+
+    for sub in subs.get("entries", []):
+        _scan_text(sub.get("id", "sub"), sub.get("text"))
+    for elem in pkg.get("visual_elements", []) + pkg.get("stage_overlays", []):
+        _scan_text(elem.get("id", "pkg"), elem.get("text_or_asset"))
+        for nd in elem.get("nodes", []) or []:
+            _scan_text(elem.get("id", "pkg_node"), nd)
+        cd = elem.get("card_data") or {}
+        if isinstance(cd, dict):
+            for k, v in cd.items():
+                if isinstance(v, list):
+                    for item in v:
+                        _scan_text(f"{elem.get('id','card')}.{k}", item)
+                else:
+                    _scan_text(f"{elem.get('id','card')}.{k}", v)
+    cover_json_p = pipeline_dir / "09_title_cover.json"
+    if cover_json_p.exists():
+        cj = read_json(cover_json_p)
+        for k in ("cover_main", "cover_sub", "cover_badge", "cover_bottom"):
+            _scan_text(f"09_cover.{k}", cj.get(k))
+
+    checks.append({
+        "id": "forbidden_meta_text",
+        "name": "零开发词与风格名称露馅审计",
+        "passed": len(meta_leaks) == 0,
+        "measured": f"检出 {len(meta_leaks)} 处露馅文本" + (f" ({meta_leaks[0]})" if meta_leaks else ""),
+        "threshold": "0 处露馅 (禁止出现 STYLE/Notion/风格代号)",
+    })
+
     all_passed = all(c["passed"] for c in checks)
     report = {
         "step": "10_qa_inspector",
@@ -343,6 +388,8 @@ def inspect_video(
         md_lines += ["", "## UI 遮挡越界详情"] + [f"- {u}" for u in ui_violations]
     if aroll_boundary_violations:
         md_lines += ["", "## A-Roll 句界严锁违规详情"] + [f"- {u}" for u in aroll_boundary_violations]
+    if meta_leaks:
+        md_lines += ["", "## 露馅禁用词详情"] + [f"- {m}" for m in meta_leaks]
 
     (pipeline_dir / "10_qa_report.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
 
