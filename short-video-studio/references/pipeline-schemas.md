@@ -19,7 +19,7 @@
 | Step 8 | `08_mixed_master.wav` + `08_mix_metrics.json` | 降噪 + BGM 自动闪避 + `-14.0 LUFS` 母带混音 |
 | Step 9 | `09_title_cover.md` + `09_cover.jpg` | 标题、话题标签、封面文案与高密度封面图 |
 | 出片 | `output_preview.mp4` / `output_final.mp4` / `jianying_draft/` | 本地 MP4 渲染与可选剪映草稿（失效自动降级） |
-| 质检 | `10_qa_report.json` + `10_qa_report.md` (+ `10_benchmark_comparison.md`) | 9 项自动质检（全部 PASS 才交付）+ 对标逐秒结构对比 |
+| 质检 | `10_qa_report.json` + `10_qa_report.md` (+ `10_benchmark_comparison.md`) | 11 项自动质检（全部 PASS 且通过多模态声画实审才交付）+ 对标逐秒结构对比 |
 
 ---
 
@@ -117,11 +117,16 @@
       "sentence_id": "sent_001",
       "sentence_text": "做了八年烧烤店",
       "purpose": "首帧高密度开篇钩子",
-      "visual_description": "老板直视镜头切羊排特写"
+      "visual_description": "老板直视镜头切羊排特写",
+      "frame_canvas": {"x": 64, "y": 725, "w": 810, "h": 530, "bg_hex": "0xF1F3F5", "crop_y_frac": 0.32},
+      "vf_extra": ""
     }
   ]
 }
 ```
+> **画布与边界可选约束**：
+> - 分屏/边框流派可通过 `frame_canvas` 指定嵌套视窗坐标与背景色，并通过 `crop_y_frac`（默认 `0.32`）调整竖屏裁剪的垂直锚点（手持道具或特写画面建议设为 `0.44~0.48` 以居中防裁切）。
+> - 手工锁定 `a_roll` 切片边界时须严格隔离句前后摄影师/导演画外提词音与环境句首余响（建议设置 `lock_edges` 禁止自动向右/向左跨过外部停顿吸帧）。
 
 ### `06_packaging.json`（包装与预算控制）
 ```json

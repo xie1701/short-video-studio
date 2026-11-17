@@ -23,6 +23,20 @@ from typing import Any, Dict, List, Optional, Tuple
 from common import find_bin, maybe_reexec_in_venv, read_json, run_cmd, write_json
 
 FILLER_WORDS = {"呃", "嗯", "那个", "就是说", "然后呢", "啊", "这个"}
+DIRECTOR_CUE_EXACT = {
+    "ok", "好", "对", "来", "开始", "重来", "三二一", "321",
+    "等一下", "再讲一遍", "再说一遍", "再试一次", "准备", "可以",
+}
+
+
+def is_filler_or_director_cue(text: str) -> bool:
+    """识别口头禅及摄影师/导演画外场记提词口令，避免混入锁定音轨。"""
+    cleaned = re.sub(r"[\s，。！？、；：“”‘’（）.,!?]+", "", text).lower()
+    if not cleaned:
+        return True
+    if cleaned in DIRECTOR_CUE_EXACT:
+        return True
+    return any(fw == cleaned or (len(cleaned) <= 5 and fw in cleaned) for fw in FILLER_WORDS)
 
 DEFAULT_STORE_SCRIPT = [
     {"text": "所有餐饮店，价格越高的菜，利润反而越低。", "keywords": ["餐饮店", "价格越高", "利润"], "is_filler": False, "emotion": "hook"},
@@ -218,7 +232,7 @@ def try_faster_whisper(wav_path: Path) -> Optional[List[Dict[str, Any]]]:
                     "is_keyword": False,
                     "energy": 0.78,
                 })
-            is_filler = any(fw == text or (len(text) <= 5 and fw in text) for fw in FILLER_WORDS)
+            is_filler = is_filler_or_director_cue(text)
             out.append({
                 "id": f"seg_{idx:03d}",
                 "text": text,
@@ -247,6 +261,7 @@ def align_script_to_existing_wav(wav_path: Path, script_items: List[Dict[str, An
         e_sec = round(min(total_dur, cursor + seg_dur), 4)
         cursor = e_sec
         kws = item.get("keywords", [])
+        is_filler = bool(item.get("is_filler", False)) or is_filler_or_director_cue(item["text"])
         segments.append({
             "id": f"seg_{idx:03d}",
             "text": item["text"],
@@ -254,8 +269,8 @@ def align_script_to_existing_wav(wav_path: Path, script_items: List[Dict[str, An
             "end_sec": e_sec,
             "source_media": source_media,
             "source_audio": str(wav_path.resolve()),
-            "is_filler": bool(item.get("is_filler", False)),
-            "emotion": item.get("emotion", "info"),
+            "is_filler": is_filler,
+            "emotion": "filler" if is_filler else item.get("emotion", "info"),
             "keywords": kws,
             "words": split_chinese_chars_with_timestamps(item["text"], s_sec, e_sec, kws),
         })

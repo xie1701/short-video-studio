@@ -178,7 +178,14 @@ def run_step4(
             })
 
     # 查找每个区间对应的主体句子
-    def find_sentence_for_time(t_sec: float) -> Dict[str, Any]:
+    sent_by_id = {s["id"]: s for s in sentences}
+
+    def find_sentence_for_time(t_sec: float, ev: Dict[str, Any] | None = None) -> Dict[str, Any]:
+        if ev and ev.get("sentence_id") in sent_by_id and ev.get("type") in ("sentence_start", "pause_end", "keyword_accent", "stress"):
+            return sent_by_id[ev["sentence_id"]]
+        for s in sentences:
+            if s["start_sec"] <= t_sec <= s["end_sec"]:
+                return s
         for s in sentences:
             if s["start_sec"] <= t_sec <= s["end_sec"] + 0.35:
                 return s
@@ -192,11 +199,13 @@ def run_step4(
         t_start = frames_to_sec(f_start, fps)
         t_end = frames_to_sec(f_end, fps)
         seg_dur = round(t_end - t_start, 4)
-        sent = find_sentence_for_time(t_start)
         ev = cp["event"]
+        sent = find_sentence_for_time(t_start, ev)
 
-        # 决定镜头类型：首镜有 A-roll 则出真人同期声，之后交替插播 B-roll/代码补镜（或偏好纯 B-roll 改画模式）
-        use_aroll = bool(arolls) and not prefer_broll_only and (idx == 0 or idx % 3 == 0)
+        # 决定镜头类型：首镜有 A-roll 则出真人同期声，实物/图纸展示句强制保护 A-roll，其余交替插播 B-roll/代码补镜
+        prop_show_cues = ("睇下", "看下", "看一下", "给大家看", "给你看", "看我手上", "看我手里", "效果图", "实物", "清单", "明细")
+        has_prop_show = any(cue in sent.get("text", "") for cue in prop_show_cues)
+        use_aroll = bool(arolls) and not prefer_broll_only and (idx == 0 or idx % 3 == 0 or has_prop_show)
         if use_aroll:
             ar = arolls[0]
             # 如果同期声源视频与被剪后音轨同步，取该句对应的源时间并严格钳制在当前句源结束时间以内，防跨句闪跳
@@ -211,6 +220,11 @@ def run_step4(
             src_in = min(src_in, max(0.0, max_src_out - 0.05))
             need_freeze = src_in + seg_dur > max_src_out + 0.01
             src_out = round(min(max_src_out, src_in + seg_dur), 4)
+            purpose = (
+                "首帧高密度开篇钩子" if idx == 0
+                else ("实拍实物/图纸展示保护" if has_prop_show
+                      else ("结尾人设转化" if idx == len(cut_points) - 1 else "同期声口播强化信任"))
+            )
             clips.append({
                 "clip_id": f"clip_{idx+1:03d}",
                 "track_role": "a_roll",
@@ -232,7 +246,7 @@ def run_step4(
                 "cut_event_frame": ev["frame"],
                 "sentence_id": sent["id"],
                 "sentence_text": sent["text"],
-                "purpose": "首帧高密度开篇钩子" if idx == 0 else ("结尾人设转化" if idx == len(cut_points) - 1 else "同期声口播强化信任"),
+                "purpose": purpose,
             })
         else:
             br = broll_pool[broll_idx % len(broll_pool)]

@@ -358,7 +358,8 @@ def build_base_video_track(
         fc = clip.get("frame_canvas")
         tw = int(fc["w"]) if fc else CANVAS_WIDTH
         th = int(fc["h"]) if fc else CANVAS_HEIGHT
-        crop_expr = f"crop={tw}:{th}:(iw-ow)/2:(ih-oh)*0.32" if fc else f"crop={tw}:{th}"
+        y_frac = float(fc.get("crop_y_frac", 0.32)) if fc else 0.32
+        crop_expr = f"crop={tw}:{th}:(iw-ow)/2:(ih-oh)*{y_frac:.3f}" if fc else f"crop={tw}:{th}"
         filters: List[str] = [
             f"scale={tw}:{th}:force_original_aspect_ratio=increase",
             crop_expr,
