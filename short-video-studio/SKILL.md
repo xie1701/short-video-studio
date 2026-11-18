@@ -142,7 +142,7 @@ python3 scripts/run_pipeline.py --project-dir <项目目录> --track creator --m
 python3 scripts/apply_style_spectrum.py --style-id style_16 --apply-pipeline <项目目录>/pipeline
 python3 scripts/apply_style_spectrum.py --style-id style_16 \
   --export-jianying-template <草稿目录> \
-  --export-hyperframes <html路径> \
+  --export-hyperframes <工程目录|html路径> \
   --export-remotion-props <json路径>
 
 # 4. 针对新的参考视频目录重新提取「风格谱」并更新资产库

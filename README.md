@@ -30,6 +30,8 @@ short-video-studio/
 ├── README.md                          # 本文档
 ├── install.sh                         # macOS / Linux 一键安装与环境初始化脚本
 ├── install.ps1                        # Windows PowerShell 一键安装与部署脚本
+├── 启动HyperFrames工程.command         # macOS 双击一键启动 HyperFrames Studio 预览（支持新建风格谱工程）
+├── 启动HyperFrames工程.bat             # Windows 双击一键启动 HyperFrames Studio 预览
 ├── BRIEF.md                           # 原始需求说明文档
 ├── 建立可循环的内容系统.md             # 方法论原稿留档
 └── short-video-studio/                # Agent Skill 本体目录（安装后挂载至 ~/.claude/skills/short-video-studio 等）
@@ -71,7 +73,7 @@ short-video-studio/
         ├── step8_mix_audio.py         # Step 8：人声降噪 + BGM 自动闪避 + -14.0 LUFS 闭环混音
         ├── step9_title_cover.py       # Step 9：爆款标题与高密度 9:16 首帧封面生成
         ├── render_mp4.py              # 出片 1：本地合成 MP4（支持粤语缺字回退与超宽字幕缩号防重叠）
-        ├── export_jianying.py         # 出片 2：剪映专业版草稿导出（异常自动降级保护）
+        ├── export_jianying.py         # 出片 2：剪映全风格可编辑工程导出（FCPXML 1.10 + Alpha MOV + SRT/LUT）
         ├── qa_inspector.py            # 9 项强制自动质检 + 对标视频逐秒对比
         ├── content_log_review.py      # 发布数据沉淀与每周一页结构化复盘
         └── run_pipeline.py            # 端到端一键编排入口（full / lock-preview / reedit-visuals / relock-voice，支持 --style-id）
@@ -170,6 +172,29 @@ cd short-video-studio
      --add-json '{"title":"新店开门","track":"store","formula":"水桶流","hook_type":"数字冲击","views":18500,"retention_3s":0.46,"completion_rate":0.28,"inquiries":37}'
    ```
 
+### 方式 3：出片后期导入剪映与 HyperFrames 双击启动指南
+
+#### 1) 怎么导入剪映专业版（兼容 6.0 ~ 11.7.0+，一键还原全风格多轨）
+由于剪映专业版 `6.0+`（含 macOS `11.7.0`）对内部草稿 `draft_info.json` 启用了私有加密，**切勿直接复制旧版明文草稿文件夹去草稿箱**。流水线出片时已在 `<项目>/pipeline/jianying_draft/` 中自动生成剪映官方原生支持的多轨工程包：
+
+1. **开启导入开关（仅首次需要）**：打开剪映专业版 → 右上角齿轮「设置」→「全局设置」→ 确认开启「导入工程」。
+2. **一键导入全部多轨内容**：在剪映首页「本地草稿」右上角点击 `...` →「**导入工程**」（或新建空白草稿后直接把文件拖进时间线），选中目录中的 **`<project_name>.fcpxml`**。
+   - 导入后自动生成以下完整可编辑轨道，无需逐张手拖图片：
+     - **主视频轨 (`V1`)**：全套精剪调色分镜（`seg_xxx.mp4`）；
+     - **上层透明包装轨 (`alpha_layers/*.mov`)**：按顺序无重叠挂好对应「风格谱」的分屏圆角画框、知识卡片、顶部步骤条、Founder 徽章与语义花字（每块均可独立拖动、隐藏开关或删除）；
+     - **顶层双色字幕轨 (`alpha_layers/sub_*.mov`)**：100% 保留商业字体、关键词放大高亮、描边底框与抖音安全区位置；
+     - **三轨独立解耦音频 (`A1–A3`)**：`纯净人声干音`、`专属 BGM`、`切镜音效 SFX`，可任意单独静音或调音量。
+3. **仅需修改某句错别字 / 自定义全文字体时**：在时间线最顶层删掉对应那一句的双色字幕块，然后将同目录下的 `<project_name>.srt`（或 `.ass`）拖入剪映「文本 → 本地字幕」即可按纯文本自由改字；如需二次微调滤镜强度，可在「调节 → 滤镜 → 导入 LUT」加载同目录的 `*.cube` 文件。
+
+#### 2) 怎么用最简单的方式启动 HyperFrames 工程（双击直开）
+仓库根目录已内置跨平台双击启动器（前置仅需安装 `Node.js >= 22` 与 `FFmpeg`，macOS 可用 `brew install node ffmpeg` 一句补齐）：
+
+- **场景 A（打开已有 HyperFrames 工程）**：
+  - 将根目录的 [启动HyperFrames工程.command](启动HyperFrames工程.command)（macOS）或 [启动HyperFrames工程.bat](启动HyperFrames工程.bat)（Windows）**直接放进包含 `index.html` / `hyperframes.json` 的工程文件夹里双击**，无需任何配置，直接启动 `hyperframes preview` 并弹出浏览器实时预览时间线。
+  - 或者直接在仓库根目录**双击该文件**：macOS 会自动弹出系统文件夹选择框让你点选已有工程目录（也支持直接把文件夹拖进终端窗口）。
+- **场景 B（直接基于内置「20 套风格谱」或新建空白工程启动）**：
+  - 双击根目录的 `启动HyperFrames工程.command` 后，选择 `[2]` 输入风格编号（如 `style_14`、`style_12`、`style_15`）或 `[3]` 新建空白竖屏工程，脚本会自动完成初始化并立刻弹出 HyperFrames Studio 浏览器界面进行可视化预览与 MP4 导出。
+
 ---
 
 ## 五、 9 项强制自动质检红线 (`qa_inspector.py`)
@@ -251,13 +276,13 @@ python3 short-video-studio/scripts/apply_style_spectrum.py --list
 # 2. 在流水线中直接套用 style_02 出片（自动绑定字幕模板 + 3D LUT + J-cut）
 python3 short-video-studio/scripts/run_pipeline.py --project-dir ./my_video --track creator --mode full --style-id style_02
 
-# 3. 一键导出至 剪映专业版样板草稿 / Remotion Props / 独立 HyperFrames HTML
+# 3. 一键导出至 剪映专业版样板草稿 / Remotion Props / 可双击启动的 HyperFrames 工程目录
 python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_16 \
   --title "360亿大佬的真实困局" \
   --subtitle "看懂商业底层的现金流真相" \
   --export-jianying-template ./out_style_16/jianying_draft \
   --export-remotion-props ./out_style_16/remotion_props.json \
-  --export-hyperframes ./out_style_16/hyperframes_comp.html
+  --export-hyperframes ./out_style_16_hyperframes
 
 # 4. 针对自己的参考视频库重新逐帧提取「风格谱」并更新资产
 python3 short-video-studio/scripts/analyze_style_spectrum.py --input-dir /path/to/reference_videos --workers 6
@@ -265,5 +290,5 @@ python3 short-video-studio/scripts/build_style_spectrum_assets.py
 ```
 
 - **Remotion 组件入口**：在 [Root.tsx](short-video-studio/assets/remotion_templates/Root.tsx) 中已注册 `StyleSpectrumShowcase`，并可单独复用 [StyleSpectrumPack.tsx](short-video-studio/assets/style_spectrum/remotion/StyleSpectrumPack.tsx) 中的 `StyleCoverCard`、`StyleSubtitleBar`、`StyleChapterBar`、`StyleGraphicCard`。
-- **HyperFrames 母版入口**：打开 [style-spectrum-template.html](short-video-studio/assets/style_spectrum/hyperframes/style-spectrum-template.html)`?style=style_02` 即可按风格 ID 切换预览，或用 `--export-hyperframes` 导出单文件交由 `npx hyperframes check && npx hyperframes render` 渲染。
-- **剪映专业版预设库**：`short-video-studio/assets/style_spectrum/jianying/jianying_style_presets.json` 及 `short-video-studio/assets/style_spectrum/luts/style_01.cube` ~ `style_20.cube`。
+- **HyperFrames 母版入口**：打开 [style-spectrum-template.html](short-video-studio/assets/style_spectrum/hyperframes/style-spectrum-template.html)`?style=style_02` 即可按风格 ID 切换预览；使用 `--export-hyperframes <工程目录>` 会直接生成含 `index.html`、`hyperframes.json` 与 `启动HyperFrames工程.command` 的完整工程（双击即打开 Studio，也可按 `.html` 结尾仅导出单文件）。
+- **剪映专业版导出与预设库**：全片剪映可编辑工程优先由流水线 `export_jianying.py` 产出（`*.fcpxml` + `alpha_layers/*.mov` + `*.srt` + `*.cube`），风格参数预设位于 `short-video-studio/assets/style_spectrum/jianying/jianying_style_presets.json` 及 `short-video-studio/assets/style_spectrum/luts/style_01.cube` ~ `style_20.cube`。

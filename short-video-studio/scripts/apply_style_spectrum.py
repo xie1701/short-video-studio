@@ -5,7 +5,7 @@
 1. --list                             : 查看 6 大流派母版与 20 套风格谱核心参数
 2. --export-jianying-template <dir>   : 生成包含对应 .cube LUT、字幕样式、节奏切点轨的剪映专业版样板草稿
 3. --export-remotion-props <json>     : 导出可直接用于 Remotion StyleSpectrumShowcase 渲染的 props JSON
-4. --export-hyperframes <html_path>   : 导出内联对应风格 CSS 变量与画幅设定的独立可渲染 HyperFrames HTML
+4. --export-hyperframes <dir|html>   : 导出对应风格的完整可双击 HyperFrames 工程目录（或单文件 HTML）
 5. --apply-pipeline <pipeline_dir>    : 将指定风格谱的字幕模板与 3D LUT 同步并应用到 short-video-studio 流水线目录
 """
 
@@ -13,13 +13,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from common import ASSETS_DIR, maybe_reexec_in_venv, read_json, write_json
+from common import ASSETS_DIR, SKILL_ROOT, maybe_reexec_in_venv, read_json, write_json
 
 maybe_reexec_in_venv()
 
@@ -256,10 +257,34 @@ def export_remotion_props(
     return out_json
 
 
+def _attach_hyperframes_launchers(out_dir: Path) -> None:
+    """将双击启动脚本写入导出的 HyperFrames 工程目录，开箱即双击预览。"""
+    repo_root = SKILL_ROOT.parent
+    cmd_name = "启动HyperFrames工程.command"
+    bat_name = "启动HyperFrames工程.bat"
+
+    src_cmd = repo_root / cmd_name
+    dst_cmd = out_dir / cmd_name
+    if src_cmd.is_file():
+        shutil.copy2(src_cmd, dst_cmd)
+    else:
+        dst_cmd.write_text(
+            "#!/usr/bin/env bash\n"
+            'export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"\n'
+            'cd "$(dirname "$0")" && npx --yes hyperframes preview\n',
+            encoding="utf-8",
+        )
+    os.chmod(dst_cmd, 0o755)
+
+    src_bat = repo_root / bat_name
+    if src_bat.is_file():
+        shutil.copy2(src_bat, out_dir / bat_name)
+
+
 def export_hyperframes_html(
     lib: Dict[str, Any],
     style_id: str,
-    out_html: Path,
+    out_target: Path,
     cover_title: str,
     subtitle_text: str,
     duration_sec: float,
@@ -286,10 +311,28 @@ def export_hyperframes_html(
     html = html.replace("没文化才可怕 · 3秒三切强反差", entry["title_cover_layout"]["layout_name"])
     html = html.replace("这是你身上的一个", subtitle_text)
 
-    out_html.parent.mkdir(parents=True, exist_ok=True)
-    out_html.write_text(html, encoding="utf-8")
-    print(f"[apply-style] 已导出独立 HyperFrames 合成 HTML ({style_id}, {w}x{h}@{fps}fps) -> {out_html}")
-    return out_html
+    is_single_html = out_target.suffix.lower() in (".html", ".htm")
+    if is_single_html:
+        out_target.parent.mkdir(parents=True, exist_ok=True)
+        out_target.write_text(html, encoding="utf-8")
+        print(f"[apply-style] 已导出独立 HyperFrames 合成 HTML ({style_id}, {w}x{h}@{fps}fps) -> {out_target}")
+        return out_target
+
+    out_target.mkdir(parents=True, exist_ok=True)
+    index_html = out_target / "index.html"
+    index_html.write_text(html, encoding="utf-8")
+    hf_cfg = out_target / "hyperframes.json"
+    if not hf_cfg.exists():
+        write_json(hf_cfg, {
+            "$schema": "https://hyperframes.heygen.com/schema/hyperframes.json",
+            "media": {"autoProxy": True},
+        })
+    _attach_hyperframes_launchers(out_target)
+    print(
+        f"[apply-style] 已导出可双击启动的 HyperFrames 工程 ({style_id}, {w}x{h}@{fps}fps) -> {out_target} "
+        f"（直接双击 启动HyperFrames工程.command 即可打开 Studio）"
+    )
+    return out_target
 
 
 def apply_to_pipeline(lib: Dict[str, Any], style_id: str, pipeline_dir: Path) -> Path:
@@ -342,7 +385,7 @@ def main() -> None:
     parser.add_argument("--duration", type=float, default=9.0, help="样板导出时长（秒）")
     parser.add_argument("--export-jianying-template", help="导出剪映专业版样板草稿目录路径")
     parser.add_argument("--export-remotion-props", help="导出 Remotion StyleSpectrumShowcase props JSON 路径")
-    parser.add_argument("--export-hyperframes", help="导出独立 HyperFrames HTML 路径")
+    parser.add_argument("--export-hyperframes", help="导出可直接双击启动的 HyperFrames 工程目录路径（若以 .html 结尾则导出单文件）")
     parser.add_argument("--apply-pipeline", help="应用至指定 pipeline 目录（并同步 LUT 与刷新字幕/调色）")
     args = parser.parse_args()
 
