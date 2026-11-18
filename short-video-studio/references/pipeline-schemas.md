@@ -159,7 +159,9 @@
 
 ---
 
-## 2. 剪映草稿独立封装说明 (`export_jianying.py`)
-- 输出标准剪映专业版草稿目录：`jianying_draft/draft_content.json` 与 `jianying_draft/draft_meta_info.json`，时间单位为**微秒** (`1 sec = 1_000_000 us`)。
-- 包含轨道结构：`video` 主轨 + `audio`（locked voice + bgm + sfx）+ `text`（逐字字幕轨）。
-- **容错降级原则**：任何模板字段异常或目标路径不可写时，捕获异常并将 `status` 设为 `"degraded_to_mp4_only"`，明确提示用户“剪映草稿导出失败已自动降级为仅输出 MP4，不影响成片交付”。
+## 2. 剪映可编辑工程独立封装说明 (`export_jianying.py`)
+- 鉴于剪映专业版 6.0+（含 11.7.0）对 `draft_info.json` 启用私有加密，直接写明文 JSON 拷贝至草稿箱无法打开；`export_jianying.py` 默认导出**剪映官方原生支持导入的多轨可编辑包**：
+  - `jianying_draft/<project>.fcpxml`（Apple FCPXML 1.10：`frameDuration="100/3000s"` 严格帧对齐，主 `<spine>` 含全部切片，`lane -1/-2/-3` 为纯净人声、BGM、SFX 三条独立 WAV 音轨）
+  - `jianying_draft/<project>.srt`（及 `05_subtitles.ass`，可直接在剪映「文本 → 本地字幕」拖拽生成可编辑文字轨）
+  - `jianying_draft/overlays/`（1080×1920 透明定位花字/卡片 PNG）与 `*.cube` 3D LUT，附 `README_剪映导入指南.txt` 及 `legacy_v5_json/` 归档元数据
+- **容错降级原则**：任何格式转换异常或目标路径不可写时，捕获异常并将 `status` 设为 `"degraded_to_mp4_only"`，明确提示用户“剪映工程导出失败已自动降级为仅输出 MP4，不影响成片交付”。
