@@ -73,6 +73,15 @@ def _char_is_tofu(font: Any, font_key: str, ch: str) -> bool:
     return res
 
 
+def compute_subtitle_place_xy(img_w: int, img_h: int, tpl: Dict[str, Any]) -> Tuple[int, int]:
+    """计算字幕透明 PNG 在 1080x1920 安全区内的放置坐标 (place_x, place_y)。"""
+    center_x = int(tpl.get("center_x") if tpl.get("center_x") is not None else 470)
+    safe_y = int(tpl.get("safe_y_center") if tpl.get("safe_y_center") is not None else 1340)
+    place_x = max(80, min(860 - img_w, center_x - img_w // 2))
+    place_y = max(1160, min(1476 - img_h, safe_y - img_h // 2))
+    return place_x, place_y
+
+
 def render_subtitle_png(entry: Dict[str, Any], tpl: Dict[str, Any], font_path: str | None, out_png: Path) -> Tuple[int, int]:
     """将单条字幕（含逐字关键词变色高亮、缺字自动回退与超宽字号自适应）渲染为透明 PNG，返回放置坐标 (x, y)。"""
     from PIL import Image, ImageDraw, ImageFont
@@ -160,9 +169,7 @@ def render_subtitle_png(entry: Dict[str, Any], tpl: Dict[str, Any], font_path: s
     out_png.parent.mkdir(parents=True, exist_ok=True)
     img.save(out_png)
     # 水平保持在安全区 [80, 860] 中轴，垂直严格位于平台底部安全窗内 [1160, 1476]
-    place_x = max(80, min(860 - img_w, int(tpl.get("center_x", 470)) - img_w // 2))
-    place_y = max(1160, min(1476 - img_h, int(tpl.get("safe_y_center", 1340)) - img_h // 2))
-    return place_x, place_y
+    return compute_subtitle_place_xy(img_w, img_h, tpl)
 
 
 def _resolve_packaging_theme(style_id: str) -> str:

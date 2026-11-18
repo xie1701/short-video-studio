@@ -3,11 +3,12 @@
 [出片 2：剪映专业版可编辑工程导出封装]
 由于剪映专业版 6.0+（含 macOS 11.7.0）对内部 draft_info.json 强制启用私有加密，
 直接复制第三方明文 draft_content.json 会被判定为草稿损坏无法打开。
-本模块遵循剪映官方原生开放导入规范，导出标准可编辑工程包 (jianying_draft/)：
-- <project_name>.fcpxml : Apple FCPXML 1.10 多轨工程（主视频精剪分镜 + 纯净人声/配乐/音效三轨独立 WAV）
-- <project_name>.srt    : 毫秒级精准可编辑字幕（兼容剪映“本地字幕”一键拖拽生成文字轨）
-- <project_name>.ass    : 高级样式字幕（若步骤 5 已生成则同步附带）
-- overlays/             : 1080x1920 全画幅透明定位花字/卡片贴图（按起止时间命名）
+本模块遵循剪映官方原生开放导入规范，导出完整多轨可编辑工程包 (jianying_draft/)：
+- <project_name>.fcpxml : Apple FCPXML 1.10 多轨工程（主视频分镜 + 风格谱画框/卡片/花字 Alpha 透明轨 + 双色安全区字幕 Alpha 透明轨 + 三轨独立 WAV）
+- alpha_layers/         : 1080x1920 带透明通道的视频轨素材（macOS 优先 HEVC+Alpha `hvc1`，跨平台自动回退 ProRes4444/QTRLE）
+- overlays/             : 1080x1920 透明全画幅 PNG 底图备份
+- <project_name>.srt    : 可选文字替换备选字幕（仅当需在剪映内改错别字或重排文本时拖入）
+- <project_name>.ass    : 高级样式字幕备份（若步骤 5 已生成则同步附带）
 - <lut_name>.cube       : 风格专属 3D LUT（若存在则同步附带，可在剪映中导入调色）
 - README_剪映导入指南.txt
 - legacy_v5_json/       : 留存旧版 5.9 协议精简 JSON 骨架（仅作归档，勿直接导入剪映 6.0+）
@@ -16,7 +17,12 @@
 from __future__ import annotations
 
 import argparse
+import bisect
+import concurrent.futures
+import hashlib
+import platform
 import shutil
+import subprocess
 import time
 import uuid
 import wave
@@ -32,10 +38,13 @@ from common import (
     CANVAS_WIDTH,
     DEFAULT_FPS,
     ffprobe_media,
+    find_bin,
+    find_commercial_font,
     maybe_reexec_in_venv,
     read_json,
     write_json,
 )
+from render_mp4 import compute_subtitle_place_xy, render_packaging_png, render_subtitle_png
 
 
 def sec_to_us(sec: float) -> int:
@@ -64,18 +73,6 @@ def _measure_wav_frames(path_str: Optional[str], fps: int) -> Tuple[int, float]:
     return 0, 0.0
 
 
-def _measure_video_frames(path: Path, fps: int, fallback_frames: int) -> int:
-    """实测 MP4 真实可播时长对应的最大整帧数，防止越界造成媒体损坏/黑帧。"""
-    try:
-        meta = ffprobe_media(path)
-        fmt_dur = float(meta.get("format", {}).get("duration") or 0.0)
-        if fmt_dur > 0.05:
-            return max(1, int(fmt_dur * fps + 1e-4))
-    except Exception:
-        pass
-    return max(1, fallback_frames)
-
-
 def _format_srt_ts(sec: float) -> str:
     ms_total = max(0, int(round(sec * 1000.0)))
     h, rem = divmod(ms_total, 3_600_000)
@@ -101,57 +98,320 @@ def _build_srt_content(subs: Dict[str, Any]) -> str:
             txt,
             "",
         ])
-    return "\n".join(lines)
+    return "\n".join(lines).strip() + "\n"
 
 
-def _export_full_canvas_overlays(pipeline_dir: Path, overlays_dir: Path, fps: int) -> List[Path]:
-    """将渲染阶段产出的局部花字与阶段卡 PNG 统一贴合到 1080x1920 透明全画幅底图导出。"""
+def _detect_alpha_codec(ffmpeg_bin: str) -> str:
+    """选择当前平台最优透明通道编码器（macOS 优先硬件 HEVC+Alpha）。"""
+    try:
+        res = subprocess.run(
+            [ffmpeg_bin, "-hide_banner", "-encoders"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        encoders = res.stdout or ""
+    except Exception:
+        encoders = ""
+    if platform.system() == "Darwin" and "hevc_videotoolbox" in encoders:
+        return "hevc_videotoolbox"
+    if "prores_ks" in encoders:
+        return "prores_ks"
+    return "qtrle"
+
+
+def _build_alpha_encode_cmd(
+    ffmpeg_bin: str,
+    codec: str,
+    full_png: Path,
+    out_mov: Path,
+    frames: int,
+    fps: int,
+) -> List[str]:
+    base = [
+        ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
+        "-loop", "1", "-framerate", str(fps), "-i", str(full_png),
+        "-frames:v", str(frames), "-r", str(fps),
+    ]
+    if codec == "hevc_videotoolbox":
+        return base + [
+            "-c:v", "hevc_videotoolbox",
+            "-alpha_quality", "1.0",
+            "-b:v", "1200k",
+            "-g", "300",
+            "-vtag", "hvc1",
+            "-pix_fmt", "bgra",
+            str(out_mov),
+        ]
+    if codec == "prores_ks":
+        return base + [
+            "-c:v", "prores_ks",
+            "-profile:v", "4444",
+            "-pix_fmt", "yuva444p10le",
+            str(out_mov),
+        ]
+    return base + [
+        "-c:v", "qtrle",
+        "-pix_fmt", "argb",
+        str(out_mov),
+    ]
+
+
+def _encode_single_alpha_mov(task: Dict[str, Any]) -> None:
+    """将单张 1080x1920 透明全画幅 PNG 编码为精确帧数的 Alpha 通道 MOV（失败自动回退 qtrle）。"""
+    ffmpeg_bin: str = task["ffmpeg"]
+    codec: str = task["codec"]
+    full_png: Path = task["full_png"]
+    out_mov: Path = task["mov_path"]
+    frames: int = task["dur_frames"]
+    fps: int = task["fps"]
+
+    out_mov.parent.mkdir(parents=True, exist_ok=True)
+    tmp_mov = out_mov.with_suffix(".tmp.mov")
+    cmd = _build_alpha_encode_cmd(ffmpeg_bin, codec, full_png, tmp_mov, frames, fps)
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    if res.returncode != 0 and codec != "qtrle":
+        # 若宿主机硬件 VideoToolbox 受限，自动回退跨平台 QTRLE Alpha
+        fallback_cmd = _build_alpha_encode_cmd(ffmpeg_bin, "qtrle", full_png, tmp_mov, frames, fps)
+        res = subprocess.run(fallback_cmd, capture_output=True, text=True)
+    if res.returncode != 0 or not tmp_mov.is_file() or tmp_mov.stat().st_size == 0:
+        if tmp_mov.exists():
+            tmp_mov.unlink()
+        raise RuntimeError(f"透明视频轨编码失败 ({out_mov.name}): {res.stderr.strip()}")
+    tmp_mov.replace(out_mov)
+
+
+def _compose_full_canvas_png(src_png: Path, out_full_png: Path, px: int, py: int) -> str:
+    """将任意尺寸局部 RGBA PNG 贴合至 1080x1920 透明全画幅画布并返回内容签名用哈希。"""
+    with Image.open(src_png).convert("RGBA") as src_im:
+        if src_im.size == (CANVAS_WIDTH, CANVAS_HEIGHT) and px == 0 and py == 0:
+            src_im.save(out_full_png)
+        else:
+            canvas = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
+            canvas.paste(src_im, (px, py), src_im)
+            canvas.save(out_full_png)
+    return hashlib.sha256(out_full_png.read_bytes()).hexdigest()[:16]
+
+
+def _resolve_packaging_source(
+    elem: Dict[str, Any],
+    eid: str,
+    render_final: Path,
+    stage_assets: Path,
+    font_path: Optional[str],
+    cur_style_id: str,
+) -> Optional[Path]:
+    candidates = [
+        render_final / f"{eid}.png",
+        Path(str(elem.get("custom_png", ""))) if elem.get("custom_png") else Path("__none__"),
+        stage_assets / f"{eid}.png",
+    ]
+    src_png = next((c for c in candidates if c.is_file()), None)
+    if src_png is not None:
+        return src_png
+    generated = render_final / f"{eid}.png"
+    render_packaging_png(elem, font_path, generated, default_style_id=cur_style_id)
+    return generated if generated.is_file() else None
+
+
+def _export_alpha_layer_tracks(
+    pipeline_dir: Path,
+    overlays_dir: Path,
+    alpha_dir: Path,
+    fps: int,
+    total_frames: int,
+) -> Tuple[List[Dict[str, Any]], List[Path]]:
+    """
+    渲染并导出全套风格谱上层透明视频轨（画框/阶段卡/花字/双色字幕）：
+    - overlays/     : 1080x1920 透明全画幅 PNG
+    - alpha_layers/ : 30fps 精确帧数透明通道 MOV（带哈希缓存避免重复转码）
+    """
+    ffmpeg_bin = find_bin("ffmpeg")
+    if not ffmpeg_bin:
+        raise RuntimeError("需要 ffmpeg 才能导出带透明通道的剪映风格包装与字幕视频轨。")
+    codec = _detect_alpha_codec(ffmpeg_bin)
+
     pkg_path = pipeline_dir / "06_packaging.json"
-    if not pkg_path.exists():
-        return []
-    pkg = read_json(pkg_path)
+    subs_path = pipeline_dir / "05_subtitles.json"
+    pkg = read_json(pkg_path) if pkg_path.exists() else {}
+    subs = read_json(subs_path) if subs_path.exists() else {}
+
     render_final = pipeline_dir / "_render_final"
     stage_assets = pipeline_dir / "_stage_assets"
+    font_path = subs.get("font_path") or find_commercial_font()
+    tpl = subs.get("template_config", {})
+    cur_style_id = str(subs.get("template_id") or pkg.get("style_id") or "style_14")
+
     overlays_dir.mkdir(parents=True, exist_ok=True)
-    for old in overlays_dir.glob("*.png"):
-        old.unlink()
+    alpha_dir.mkdir(parents=True, exist_ok=True)
 
-    exported: List[Path] = []
-    items = list(pkg.get("stage_overlays", [])) + list(pkg.get("visual_elements", []))
-    for idx, elem in enumerate(items, start=1):
-        eid = str(elem.get("id", f"elem_{idx:03d}"))
-        # 优先取 _render_final 中渲染好的透明 PNG，其次取 custom_png / _stage_assets
-        candidates = [
-            render_final / f"{eid}.png",
-            Path(str(elem.get("custom_png", ""))) if elem.get("custom_png") else Path("__none__"),
-            stage_assets / f"{eid}.png",
-        ]
-        src_png = next((c for c in candidates if c.is_file()), None)
-        if not src_png:
-            continue
-        sf = int(elem.get("start_frame", 0))
-        ef = max(sf + 1, int(elem.get("end_frame", sf + fps)))
-        out_name = f"{idx:02d}_{sf / fps:06.2f}s-{ef / fps:06.2f}s_{eid}.png"
-        out_p = overlays_dir / out_name
+    raw_items: List[Dict[str, Any]] = []
+    seq_no = 0
 
-        with Image.open(src_png).convert("RGBA") as src_im:
-            if src_im.size == (CANVAS_WIDTH, CANVAS_HEIGHT):
-                src_im.save(out_p)
+    def _add_packaging_list(elems: List[Dict[str, Any]], default_group: str) -> None:
+        nonlocal seq_no
+        for elem in elems:
+            seq_no += 1
+            eid = str(elem.get("id", f"elem_{seq_no:03d}"))
+            src_png = _resolve_packaging_source(elem, eid, render_final, stage_assets, font_path, cur_style_id)
+            if not src_png:
+                continue
+            bbox = elem.get("bbox", {})
+            with Image.open(src_png) as im_probe:
+                w, h = im_probe.size
+            if w == CANVAS_WIDTH and h == CANVAS_HEIGHT:
+                px, py = 0, 0
             else:
-                bbox = elem.get("bbox", {})
-                px = int(bbox.get("x", max(0, (CANVAS_WIDTH - src_im.width) // 2)))
-                py = int(bbox.get("y", max(0, (CANVAS_HEIGHT - src_im.height) // 2)))
-                canvas = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
-                canvas.paste(src_im, (px, py), src_im)
-                canvas.save(out_p)
-        exported.append(out_p)
-    return exported
+                px = int(bbox.get("x", max(0, (CANVAS_WIDTH - w) // 2)))
+                py = int(bbox.get("y", max(0, (CANVAS_HEIGHT - h) // 2)))
+
+            is_win = ("_win_" in eid) or (int(bbox.get("w", 0)) == CANVAS_WIDTH and int(bbox.get("h", 0)) == CANVAS_HEIGHT)
+            group = "stage_win" if (default_group == "stage" and is_win) else ("stage_card" if default_group == "stage" else default_group)
+            sf = max(0, min(total_frames - 1, int(elem.get("start_frame", 0))))
+            ef = min(total_frames, max(sf + 1, int(elem.get("end_frame", sf + fps))))
+            raw_hint = str(elem.get("text_or_asset") or "").strip()
+            txt_hint = eid if (not raw_hint or "/" in raw_hint or "\\" in raw_hint or raw_hint.endswith(".png")) else raw_hint
+            prefix = "画框" if group == "stage_win" else ("阶段卡" if group == "stage_card" else "花字")
+            raw_items.append({
+                "seq": seq_no,
+                "group": group,
+                "id": eid,
+                "label": f"[{prefix}] {txt_hint[:14]}",
+                "src_png": src_png,
+                "px": px,
+                "py": py,
+                "start_frame": sf,
+                "end_frame": ef,
+                "dur_frames": ef - sf,
+            })
+
+    _add_packaging_list(list(pkg.get("stage_overlays", [])), "stage")
+    _add_packaging_list(list(pkg.get("visual_elements", [])), "flower_text")
+
+    for s_idx, sub in enumerate(subs.get("entries", []), start=1):
+        seq_no += 1
+        sub_id = str(sub.get("id", f"sub_{s_idx:03d}"))
+        src_png = render_final / f"{sub_id}.png"
+        if not src_png.is_file():
+            px, py = render_subtitle_png(sub, tpl, font_path, src_png)
+        else:
+            with Image.open(src_png) as im_probe:
+                w, h = im_probe.size
+            px, py = (0, 0) if (w == CANVAS_WIDTH and h == CANVAS_HEIGHT) else compute_subtitle_place_xy(w, h, tpl)
+        sf = max(0, min(total_frames - 1, int(round(float(sub.get("start_sec", 0.0)) * fps))))
+        ef = min(total_frames, max(sf + 1, int(round(float(sub.get("end_sec", 0.0)) * fps))))
+        raw_items.append({
+            "seq": seq_no,
+            "group": "subtitle",
+            "id": sub_id,
+            "label": f"[字幕] {str(sub.get('text', sub_id)).strip()[:16]}",
+            "src_png": src_png,
+            "px": px,
+            "py": py,
+            "start_frame": sf,
+            "end_frame": ef,
+            "dur_frames": ef - sf,
+        })
+
+    cache_path = alpha_dir / ".alpha_cache.json"
+    old_cache: Dict[str, str] = read_json(cache_path) if cache_path.exists() else {}
+    new_cache: Dict[str, str] = {}
+    keep_png_names: set[str] = set()
+    keep_mov_names: set[str] = set()
+    exported_pngs: List[Path] = []
+    encode_tasks: List[Dict[str, Any]] = []
+
+    for item in raw_items:
+        stem = f"{item['seq']:03d}_{item['start_frame'] / fps:06.2f}s-{item['end_frame'] / fps:06.2f}s_{item['id']}"
+        full_png = overlays_dir / f"{stem}.png"
+        mov_path = alpha_dir / f"{stem}.mov"
+        png_hash = _compose_full_canvas_png(item["src_png"], full_png, item["px"], item["py"])
+        sig = f"{png_hash}:{item['dur_frames']}:{fps}:{codec}"
+
+        item["full_png"] = full_png
+        item["mov_path"] = mov_path
+        keep_png_names.add(full_png.name)
+        keep_mov_names.add(mov_path.name)
+        exported_pngs.append(full_png)
+        new_cache[mov_path.name] = sig
+
+        cached_ok = (
+            old_cache.get(mov_path.name) == sig
+            and mov_path.is_file()
+            and mov_path.stat().st_size > 1024
+        )
+        if not cached_ok:
+            encode_tasks.append({
+                "ffmpeg": ffmpeg_bin,
+                "codec": codec,
+                "full_png": full_png,
+                "mov_path": mov_path,
+                "dur_frames": item["dur_frames"],
+                "fps": fps,
+            })
+
+    # 清理失效残留文件，确保目录始终整洁
+    for old_png in overlays_dir.glob("*.png"):
+        if old_png.name not in keep_png_names:
+            old_png.unlink()
+    for old_mov in alpha_dir.glob("*.mov"):
+        if old_mov.name not in keep_mov_names:
+            old_mov.unlink()
+
+    if encode_tasks:
+        workers = min(4, len(encode_tasks))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = [pool.submit(_encode_single_alpha_mov, t) for t in encode_tasks]
+            for fut in concurrent.futures.as_completed(futures):
+                fut.result()
+
+    write_json(cache_path, new_cache)
+    return raw_items, exported_pngs
 
 
-def build_fcpxml_tree(pipeline_dir: Path, project_name: str) -> str:
+def _assign_non_overlapping_lanes(layers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    按 Painter 叠层顺序分组并执行贪心无重叠区间排轨 (lane >= 1)：
+    stage_win (画框) < stage_card (卡片/进度条) < flower_text (花字) < subtitle (双色字幕，最顶层)
+    同轨严格满足前段 end_frame <= 后段 start_frame，撞帧自动升至相邻上轨。
+    """
+    lane_base = 1
+    scheduled: List[Dict[str, Any]] = []
+    for group in ("stage_win", "stage_card", "flower_text", "subtitle"):
+        grp_items = sorted(
+            (it for it in layers if it["group"] == group),
+            key=lambda x: (x["start_frame"], x["end_frame"], x["seq"]),
+        )
+        if not grp_items:
+            continue
+        lane_ends: List[int] = []
+        for it in grp_items:
+            sf, ef = it["start_frame"], it["end_frame"]
+            placed_sub = None
+            for idx, end_f in enumerate(lane_ends):
+                if end_f <= sf:
+                    placed_sub = idx
+                    lane_ends[idx] = ef
+                    break
+            if placed_sub is None:
+                placed_sub = len(lane_ends)
+                lane_ends.append(ef)
+            placed = dict(it)
+            placed["lane"] = lane_base + placed_sub
+            scheduled.append(placed)
+        lane_base += len(lane_ends)
+    return scheduled
+
+
+def build_fcpxml_tree(
+    pipeline_dir: Path,
+    project_name: str,
+    overlay_layers: List[Dict[str, Any]],
+) -> str:
     """
     构建严格符合 Apple FCPXML 1.10 DTD 标准的剪映可导入多轨工程：
-    - Primary Storyline (<spine>): 全 46 段精剪/调色纯无声分镜 (<asset-clip>)
+    - Primary Storyline (<spine>): 全段精剪/调色分镜 (<asset-clip>)
+    - Connected Upper Video Lanes (lane 1..N): 风格谱透明画框/卡片/花字 & 顶层双色字幕 (.mov)
     - Connected Audio Lanes (-1 / -2 / -3): 独立纯净人声、风格 BGM、精准 SFX 音轨
     """
     edl = read_json(pipeline_dir / "04_edl.json")
@@ -177,7 +437,6 @@ def build_fcpxml_tree(pipeline_dir: Path, project_name: str) -> str:
         colorSpace="1-1-1 (Rec. 709)",
     )
 
-    # 注册视频资产（优先使用无音频流的 _render_final/seg_xxx.mp4，已保留各风格色彩与边窗框）
     asset_cache: Dict[str, Tuple[str, int, bool]] = {}
     res_counter = 1
 
@@ -236,7 +495,6 @@ def build_fcpxml_tree(pipeline_dir: Path, project_name: str) -> str:
         ET.SubElement(asset_el, "media-rep", kind="original-media", src=p.resolve().as_uri())
         return rid, n_frames
 
-    # 注册三条完全解耦的可编辑音轨：纯净降噪人声 + BGM + 音效轨
     voice_path = next(
         (cand for cand in [
             str(pipeline_dir / "08_voice_denoised.wav"),
@@ -266,7 +524,9 @@ def build_fcpxml_tree(pipeline_dir: Path, project_name: str) -> str:
 
     clips = edl.get("clips", [])
     accum_frames = 0
-    first_clip_el: Optional[ET.Element] = None
+    # 记录 (in_f, out_f, src_start_f, clip_el)，确保每个 Connected Clip 锚定在覆盖其起点的主轨片段内
+    spine_spans: List[Tuple[int, int, int, ET.Element]] = []
+    spine_starts: List[int] = []
 
     for idx, clip in enumerate(clips):
         seg_file = render_final_dir / f"seg_{idx+1:03d}.mp4"
@@ -301,14 +561,20 @@ def build_fcpxml_tree(pipeline_dir: Path, project_name: str) -> str:
             format=fmt_id,
             tcFormat="NDF",
         )
-        # 若回退引用了自带音频的源视频，将底片音轨静音，防止与独立人声轨重音
         if has_audio:
             ET.SubElement(clip_el, "adjust-volume", amount="-infinity")
-        if first_clip_el is None:
-            first_clip_el = clip_el
+        spine_spans.append((offset_frames, offset_frames + dur_frames, src_start_frames, clip_el))
+        spine_starts.append(offset_frames)
 
-    # 挂载三条全片连续的独立 WAV 音轨至首个时间线起点 (lane -1 / -2 / -3)
-    if first_clip_el is not None:
+    def _find_anchor(sf: int) -> Tuple[ET.Element, int]:
+        pos = max(0, bisect.bisect_right(spine_starts, sf) - 1)
+        in_f, _, src_start_f, el = spine_spans[pos]
+        return el, src_start_f + max(0, sf - in_f)
+
+    if spine_spans:
+        # 1) 挂载三条全片连续独立 WAV 音轨 (lane -1 / -2 / -3)
+        first_el = spine_spans[0][3]
+        first_anchor = _frames_to_rational(spine_spans[0][2], fps)
         audio_lanes = [
             (voice_res, -1, "dialogue", "0dB", "纯净人声干音"),
             (bgm_res, -2, "music", "-14dB", "专属BGM配乐"),
@@ -320,12 +586,12 @@ def build_fcpxml_tree(pipeline_dir: Path, project_name: str) -> str:
             rid, a_frames = res_info
             use_frames = min(total_frames, a_frames)
             aud_el = ET.SubElement(
-                first_clip_el,
+                first_el,
                 "asset-clip",
                 name=lane_title,
                 ref=rid,
                 lane=str(lane_idx),
-                offset="0s",
+                offset=first_anchor,
                 start="0s",
                 duration=_frames_to_rational(use_frames, fps),
                 role=role_name,
@@ -333,14 +599,29 @@ def build_fcpxml_tree(pipeline_dir: Path, project_name: str) -> str:
             if vol_db != "0dB":
                 ET.SubElement(aud_el, "adjust-volume", amount=vol_db)
 
+        # 2) 挂载全套风格谱透明包装轨 & 最顶层双色安全区字幕轨 (lane 1..N)
+        for layer in _assign_non_overlapping_lanes(overlay_layers):
+            mov_p: Path = layer["mov_path"]
+            rid, avail_frames, _ = ensure_video_asset(mov_p, layer["dur_frames"])
+            dur_frames = min(layer["dur_frames"], avail_frames)
+            parent_el, anchor_off = _find_anchor(layer["start_frame"])
+            ET.SubElement(
+                parent_el,
+                "asset-clip",
+                name=layer["label"],
+                ref=rid,
+                lane=str(layer["lane"]),
+                offset=_frames_to_rational(anchor_off, fps),
+                start="0s",
+                duration=_frames_to_rational(dur_frames, fps),
+                format=fmt_id,
+                tcFormat="NDF",
+            )
+
     rough = ET.tostring(fcpxml, encoding="utf-8")
     pretty = minidom.parseString(rough).toprettyxml(indent="  ", encoding="utf-8").decode("utf-8")
-    # 注入标准 FCPXML DOCTYPE 声明，符合严格 XML/FCPXML DTD 校验
     header = '<?xml version="1.0" encoding="utf-8"?>\n'
-    if pretty.startswith("<?xml"):
-        body = pretty.split("?>", 1)[1].lstrip("\n")
-    else:
-        body = pretty
+    body = pretty.split("?>", 1)[1].lstrip("\n") if pretty.startswith("<?xml") else pretty
     return header + "<!DOCTYPE fcpxml>\n" + body
 
 
@@ -390,7 +671,6 @@ def export_jianying_draft(pipeline_dir: Path, simulate_failure: bool = False) ->
             raise RuntimeError("模拟剪映工程导出版本不匹配或目标目录不可写。")
 
         draft_dir.mkdir(parents=True, exist_ok=True)
-        # 清理旧版本直接写出的未加密 draft_*.json，避免用户误复制去 6.0+ 草稿目录报损坏
         legacy_dir = draft_dir / "legacy_v5_json"
         legacy_dir.mkdir(parents=True, exist_ok=True)
         for old_f in ("draft_content.json", "draft_meta_info.json"):
@@ -403,52 +683,65 @@ def export_jianying_draft(pipeline_dir: Path, simulate_failure: bool = False) ->
         color_p = pipeline_dir / "07_color_plan.json"
         color_plan = read_json(color_p) if color_p.exists() else {}
         fps = int(edl.get("fps", DEFAULT_FPS))
+        total_frames = int(edl.get("total_frames") or round(float(edl["total_duration_sec"]) * fps))
 
-        # 1. 生成 FCPXML 1.10 工程文件（剪映专业版 6.0~11.7+ 原生开放导入格式）
-        fcpxml_text = build_fcpxml_tree(pipeline_dir, safe_name)
+        # 1. 先渲染并编码全部风格谱透明视频层（画框/阶段卡/花字 + 双色精调字幕）
+        overlay_layers, overlays_exported = _export_alpha_layer_tracks(
+            pipeline_dir,
+            draft_dir / "overlays",
+            draft_dir / "alpha_layers",
+            fps,
+            total_frames,
+        )
+
+        # 2. 生成全轨道 FCPXML 1.10 工程文件（主分镜 + 风格包装透明轨 + 双色字幕透明轨 + 三轨音频）
+        fcpxml_text = build_fcpxml_tree(pipeline_dir, safe_name, overlay_layers)
         fcpxml_path = draft_dir / f"{safe_name}.fcpxml"
         fcpxml_path.write_text(fcpxml_text, encoding="utf-8")
 
-        # 2. 生成标准 SRT 字幕并拷贝 ASS 字幕
+        # 3. 同步附带 SRT/ASS 字幕备选与 3D LUT
         srt_path = draft_dir / f"{safe_name}.srt"
         srt_path.write_text(_build_srt_content(subs), encoding="utf-8")
         ass_src = pipeline_dir / "05_subtitles.ass"
         if ass_src.is_file():
             shutil.copy2(ass_src, draft_dir / f"{safe_name}.ass")
 
-        # 3. 导出 1080x1920 全画幅透明定位花字/卡片 PNG 与专属 3D LUT
-        overlays_exported = _export_full_canvas_overlays(pipeline_dir, draft_dir / "overlays", fps)
         lut_exported: Optional[Path] = None
         if color_plan.get("lut_path") and Path(color_plan["lut_path"]).is_file():
             lut_src = Path(color_plan["lut_path"])
             lut_exported = draft_dir / lut_src.name
             shutil.copy2(lut_src, lut_exported)
 
-        # 4. 写明清晰的中文导入操作说明
+        n_stage = sum(1 for x in overlay_layers if x["group"] in ("stage_win", "stage_card"))
+        n_flower = sum(1 for x in overlay_layers if x["group"] == "flower_text")
+        n_sub = sum(1 for x in overlay_layers if x["group"] == "subtitle")
+
         readme = "\n".join([
-            f"【{safe_name} 剪映专业版（含 11.7.0+）导入可编辑工程指南】",
+            f"【{safe_name} 剪映专业版（含 11.7.0+）全风格完整工程导入指南】",
             "",
-            "由于剪映 6.0 及以上版本已对内部草稿文件夹启用私有加密，",
-            "直接把旧版文件夹拷入草稿箱会提示损坏；请改用剪映官方原生开放工程导入：",
+            "本工程包已升级为「多轨透明视频层 + 三轨独立音频」一键导入结构：",
+            "导入一次 FCPXML 即可直接还原风格谱的画框、卡片、花字与双色安全区字幕，无需逐张手拖 PNG！",
             "",
-            f"第 1 步（导入分镜与三轨音频）：",
-            f"  1) 打开剪映专业版 -> 右上角齿轮「设置」->「全局设置」-> 确认开启「导入工程」。",
-            f"  2) 在首页「本地草稿」右上角点击「...」->「导入工程」（或新建项目后直接拖拽进来），",
-            f"     选中本目录下的：{fcpxml_path.name}",
-            f"  ✅ 导入后时间线即包含全部 {len(edl.get('clips', []))} 段切分镜头 + 独立纯净人声 + BGM + SFX 三条可任意静音/裁剪音轨！",
+            "第 1 步（一键导入完整多轨时间线）：",
+            "  1) 打开剪映专业版 -> 右上角齿轮「设置」->「全局设置」-> 确认开启「导入工程」。",
+            f"  2) 在首页「本地草稿」右上角点击「...」->「导入工程」，选中本目录下的：{fcpxml_path.name}",
+            "  导入后您将直接获得以下可自由编辑轨道：",
+            f"    - 主视频轨 V1：全部 {len(edl.get('clips', []))} 段调色精剪分镜",
+            f"    - 风格包装层（透明轨道）：{n_stage} 个画框/阶段卡片/进度条 + {n_flower} 个语义花字胶囊（可单块移动/隐藏/删除）",
+            f"    - 双色精调字幕轨（最顶层）：{n_sub} 句风格谱原版双色高亮字幕（严格对齐安全区与商业字体）",
+            "    - 三轨独立音频：纯净人声干音 + 专属 BGM + 切镜音效 SFX（可任意单独静音/裁剪/调音量）",
             "",
-            f"第 2 步（导入可随意改字/改样式的原生字幕轨）：",
-            f"  进入剪映编辑器 -> 顶部「文本」->「本地字幕」-> 拖入 {srt_path.name}（或 {safe_name}.ass）",
-            f"  即可生成整条可任意更改字体、大小、颜色和错别字的原生字幕轨道。",
+            "第 2 步（仅需手动改某个错别字时使用）：",
+            "  双色字幕轨道默认已呈现与成片完全一致的精美排版样式；如仅需修改某一句文案内容，",
+            f"  可在时间线最顶层删掉对应句子的字幕块，并拖入本目录附带的 {srt_path.name}（或 {safe_name}.ass）做文字替换。",
             "",
-            f"第 3 步（可选：叠加独立花字/知识卡片与 LUT 微调）：",
-            f"  - overlays/ 目录已导出 {len(overlays_exported)} 张 1080x1920 透明图，按文件名标注的时间段拖入画中画副轨即可自由开关；",
-            f"  - 如需调整滤镜强度，可在「调节 -> 滤镜 -> 导入 LUT」加载 {lut_exported.name if lut_exported else '对应 .cube 文件'}。",
+            f"第 3 步（可选 3D LUT 调节）：",
+            f"  - overlays/ 与 alpha_layers/ 已保留全画幅透明素材备份；",
+            f"  - 如需调整成片滤镜风格，可在「调节 -> 滤镜 -> 导入 LUT」加载 {lut_exported.name if lut_exported else '对应 .cube 文件'}。",
             "",
         ])
         (draft_dir / "README_剪映导入指南.txt").write_text(readme, encoding="utf-8")
 
-        # 5. 归档精简元数据摘要
         payload = build_jianying_draft_payload(pipeline_dir)
         write_json(legacy_dir / "draft_summary.json", payload["draft_content"])
         write_json(legacy_dir / "draft_meta_info.json", payload["draft_meta_info"])
@@ -456,15 +749,22 @@ def export_jianying_draft(pipeline_dir: Path, simulate_failure: bool = False) ->
         status = {
             "status": "success",
             "degraded_to_mp4_only": False,
-            "export_format": "fcpxml_1.10+srt",
+            "export_format": "fcpxml_1.10+alpha_mov+srt",
             "draft_dir": str(draft_dir.resolve()),
             "fcpxml_path": str(fcpxml_path.resolve()),
             "srt_path": str(srt_path.resolve()),
+            "alpha_layers_count": len(overlay_layers),
+            "stage_overlays_count": n_stage,
+            "flower_texts_count": n_flower,
+            "subtitles_rendered_count": n_sub,
             "overlays_count": len(overlays_exported),
-            "message": f"剪映可编辑工程导出成功 ({fcpxml_path.name} + {srt_path.name})，可通过剪映「导入工程」打开编辑。",
+            "message": (
+                f"剪映全风格可编辑工程导出成功 ({fcpxml_path.name}，"
+                f"含 {n_stage} 张阶段卡/画框 + {n_flower} 个花字 + {n_sub} 条双色透明字幕轨)。"
+            ),
         }
         write_json(pipeline_dir / "jianying_export_status.json", status)
-        print(f"[jianying] 剪映原生可编辑导入包 (FCPXML + SRT) 导出成功 -> {draft_dir}")
+        print(f"[jianying] 全风格可编辑工程包 (FCPXML + Alpha MOV) 导出成功 -> {draft_dir}")
         return status
     except Exception as exc:
         status = {
@@ -481,7 +781,7 @@ def export_jianying_draft(pipeline_dir: Path, simulate_failure: bool = False) ->
 
 def main() -> None:
     maybe_reexec_in_venv()
-    parser = argparse.ArgumentParser(description="出片2: 剪映原生可编辑工程包 (FCPXML + SRT) 独立导出")
+    parser = argparse.ArgumentParser(description="出片2: 剪映原生全风格可编辑工程包 (FCPXML + Alpha MOV + SRT) 独立导出")
     parser.add_argument("--pipeline-dir", required=True)
     parser.add_argument("--simulate-failure", action="store_true", help="模拟导出失败验证降级逻辑")
     args = parser.parse_args()
