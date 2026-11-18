@@ -316,6 +316,28 @@ def render_packaging_png(
     return int(bbox["x"]), int(bbox["y"])
 
 
+def resolve_packaging_source(
+    elem: Dict[str, Any],
+    eid: str,
+    render_final: Path,
+    stage_assets: Path,
+    font_path: Optional[str],
+    cur_style_id: str,
+) -> Optional[Path]:
+    """定位或按需补渲染包装图层的 RGBA PNG 源文件路径。"""
+    candidates = [
+        render_final / f"{eid}.png",
+        Path(str(elem.get("custom_png", ""))) if elem.get("custom_png") else Path("__none__"),
+        stage_assets / f"{eid}.png",
+    ]
+    src_png = next((c for c in candidates if c.is_file()), None)
+    if src_png is not None:
+        return src_png
+    generated = render_final / f"{eid}.png"
+    render_packaging_png(elem, font_path, generated, default_style_id=cur_style_id)
+    return generated if generated.is_file() else None
+
+
 def build_base_video_track(
     pipeline_dir: Path,
     edl: Dict[str, Any],

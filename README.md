@@ -53,7 +53,7 @@ short-video-studio/
     │       ├── remotion/                     # StyleSpectrumPresets.ts + StyleSpectrumPack.tsx
     │       ├── hyperframes/                  # style-spectrum-presets.css + style-spectrum-template.html
     │       └── jianying/                     # jianying_style_presets.json（剪映样式/调色/节奏预设）
-    └── scripts/                       # 23 个 Python 确定性工程脚本
+    └── scripts/                       # 25 个 Python 确定性工程脚本
         ├── common.py                  # 公共工具模块（路径、venv、FFmpeg、字体、安全区与 JSON 读写）
         ├── check_and_setup.py         # 环境检测、隔离 venv 依赖安装与 CC0 资产生成
         ├── generate_builtin_assets.py # 程序化生成零版权风险 CC0 BGM/SFX/LUT/贴纸
@@ -74,6 +74,7 @@ short-video-studio/
         ├── step9_title_cover.py       # Step 9：爆款标题与高密度 9:16 首帧封面生成
         ├── render_mp4.py              # 出片 1：本地合成 MP4（支持粤语缺字回退与超宽字幕缩号防重叠）
         ├── export_jianying.py         # 出片 2：剪映全风格可编辑工程导出（FCPXML 1.10 + Alpha MOV + SRT/LUT）
+        ├── export_hyperframes.py      # 出片 3：HyperFrames Studio 多轨可编辑工程 + 双击启动器导出
         ├── qa_inspector.py            # 9 项强制自动质检 + 对标视频逐秒对比
         ├── content_log_review.py      # 发布数据沉淀与每周一页结构化复盘
         └── run_pipeline.py            # 端到端一键编排入口（full / lock-preview / reedit-visuals / relock-voice，支持 --style-id）
@@ -165,6 +166,7 @@ cd short-video-studio
 5. **独立校验与导出**
    - 自动质检：`python3 short-video-studio/scripts/qa_inspector.py --pipeline-dir ./my_video/pipeline`
    - 剪映草稿：`python3 short-video-studio/scripts/export_jianying.py --pipeline-dir ./my_video/pipeline`
+   - HyperFrames 工程：`python3 short-video-studio/scripts/export_hyperframes.py --pipeline-dir ./my_video/pipeline`
 6. **发布数据沉淀与每周一页复盘**
    ```bash
    python3 short-video-studio/scripts/content_log_review.py \
@@ -186,14 +188,14 @@ cd short-video-studio
      - **三轨独立解耦音频 (`A1–A3`)**：`纯净人声干音`、`专属 BGM`、`切镜音效 SFX`，可任意单独静音或调音量。
 3. **仅需修改某句错别字 / 自定义全文字体时**：在时间线最顶层删掉对应那一句的双色字幕块，然后将同目录下的 `<project_name>.srt`（或 `.ass`）拖入剪映「文本 → 本地字幕」即可按纯文本自由改字；如需二次微调滤镜强度，可在「调节 → 滤镜 → 导入 LUT」加载同目录的 `*.cube` 文件。
 
-#### 2) 怎么用最简单的方式启动 HyperFrames 工程（双击直开）
-仓库根目录已内置跨平台双击启动器（前置仅需安装 `Node.js >= 22` 与 `FFmpeg`，macOS 可用 `brew install node ffmpeg` 一句补齐）：
+#### 2) 怎么用最简单的方式启动 HyperFrames 工程（双击直开，完整还原全部流水线工程）
+每次 `run_pipeline.py` 剪辑包装完成后，会自动在 `<项目>/pipeline/` 下同步产出 **两份可编辑工程**：`jianying_draft/`（剪映包）与 **`hyperframes_draft/`**（HyperFrames Studio 工程，含全部分镜、风格画框/卡片/花字、原生 HTML 双色高亮字幕与 3 轨独立音频，**并直接附带双击启动器**）。前置仅需 `Node.js >= 22` 与 `FFmpeg`（macOS 可运行 `brew install node ffmpeg`）。
 
-- **场景 A（打开已有 HyperFrames 工程）**：
-  - 将根目录的 [启动HyperFrames工程.command](启动HyperFrames工程.command)（macOS）或 [启动HyperFrames工程.bat](启动HyperFrames工程.bat)（Windows）**直接放进包含 `index.html` / `hyperframes.json` 的工程文件夹里双击**，无需任何配置，直接启动 `hyperframes preview` 并弹出浏览器实时预览时间线。
-  - 或者直接在仓库根目录**双击该文件**：macOS 会自动弹出系统文件夹选择框让你点选已有工程目录（也支持直接把文件夹拖进终端窗口）。
-- **场景 B（直接基于内置「20 套风格谱」或新建空白工程启动）**：
-  - 双击根目录的 `启动HyperFrames工程.command` 后，选择 `[2]` 输入风格编号（如 `style_14`、`style_12`、`style_15`）或 `[3]` 新建空白竖屏工程，脚本会自动完成初始化并立刻弹出 HyperFrames Studio 浏览器界面进行可视化预览与 MP4 导出。
+- **场景 A（直接打开已做好的成片工程，例如 `style_12`）**：
+  - 进入 `<项目>/pipeline/hyperframes_draft/`，直接双击里面的 **[启动HyperFrames工程.command](启动HyperFrames工程.command)**（macOS）或 **[启动HyperFrames工程.bat](启动HyperFrames工程.bat)**（Windows），3 秒内自动打开浏览器 HyperFrames Studio 实时时间线预览，可修改文案/图层后直接点击重新渲染。
+  - 或者双击仓库根目录的 `启动HyperFrames工程.command` → 直接点选 `<项目>`、`<项目>/pipeline` 或 `<项目>/pipeline/hyperframes_draft`（甚至 `TestinVideo`），若尚无 `hyperframes_draft/` 还会自动帮你转出后直接打开！
+- **场景 B（套用「20 套风格谱」新建示例工程或新建空白工程）**：
+  - 双击仓库根目录 `启动HyperFrames工程.command` 后，选 `[2]` 输入风格编号（回车默认 `style_14`）或选 `[3]` 新建空白竖屏工程，即可立即打开 Studio 预览。
 
 ---
 

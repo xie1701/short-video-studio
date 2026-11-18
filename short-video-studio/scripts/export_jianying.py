@@ -44,7 +44,7 @@ from common import (
     read_json,
     write_json,
 )
-from render_mp4 import compute_subtitle_place_xy, render_packaging_png, render_subtitle_png
+from render_mp4 import compute_subtitle_place_xy, render_subtitle_png, resolve_packaging_source
 
 
 def sec_to_us(sec: float) -> int:
@@ -193,27 +193,6 @@ def _compose_full_canvas_png(src_png: Path, out_full_png: Path, px: int, py: int
     return hashlib.sha256(out_full_png.read_bytes()).hexdigest()[:16]
 
 
-def _resolve_packaging_source(
-    elem: Dict[str, Any],
-    eid: str,
-    render_final: Path,
-    stage_assets: Path,
-    font_path: Optional[str],
-    cur_style_id: str,
-) -> Optional[Path]:
-    candidates = [
-        render_final / f"{eid}.png",
-        Path(str(elem.get("custom_png", ""))) if elem.get("custom_png") else Path("__none__"),
-        stage_assets / f"{eid}.png",
-    ]
-    src_png = next((c for c in candidates if c.is_file()), None)
-    if src_png is not None:
-        return src_png
-    generated = render_final / f"{eid}.png"
-    render_packaging_png(elem, font_path, generated, default_style_id=cur_style_id)
-    return generated if generated.is_file() else None
-
-
 def _export_alpha_layer_tracks(
     pipeline_dir: Path,
     overlays_dir: Path,
@@ -253,7 +232,7 @@ def _export_alpha_layer_tracks(
         for elem in elems:
             seq_no += 1
             eid = str(elem.get("id", f"elem_{seq_no:03d}"))
-            src_png = _resolve_packaging_source(elem, eid, render_final, stage_assets, font_path, cur_style_id)
+            src_png = resolve_packaging_source(elem, eid, render_final, stage_assets, font_path, cur_style_id)
             if not src_png:
                 continue
             bbox = elem.get("bbox", {})

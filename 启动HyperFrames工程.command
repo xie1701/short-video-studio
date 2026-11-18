@@ -89,16 +89,65 @@ check_environment() {
   return 0
 }
 
+resolve_export_script() {
+  local cand
+  for cand in \
+    "${SCRIPT_DIR}/short-video-studio/scripts/export_hyperframes.py" \
+    "${HOME}/.claude/skills/short-video-studio/scripts/export_hyperframes.py" \
+    "${HOME}/.gemini/config/skills/short-video-studio/scripts/export_hyperframes.py"
+  do
+    if [ -f "${cand}" ]; then
+      printf '%s\n' "${cand}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+resolve_pipeline_to_hf() {
+  local dir="$1"
+  if [ -f "${dir}/hyperframes.json" ] || [ -f "${dir}/index.html" ]; then
+    printf '%s\n' "${dir}"
+    return 0
+  fi
+  local p_dir=""
+  if [ -f "${dir}/04_edl.json" ]; then
+    p_dir="${dir}"
+  elif [ -f "${dir}/pipeline/04_edl.json" ]; then
+    p_dir="${dir}/pipeline"
+  fi
+  if [ -n "${p_dir}" ]; then
+    local hf_dir="${p_dir}/hyperframes_draft"
+    if [ ! -f "${hf_dir}/index.html" ]; then
+      local exp_script py_bin
+      exp_script="$(resolve_export_script || true)"
+      py_bin="$(resolve_python_bin || true)"
+      if [ -n "${exp_script}" ] && [ -n "${py_bin}" ]; then
+        echo ">>> 检测到剪辑流水线目录，正在自动生成可编辑 HyperFrames 工程..." >&2
+        "${py_bin}" "${exp_script}" --pipeline-dir "${p_dir}" >&2 || return 1
+      fi
+    fi
+    if [ -f "${hf_dir}/index.html" ]; then
+      printf '%s\n' "${hf_dir}"
+      return 0
+    fi
+  fi
+  printf '%s\n' "${dir}"
+  return 0
+}
+
 launch_preview() {
-  local proj_dir="$1"
+  local raw_dir="$1"
   shift || true
-  if [ ! -d "${proj_dir}" ]; then
-    echo "[ERROR] 目录不存在: ${proj_dir}"
+  if [ ! -d "${raw_dir}" ]; then
+    echo "[ERROR] 目录不存在: ${raw_dir}"
     return 1
   fi
+  local proj_dir
+  proj_dir="$(resolve_pipeline_to_hf "${raw_dir}")" || return 1
   if [ ! -f "${proj_dir}/hyperframes.json" ] && [ ! -f "${proj_dir}/index.html" ]; then
-    echo "[ERROR] 该目录中未找到 hyperframes.json 或 index.html："
-    echo "        ${proj_dir}"
+    echo "[ERROR] 该目录中未找到 hyperframes.json、index.html 或流水线 04_edl.json："
+    echo "        ${raw_dir}"
     return 1
   fi
 

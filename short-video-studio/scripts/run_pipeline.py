@@ -19,6 +19,7 @@ from common import ASSETS_DIR, maybe_reexec_in_venv, read_json
 
 maybe_reexec_in_venv()
 
+from export_hyperframes import export_hyperframes_draft
 from export_jianying import export_jianying_draft
 from generate_code_broll import generate_demo_media_pack
 from qa_inspector import inspect_video
@@ -43,6 +44,7 @@ def write_decisions_made(pipeline_dir: Path, track: str) -> Path:
     col = read_json(pipeline_dir / "07_color_plan.json")
     mix = read_json(pipeline_dir / "08_mix_metrics.json")
     jy = read_json(pipeline_dir / "jianying_export_status.json") if (pipeline_dir / "jianying_export_status.json").exists() else {}
+    hf = read_json(pipeline_dir / "hyperframes_export_status.json") if (pipeline_dir / "hyperframes_export_status.json").exists() else {}
 
     lines = [
         "# 我替你做的决定（默认配置与一句话修改指南）",
@@ -59,7 +61,7 @@ def write_decisions_made(pipeline_dir: Path, track: str) -> Path:
         f"| **包装密度预算** | 音效 {pkg['budget']['used_sfx_cues']}/{pkg['budget']['max_sfx_cues']} 个，花字贴纸 {pkg['budget']['used_visual_elements']}/{pkg['budget']['max_visual_elements']} 个（均在安全区±0帧对齐） | “把花字贴纸再精简一点” |",
         f"| **调色 LUT** | 自动白平衡曝光基础校色 + `{col['lut_name']}` | “调色换成清透自然 / 高反差 LUT” |",
         f"| **混音响度** | 人声降噪 + BGM 自动闪避，成品响度 `{mix['measured_lufs']:.2f} LUFS` | “BGM 音量再小一点 / 大一点” |",
-        f"| **出片与草稿** | 高清成片 `output_final.mp4` + 剪映草稿 `{jy.get('status', 'unknown')}` | “导出剪映草稿供我微调” |",
+        f"| **出片与可编辑工程** | 高清成片 `output_final.mp4` + 剪映草稿 `{jy.get('status', 'unknown')}` + HyperFrames 工程 `{hf.get('status', 'unknown')}` | “导出/修改剪映或 HyperFrames 工程” |",
         "",
     ]
     out_md = pipeline_dir / "decisions_made.md"
@@ -91,6 +93,7 @@ def run_visual_to_delivery(
 
     final_mp4 = render_mp4(pipeline_dir, preview=False)
     jy_status = export_jianying_draft(pipeline_dir, simulate_failure=simulate_jy_fail)
+    hf_status = export_hyperframes_draft(pipeline_dir, simulate_failure=simulate_jy_fail)
     qa_report = inspect_video(pipeline_dir, video_path=final_mp4, benchmark_path=benchmark)
     decisions_md = write_decisions_made(pipeline_dir, track)
 
@@ -98,6 +101,7 @@ def run_visual_to_delivery(
         "preview_mp4": str(preview_mp4),
         "final_mp4": str(final_mp4),
         "jianying": jy_status,
+        "hyperframes": hf_status,
         "qa_report": qa_report,
         "decisions_made_md": str(decisions_md),
     }

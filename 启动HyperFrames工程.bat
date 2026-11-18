@@ -104,8 +104,24 @@ if not exist "%TARGET%" (
   pause
   exit /b 1
 )
+set "P_DIR="
 if not exist "%TARGET%\hyperframes.json" if not exist "%TARGET%\index.html" (
-  echo [ERROR] 目录内缺少 hyperframes.json 或 index.html: %TARGET%
+  if exist "%TARGET%\04_edl.json" set "P_DIR=%TARGET%"
+  if exist "%TARGET%\pipeline\04_edl.json" set "P_DIR=%TARGET%\pipeline"
+)
+if not "%P_DIR%"=="" (
+  if not exist "%P_DIR%\hyperframes_draft\index.html" (
+    set "EXP_PY=%SCRIPT_DIR%\short-video-studio\scripts\export_hyperframes.py"
+    if not exist "!EXP_PY!" set "EXP_PY=%USERPROFILE%\.claude\skills\short-video-studio\scripts\export_hyperframes.py"
+    if exist "!EXP_PY!" (
+      echo ^>^>^> 检测到剪辑流水线目录，正在自动生成 HyperFrames 工程...
+      python "!EXP_PY!" --pipeline-dir "%P_DIR%"
+    )
+  )
+  if exist "%P_DIR%\hyperframes_draft\index.html" set "TARGET=%P_DIR%\hyperframes_draft"
+)
+if not exist "%TARGET%\hyperframes.json" if not exist "%TARGET%\index.html" (
+  echo [ERROR] 目录内缺少 hyperframes.json、index.html 或流水线 04_edl.json: %TARGET%
   pause
   exit /b 1
 )

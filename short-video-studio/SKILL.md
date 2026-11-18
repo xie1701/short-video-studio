@@ -91,7 +91,7 @@ python3 scripts/run_pipeline.py --project-dir <项目目录> --track <store|crea
 9. `step9_title_cover.py`：生成高点击标题与高信息密度封面帧 `09_cover.jpg`（严禁出现任何“STYLE/风格/Notion/模板”等内部开发字眼）。
 
 ### 出片与自动质检门槛
-- **出片**：默认本地自动渲染 `output_final.mp4`（分屏画布支持 `frame_canvas.crop_y_frac` 精细控制人像/道具裁剪高度），并调用 `export_jianying.py` 独立导出兼容剪映 6.0~11.7+ 原生导入协议的全风格工程包（`<project>.fcpxml` 多轨工程直接内嵌主分镜、上层 `alpha_layers/*.mov` 透明画框/卡片/花字与双色安全区字幕轨、以及三轨独立 WAV；另附 `<project>.srt`/`.ass` 文字替换备选、`overlays/` PNG 与 `.cube` LUT，导出失败仍自动降级仅出 MP4 并明确提示）。
+- **出片**：默认本地自动渲染 `output_final.mp4`（分屏画布支持 `frame_canvas.crop_y_frac` 精细控制人像/道具裁剪高度），并**并行自动导出两套可编辑工程**：① `export_jianying.py` 产出剪映 6.0~11.7+ 原生导入包（`jianying_draft/`：`<project>.fcpxml` + `alpha_layers/*.mov` 透明画框/卡片/花字/双色字幕 + 三轨独立 WAV + `.srt`/`.ass` + `.cube` LUT）；② `export_hyperframes.py` 产出模块化 HyperFrames Studio 工程（`hyperframes_draft/`：分镜 `video_track` + 包装 `stage_*/flower` 透明轨 + 原生 HTML/CSS `@font-face` 双色可编辑字幕轨 + 三轨 WAV + 内置双击 `启动HyperFrames工程.command`/`.bat`，导出失败均自动降级保底 MP4 并明确提示）。
 - **11 项自动质检 (`qa_inspector.py`)**：必须全部通过才可交付（1 综合响度、2 黑帧、3 >0.8s 静音、4 音画同步 ≤1 帧、5 字幕偏差、6 切点对齐音频事件、7 UI 遮挡区/代码卡互斥、8 镜头分布/0 倒带/A-roll 占比、9 前 3 秒 ≥2 切、10 A-Roll 句界严锁与口型同步、11 零开发词与风格名称露馅审计）；提供对标视频时必出逐秒对比表 `10_benchmark_comparison.md`。
 - **多模态双审终验铁律（机器盲区必查）**：跑完 `11/11` 自动 QA 后，仍须执行两项实测抽检：
   1. **人声纯度抽听**：用多模态能力直读多切片跨 Cut 边界（±0.5s 拼接缝）音轨，确认 **100% 仅剩主讲人原声**；严禁气口吸附越过外部低谷把摄影师/导演画外提词（「OK」「对」「中间」「再讲一次」等）或句首残响吸入成片。

@@ -18,7 +18,7 @@
 | Step 7 | `07_color_plan.json` | 基础白平衡/曝光参数 + 3D `.cube` LUT 配置 |
 | Step 8 | `08_mixed_master.wav` + `08_mix_metrics.json` | 降噪 + BGM 自动闪避 + `-14.0 LUFS` 母带混音 |
 | Step 9 | `09_title_cover.md` + `09_cover.jpg` | 标题、话题标签、封面文案与高密度封面图 |
-| 出片 | `output_preview.mp4` / `output_final.mp4` / `jianying_draft/` | 本地 MP4 渲染与可选剪映草稿（失效自动降级） |
+| 出片 | `output_preview.mp4` / `output_final.mp4` / `jianying_draft/` / `hyperframes_draft/` | 本地 MP4 渲染 + 剪映导入草稿 + 双击即开的 HyperFrames 工程（均带失效降级） |
 | 质检 | `10_qa_report.json` + `10_qa_report.md` (+ `10_benchmark_comparison.md`) | 11 项自动质检（全部 PASS 且通过多模态声画实审才交付）+ 对标逐秒结构对比 |
 
 ---
@@ -166,3 +166,11 @@
   - `jianying_draft/<project>.srt`（及 `.ass`，作为改错别字或自定义字体时的纯文本字幕备选）
   - `jianying_draft/overlays/`（1080×1920 透明全画幅 PNG 底图备份）与 `*.cube` 3D LUT，附 `README_剪映导入指南.txt` 及 `legacy_v5_json/` 归档元数据
 - **容错降级原则**：任何格式转换异常或目标路径不可写时，捕获异常并将 `status` 设为 `"degraded_to_mp4_only"`，明确提示用户“剪映工程导出失败已自动降级为仅输出 MP4，不影响成片交付”。
+
+---
+
+## 3. HyperFrames Studio 可编辑工程封装说明 (`export_hyperframes.py`)
+- `run_pipeline.py` 每次完成剪辑包装后，同步生成模块化 `pipeline/hyperframes_draft/`（并通过 `os.link` 同卷硬链接零拷贝复用分镜、三轨 WAV、透明贴图与商用字体到 `media/`）：
+  - `index.html` + `hyperframes.json`：根编排文件（声明画幅、帧率、三轨 `<audio>` 与子组合插槽）
+  - `compositions/video_track.html`（`video`）、`stage_win_track.html` / `stage_card_track.html` / `flower_track.html`（`graphics`）及 `captions_track.html`（`captions`：原生 HTML/CSS `@font-face` 双色可编辑字幕）
+  - `启动HyperFrames工程.command`（`0o755` macOS 双击启动器）与 `启动HyperFrames工程.bat`（Windows 双击启动器），双击直开 `hyperframes preview`。

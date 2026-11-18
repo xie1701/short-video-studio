@@ -13,14 +13,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from common import ASSETS_DIR, SKILL_ROOT, maybe_reexec_in_venv, read_json, write_json
+from common import ASSETS_DIR, maybe_reexec_in_venv, read_json, write_json
+from export_hyperframes import attach_hyperframes_launchers
 
 maybe_reexec_in_venv()
 
@@ -257,30 +257,6 @@ def export_remotion_props(
     return out_json
 
 
-def _attach_hyperframes_launchers(out_dir: Path) -> None:
-    """将双击启动脚本写入导出的 HyperFrames 工程目录，开箱即双击预览。"""
-    repo_root = SKILL_ROOT.parent
-    cmd_name = "启动HyperFrames工程.command"
-    bat_name = "启动HyperFrames工程.bat"
-
-    src_cmd = repo_root / cmd_name
-    dst_cmd = out_dir / cmd_name
-    if src_cmd.is_file():
-        shutil.copy2(src_cmd, dst_cmd)
-    else:
-        dst_cmd.write_text(
-            "#!/usr/bin/env bash\n"
-            'export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"\n'
-            'cd "$(dirname "$0")" && npx --yes hyperframes preview\n',
-            encoding="utf-8",
-        )
-    os.chmod(dst_cmd, 0o755)
-
-    src_bat = repo_root / bat_name
-    if src_bat.is_file():
-        shutil.copy2(src_bat, out_dir / bat_name)
-
-
 def export_hyperframes_html(
     lib: Dict[str, Any],
     style_id: str,
@@ -327,7 +303,7 @@ def export_hyperframes_html(
             "$schema": "https://hyperframes.heygen.com/schema/hyperframes.json",
             "media": {"autoProxy": True},
         })
-    _attach_hyperframes_launchers(out_target)
+    attach_hyperframes_launchers(out_target)
     print(
         f"[apply-style] 已导出可双击启动的 HyperFrames 工程 ({style_id}, {w}x{h}@{fps}fps) -> {out_target} "
         f"（直接双击 启动HyperFrames工程.command 即可打开 Studio）"
