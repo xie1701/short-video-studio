@@ -1,51 +1,48 @@
 #!/usr/bin/env python3
 """
-生成 100% 原创 CC0 可商用的内置资产：
+生成 100% 原创 CC0 可商用的内置资产（NumPy 向量化高速版本）：
 1. BGM (.wav + 节拍元数据 .json): upbeat_store_120bpm, chill_story_100bpm
 2. SFX (.wav): whoosh, ding, pop, bass_drop, shutter
 3. 3D LUTs (.cube): warm_store, clean_creator, high_contrast
-4. 矢量贴纸 (.svg): arrow_highlight, badge_must_see, check_mark, warning_tag
-仅使用 Python 标准库，确保零外部依赖即可初始化。
 """
 
 from __future__ import annotations
 
-import math
-import random
-import struct
 import wave
 from pathlib import Path
-from typing import Callable, List
+from typing import Callable, List, Tuple
 
-from common import ASSETS_DIR, write_json
+from common import ASSETS_DIR, maybe_reexec_in_venv, write_cube_lut, write_json
+
+maybe_reexec_in_venv()
+
+import numpy as np
 
 SAMPLE_RATE = 48000
 
 
-def write_stereo_wav(path: Path, samples_l: List[float], samples_r: List[float], sr: int = SAMPLE_RATE) -> None:
-    """将归一化 [-1.0, 1.0] 双声道浮点采样写入 16-bit PCM WAV。"""
+def write_stereo_wav(path: Path, samples_l: np.ndarray, samples_r: np.ndarray, sr: int = SAMPLE_RATE) -> None:
+    """将双声道浮点采样向量化归一化并写入 16-bit PCM WAV。"""
     path.parent.mkdir(parents=True, exist_ok=True)
-    peak = max(1e-6, max(max(abs(x) for x in samples_l), max(abs(x) for x in samples_r)))
+    l_arr = np.asarray(samples_l, dtype=np.float32)
+    r_arr = np.asarray(samples_r, dtype=np.float32)
+    peak = max(1e-6, float(np.max(np.abs(l_arr))), float(np.max(np.abs(r_arr))))
     scale = 0.92 / max(1.0, peak)
-    frames = bytearray()
-    for l_val, r_val in zip(samples_l, samples_r):
-        li = max(-32767, min(32767, int(l_val * scale * 32767.0)))
-        ri = max(-32767, min(32767, int(r_val * scale * 32767.0)))
-        frames += struct.pack("<hh", li, ri)
+    inter = np.empty((len(l_arr), 2), dtype=np.int16)
+    inter[:, 0] = np.clip(np.round(l_arr * scale * 32767.0), -32767, 32767).astype(np.int16)
+    inter[:, 1] = np.clip(np.round(r_arr * scale * 32767.0), -32767, 32767).astype(np.int16)
     with wave.open(str(path), "wb") as wf:
         wf.setnchannels(2)
         wf.setsampwidth(2)
         wf.setframerate(sr)
-        wf.writeframes(bytes(frames))
+        wf.writeframes(inter.tobytes())
 
 
 def generate_bgm(name: str, bpm: float, duration_sec: float, chord_freqs: List[List[float]]) -> None:
-    """程序化合成节拍清晰、听感温暖的免版税 CC0 背景音乐。"""
+    """向量化合成节拍清晰、听感温暖的免版税 CC0 背景音乐。"""
     total_samples = int(duration_sec * SAMPLE_RATE)
     beat_sec = 60.0 / bpm
-    samples_l = [0.0] * total_samples
-    samples_r = [0.0] * total_samples
-    rng = random.Random(42)
+    rng = np.random.default_rng(42)
 
     beat_times: List[float] = []
     downbeat_times: List[float] = []
@@ -58,70 +55,56 @@ def generate_bgm(name: str, bpm: float, duration_sec: float, chord_freqs: List[L
         t += beat_sec
         beat_idx += 1
 
-    # 1. 温暖和弦铺底（每 4 拍换一次和弦，加入轻微立体声声场偏移）
+    ts = np.arange(total_samples, dtype=np.float64) / SAMPLE_RATE
     bar_sec = beat_sec * 4.0
-    for i in range(total_samples):
-        ts = i / SAMPLE_RATE
-        bar_idx = int(ts // bar_sec) % len(chord_freqs)
-        bar_local = (ts % bar_sec) / bar_sec
-        # 柔和呼吸感包络
-        pad_env = 0.28 + 0.12 * math.sin(math.pi * bar_local)
-        chord = chord_freqs[bar_idx]
-        val_l = 0.0
-        val_r = 0.0
-        for idx, freq in enumerate(chord):
-            phase = 2.0 * math.pi * freq * ts
-            tone = math.sin(phase) * 0.7 + math.sin(phase * 2.0) * 0.15
-            pan = 0.5 + 0.25 * ((-1) ** idx)
-            val_l += tone * (1.0 - pan * 0.3)
-            val_r += tone * (0.7 + pan * 0.3)
-        # 首尾 0.05s 微淡入淡出避免爆音
-        edge_env = min(1.0, ts / 0.05, max(0.0, (duration_sec - ts) / 0.15))
-        samples_l[i] = (val_l / len(chord)) * pad_env * 0.45 * edge_env
-        samples_r[i] = (val_r / len(chord)) * pad_env * 0.45 * edge_env
+    bar_idx = (ts // bar_sec).astype(np.int32) % len(chord_freqs)
+    bar_local = (ts % bar_sec) / bar_sec
+    pad_env = 0.28 + 0.12 * np.sin(np.pi * bar_local)
+    edge_env = np.minimum(1.0, np.minimum(ts / 0.05, np.maximum(0.0, (duration_sec - ts) / 0.15)))
 
-    # 2. 叠加清晰节拍瞬态（强拍底鼓 + 次拍轻军鼓/踩镲），方便节拍检测器精准捕捉
+    samples_l = np.zeros(total_samples, dtype=np.float64)
+    samples_r = np.zeros(total_samples, dtype=np.float64)
+    for b_i, chord in enumerate(chord_freqs):
+        mask = bar_idx == b_i
+        if not np.any(mask):
+            continue
+        ts_m = ts[mask]
+        vl = np.zeros_like(ts_m)
+        vr = np.zeros_like(ts_m)
+        for idx, freq in enumerate(chord):
+            phase = 2.0 * np.pi * freq * ts_m
+            tone = np.sin(phase) * 0.7 + np.sin(phase * 2.0) * 0.15
+            pan = 0.5 + 0.25 * ((-1) ** idx)
+            vl += tone * (1.0 - pan * 0.3)
+            vr += tone * (0.7 + pan * 0.3)
+        gain = (pad_env[mask] * 0.45 * edge_env[mask]) / max(1, len(chord))
+        samples_l[mask] = vl * gain
+        samples_r[mask] = vr * gain
+
     for b_idx, bt in enumerate(beat_times):
         start_s = int(bt * SAMPLE_RATE)
-        is_down = (b_idx % 4 == 0)
-        is_snare = (b_idx % 4 == 2)
-        if is_down:
-            # 强拍 Kick（55Hz->120Hz 俯冲 + 清晰点击音头）
-            kick_len = int(0.18 * SAMPLE_RATE)
-            for j in range(kick_len):
-                pos = start_s + j
-                if pos >= total_samples:
-                    break
-                dt = j / SAMPLE_RATE
-                freq = 52.0 + 95.0 * math.exp(-dt * 28.0)
-                env = math.exp(-dt * 18.0)
-                kick = math.sin(2.0 * math.pi * freq * dt) * env * 0.65
-                samples_l[pos] += kick
-                samples_r[pos] += kick
-        elif is_snare:
-            # 轻拍 Clack/Snare
-            snare_len = int(0.10 * SAMPLE_RATE)
-            for j in range(snare_len):
-                pos = start_s + j
-                if pos >= total_samples:
-                    break
-                dt = j / SAMPLE_RATE
-                env = math.exp(-dt * 35.0)
-                noise = (rng.random() * 2.0 - 1.0) * 0.28 + math.sin(2.0 * math.pi * 190.0 * dt) * 0.22
-                samples_l[pos] += noise * env
-                samples_r[pos] += noise * env
+        if b_idx % 4 == 0:
+            kick_len = min(int(0.18 * SAMPLE_RATE), total_samples - start_s)
+            if kick_len > 0:
+                dt = np.arange(kick_len, dtype=np.float64) / SAMPLE_RATE
+                freq = 52.0 + 95.0 * np.exp(-dt * 28.0)
+                kick = np.sin(2.0 * np.pi * freq * dt) * np.exp(-dt * 18.0) * 0.65
+                samples_l[start_s : start_s + kick_len] += kick
+                samples_r[start_s : start_s + kick_len] += kick
+        elif b_idx % 4 == 2:
+            snare_len = min(int(0.10 * SAMPLE_RATE), total_samples - start_s)
+            if snare_len > 0:
+                dt = np.arange(snare_len, dtype=np.float64) / SAMPLE_RATE
+                noise = (rng.uniform(-1.0, 1.0, snare_len) * 0.28 + np.sin(2.0 * np.pi * 190.0 * dt) * 0.22) * np.exp(-dt * 35.0)
+                samples_l[start_s : start_s + snare_len] += noise
+                samples_r[start_s : start_s + snare_len] += noise
         else:
-            # 轻踩镲 Hi-hat
-            hat_len = int(0.05 * SAMPLE_RATE)
-            for j in range(hat_len):
-                pos = start_s + j
-                if pos >= total_samples:
-                    break
-                dt = j / SAMPLE_RATE
-                env = math.exp(-dt * 75.0)
-                hat = (rng.random() * 2.0 - 1.0) * 0.16 * env
-                samples_l[pos] += hat * 0.9
-                samples_r[pos] += hat * 1.1
+            hat_len = min(int(0.05 * SAMPLE_RATE), total_samples - start_s)
+            if hat_len > 0:
+                dt = np.arange(hat_len, dtype=np.float64) / SAMPLE_RATE
+                hat = rng.uniform(-1.0, 1.0, hat_len) * 0.16 * np.exp(-dt * 75.0)
+                samples_l[start_s : start_s + hat_len] += hat * 0.9
+                samples_r[start_s : start_s + hat_len] += hat * 1.1
 
     wav_path = ASSETS_DIR / "bgm" / f"{name}.wav"
     meta_path = ASSETS_DIR / "bgm" / f"{name}.json"
@@ -137,157 +120,77 @@ def generate_bgm(name: str, bpm: float, duration_sec: float, chord_freqs: List[L
 
 
 def generate_sfx_all() -> None:
-    """合成 5 种常用短视频包装音效。"""
-    rng = random.Random(101)
+    """合成 5 种通用 CC0 基础兜底音效（主流程优先使用 vibe_sound 真实物理材质 CC0 SFX）。"""
+    rng = np.random.default_rng(101)
 
-    def build_sfx(filename: str, dur: float, fn: Callable[[float, int], float]) -> None:
-        n = int(dur * SAMPLE_RATE)
-        l_ch = [0.0] * n
-        r_ch = [0.0] * n
-        for i in range(n):
-            v = fn(i / SAMPLE_RATE, i)
-            l_ch[i] = v
-            r_ch[i] = v
-        write_stereo_wav(ASSETS_DIR / "sfx" / filename, l_ch, r_ch)
+    # 1. whoosh.wav
+    n_w = int(0.35 * SAMPLE_RATE)
+    t_w = np.arange(n_w, dtype=np.float64) / SAMPLE_RATE
+    env_w = np.sin(np.pi * np.minimum(1.0, t_w / 0.35)) ** 1.5
+    raw_w = rng.uniform(-1.0, 1.0, n_w)
+    from scipy.signal import lfilter
+    b_coef = np.array([0.22], dtype=np.float64)
+    a_coef = np.array([1.0, -0.78], dtype=np.float64)
+    w_sig = lfilter(b_coef, a_coef, raw_w) * env_w * 0.85
+    write_stereo_wav(ASSETS_DIR / "sfx" / "whoosh.wav", w_sig, w_sig)
 
-    # 1. whoosh.wav: 滤波风声转场
-    prev = [0.0]
-    def sfx_whoosh(t: float, _: int) -> float:
-        env = math.sin(math.pi * min(1.0, t / 0.35)) ** 1.5
-        raw = rng.random() * 2.0 - 1.0
-        alpha = 0.08 + 0.35 * math.sin(math.pi * min(1.0, t / 0.35))
-        prev[0] = prev[0] * (1.0 - alpha) + raw * alpha
-        return prev[0] * env * 0.85
+    # 2. ding.wav
+    n_d = int(0.55 * SAMPLE_RATE)
+    t_d = np.arange(n_d, dtype=np.float64) / SAMPLE_RATE
+    d_sig = (np.sin(2 * np.pi * 1046.5 * t_d) * 0.65 + np.sin(2 * np.pi * 2093.0 * t_d) * 0.3) * np.exp(-t_d * 7.5) * np.minimum(1.0, t_d / 0.005)
+    write_stereo_wav(ASSETS_DIR / "sfx" / "ding.wav", d_sig, d_sig)
 
-    build_sfx("whoosh.wav", 0.35, sfx_whoosh)
+    # 3. pop.wav
+    n_p = int(0.16 * SAMPLE_RATE)
+    t_p = np.arange(n_p, dtype=np.float64) / SAMPLE_RATE
+    p_sig = np.sin(2 * np.pi * (320.0 + 980.0 * (t_p / 0.16)) * t_p) * np.exp(-t_p * 22.0) * np.minimum(1.0, t_p / 0.004)
+    write_stereo_wav(ASSETS_DIR / "sfx" / "pop.wav", p_sig, p_sig)
 
-    # 2. ding.wav: 清脆提示音（1046Hz C6 + 泛音）
-    build_sfx(
-        "ding.wav",
-        0.55,
-        lambda t, _: (math.sin(2 * math.pi * 1046.5 * t) * 0.65 + math.sin(2 * math.pi * 2093.0 * t) * 0.3)
-        * math.exp(-t * 7.5)
-        * min(1.0, t / 0.005),
-    )
+    # 4. bass_drop.wav
+    n_b = int(0.65 * SAMPLE_RATE)
+    t_b = np.arange(n_b, dtype=np.float64) / SAMPLE_RATE
+    b_sig = np.sin(2 * np.pi * (110.0 * np.exp(-t_b * 3.2) + 38.0) * t_b) * np.exp(-t_b * 4.5) * np.minimum(1.0, t_b / 0.006)
+    write_stereo_wav(ASSETS_DIR / "sfx" / "bass_drop.wav", b_sig, b_sig)
 
-    # 3. pop.wav: 气泡弹窗音（频率上挑）
-    build_sfx(
-        "pop.wav",
-        0.16,
-        lambda t, _: math.sin(2 * math.pi * (320.0 + 980.0 * (t / 0.16)) * t)
-        * math.exp(-t * 22.0)
-        * min(1.0, t / 0.004),
-    )
-
-    # 4. bass_drop.wav: 低频重音冲击
-    build_sfx(
-        "bass_drop.wav",
-        0.65,
-        lambda t, _: math.sin(2 * math.pi * (110.0 * math.exp(-t * 3.2) + 38.0) * t)
-        * math.exp(-t * 4.5)
-        * min(1.0, t / 0.006),
-    )
-
-    # 5. shutter.wav: 快门定格音
-    build_sfx(
-        "shutter.wav",
-        0.12,
-        lambda t, _: ((rng.random() * 2.0 - 1.0) * 0.55 + math.sin(2 * math.pi * 1600.0 * t) * 0.35)
-        * math.exp(-t * 40.0),
-    )
-
-
-def write_cube_lut(path: Path, title: str, transform_fn: Callable[[float, float, float], tuple[float, float, float]]) -> None:
-    """生成标准 17x17x17 3D .cube LUT 文件。"""
-    size = 17
-    lines = [f'TITLE "{title}"', f"LUT_3D_SIZE {size}", "DOMAIN_MIN 0.0 0.0 0.0", "DOMAIN_MAX 1.0 1.0 1.0"]
-    for b in range(size):
-        fb = b / (size - 1)
-        for g in range(size):
-            fg = g / (size - 1)
-            for r in range(size):
-                fr = r / (size - 1)
-                nr, ng, nb = transform_fn(fr, fg, fb)
-                nr = max(0.0, min(1.0, nr))
-                ng = max(0.0, min(1.0, ng))
-                nb = max(0.0, min(1.0, nb))
-                lines.append(f"{nr:.6f} {ng:.6f} {nb:.6f}")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # 5. shutter.wav
+    n_s = int(0.12 * SAMPLE_RATE)
+    t_s = np.arange(n_s, dtype=np.float64) / SAMPLE_RATE
+    s_sig = (rng.uniform(-1.0, 1.0, n_s) * 0.55 + np.sin(2 * np.pi * 1600.0 * t_s) * 0.35) * np.exp(-t_s * 40.0)
+    write_stereo_wav(ASSETS_DIR / "sfx" / "shutter.wav", s_sig, s_sig)
 
 
 def generate_luts_all() -> None:
-    """生成 3 套内置风格 LUT。"""
-    def clamp_s_curve(v: float, contrast: float = 1.08) -> float:
-        return 0.5 + (v - 0.5) * contrast
+    """使用向量化与共享 common.write_cube_lut 生成 3 套基础通用 3D LUT。"""
+    size = 17
+    grid = np.linspace(0.0, 1.0, size, dtype=np.float32)
+    bb, gg, rr = np.meshgrid(grid, grid, grid, indexing="ij")
+    r, g, b = rr.reshape(-1), gg.reshape(-1), bb.reshape(-1)
 
-    # 1. 门店暖调提亮：红黄微暖、阴影提亮、高光不溢出
+    def s_curve(v: np.ndarray, c: float) -> np.ndarray:
+        return 0.5 + (v - 0.5) * c
+
     write_cube_lut(
         ASSETS_DIR / "luts" / "warm_store.cube",
+        np.stack([s_curve(r * 1.05 + 0.02, 1.06), s_curve(g * 1.02 + 0.01, 1.05), s_curve(b * 0.94, 1.04)], axis=-1),
+        size,
         "Warm Store",
-        lambda r, g, b: (
-            clamp_s_curve(r * 1.05 + 0.02, 1.06),
-            clamp_s_curve(g * 1.02 + 0.01, 1.05),
-            clamp_s_curve(b * 0.94, 1.04),
-        ),
     )
-    # 2. 博主清透自然：干净白平衡、轻对比、轻微冷青高光
     write_cube_lut(
         ASSETS_DIR / "luts" / "clean_creator.cube",
+        np.stack([s_curve(r * 1.01, 1.07), s_curve(g * 1.02 + 0.005, 1.07), s_curve(b * 1.04 + 0.01, 1.07)], axis=-1),
+        size,
         "Clean Creator",
-        lambda r, g, b: (
-            clamp_s_curve(r * 1.01, 1.07),
-            clamp_s_curve(g * 1.02 + 0.005, 1.07),
-            clamp_s_curve(b * 1.04 + 0.01, 1.07),
-        ),
     )
-    # 3. 高反差纪实：强对比度、电影暗部压实
     write_cube_lut(
         ASSETS_DIR / "luts" / "high_contrast.cube",
+        np.stack([s_curve(r, 1.18), s_curve(g, 1.18), s_curve(b * 0.98, 1.18)], axis=-1),
+        size,
         "High Contrast",
-        lambda r, g, b: (
-            clamp_s_curve(r, 1.18),
-            clamp_s_curve(g, 1.18),
-            clamp_s_curve(b * 0.98, 1.18),
-        ),
     )
-
-
-def generate_stickers_all() -> None:
-    """生成 4 个原创可商用 SVG 贴纸。"""
-    stickers = {
-        "arrow_highlight.svg": (
-            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 120">'
-            '<path d="M15 60 L155 60 L125 25 L145 15 L205 60 L145 105 L125 95 L155 60" '
-            'fill="#FFD54F" stroke="#111111" stroke-width="6" stroke-linejoin="round"/></svg>'
-        ),
-        "badge_must_see.svg": (
-            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 260 90">'
-            '<rect x="6" y="6" width="248" height="78" rx="18" fill="#FF3B30" stroke="#FFFFFF" stroke-width="5"/>'
-            '<text x="130" y="58" text-anchor="middle" fill="#FFFFFF" font-size="38" font-weight="bold" '
-            'font-family="sans-serif">重点必看</text></svg>'
-        ),
-        "check_mark.svg": (
-            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">'
-            '<circle cx="60" cy="60" r="52" fill="#22C55E" stroke="#FFFFFF" stroke-width="6"/>'
-            '<path d="M34 62 L53 80 L88 40" fill="none" stroke="#FFFFFF" stroke-width="11" '
-            'stroke-linecap="round" stroke-linejoin="round"/></svg>'
-        ),
-        "warning_tag.svg": (
-            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 120">'
-            '<polygon points="70,10 130,110 10,110" fill="#F59E0B" stroke="#111111" stroke-width="6" stroke-linejoin="round"/>'
-            '<text x="70" y="96" text-anchor="middle" fill="#111111" font-size="60" font-weight="bold">!</text></svg>'
-        ),
-    }
-    s_dir = ASSETS_DIR / "stickers"
-    s_dir.mkdir(parents=True, exist_ok=True)
-    for name, content in stickers.items():
-        (s_dir / name).write_text(content, encoding="utf-8")
 
 
 def main() -> None:
-    print("[assets] 正在生成内置 CC0 可商用 BGM...")
-    # C大调进行 C - G - Am - F
+    print("[assets] 正在向量化生成内置 CC0 可商用 BGM...")
     generate_bgm(
         "upbeat_store_120bpm",
         bpm=120.0,
@@ -299,7 +202,6 @@ def main() -> None:
             [174.61, 220.00, 261.63],
         ],
     )
-    # 温暖叙事 Fmaj7 - Em7 - Dm7 - Cmaj7
     generate_bgm(
         "chill_story_100bpm",
         bpm=100.0,
@@ -311,12 +213,10 @@ def main() -> None:
             [130.81, 164.81, 196.00, 246.94],
         ],
     )
-    print("[assets] 正在生成内置 CC0 音效 SFX...")
+    print("[assets] 正在生成内置 CC0 基础音效 SFX...")
     generate_sfx_all()
-    print("[assets] 正在生成内置 3D LUTs...")
+    print("[assets] 正在生成内置通用 3D LUTs...")
     generate_luts_all()
-    print("[assets] 正在生成内置 SVG 贴纸...")
-    generate_stickers_all()
     print("[assets] 所有内置资产已就绪。")
 
 

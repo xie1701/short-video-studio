@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
 [Vibe Sound CC0 声学资产集成与清洗工具]
-基于 vibe-motion/sound (https://github.com/vibe-motion/sound) 规范集成 Freesound CC0 检索与下载，
-并对下载的原始声学样本执行静音裁切、瞬态对准、尾部平滑淡出与 LUFS/Peak 归一化清洗，
-为《风格谱》各流派提供高质感、不抢人声的商业级真实声学 SFX 与差异化 BGM 底乐。
+基于 vibe-motion/sound 规范集成 Freesound CC0 检索与清洗，
+全面使用基于 ASSETS_DIR 的相对路径（跨机零失效），并按六大流派母版覆盖全部 20 套风格。
 """
 
 from __future__ import annotations
@@ -13,15 +12,21 @@ import html
 import json
 import re
 import subprocess
-import sys
 import time
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
-from common import ASSETS_DIR, find_bin, maybe_reexec_in_venv, write_json
+from common import (
+    ASSETS_DIR,
+    find_bin,
+    get_wav_duration_sec,
+    load_style_spectrum_entry,
+    maybe_reexec_in_venv,
+    write_json,
+)
 
 UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) short-video-studio-vibe-sound"}
 CACHE_DIR = Path.home() / ".cache" / "sfx-sources"
@@ -41,8 +46,16 @@ FS_SORT = {
     "short": "Duration (shortest first)",
 }
 
-# 7 套展示与通用流派对应的 CC0 真实声源蓝图（全数经 Freesound CC0 人工筛选：高评分+真录音+无版权风险）
-# 每个流派均配置：1首差异化 BGM（含有效循环窗口），以及 2~3 种柔和真实物理材质 SFX（严格区分音色手感）
+# 六大流派母版到 7 套内置 CC0 真实物理音库的兜底映射，覆盖全库 style_01 ~ style_20
+ARCHETYPE_TO_VIBE_STYLE: Dict[str, str] = {
+    "arch_01_tech_ui_console": "style_15",
+    "arch_02_high_contrast_story": "style_03",
+    "arch_03_editorial_matte_depth": "style_12",
+    "arch_04_punch_talking_head": "style_14",
+    "arch_05_cinema_slow_space": "style_06",
+    "arch_06_paper_stopmotion": "style_05",
+}
+
 STYLE_SOUND_MAP: Dict[str, Dict[str, Any]] = {
     "style_14": {
         "bgm": {"src": "fs_680113_Pop-Guitar-Loop-Thing.mp3", "start": 0.60, "end": 65.50, "bpm": 120.0},
@@ -132,6 +145,39 @@ STYLE_SOUND_MAP: Dict[str, Dict[str, Any]] = {
 }
 
 
+def _to_asset_rel(path_or_str: str | Path) -> str:
+    """将任意路径规范化为相对 ASSETS_DIR 的 POSIX 路径，防止写入本机绝对路径。"""
+    s = str(path_or_str)
+    p = Path(s)
+    if p.is_absolute():
+        try:
+            return p.resolve().relative_to(ASSETS_DIR.resolve()).as_posix()
+        except Exception:
+            if "assets/" in s:
+                return s.split("assets/", 1)[1].lstrip("/")
+    return s.replace("\\", "/").lstrip("/")
+
+
+def _resolve_asset_path(rel_or_abs: str) -> str:
+    rel = _to_asset_rel(rel_or_abs)
+    return str((ASSETS_DIR / rel).resolve())
+
+
+def _build_beat_grid(dur_sec: float, bpm: float) -> Tuple[List[float], List[float]]:
+    beat_sec = 60.0 / max(40.0, min(220.0, float(bpm)))
+    beats: List[float] = []
+    downs: List[float] = []
+    t = 0.0
+    idx = 0
+    while t < max(0.5, dur_sec) - 0.03:
+        beats.append(round(t, 4))
+        if idx % 4 == 0:
+            downs.append(round(t, 4))
+        t += beat_sec
+        idx += 1
+    return beats, downs
+
+
 def _fetch(url: str, timeout: int = 60, tries: int = 3) -> bytes:
     for n in range(tries):
         try:
@@ -178,59 +224,38 @@ def search_freesound(query: str, license_mode: str = "cc0", limit: int = 8, page
     return rows[:limit]
 
 
-def clean_all_vibe_assets(raw_dir: Path | None = None, out_dir: Path | None = None) -> Dict[str, Any]:
-    """将 raw 目录中的 CC0 Freesound 录音清洗为 48kHz stereo 标准化 BGM (-20 LUFS) 与 SFX (-18 dBFS peak 限幅)。"""
-    ffmpeg = find_bin("ffmpeg")
-    if not ffmpeg:
-        raise RuntimeError("需要 ffmpeg 执行声学清洗。")
-    raw_dir = raw_dir or (SOUND_VIBE_DIR / "raw")
+def rebuild_relative_manifest_and_beats(out_dir: Path | None = None) -> Dict[str, Any]:
+    """基于已清洗 WAV 文件重建相对路径 manifest 并为全部 BGM JSON 补全节拍时间轴。"""
     out_dir = out_dir or SOUND_VIBE_DIR
     bgm_dir = out_dir / "bgm"
     sfx_dir = out_dir / "sfx"
-    bgm_dir.mkdir(parents=True, exist_ok=True)
-    sfx_dir.mkdir(parents=True, exist_ok=True)
+    manifest: Dict[str, Any] = {"styles": {}, "archetype_fallback": ARCHETYPE_TO_VIBE_STYLE}
 
-    manifest: Dict[str, Any] = {"styles": {}}
     for sid, cfg in STYLE_SOUND_MAP.items():
         b = cfg["bgm"]
-        src_b = raw_dir / b["src"]
         dst_b = bgm_dir / f"{sid}_bgm.wav"
-        dur_b = max(2.0, float(b["end"]) - float(b["start"]))
-        fade_out_t = max(0.0, dur_b - 0.18)
-        subprocess.run([
-            ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
-            "-ss", f"{float(b['start']):.3f}", "-t", f"{dur_b:.3f}",
-            "-i", str(src_b),
-            "-af", f"afade=t=in:st=0:d=0.12,afade=t=out:st={fade_out_t:.3f}:d=0.18,loudnorm=I=-20:TP=-2.0:LRA=8",
-            "-ar", "48000", "-ac", "2", "-acodec", "pcm_s16le",
-            str(dst_b),
-        ], check=True)
-        write_json(bgm_dir / f"{sid}_bgm.json", {"style_id": sid, "bpm": b["bpm"], "source": b["src"], "license": "CC0"})
-
+        if not dst_b.exists():
+            continue
+        dur_b = round(get_wav_duration_sec(dst_b), 4)
+        beats, downs = _build_beat_grid(dur_b, float(b["bpm"]))
+        write_json(bgm_dir / f"{sid}_bgm.json", {
+            "style_id": sid,
+            "bpm": float(b["bpm"]),
+            "duration_sec": dur_b,
+            "beat_times_sec": beats,
+            "downbeat_times_sec": downs,
+            "source": b["src"],
+            "license": "CC0",
+        })
         sfx_entry: Dict[str, str] = {}
-        for role, (fn, s0, s1, trim_gain_db) in cfg["sfx"].items():
-            src_s = raw_dir / fn
+        for role in cfg["sfx"]:
             dst_s = sfx_dir / f"{sid}_{role}.wav"
-            d_s = max(0.08, s1 - s0)
-            f_out_d = min(0.06, d_s * 0.35)
-            f_out_st = max(0.0, d_s - f_out_d)
-            # 先高通去除低频喷麦杂质，裁取目标瞬态区间，加起止淡化并压限避免刺耳
-            subprocess.run([
-                ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
-                "-ss", f"{s0:.3f}", "-t", f"{d_s:.3f}",
-                "-i", str(src_s),
-                "-af", (
-                    f"highpass=f=60,afade=t=in:st=0:d=0.005,afade=t=out:st={f_out_st:.3f}:d={f_out_d:.3f},"
-                    f"loudnorm=I=-22:TP=-6.0:LRA=6,volume={trim_gain_db:.1f}dB"
-                ),
-                "-ar", "48000", "-ac", "2", "-acodec", "pcm_s16le",
-                str(dst_s),
-            ], check=True)
-            sfx_entry[role] = str(dst_s.resolve())
+            if dst_s.exists():
+                sfx_entry[role] = _to_asset_rel(dst_s)
 
         manifest["styles"][sid] = {
-            "bgm_wav": str(dst_b.resolve()),
-            "bpm": b["bpm"],
+            "bgm_wav": _to_asset_rel(dst_b),
+            "bpm": float(b["bpm"]),
             "sfx": sfx_entry,
             "sfx_min_gap_sec": cfg["sfx_min_gap_sec"],
             "sfx_gain_db": cfg["sfx_gain_db"],
@@ -239,16 +264,97 @@ def clean_all_vibe_assets(raw_dir: Path | None = None, out_dir: Path | None = No
         }
 
     write_json(out_dir / "vibe_sound_manifest.json", manifest)
-    print(f"[vibe_sound] 已清洗生成 {len(manifest['styles'])} 套风格专属 CC0 BGM 与真实物理 SFX -> {out_dir / 'vibe_sound_manifest.json'}")
     return manifest
 
 
+def clean_all_vibe_assets(raw_dir: Path | None = None, out_dir: Path | None = None) -> Dict[str, Any]:
+    """将 raw 目录中的 CC0 Freesound 录音清洗为 48kHz stereo 标准化 BGM 与 SFX，写出全相对路径清单。"""
+    out_dir = out_dir or SOUND_VIBE_DIR
+    raw_dir = raw_dir or (out_dir / "raw")
+    if not raw_dir.exists():
+        # 若原始下载目录已被瘦身清理，直接基于现有已清洗 WAV 重建相对路径 manifest 与节拍 JSON
+        mf = rebuild_relative_manifest_and_beats(out_dir)
+        print(f"[vibe_sound] raw 目录已瘦身，已直接刷新相对路径与节拍网格 -> {out_dir / 'vibe_sound_manifest.json'}")
+        return mf
+
+    ffmpeg = find_bin("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("需要 ffmpeg 执行声学清洗。")
+    bgm_dir = out_dir / "bgm"
+    sfx_dir = out_dir / "sfx"
+    bgm_dir.mkdir(parents=True, exist_ok=True)
+    sfx_dir.mkdir(parents=True, exist_ok=True)
+
+    for sid, cfg in STYLE_SOUND_MAP.items():
+        b = cfg["bgm"]
+        src_b = raw_dir / b["src"]
+        dst_b = bgm_dir / f"{sid}_bgm.wav"
+        dur_b = max(2.0, float(b["end"]) - float(b["start"]))
+        fade_out_t = max(0.0, dur_b - 0.18)
+        if src_b.exists():
+            subprocess.run([
+                ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+                "-ss", f"{float(b['start']):.3f}", "-t", f"{dur_b:.3f}",
+                "-i", str(src_b),
+                "-af", f"afade=t=in:st=0:d=0.12,afade=t=out:st={fade_out_t:.3f}:d=0.18,loudnorm=I=-20:TP=-2.0:LRA=8",
+                "-ar", "48000", "-ac", "2", "-acodec", "pcm_s16le",
+                str(dst_b),
+            ], check=True)
+        for role, (fn, s0, s1, trim_gain_db) in cfg["sfx"].items():
+            src_s = raw_dir / fn
+            dst_s = sfx_dir / f"{sid}_{role}.wav"
+            d_s = max(0.08, s1 - s0)
+            f_out_d = min(0.06, d_s * 0.35)
+            f_out_st = max(0.0, d_s - f_out_d)
+            if src_s.exists():
+                subprocess.run([
+                    ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+                    "-ss", f"{s0:.3f}", "-t", f"{d_s:.3f}",
+                    "-i", str(src_s),
+                    "-af", (
+                        f"highpass=f=60,afade=t=in:st=0:d=0.005,afade=t=out:st={f_out_st:.3f}:d={f_out_d:.3f},"
+                        f"loudnorm=I=-22:TP=-6.0:LRA=6,volume={trim_gain_db:.1f}dB"
+                    ),
+                    "-ar", "48000", "-ac", "2", "-acodec", "pcm_s16le",
+                    str(dst_s),
+                ], check=True)
+
+    mf = rebuild_relative_manifest_and_beats(out_dir)
+    print(f"[vibe_sound] 已生成 {len(mf['styles'])} 套相对路径 CC0 音库 -> {out_dir / 'vibe_sound_manifest.json'}")
+    return mf
+
+
 def get_style_sound_profile(style_id: str) -> Optional[Dict[str, Any]]:
+    """
+    获取任意 style_01 ~ style_20 对应的真实 CC0 音色包：
+    1. 精确命中 STYLE_SOUND_MAP / manifest；
+    2. 未单独建包者按其 archetype_id 自动映射至同流派真实 CC0 音色包；
+    3. 全部路径基于当前主机 ASSETS_DIR 动态拼装，彻底杜绝绝对路径失效。
+    """
     mf_path = SOUND_VIBE_DIR / "vibe_sound_manifest.json"
     if not mf_path.exists():
         return None
     mf = json.loads(mf_path.read_text(encoding="utf-8"))
-    return mf.get("styles", {}).get(style_id)
+    styles = mf.get("styles", {})
+    target_sid = style_id
+    if target_sid not in styles:
+        entry = load_style_spectrum_entry(style_id)
+        arch_id = entry.get("archetype_id") if entry else None
+        fb_map = mf.get("archetype_fallback") or ARCHETYPE_TO_VIBE_STYLE
+        if arch_id and arch_id in fb_map and fb_map[arch_id] in styles:
+            target_sid = fb_map[arch_id]
+        else:
+            return None
+
+    raw_prof = dict(styles[target_sid])
+    if raw_prof.get("bgm_wav"):
+        raw_prof["bgm_wav"] = _resolve_asset_path(raw_prof["bgm_wav"])
+    resolved_sfx: Dict[str, str] = {}
+    for role, sp in (raw_prof.get("sfx") or {}).items():
+        resolved_sfx[role] = _resolve_asset_path(sp)
+    raw_prof["sfx"] = resolved_sfx
+    raw_prof["mapped_from_style_id"] = target_sid
+    return raw_prof
 
 
 def main() -> None:
@@ -259,7 +365,7 @@ def main() -> None:
     p_s.add_argument("query")
     p_s.add_argument("--license", default="cc0", choices=list(FS_LICENSE))
     p_s.add_argument("-n", type=int, default=8)
-    p_c = sp.add_parser("clean")
+    sp.add_parser("clean")
     a = ap.parse_args()
     if a.cmd == "search":
         for r in search_freesound(a.query, license_mode=a.license, limit=a.n):

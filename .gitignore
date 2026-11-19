@@ -37,3 +37,7 @@ _render_final/
 # Runtime copies of Style Spectrum LUTs & uncleaned vibe_sound downloads
 short-video-studio/assets/luts/style_*.cube
 short-video-studio/assets/sound_vibe/raw/
+
+# Ensure macOS Finder metadata inside assets/ is never tracked
+**/.DS_Store
+

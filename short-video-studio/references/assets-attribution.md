@@ -15,7 +15,7 @@
 | **得意黑 (Smiley Sans)** | SIL OFL 1.1 | atelier-anchor 开源发布 (`github.com/atelier-anchor/smiley-sans`) |
 | **阿里妈妈数黑体 (Alimama ShuHeiTi)** | 阿里巴巴免费可商用授权 | 阿里妈妈智造字官网授权全平台免费商用 |
 
-> 注：若目标主机尚未安装上述字体，脚本会自动检测系统可用开源字体，或提示通过 `check_and_setup.py` 下载/定位对应开源字体；Windows/macOS 自带回退仅用于本地测试预览，正式导出默认优先绑定本清单内的 OFL 开源商用字体路径。
+> 注：仓库内 `assets/fonts/` 随仓预置轻量化免费商用字体 `AlimamaShuHeiTi-Bold.otf` (约 1.0 MB，可用 `check_and_setup.py --init-fonts` 初始化校验)，若本机安装有思源黑体/宋体、清松手写体等同样会优先选用；所有导出与 `#22` 质检均通过 `common.is_verified_commercial_font()` **严格拦截无商用授权的系统私有字体（如苹方/华文黑体/微软雅黑）**，防止版权风险。
 
 ---
 
@@ -42,37 +42,28 @@
 
 ---
 
-## 四、 内置贴纸 (Stickers) & 调色预设 (LUTs)
+## 四、 调色预设 (LUTs) & 现场信息可视化渲染器
 
 | 资产路径 | 说明 | 来源 | 授权协议 |
 | :--- | :--- | :--- | :--- |
-| `assets/stickers/arrow_highlight.svg` | 重点指引箭头贴纸 | 本项目原创矢量绘制 | **CC0 1.0 可商用** |
-| `assets/stickers/badge_must_see.svg` | 高信息密度角标徽章 | 本项目原创矢量绘制 | **CC0 1.0 可商用** |
-| `assets/stickers/check_mark.svg` | 正确/推荐对勾标识 | 本项目原创矢量绘制 | **CC0 1.0 可商用** |
-| `assets/stickers/warning_tag.svg` | 避坑/警示标签 | 本项目原创矢量绘制 | **CC0 1.0 可商用** |
 | `assets/luts/warm_store.cube` | 门店暖调提亮 LUT (17³) | 本项目三维色彩映射表生成 | **CC0 1.0 可商用** |
 | `assets/luts/clean_creator.cube` | 博主清透自然 LUT (17³) | 本项目三维色彩映射表生成 | **CC0 1.0 可商用** |
 | `assets/luts/high_contrast.cube` | 高反差纪实 LUT (17³) | 本项目三维色彩映射表生成 | **CC0 1.0 可商用** |
 
----
-
-## 五、 代码生成补镜模板
-
-- `assets/remotion_templates/`：本项目原创 MIT/CC0 模板，支持在 Remotion / HyperFrames 或本地 Pillow+FFmpeg 引擎中无限制商用渲染。
+- 信息图表与 7 种修辞补镜（`kinetic_text / data_chart / flow_diagram / proportion / day_night / chips / versus`）均由 `scripts/generate_code_broll.py` 使用纯 Python (`Pillow` + `ffmpeg rawvideo` 管道) 现场原创绘制，无第三方 UI 素材版权负担。
 
 ---
 
-## 六、 「风格谱 (Style Spectrum)」参考包装资产库
+## 五、 「风格谱 (Style Spectrum)」参考包装资产库
 
-- `assets/style_spectrum/luts/style_01.cube` ~ `style_20.cube`（`33³` 3D LUT）：由 `scripts/analyze_style_spectrum.py` 基于公开参考样片色彩统计分布程序化逆向生成的数学色彩映射矩阵，**CC0 1.0 可商用**。
-- `assets/style_spectrum/remotion/`、`assets/style_spectrum/hyperframes/`、`assets/style_spectrum/jianying/`：本项目原创跨平台代码模板与 JSON 参数配置，**MIT / CC0 可商用**；所有字幕样式优先绑定「思源黑体 / 思源宋体 / 阿里妈妈数黑体 / 清松手写体」等开源/免费可商用字体链。
-- `assets/style_spectrum/keyframes/style_01_contact.jpg` ~ `style_20_contact.jpg`：用于本地视觉复核与参数比对的关键帧采样图谱（仅作教学与参考研究用途，请勿直接截取原片人物肖像用于商业投放）。
+- `assets/style_spectrum/luts/style_01.cube` ~ `style_20.cube`（`33³` 3D LUT）：由 `scripts/analyze_style_spectrum.py` 基于参考样片色彩分布逆向生成的数学色彩映射矩阵，**CC0 1.0 可商用**。
+- `assets/style_spectrum/hyperframes/`、`assets/style_spectrum/style_spectrum_library.json`、`assets/subtitle_templates/templates.json`：本项目原创风格谱 CSS/JSON 配置，**MIT / CC0 可商用**；全部字体候选链严格映射至 SIL OFL / 阿里妈妈免费商用字体。
 
 ---
 
-## 七、 Vibe Sound CC0 真实物理音效与流派背景音乐 (`assets/sound_vibe/`)
+## 六、 Vibe Sound CC0 真实物理音效与流派背景音乐 (`assets/sound_vibe/`)
 
-由 [scripts/vibe_sound.py](file:///Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/scripts/vibe_sound.py) 基于 [vibe-motion/sound](https://github.com/vibe-motion/sound) 检索框架从 Freesound 筛选 **Creative Commons 0 (CC0)** 商业免版税真实录音素材并执行静音裁切与 LUFS 归一化清洗生成：
+由 [scripts/vibe_sound.py](../scripts/vibe_sound.py) 基于 [vibe-motion/sound](https://github.com/vibe-motion/sound) 检索框架筛选 **Creative Commons 0 (CC0)** 免版税真实录音素材并生成（现全库 BGM 元数据已完整覆盖 `beat_times_sec` / `downbeat_times_sec` 且支持全部 20 套 `style_01`–`style_20` 映射）：
 
 | 流派样式 | 真实 BGM 来源 (Freesound ID · CC0) | 物理材质 SFX 来源 (Freesound ID · CC0) |
 | :--- | :--- | :--- |

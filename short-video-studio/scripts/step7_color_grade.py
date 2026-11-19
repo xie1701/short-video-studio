@@ -1,73 +1,278 @@
 #!/usr/bin/env python3
 """
-[Step 7: 调色处理]
-1. 基础校色：使用 ffmpeg signalstats 采样分析每条实拍镜头的曝光(YAVG)与白平衡(UAVG/VAVG)，
-   计算补偿参数 (eq brightness/contrast + colorbalance)。
-2. 风格套用：挂载内置可商用 3D LUT (.cube)（门店暖食 warm_store / 博主清透 clean_creator / 高反差 high_contrast）。
-   注意：代码生成的叙事图表 (code_broll) 自动免除色温偏置与强LUT以保持UI配色精确。
-输出：pipeline/07_color_plan.json
+[Step 7: 真实肤色矢量掩膜校色 + 切段中点测光 + 20 风格动态适配 + LUT 肤色回测闭环]
+1. 按 EDL 实际切片区间 [source_in_sec, source_out_sec] 中点测光（不拿片头 3s 乱调第 20s 画面）。
+2. 利用 Step 1 映射后的裁切人脸 ROI + BT.709 肤色像素掩膜剔除背景/眼镜/眉毛后测定真实 Cb/Cr。
+3. 肤色矫正作用于中间调 Midtones (rm/bm)，彻底告别用暗部 rs/bs 调肤色；
+   从 style_spectrum_library.json 动态派生全部 20 套风格参数。
+4. 闭环回测：生成 blended LUT 后对 Hero 帧抽样复核套色后肤色是否偏移 common.SKIN_YCBCR_RANGE，若偏移则自动降强度重编。
+输出：pipeline/07_color_plan.json (+ pipeline/07_blended_lut.cube)
 """
 
 from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from common import ASSETS_DIR, find_bin, maybe_reexec_in_venv, read_json, run_cmd, write_json
+from common import (
+    SKIN_YCBCR_RANGE,
+    find_bin,
+    load_style_applied,
+    load_style_spectrum_entry,
+    maybe_reexec_in_venv,
+    read_json,
+    resolve_lut_path,
+    run_cmd,
+    write_cube_lut,
+    write_json,
+)
+
+maybe_reexec_in_venv()
+
+import numpy as np
 
 
-def probe_clip_color_stats(media_path: Path) -> Dict[str, float]:
+STYLE_GRADE_PROFILES: Dict[str, Dict[str, float]] = {
+    "style_14": {"b_off": 0.012, "contrast": 1.05, "sat": 1.06, "rm_off": 0.016, "bm_off": -0.014},
+    "style_02": {"b_off": -0.008, "contrast": 1.12, "sat": 0.96, "rm_off": 0.004, "bm_off": 0.004},
+    "style_03": {"b_off": 0.008, "contrast": 1.08, "sat": 1.12, "rm_off": 0.028, "bm_off": -0.026},
+    "style_12": {"b_off": 0.032, "contrast": 1.05, "sat": 0.90, "rm_off": -0.008, "bm_off": 0.012},
+    "style_06": {"b_off": -0.040, "contrast": 1.16, "sat": 0.82, "rm_off": -0.020, "bm_off": 0.032},
+    "style_05": {"b_off": 0.028, "contrast": 1.04, "sat": 0.76, "rm_off": 0.020, "bm_off": -0.020},
+    "style_15": {"b_off": -0.042, "contrast": 1.18, "sat": 0.92, "rm_off": -0.024, "bm_off": 0.038},
+}
+
+
+def _resolve_style_grade_profile(style_id: Optional[str]) -> Dict[str, float]:
+    """覆盖全 20 套风格：先查调优表，否则从 style_spectrum_library.json 的 color_and_lut & archetype 动态派生。"""
+    if not style_id:
+        return {}
+    if style_id in STYLE_GRADE_PROFILES:
+        return STYLE_GRADE_PROFILES[style_id]
+    entry = load_style_spectrum_entry(style_id)
+    if not entry:
+        return {}
+    arch = str(entry.get("archetype_id", ""))
+    cl = entry.get("color_and_lut", {}) or {}
+    warm = float(cl.get("warm_cool_score", 0.0))  # 正偏暖，负偏冷
+    if arch == "arch_01_tech_ui_console":
+        return {"b_off": -0.025, "contrast": 1.15, "sat": 0.94, "rm_off": -0.018, "bm_off": 0.028}
+    if arch == "arch_02_high_contrast_story":
+        return {"b_off": 0.0, "contrast": 1.12, "sat": 1.08, "rm_off": 0.020, "bm_off": -0.018}
+    if arch == "arch_03_editorial_matte_depth":
+        return {"b_off": 0.028, "contrast": 1.04, "sat": 0.90, "rm_off": -0.006, "bm_off": 0.010}
+    if arch == "arch_05_cinema_slow_space":
+        return {"b_off": -0.035, "contrast": 1.15, "sat": 0.84, "rm_off": -0.016, "bm_off": 0.026}
+    if arch == "arch_06_paper_stopmotion":
+        return {"b_off": 0.025, "contrast": 1.04, "sat": 0.80, "rm_off": 0.018, "bm_off": -0.018}
+    # arch_04 默认暖人声高饱和口播
+    return {
+        "b_off": 0.010,
+        "contrast": 1.07,
+        "sat": 1.04,
+        "rm_off": round(max(-0.025, min(0.025, warm * 0.02)), 3),
+        "bm_off": round(max(-0.025, min(0.025, -warm * 0.02)), 3),
+    }
+
+
+def _escape_lut_filter_path(p: Path) -> str:
+    return str(p.resolve()).replace("\\", "/").replace("'", "\\'").replace(":", "\\:")
+
+
+def probe_clip_color_stats(
+    media_path: Path,
+    start_sec: float = 0.0,
+    dur_sec: float = 3.0,
+) -> Dict[str, float]:
+    """针对 EDL 实际使用的 [start_sec, start_sec + dur_sec] 切段窗口抽样测光（绝不错拿片头代表中后段）。"""
     ffmpeg = find_bin("ffmpeg")
     if not ffmpeg or not media_path.exists():
-        return {"yavg": 128.0, "uavg": 128.0, "vavg": 128.0}
+        return {"yavg": 125.0, "uavg": 128.0, "vavg": 128.0}
+    win_start = max(0.0, float(start_sec))
+    win_dur = max(0.3, min(4.0, float(dur_sec)))
     cmd = [
-        ffmpeg, "-v", "info", "-t", "3.0", "-i", str(media_path),
-        "-vf", "select='not(mod(n,15))',format=yuv420p,signalstats,metadata=print",
-        "-f", "null", "-",
+        ffmpeg, "-v", "info",
+        "-ss", f"{win_start:.3f}", "-t", f"{win_dur:.3f}",
+        "-i", str(media_path),
+        "-vf", "select='not(mod(n,12))',format=yuv420p,signalstats,metadata=print",
+        "-an", "-f", "null", "-",
     ]
     res = run_cmd(cmd, check=False)
+
     def avg_val(key: str, default: float = 128.0) -> float:
-        vals = [float(m) for m in re.findall(rf"lavfi\.signalstats\.{key}=([0-9.]+)", res.stderr)]
+        vals = [float(m) for m in re.findall(rf"lavfi\.signalstats\.{key}=([0-9.]+)", res.stderr or "")]
         return round(sum(vals) / len(vals), 2) if vals else default
 
     return {
-        "yavg": avg_val("YAVG", 128.0),
+        "yavg": avg_val("YAVG", 125.0),
         "uavg": avg_val("UAVG", 128.0),
         "vavg": avg_val("VAVG", 128.0),
     }
 
 
-# 各风格谱光学影调强化曲线（与内置 33³ LUT 叠加，拉开肉眼直观质感与冷暖性格）
-STYLE_GRADE_PROFILES: Dict[str, Dict[str, float]] = {
-    "style_14": {"b_off": 0.015, "contrast": 1.06, "sat": 1.08, "rs_off": 0.028, "bs_off": -0.024},  # 温暖居家高透
-    "style_02": {"b_off": -0.01, "contrast": 1.16, "sat": 0.94, "rs_off": 0.005, "bs_off": 0.005},   # 硬核锐利高反差
-    "style_03": {"b_off": 0.01,  "contrast": 1.09, "sat": 1.18, "rs_off": 0.055, "bs_off": -0.052},  # 暖黄高饱和人物故事
-    "style_12": {"b_off": 0.045, "contrast": 1.06, "sat": 0.88, "rs_off": -0.01, "bs_off": 0.018},   # 清爽明亮极简通透
-    "style_06": {"b_off": -0.055,"contrast": 1.22, "sat": 0.78, "rs_off": -0.032,"bs_off": 0.052},   # 电影低亮冷灰胶片调
-    "style_05": {"b_off": 0.04,  "contrast": 1.05, "sat": 0.65, "rs_off": 0.038, "bs_off": -0.038},  # 低饱和暖米工程纸调
-    "style_15": {"b_off": -0.065,"contrast": 1.24, "sat": 0.90, "rs_off": -0.045,"bs_off": 0.068},   # 暗夜冷青科技对比调
-}
+def _compute_masked_skin_ycbcr_from_rgb(
+    arr_rgb: np.ndarray,
+    face_bbox: Dict[str, float],
+) -> Optional[Dict[str, float]]:
+    """使用 BT.709 矩阵 + 皮肤色度粗掩膜提取人脸真实肤色画素（剔除眼镜/眉毛/胡须/背景）。"""
+    h_s, w_s, _ = arr_rgb.shape
+    fx, fy, fw, fh = float(face_bbox["x"]), float(face_bbox["y"]), float(face_bbox["w"]), float(face_bbox["h"])
+    x0 = max(0, int((fx + fw * 0.22) * w_s))
+    x1 = min(w_s, max(x0 + 4, int((fx + fw * 0.78) * w_s)))
+    y0 = max(0, int((fy + fh * 0.22) * h_s))
+    y1 = min(h_s, max(y0 + 4, int((fy + fh * 0.76) * h_s)))
+    roi = arr_rgb[y0:y1, x0:x1].astype(np.float32)
+    if roi.size < 12:
+        return None
+
+    r, g, b = roi[:, :, 0], roi[:, :, 1], roi[:, :, 2]
+    # BT.709 矩阵系数转换
+    y_val = 16.0 + (0.2126 * r + 0.7152 * g + 0.0722 * b) * (219.0 / 255.0)
+    cb = 128.0 + (-0.114572 * r - 0.385428 * g + 0.5 * b) * (224.0 / 255.0)
+    cr = 128.0 + (0.5 * r - 0.454153 * g - 0.045847 * b) * (224.0 / 255.0)
+
+    skin_mask = (cb >= 77.0) & (cb <= 136.0) & (cr >= 125.0) & (cr <= 178.0) & (y_val >= 35.0) & (y_val <= 235.0)
+    if int(np.sum(skin_mask)) >= 8:
+        return {
+            "skin_y": round(float(np.median(y_val[skin_mask])), 1),
+            "skin_cb": round(float(np.median(cb[skin_mask])), 1),
+            "skin_cr": round(float(np.median(cr[skin_mask])), 1),
+            "mask_ratio": round(float(np.mean(skin_mask)), 3),
+        }
+    return {
+        "skin_y": round(float(np.median(y_val)), 1),
+        "skin_cb": round(float(np.median(cb)), 1),
+        "skin_cr": round(float(np.median(cr)), 1),
+        "mask_ratio": 0.0,
+    }
 
 
-def compute_base_correction(stats: Dict[str, float], style_id: Optional[str] = None) -> Dict[str, Any]:
-    y = stats["yavg"]
-    u = stats["uavg"]
-    v = stats["vavg"]
-    prof = STYLE_GRADE_PROFILES.get(str(style_id or ""), {})
-    # 目标曝光 YAVG ≈ 125；偏暗适度提亮，过亮略压低，再叠加流派性格偏移
-    brightness = round(max(-0.22, min(0.22, (125.0 - y) / 420.0 + float(prof.get("b_off", 0.0)))), 3)
-    # U 偏高偏蓝，V 偏高偏红，先轻柔归中再按风格赋予冷暖基调
-    bs_shift = round(max(-0.14, min(0.14, (128.0 - u) / 450.0 + float(prof.get("bs_off", 0.0)))), 3)
-    rs_shift = round(max(-0.14, min(0.14, (128.0 - v) / 450.0 + float(prof.get("rs_off", 0.0)))), 3)
+def probe_face_skin_ycbcr(
+    media_path: Path,
+    face_bbox: Dict[str, float],
+    at_sec: float = 0.2,
+    extra_vf: Optional[str] = None,
+) -> Optional[Dict[str, float]]:
+    ffmpeg = find_bin("ffmpeg")
+    if not ffmpeg or not media_path.exists():
+        return None
+    w_s, h_s = 270, 480
+    vf_arg = f"{extra_vf},scale={w_s}:{h_s}" if extra_vf else f"scale={w_s}:{h_s}"
+    res = subprocess.run(
+        [
+            ffmpeg, "-hide_banner", "-loglevel", "error",
+            "-ss", f"{max(0.0, at_sec):.2f}", "-i", str(media_path),
+            "-frames:v", "1", "-vf", vf_arg,
+            "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if len(res.stdout) < w_s * h_s * 3:
+        return None
+    arr = np.frombuffer(res.stdout[: w_s * h_s * 3], dtype=np.uint8).reshape((h_s, w_s, 3))
+    return _compute_masked_skin_ycbcr_from_rgb(arr, face_bbox)
+
+
+def compute_hero_and_shot_correction(
+    stats: Dict[str, float],
+    hero_stats: Dict[str, float],
+    is_hero: bool,
+    skin_ycbcr: Optional[Dict[str, float]],
+    style_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """基于 Hero 锚定与中间调皮肤矢量保护计算校色参数（仅作用于 rm/bm 中间调，不错调暗部）。"""
+    prof = _resolve_style_grade_profile(style_id)
+    y, u, v = stats["yavg"], stats["uavg"], stats["vavg"]
+
+    if is_hero:
+        y_corr = 0.0
+        if y < 85.0:
+            y_corr = (95.0 - y) / 480.0
+        elif y > 175.0:
+            y_corr = (165.0 - y) / 480.0
+        brightness = round(max(-0.14, min(0.14, y_corr + float(prof.get("b_off", 0.0)))), 3)
+
+        bm_base, rm_base = 0.0, 0.0
+        if skin_ycbcr:
+            cb, cr = skin_ycbcr["skin_cb"], skin_ycbcr["skin_cr"]
+            if cb > SKIN_YCBCR_RANGE["cb_max"] - 6.0:
+                bm_base = -(cb - 118.0) / 360.0
+            elif cb < SKIN_YCBCR_RANGE["cb_min"] + 6.0:
+                bm_base = (100.0 - cb) / 360.0
+            if cr < SKIN_YCBCR_RANGE["cr_min"] + 6.0:
+                rm_base = (142.0 - cr) / 360.0
+            elif cr > SKIN_YCBCR_RANGE["cr_max"] - 6.0:
+                rm_base = -(cr - 160.0) / 360.0
+        bm_shift = round(max(-0.08, min(0.08, bm_base + float(prof.get("bm_off", 0.0)))), 3)
+        rm_shift = round(max(-0.08, min(0.08, rm_base + float(prof.get("rm_off", 0.0)))), 3)
+    else:
+        y_diff = hero_stats["yavg"] - y
+        u_diff = hero_stats["uavg"] - u
+        v_diff = hero_stats["vavg"] - v
+        brightness = round(max(-0.12, min(0.12, (y_diff * 0.45) / 380.0 + float(prof.get("b_off", 0.0)))), 3)
+        bm_shift = round(max(-0.06, min(0.06, (u_diff * 0.30) / 420.0 + float(prof.get("bm_off", 0.0)))), 3)
+        rm_shift = round(max(-0.06, min(0.06, (v_diff * 0.30) / 420.0 + float(prof.get("rm_off", 0.0)))), 3)
+
     return {
         "brightness": brightness,
         "contrast": round(float(prof.get("contrast", 1.05)), 3),
-        "saturation": round(float(prof.get("sat", 1.06)), 3),
-        "rs": rs_shift,
-        "bs": bs_shift,
+        "saturation": round(float(prof.get("sat", 1.04)), 3),
+        "rm": rm_shift,
+        "bm": bm_shift,
     }
+
+
+def build_blended_cube_lut(lut_path: Path, strength: float, out_path: Path) -> tuple[Path, float]:
+    """将源 3D .cube LUT 与恒等映射线性混合；通过 common.write_cube_lut 写出并如实返回有效强度。"""
+    strength = max(0.0, min(1.0, strength))
+    if strength >= 0.99 or not lut_path.exists():
+        return lut_path, 1.0 if lut_path.exists() else 0.0
+
+    lines = lut_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    size = 33
+    triplets: List[List[float]] = []
+    title = f"Blended_{lut_path.stem}_{int(round(strength*100))}pct"
+
+    for ln in lines:
+        s = ln.strip()
+        if not s or s.startswith("#"):
+            continue
+        if s.startswith("LUT_3D_SIZE"):
+            size = int(s.split()[1])
+            continue
+        if s.startswith(("TITLE", "DOMAIN_MIN", "DOMAIN_MAX")):
+            continue
+        parts = s.split()
+        if len(parts) == 3:
+            try:
+                triplets.append([float(parts[0]), float(parts[1]), float(parts[2])])
+            except ValueError:
+                continue
+
+    if len(triplets) != size ** 3:
+        return lut_path, 1.0
+
+    lut_arr = np.array(triplets, dtype=np.float32)
+    grid = np.linspace(0.0, 1.0, size, dtype=np.float32)
+    bb, gg, rr = np.meshgrid(grid, grid, grid, indexing="ij")
+    identity = np.stack([rr, gg, bb], axis=-1).reshape(-1, 3)
+
+    blended = np.clip(identity * (1.0 - strength) + lut_arr * strength, 0.0, 1.0)
+    write_cube_lut(out_path, blended, size, title)
+    return out_path, strength
+
+
+def _build_vf_for_corr(corr: Dict[str, Any], lut_path: Path) -> str:
+    lut_escaped = _escape_lut_filter_path(lut_path)
+    return (
+        f"eq=brightness={corr['brightness']}:contrast={corr['contrast']}:saturation={corr['saturation']},"
+        f"colorbalance=rm={corr['rm']}:bm={corr['bm']},"
+        f"lut3d='{lut_escaped}'"
+    )
 
 
 def run_step7(
@@ -75,20 +280,59 @@ def run_step7(
     track: str = "store",
     lut_name: Optional[str] = None,
     style_id: Optional[str] = None,
+    lut_strength: Optional[float] = None,
 ) -> Dict[str, Any]:
     edl = read_json(pipeline_dir / "04_edl.json")
-    if not style_id:
-        spec_p = pipeline_dir / "style_spectrum_applied.json"
-        if spec_p.exists():
-            style_id = read_json(spec_p).get("style_id")
-    if not lut_name:
-        lut_name = "warm_store.cube" if track == "store" else "clean_creator.cube"
-    lut_path = ASSETS_DIR / "luts" / lut_name
-    if not lut_path.exists():
-        style_lut_path = ASSETS_DIR / "style_spectrum" / "luts" / lut_name
-        lut_path = style_lut_path if style_lut_path.exists() else (ASSETS_DIR / "luts" / "clean_creator.cube")
+    manifest = read_json(pipeline_dir / "01_manifest.json") if (pipeline_dir / "01_manifest.json").exists() else {"items": []}
 
-    unique_media_stats: Dict[str, Dict[str, float]] = {}
+    if not style_id:
+        style_id = edl.get("style_id") or load_style_applied(pipeline_dir)
+    if not lut_name:
+        lut_name = f"{style_id}.cube" if style_id else ("warm_store.cube" if track == "store" else "clean_creator.cube")
+    lut_path = resolve_lut_path(lut_name, style_id=style_id)
+
+    if lut_strength is None:
+        lut_strength = 0.72 if style_id in ("style_06", "style_08", "style_13") else 0.60
+
+    blended_lut, eff_strength = build_blended_cube_lut(lut_path, lut_strength, pipeline_dir / "07_blended_lut.cube")
+
+    manifest_by_mp4 = {it.get("normalized_mp4"): it for it in manifest.get("items", [])}
+    hero_clip = next((c for c in edl["clips"] if c["track_role"] == "a_roll"), None)
+    if not hero_clip:
+        hero_clip = next((c for c in edl["clips"] if c["track_role"] != "code_broll"), None)
+
+    hero_mp = hero_clip["media_path"] if hero_clip else ""
+    hero_in = float(hero_clip.get("source_in_sec", 0.0)) if hero_clip else 0.0
+    hero_dur = float(hero_clip.get("duration_sec", 2.0)) if hero_clip else 2.0
+    hero_stats = probe_clip_color_stats(Path(hero_mp), hero_in, hero_dur) if hero_mp else {"yavg": 125.0, "uavg": 128.0, "vavg": 128.0}
+
+    skin_ycbcr: Optional[Dict[str, float]] = None
+    hero_face_bbox: Optional[Dict[str, float]] = None
+    hero_at_sec = round(hero_in + min(0.5, hero_dur * 0.4), 2)
+    if hero_mp and hero_mp in manifest_by_mp4:
+        faces = manifest_by_mp4[hero_mp].get("faces") or []
+        if faces:
+            hero_face_bbox = faces[0]["bbox"]
+            skin_ycbcr = probe_face_skin_ycbcr(Path(hero_mp), hero_face_bbox, at_sec=hero_at_sec)
+
+    # 闭环 LUT 肤色保护验证：套用建议滤镜回测 Hero 肤色是否跌出健康扇区，超标自动步进降低强度
+    skin_post_grade: Optional[Dict[str, float]] = None
+    if hero_mp and hero_face_bbox and skin_ycbcr:
+        hero_corr = compute_hero_and_shot_correction(hero_stats, hero_stats, True, skin_ycbcr, style_id=style_id)
+        for cand_str in (eff_strength, 0.45, 0.32):
+            blended_lut, eff_strength = build_blended_cube_lut(lut_path, cand_str, pipeline_dir / "07_blended_lut.cube")
+            test_vf = _build_vf_for_corr(hero_corr, blended_lut)
+            skin_post_grade = probe_face_skin_ycbcr(Path(hero_mp), hero_face_bbox, at_sec=hero_at_sec, extra_vf=test_vf)
+            if not skin_post_grade:
+                break
+            in_sector = (
+                SKIN_YCBCR_RANGE["cb_min"] <= skin_post_grade["skin_cb"] <= SKIN_YCBCR_RANGE["cb_max"]
+                and SKIN_YCBCR_RANGE["cr_min"] <= skin_post_grade["skin_cr"] <= SKIN_YCBCR_RANGE["cr_max"]
+            )
+            if in_sector or cand_str <= 0.32:
+                break
+
+    clip_stats_cache: Dict[str, Dict[str, float]] = {}
     clip_plans: List[Dict[str, Any]] = []
 
     for clip in edl["clips"]:
@@ -104,47 +348,68 @@ def run_step7(
             })
             continue
 
-        if mp not in unique_media_stats:
-            unique_media_stats[mp] = probe_clip_color_stats(Path(mp))
-        stats = unique_media_stats[mp]
-        corr = compute_base_correction(stats, style_id=style_id)
-        # 先做基础校色 (eq + colorbalance)，再套用 3D LUT
-        lut_escaped = str(lut_path.resolve()).replace("\\", "/").replace(":", "\\:")
-        vf_str = (
-            f"eq=brightness={corr['brightness']}:contrast={corr['contrast']}:saturation={corr['saturation']},"
-            f"colorbalance=rs={corr['rs']}:bs={corr['bs']},"
-            f"lut3d='{lut_escaped}'"
+        c_in = float(clip.get("source_in_sec", 0.0))
+        c_dur = float(clip.get("duration_sec", 2.0))
+        cache_key = f"{mp}@{c_in:.1f}"
+        if cache_key not in clip_stats_cache:
+            clip_stats_cache[cache_key] = probe_clip_color_stats(Path(mp), c_in, c_dur)
+        stats = clip_stats_cache[cache_key]
+        is_hero = (mp == hero_mp)
+        corr = compute_hero_and_shot_correction(
+            stats,
+            hero_stats=hero_stats,
+            is_hero=is_hero,
+            skin_ycbcr=skin_ycbcr if is_hero else None,
+            style_id=style_id,
         )
+        vf_str = _build_vf_for_corr(corr, blended_lut)
         clip_plans.append({
             "clip_id": clip["clip_id"],
             "track_role": clip["track_role"],
+            "is_hero_ref": is_hero,
             "apply_color_grade": True,
             "measured_stats": stats,
             "base_correction": corr,
-            "lut_file": str(lut_path.resolve()),
+            "lut_file": str(blended_lut.resolve()),
             "vf_filter": vf_str,
         })
 
     plan = {
         "step": "07_color_grade",
+        "style_id": style_id,
         "lut_name": lut_path.name,
-        "lut_path": str(lut_path.resolve()),
+        "lut_strength": round(eff_strength, 2),
+        "lut_path": str(blended_lut.resolve()),
+        "hero_media": hero_mp,
+        "hero_stats": hero_stats,
+        "skin_tone_measured": skin_ycbcr,
+        "skin_tone_post_grade": skin_post_grade,
         "clip_plans": clip_plans,
     }
     write_json(pipeline_dir / "07_color_plan.json", plan)
     graded_cnt = sum(1 for c in clip_plans if c["apply_color_grade"])
-    print(f"[step7] 调色方案生成完成：{graded_cnt} 个实拍镜头先校色再套 `{lut_path.name}` -> 07_color_plan.json")
+    print(
+        f"[step7] 肤色保护调色方案生成完成：{graded_cnt} 个实拍镜头（Hero锚定 + 强度{eff_strength:.0%}混合 `{lut_path.name}`）-> 07_color_plan.json"
+    )
     return plan
 
 
 def main() -> None:
     maybe_reexec_in_venv()
-    parser = argparse.ArgumentParser(description="Step 7: 基础校色与风格 LUT 规划")
+    parser = argparse.ArgumentParser(description="Step 7: 肤色保护基准校色与可控强度 LUT 规划")
     parser.add_argument("--pipeline-dir", required=True)
     parser.add_argument("--track", choices=["store", "creator"], default="store")
-    parser.add_argument("--lut", help="LUT 文件名（如 warm_store.cube / clean_creator.cube / high_contrast.cube）")
+    parser.add_argument("--style-id", help="绑定风格谱 ID")
+    parser.add_argument("--lut", help="LUT 文件名")
+    parser.add_argument("--lut-strength", type=float, default=None, help="LUT 混合强度 0.0~1.0")
     args = parser.parse_args()
-    run_step7(Path(args.pipeline_dir), track=args.track, lut_name=args.lut)
+    run_step7(
+        Path(args.pipeline_dir),
+        track=args.track,
+        lut_name=args.lut,
+        style_id=args.style_id,
+        lut_strength=args.lut_strength,
+    )
 
 
 if __name__ == "__main__":

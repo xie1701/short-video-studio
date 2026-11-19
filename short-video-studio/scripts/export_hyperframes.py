@@ -1,210 +1,212 @@
 #!/usr/bin/env python3
 """
-[出片 3：HyperFrames 可编辑工程包导出封装]
-将流水线已完成的调色精剪分镜、风格谱画框/卡片/花字、原生 HTML 双色高亮字幕
-与三轨独立 WAV 音频导出为标准模块化 HyperFrames Studio 工程 (hyperframes_draft/)，
-并附带跨平台双击启动器，双击即可打开浏览器 Studio 实时预览、二次编辑或重新渲染。
+出片3: HyperFrames Studio 全离线相对路径多轨 HTML 工程导出
+P0/P1/P2 优化项：
+1. 彻底移除外部 CDN 依赖，改用零网络内联轻量 timeline 控制脚本。
+2. 字幕定位消费权威 final_bbox，严格钳制在 SUBTITLE_SAFE_ZONE (y_max <= 1468)，消灭 1510px 破安全区与 stroke_width=0 强加描边 Bug。
+3. 字体 staging 强制校验 common.is_verified_commercial_font，不可用或 .ttc 自动回退随仓免费商用字体。
+4. 三轨独立 WAV 复用 08_voice_master.wav / 08_bgm_ducked.wav / 06_sfx_track.wav (data-volume="1.0")。
+5. 清除 stage_overlays 死分支与冗余本地辅助函数，复用 common.py。
 """
 
 from __future__ import annotations
 
 import argparse
 import html
-import os
 import shutil
-import wave
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from PIL import Image
-
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import (
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
     DEFAULT_FPS,
-    SKILL_ROOT,
+    SAFE_ZONE,
+    SUBTITLE_SAFE_ZONE,
     find_commercial_font,
+    frames_to_sec,
+    get_wav_duration_sec,
+    is_verified_commercial_font,
+    link_or_copy,
+    load_style_applied,
+    load_subtitle_templates,
     maybe_reexec_in_venv,
     read_json,
     write_json,
 )
-from render_mp4 import render_subtitle_png, resolve_packaging_source
 
+maybe_reexec_in_venv()
 
-def _link_or_copy(src: Path, dst: Path) -> None:
-    """同卷优先硬链接零空间复用文件，跨文件系统自动降级为复制。"""
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    src_real = src.resolve()
-    if dst.exists() or dst.is_symlink():
-        try:
-            st_s, st_d = src_real.stat(), dst.stat()
-            if st_s.st_ino == st_d.st_ino and st_s.st_dev == st_d.st_dev:
-                return
-        except OSError:
-            pass
-        dst.unlink()
-    try:
-        os.link(src_real, dst)
-    except OSError:
-        shutil.copy2(src_real, dst)
-
-
-def _measure_wav_sec(path_str: Optional[str]) -> float:
-    if not path_str:
-        return 0.0
-    p = Path(path_str)
-    if p.is_file() and p.suffix.lower() == ".wav":
-        try:
-            with wave.open(str(p), "rb") as wf:
-                return wf.getnframes() / float(wf.getframerate())
-        except Exception:
-            pass
-    return 0.0
+from PIL import Image
+from render_mp4 import compute_subtitle_place_xy, resolve_packaging_source
 
 
 def _clamp_window(start_sec: float, end_sec: float, max_sec: float) -> Tuple[float, float]:
-    st = round(max(0.0, min(max_sec - 0.0333, start_sec)), 4)
-    en = min(max_sec, max(st + 0.0333, round(end_sec, 4)))
-    dur = round(max(0.0333, en - st), 4)
-    if st + dur > max_sec:
-        dur = round(max(0.01, max_sec - st), 4)
-    return st, dur
+    s = max(0.0, round(float(start_sec), 4))
+    e = min(max_sec, round(float(end_sec), 4))
+    if e <= s:
+        e = min(max_sec, round(s + 0.04, 4))
+    return s, e
 
 
 def _safe_id(raw: str, prefix: str = "item") -> str:
-    cleaned = "".join(ch if (ch.isalnum() or ch in "-_") else "-" for ch in str(raw)).strip("-")
-    return cleaned or prefix
+    cleaned = "".join(ch if (ch.isalnum() or ch in ("-", "_")) else "_" for ch in str(raw or ""))
+    return f"{prefix}_{cleaned}" if not cleaned or cleaned[0].isdigit() else cleaned
+
+
+def _measure_wav_sec(path_str: Optional[str]) -> float:
+    if not path_str or not Path(path_str).is_file():
+        return 0.0
+    return get_wav_duration_sec(Path(path_str))
 
 
 def attach_hyperframes_launchers(out_dir: Path) -> None:
-    """将 macOS/Windows 双击启动脚本写入 HyperFrames 工程目录，开箱即双击运行。"""
-    repo_root = SKILL_ROOT.parent
-    cmd_name = "启动HyperFrames工程.command"
-    bat_name = "启动HyperFrames工程.bat"
+    """生成双击即可用本地服务器/HyperFrames Studio 打开工程的 .command 与 .bat 启动器。"""
+    cmd_script = "\n".join([
+        "#!/bin/bash",
+        'DIR="$(cd "$(dirname "$0")" && pwd)"',
+        'cd "$DIR" || exit 1',
+        'echo "============================================="',
+        'echo "  HyperFrames 可编辑工程正在启动..."',
+        'echo "  工程目录: $DIR"',
+        'echo "============================================="',
+        'if command -v npx >/dev/null 2>&1; then',
+        '  npx --yes hyperframes studio --port 4321 || open "index.html"',
+        'else',
+        '  python3 -m http.server 4321 >/dev/null 2>&1 &',
+        '  sleep 1',
+        '  open "http://127.0.0.1:4321/index.html" 2>/dev/null || open "index.html"',
+        'fi',
+    ]) + "\n"
+    cmd_path = out_dir / "启动HyperFrames工程.command"
+    cmd_path.write_text(cmd_script, encoding="utf-8")
+    try:
+        cmd_path.chmod(0o755)
+    except Exception:
+        pass
 
-    src_cmd = repo_root / cmd_name
-    dst_cmd = out_dir / cmd_name
-    if src_cmd.is_file():
-        shutil.copy2(src_cmd, dst_cmd)
-    else:
-        dst_cmd.write_text(
-            "#!/usr/bin/env bash\n"
-            'export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${PATH:-}"\n'
-            'cd "$(dirname "$0")" && npx --yes hyperframes preview "$@"\n',
-            encoding="utf-8",
-        )
-    os.chmod(dst_cmd, 0o755)
+    bat_script = "\r\n".join([
+        "@echo off",
+        "cd /d \"%~dp0\"",
+        "where npx >nul 2>nul",
+        "if %ERRORLEVEL%==0 (",
+        "  npx --yes hyperframes studio --port 4321",
+        ") else (",
+        "  start \"\" \"index.html\"",
+        ")",
+    ]) + "\r\n"
+    (out_dir / "启动HyperFrames工程.bat").write_text(bat_script, encoding="utf-8")
 
-    src_bat = repo_root / bat_name
-    if src_bat.is_file():
-        shutil.copy2(src_bat, out_dir / bat_name)
+
+def _offline_timeline_shim(comp_id: str) -> str:
+    return "\n".join([
+        "  <script>",
+        "    (function () {",
+        "      window.__timelines = window.__timelines || {};",
+        "      var state = { paused: true, time: 0 };",
+        "      window.__timelines['" + comp_id + "'] = {",
+        "        pause: function (t) { state.paused = true; if (typeof t === 'number') state.time = t; return this; },",
+        "        play: function () { state.paused = false; return this; },",
+        "        seek: function (t) { state.time = Number(t) || 0; return this; },",
+        "        time: function (t) { if (typeof t === 'number') state.time = t; return state.time; }",
+        "      };",
+        "    })();",
+        "  </script>",
+    ])
 
 
 def _wrap_subcomposition(title: str, comp_id: str, style_css: str, body_html: str) -> str:
-    """封装符合 hyperframes-core 规范的 <template> 子组合文件。"""
     return "\n".join([
-        "<!doctype html>",
+        "<!DOCTYPE html>",
         '<html lang="zh-CN">',
-        "  <head>",
-        '    <meta charset="UTF-8" />',
-        f"    <title>{html.escape(title)}</title>",
-        "  </head>",
-        "  <body>",
-        "    <template>",
-        "      <style>",
-        style_css.rstrip(),
-        "      </style>",
-        f'      <div id="root" data-composition-id="{comp_id}" data-width="{CANVAS_WIDTH}" data-height="{CANVAS_HEIGHT}">',
-        body_html.rstrip(),
-        "      </div>",
-        "      <script>",
-        "        (function () {",
-        "          const tl = gsap.timeline({ paused: true });",
-        '          tl.to("#root", { duration: 0.01 }, 0);',
-        f'          window.__timelines["{comp_id}"] = tl;',
-        "        })();",
-        "      </script>",
-        "    </template>",
-        "  </body>",
+        "<head>",
+        '  <meta charset="utf-8" />',
+        f"  <title>{html.escape(title)}</title>",
+        "  <style>",
+        "    * { box-sizing: border-box; margin: 0; padding: 0; }",
+        f"    html, body {{ width: {CANVAS_WIDTH}px; height: {CANVAS_HEIGHT}px; overflow: hidden; background: transparent; }}",
+        f"    #root {{ position: relative; width: {CANVAS_WIDTH}px; height: {CANVAS_HEIGHT}px; overflow: hidden; }}",
+        "    .clip { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }",
+        style_css,
+        "  </style>",
+        "</head>",
+        "<body>",
+        f'  <div id="root" data-composition-id="{html.escape(comp_id)}" data-width="{CANVAS_WIDTH}" data-height="{CANVAS_HEIGHT}">',
+        body_html,
+        "  </div>",
+        _offline_timeline_shim(comp_id),
+        "</body>",
         "</html>",
-        "",
-    ])
+    ]) + "\n"
 
 
 def _stage_font(font_path: Optional[str], fonts_dir: Path) -> Optional[Tuple[str, str]]:
-    """将字体文件硬链接至 media/fonts/，返回 (相对URL, CSS format)（.ttc 不适用于网页 font-face）。"""
-    if not font_path:
+    """仅 staging 经 common.is_verified_commercial_font 校验通过的网页可用字体 (.otf/.ttf/.woff2)。"""
+    cand = font_path
+    if not cand or not Path(cand).is_file() or Path(cand).suffix.lower() not in (".otf", ".ttf", ".woff2") or not is_verified_commercial_font(cand):
+        cand = find_commercial_font(verified_only=True)
+    if not cand or not Path(cand).is_file():
         return None
-    fp = Path(font_path)
-    if not fp.is_file():
+    src = Path(cand)
+    ext = src.suffix.lower()
+    if ext not in (".otf", ".ttf", ".woff2") or not is_verified_commercial_font(src):
         return None
-    ext = fp.suffix.lower()
-    fmt_map = {".otf": "opentype", ".ttf": "truetype", ".woff2": "woff2", ".woff": "woff"}
-    css_fmt = fmt_map.get(ext)
-    if not css_fmt:
-        return None
-    dst = fonts_dir / f"sub_main{ext}"
-    _link_or_copy(fp, dst)
-    return f"media/fonts/{dst.name}", css_fmt
+    dst = fonts_dir / src.name
+    link_or_copy(src, dst)
+    fmt = "opentype" if ext == ".otf" else ("woff2" if ext == ".woff2" else "truetype")
+    return f"../media/fonts/{src.name}", fmt
 
 
 def _build_video_track_html(
-    pipeline_dir: Path,
     edl: Dict[str, Any],
     segments_dir: Path,
-    fps: int,
-    total_frames: int,
     total_dur: float,
 ) -> Tuple[str, int]:
-    render_final = pipeline_dir / "_render_final"
-    clips = edl.get("clips", [])
-    accum_frames = 0
-    lines: List[str] = []
-    keep_names: set[str] = set()
-    raw_alias_map: Dict[Path, str] = {}
+    clips = edl.get("clips") or []
+    src_to_rel: Dict[str, str] = {}
+    used_names: set[str] = set()
+    body_lines: List[str] = []
 
-    for idx, clip in enumerate(clips):
-        if idx == len(clips) - 1:
-            clip_frames = max(1, total_frames - accum_frames)
-        else:
-            clip_frames = max(1, int(clip["timeline_out_frame"]) - int(clip["timeline_in_frame"]))
-        st_f = accum_frames
-        en_f = accum_frames + clip_frames
-        accum_frames = en_f
+    for idx, c in enumerate(clips, start=1):
+        mp = str(c.get("media_path") or "")
+        src_p = Path(mp)
+        if not mp or not src_p.is_file():
+            raise FileNotFoundError(f"HyperFrames 导出缺失分镜文件: {mp}")
+        if mp not in src_to_rel:
+            name = src_p.name
+            if name in used_names:
+                name = f"{len(used_names) + 1:02d}_{src_p.name}"
+            used_names.add(name)
+            link_or_copy(src_p, segments_dir / name)
+            src_to_rel[mp] = f"../media/segments/{name}"
 
-        seg_file = render_final / f"seg_{idx+1:03d}.mp4"
-        use_baked = seg_file.is_file() and seg_file.stat().st_size > 1024
-        if use_baked:
-            dst_name = seg_file.name
-            _link_or_copy(seg_file, segments_dir / dst_name)
-            media_start_attr = ""
-        else:
-            src_raw = Path(clip["media_path"]).resolve()
-            if src_raw not in raw_alias_map:
-                raw_alias_map[src_raw] = f"raw_{len(raw_alias_map)+1:02d}{src_raw.suffix}"
-                _link_or_copy(src_raw, segments_dir / raw_alias_map[src_raw])
-            dst_name = raw_alias_map[src_raw]
-            src_in = max(0.0, float(clip.get("source_in_sec", 0.0)))
-            media_start_attr = f' data-media-start="{src_in:.4f}"'
-
-        keep_names.add(dst_name)
-        st_s, dur_s = _clamp_window(st_f / float(fps), en_f / float(fps), total_dur)
-        cid = f"seg-{idx+1:03d}"
-        lines.append(
-            f'        <video id="{cid}" class="clip seg-clip" src="media/segments/{dst_name}" '
-            f'playsinline muted{media_start_attr} '
-            f'data-start="{st_s:.4f}" data-duration="{dur_s:.4f}" data-track-index="0"></video>'
+        st_s, en_s = _clamp_window(float(c.get("timeline_in_sec", 0.0)), float(c.get("timeline_out_sec", 0.0)), total_dur)
+        dur_s = round(max(0.04, en_s - st_s), 4)
+        src_in = max(0.0, float(c.get("source_in_sec", 0.0)))
+        vid_id = _safe_id(str(c.get("clip_id") or f"seg_{idx:03d}"), "seg")
+        body_lines.append(
+            f'    <video class="clip" id="{vid_id}" src="{html.escape(src_to_rel[mp])}" '
+            f'muted playsinline preload="metadata" '
+            f'data-media-start="{src_in:.4f}" data-start="{st_s:.4f}" data-duration="{dur_s:.4f}" data-track-index="0"></video>'
         )
 
-    for old in segments_dir.glob("*"):
-        if old.is_file() and old.name not in keep_names:
-            old.unlink()
+    css = "    video.clip { object-fit: cover; }"
+    return _wrap_subcomposition("主视频分镜轨", "track-video", css, "\n".join(body_lines)), len(clips)
 
-    css = "\n".join([
-        "        #root { position: absolute; inset: 0; width: 100%; height: 100%; background: #000000; overflow: hidden; }",
-        "        .seg-clip { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }",
-    ])
-    return _wrap_subcomposition("主分镜视频轨", "track-video", css, "\n".join(lines)), len(lines)
+
+def _place_in_zone(entry: Dict[str, Any], pw: int, ph: int, zone: Dict[str, int], default_xy: Tuple[int, int]) -> Tuple[int, int]:
+    fb = entry.get("final_bbox") or entry.get("bbox")
+    if isinstance(fb, dict) and {"x", "y", "w", "h"}.issubset(fb.keys()):
+        bx = int(fb["x"]) + (int(fb["w"]) - pw) // 2
+        by = int(fb["y"]) + (int(fb["h"]) - ph) // 2
+        px = max(zone["x_min"], min(bx, zone["x_max"] - pw))
+        py = max(zone["y_min"], min(by, zone["y_max"] - ph))
+        return int(px), int(py)
+    px = max(zone["x_min"], min(default_xy[0], zone["x_max"] - pw))
+    py = max(zone["y_min"], min(default_xy[1], zone["y_max"] - ph))
+    return int(px), int(py)
 
 
 def _build_overlay_track_html(
@@ -214,252 +216,194 @@ def _build_overlay_track_html(
     track_index: int,
     pipeline_dir: Path,
     overlays_dir: Path,
-    font_path: Optional[str],
-    cur_style_id: str,
+    font_candidates: Optional[List[str]],
+    style_id: str,
     fps: int,
     total_dur: float,
     keep_overlays: set[str],
 ) -> str:
-    render_final = pipeline_dir / "_render_final"
-    stage_assets = pipeline_dir / "_stage_assets"
+    color_plan = read_json(pipeline_dir / "07_color_plan.json") if (pipeline_dir / "07_color_plan.json").exists() else {}
     lines: List[str] = []
 
     for idx, elem in enumerate(elems, start=1):
-        eid = str(elem.get("id", f"elem_{idx:03d}"))
-        src_png = resolve_packaging_source(elem, eid, render_final, stage_assets, font_path, cur_style_id)
-        if not src_png:
-            continue
-        with Image.open(src_png) as im_probe:
-            img_w, img_h = im_probe.size
-        bbox = elem.get("bbox", {})
-        if img_w == CANVAS_WIDTH and img_h == CANVAS_HEIGHT:
-            px, py = 0, 0
-        else:
-            px = int(bbox.get("x", max(0, (CANVAS_WIDTH - img_w) // 2)))
-            py = int(bbox.get("y", max(0, (CANVAS_HEIGHT - img_h) // 2)))
+        sf = max(0, int(elem.get("start_frame", 0)))
+        ef = int(elem.get("end_frame", sf + fps))
+        st_s, en_s = _clamp_window(frames_to_sec(sf, fps), frames_to_sec(ef, fps), total_dur)
+        dur_s = round(max(0.04, en_s - st_s), 4)
 
-        png_name = f"{_safe_id(eid)}.png"
-        _link_or_copy(src_png, overlays_dir / png_name)
-        keep_overlays.add(png_name)
+        raw_png = resolve_packaging_source(
+            elem, pipeline_dir, idx - 1, style_id=style_id, color_plan=color_plan, font_candidates=font_candidates,
+        )
+        dst_name = f"pkg_{idx:03d}.png"
+        dst_png = overlays_dir / dst_name
+        shutil.copy2(raw_png, dst_png)
+        keep_overlays.add(dst_name)
 
-        sf = int(elem.get("start_frame", 0))
-        ef = max(sf + 1, int(elem.get("end_frame", sf + fps)))
-        st_s, dur_s = _clamp_window(sf / float(fps), ef / float(fps), total_dur)
-        alt_txt = html.escape(str(elem.get("text_or_asset") or eid)[:24])
+        with Image.open(dst_png) as im:
+            pw, ph = im.size
+        def_x = max(SAFE_ZONE["x_min"], (CANVAS_WIDTH - pw) // 2)
+        def_y = SAFE_ZONE["y_min"] + 40
+        px, py = _place_in_zone(elem, pw, ph, SAFE_ZONE, (def_x, def_y))
+
+        oid = _safe_id(str(elem.get("id") or f"ov_{idx:03d}"), "ov")
         lines.append(
-            f'        <img id="ov-{_safe_id(eid)}" class="clip ov-img" src="media/overlays/{png_name}" alt="{alt_txt}" '
-            f'data-start="{st_s:.4f}" data-duration="{dur_s:.4f}" data-track-index="{track_index}" '
-            f'style="left:{px}px; top:{py}px; width:{img_w}px; height:{img_h}px;" />'
+            f'    <img class="clip ov-img" id="{oid}" src="../media/overlays/{dst_name}" '
+            f'style="left:{px}px;top:{py}px;width:{pw}px;height:{ph}px;" '
+            f'data-start="{st_s:.4f}" data-duration="{dur_s:.4f}" data-track-index="{track_index}" />'
         )
 
-    css = "\n".join([
-        "        #root { position: absolute; inset: 0; width: 100%; height: 100%; overflow: hidden; pointer-events: none; background: transparent; }",
-        "        .ov-img { position: absolute; display: block; pointer-events: auto; }",
-    ])
+    css = "    .ov-img { position: absolute; object-fit: contain; pointer-events: none; }"
     return _wrap_subcomposition(title, comp_id, css, "\n".join(lines))
 
 
 def _hex_has_alpha(hex_str: str) -> bool:
-    s = hex_str.strip().lstrip("#")
-    if len(s) == 8:
-        return int(s[6:8], 16) > 0
-    return len(s) == 6
-
-
-def _estimate_sub_sizes(words: List[Dict[str, Any]], base_sz: int, kw_scale: float) -> Tuple[int, int]:
-    """估算单行字符像素宽度并按 [80, 860] 安全区自适应缩放字号，避免换行溢出。"""
-    max_w = 708.0
-    n_sz = float(base_sz)
-    k_sz = round(n_sz * kw_scale)
-
-    def _est_width(fn: float, fk: float) -> float:
-        tot = 0.0
-        for w in words:
-            ch = str(w.get("word", ""))
-            sz = fk if w.get("is_keyword") else fn
-            for c in ch:
-                tot += sz * (1.03 if ord(c) > 127 else 0.58)
-        return tot
-
-    est = _est_width(n_sz, k_sz)
-    if est > max_w and est > 0:
-        ratio = (max_w / est) * 0.96
-        min_f = min(28, max(24, base_sz))
-        n_sz = max(min_f, int(n_sz * ratio))
-        k_sz = max(min_f + 4, int(round(k_sz * ratio)))
-    return int(round(n_sz)), int(round(k_sz))
-
-
-def _group_word_spans(words: List[Dict[str, Any]], fallback_text: str) -> str:
-    if not words:
-        return f'<span class="pt">{html.escape(fallback_text)}</span>'
-    parts: List[str] = []
-    cur_kw: Optional[bool] = None
-    buf: List[str] = []
-
-    def _flush() -> None:
-        if not buf or cur_kw is None:
-            return
-        cls = "kw" if cur_kw else "pt"
-        parts.append(f'<span class="{cls}">{html.escape("".join(buf))}</span>')
-        buf.clear()
-
-    for w in words:
-        ch = str(w.get("word", ""))
-        kw = bool(w.get("is_keyword", False))
-        if cur_kw is None:
-            cur_kw = kw
-        elif kw != cur_kw:
-            _flush()
-            cur_kw = kw
-        buf.append(ch)
-    _flush()
-    return "".join(parts)
+    s = str(hex_str or "").strip().lower()
+    return bool(s and s != "none" and not (len(s.lstrip("#")) == 8 and s.lstrip("#").endswith("00")))
 
 
 def _build_captions_track_html(
     subs: Dict[str, Any],
+    templates: Dict[str, Any],
     track_index: int,
     font_info: Optional[Tuple[str, str]],
     total_dur: float,
 ) -> Tuple[str, int]:
-    tpl = subs.get("template_config", {})
-    base_sz = int(tpl.get("font_size", 54))
-    kw_scale = float(tpl.get("keyword_scale", 1.15))
+    tpl_id = subs.get("template_id") or "style_01"
+    tpl = templates.get(tpl_id) or next(iter(templates.values()))
+
     c_primary = str(tpl.get("primary_color", "#FFFFFF"))
-    c_kw = str(tpl.get("keyword_color", "#FFD54F"))
-    c_stroke = str(tpl.get("stroke_color", "#111111"))
-    stroke_w = int(tpl.get("stroke_width", 4))
-    bg_raw = str(tpl.get("bg_box_color", "#00000000"))
-    bg_radius = int(tpl.get("bg_radius", 16))
-    safe_y = int(tpl.get("safe_y_center") if tpl.get("safe_y_center") is not None else 1340)
-    top_y = max(1120, min(1400, safe_y - 90))
+    c_kw = str(tpl.get("keyword_color", "#FFE066"))
+    c_stroke = str(tpl.get("stroke_color", "#0D1117"))
+    orig_stroke_w = int(tpl.get("stroke_width", 4))
+    font_sz = max(24, int(tpl.get("font_size", 58)))
+    kw_scale = float(tpl.get("keyword_scale", 1.15))
+    bg_hex = str(tpl.get("bg_box", "none"))
+    bg_css = f"background: {bg_hex}; padding: 12px 24px; border-radius: 16px;" if _hex_has_alpha(bg_hex) else ""
 
-    has_bg = _hex_has_alpha(bg_raw)
-    bg_css = (
-        f"background: {bg_raw}; padding: 14px 26px; border-radius: {bg_radius}px;"
-        if has_bg
-        else "background: transparent; padding: 4px 10px;"
-    )
-
-    font_face_css = ""
-    font_stack = "sans-serif"
+    font_css = ""
+    font_stack = '"AlimamaShuHeiTi", "PingFang SC", "Noto Sans CJK SC", sans-serif'
     if font_info:
         f_url, f_fmt = font_info
-        font_face_css = (
-            "        @font-face {\n"
-            '          font-family: "SubMain";\n'
-            f'          src: url("{f_url}") format("{f_fmt}");\n'
-            "          font-display: block;\n"
-            "        }\n"
+        font_css = (
+            "    @font-face {\n"
+            '      font-family: "CustomStudioFont";\n'
+            f'      src: url("{f_url}") format("{f_fmt}");\n'
+            "      font-display: swap;\n"
+            "    }\n"
         )
-        font_stack = '"SubMain", sans-serif'
+        font_stack = f'"CustomStudioFont", {font_stack}'
+
+    stroke_css = "0px" if orig_stroke_w <= 0 else f"{max(1, orig_stroke_w * 2)}px {c_stroke}"
+    shadow_css = "text-shadow: 2px 3px 6px rgba(0,0,0,0.68);" if tpl.get("shadow", True) else ""
 
     css = "\n".join([
-        font_face_css.rstrip("\n"),
-        "        #root { position: absolute; inset: 0; width: 100%; height: 100%; overflow: hidden; pointer-events: none; background: transparent; }",
-        f"        .cap-clip {{ position: absolute; left: 80px; width: 780px; top: {top_y}px; height: 180px; display: flex; align-items: center; justify-content: center; text-align: center; pointer-events: none; }}",
-        f"        .cap-box {{ display: inline-flex; align-items: baseline; justify-content: center; white-space: nowrap; font-family: {font_stack}; font-weight: 800; line-height: 1.15; letter-spacing: 1px; paint-order: stroke fill; -webkit-text-stroke: {max(1, stroke_w * 2)}px {c_stroke}; {bg_css} }}",
-        f"        .cap-box .pt {{ color: {c_primary}; font-size: var(--fs, {base_sz}px); }}",
-        f"        .cap-box .kw {{ color: {c_kw}; font-size: var(--ks, {int(round(base_sz * kw_scale))}px); font-weight: 900; }}",
-    ]).strip("\n")
+        font_css,
+        "    .cap-clip { position: absolute; display: flex; align-items: center; justify-content: center; text-align: center; }",
+        f"    .cap-box {{ display: inline-flex; flex-wrap: wrap; align-items: baseline; justify-content: center; "
+        f"font-family: {font_stack}; font-size: {font_sz}px; font-weight: 800; line-height: 1.18; "
+        f"color: {c_primary}; paint-order: stroke fill; -webkit-text-stroke: {stroke_css}; {shadow_css} {bg_css} }}",
+        f"    .cap-kw {{ color: {c_kw}; font-size: {int(round(font_sz * kw_scale))}px; }}",
+    ])
 
-    lines: List[str] = []
-    entries = subs.get("entries", [])
-    for idx, sub in enumerate(entries, start=1):
-        txt = str(sub.get("text", "")).strip()
-        if not txt:
+    body_lines: List[str] = []
+    rendered_count = 0
+    max_sub_w = SUBTITLE_SAFE_ZONE["x_max"] - SUBTITLE_SAFE_ZONE["x_min"]
+
+    for idx, sub in enumerate(subs.get("entries") or [], start=1):
+        if sub.get("suppressed"):
             continue
-        words = sub.get("words") or [{"word": ch, "is_keyword": False} for ch in txt]
-        fs, ks = _estimate_sub_sizes(words, base_sz, kw_scale)
-        st_s, dur_s = _clamp_window(float(sub.get("start_sec", 0.0)), float(sub.get("end_sec", 1.0)), total_dur)
-        sid = _safe_id(str(sub.get("id", f"sub_{idx:03d}")))
-        spans_html = _group_word_spans(words, txt)
-        lines.append(
-            f'        <div class="clip cap-clip" id="{sid}" data-start="{st_s:.4f}" data-duration="{dur_s:.4f}" data-track-index="{track_index}">'
-            f'<span class="cap-box" style="--fs:{fs}px;--ks:{ks}px;">{spans_html}</span>'
-            f"</div>"
-        )
+        st_s, en_s = _clamp_window(float(sub.get("start_sec", 0.0)), float(sub.get("end_sec", 0.0)), total_dur)
+        dur_s = round(max(0.04, en_s - st_s), 4)
 
-    return _wrap_subcomposition("双色安全区可编辑字幕轨", "track-captions", css, "\n".join(lines)), len(lines)
+        fb = sub.get("final_bbox") or sub.get("bbox")
+        if isinstance(fb, dict) and {"x", "y", "w", "h"}.issubset(fb.keys()):
+            bx = max(SUBTITLE_SAFE_ZONE["x_min"], min(int(fb["x"]), SUBTITLE_SAFE_ZONE["x_max"] - 80))
+            bw = min(max_sub_w, max(80, int(fb["w"])))
+            bh = min(SUBTITLE_SAFE_ZONE["y_max"] - SUBTITLE_SAFE_ZONE["y_min"], max(48, int(fb["h"])))
+            by = max(SUBTITLE_SAFE_ZONE["y_min"], min(int(fb["y"]), SUBTITLE_SAFE_ZONE["y_max"] - bh))
+        else:
+            bw, bh = max_sub_w, 84
+            bx, by = compute_subtitle_place_xy(bw, bh, tpl)
+            by = max(SUBTITLE_SAFE_ZONE["y_min"], min(by, SUBTITLE_SAFE_ZONE["y_max"] - bh))
+
+        words = sub.get("words") or []
+        if words:
+            spans = "".join(
+                f'<span class="cap-kw">{html.escape(str(w.get("word", "")))}</span>'
+                if w.get("is_keyword")
+                else html.escape(str(w.get("word", "")))
+                for w in words
+            )
+        else:
+            spans = html.escape(str(sub.get("text") or ""))
+
+        sid = _safe_id(str(sub.get("id") or f"sub_{idx:03d}"), "sub")
+        body_lines.append(
+            f'    <div class="clip cap-clip" id="{sid}" '
+            f'style="left:{bx}px;top:{by}px;width:{bw}px;height:{bh}px;" '
+            f'data-start="{st_s:.4f}" data-duration="{dur_s:.4f}" data-track-index="{track_index}">'
+            f'<div class="cap-box">{spans}</div></div>'
+        )
+        rendered_count += 1
+
+    return _wrap_subcomposition("双色高亮字幕轨", "track-captions", css, "\n".join(body_lines)), rendered_count
 
 
 def _build_root_index_html(
-    project_title: str,
+    proj_slug: str,
     total_dur: float,
     fps: int,
     tracks: List[Dict[str, Any]],
     audio_items: List[Dict[str, Any]],
 ) -> str:
-    slot_css: List[str] = []
-    slot_divs: List[str] = []
-    for tr in tracks:
-        slot_css.append(
-            f"      #{tr['id']} {{ position: absolute; inset: 0; width: 100%; height: 100%; z-index: {tr['z']};"
-            + (" pointer-events: none;" if tr["kind"] == "captions" else "")
-            + " }"
-        )
-        slot_divs.append(
-            f'      <div id="{tr["id"]}" '
-            f'data-composition-id="{tr["id"]}" '
-            f'data-composition-src="{tr["src"]}" '
-            f'data-start="0" data-duration="{total_dur:.4f}" '
-            f'data-track-index="{tr["track_index"]}" '
-            f'data-track-kind="{tr["kind"]}" '
-            f'data-width="{CANVAS_WIDTH}" data-height="{CANVAS_HEIGHT}"></div>'
-        )
-
-    audio_tags: List[str] = []
-    for au in audio_items:
-        audio_tags.append(
-            f'      <audio id="{au["id"]}" src="{au["src"]}" '
-            f'data-start="0" data-duration="{au["duration"]:.4f}" '
-            f'data-track-index="{au["track_index"]}" data-volume="{au["volume"]}"></audio>'
-        )
-
+    track_divs = "\n".join(
+        f'    <div class="track-layer" style="z-index:{tr["z"]};" '
+        f'data-composition-id="{html.escape(tr["id"])}" '
+        f'data-composition-src="{html.escape(tr["src"])}" '
+        f'data-start="0" data-duration="{total_dur:.4f}" '
+        f'data-track-index="{tr["track_index"]}" '
+        f'data-track-kind="{html.escape(tr["kind"])}" '
+        f'data-width="{CANVAS_WIDTH}" data-height="{CANVAS_HEIGHT}"></div>'
+        for tr in tracks
+    )
+    audio_tags = "\n".join(
+        f'    <audio id="{html.escape(au["id"])}" src="{html.escape(au["src"])}" '
+        f'data-start="0" data-duration="{au["duration"]:.4f}" '
+        f'data-track-index="{au["track_index"]}" data-volume="{au["volume"]}"></audio>'
+        for au in audio_items
+    )
     return "\n".join([
-        "<!doctype html>",
+        "<!DOCTYPE html>",
         '<html lang="zh-CN">',
-        "  <head>",
-        '    <meta charset="UTF-8" />',
-        f'    <meta name="viewport" content="width={CANVAS_WIDTH}, height={CANVAS_HEIGHT}" />',
-        f"    <title>{html.escape(project_title)} · HyperFrames 可编辑工程</title>",
-        '    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>',
-        "    <style>",
-        "      * { margin: 0; padding: 0; box-sizing: border-box; }",
-        "      html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000000; }",
-        "      #root { position: relative; width: 100%; height: 100%; overflow: hidden; background: #000000; }",
-        *slot_css,
-        "    </style>",
-        "  </head>",
-        "  <body>",
-        "    <div",
-        '      id="root"',
-        '      data-composition-id="main"',
-        '      data-start="0"',
-        f'      data-duration="{total_dur:.4f}"',
-        f'      data-fps="{fps}"',
-        f'      data-width="{CANVAS_WIDTH}"',
-        f'      data-height="{CANVAS_HEIGHT}"',
-        "    >",
-        *slot_divs,
-        *audio_tags,
-        "    </div>",
-        "    <script>",
-        "      (function () {",
-        "        const tl = gsap.timeline({ paused: true });",
-        '        tl.to("#root", { duration: 0.01 }, 0);',
-        '        window.__timelines["main"] = tl;',
-        "      })();",
-        "    </script>",
-        "  </body>",
+        "<head>",
+        '  <meta charset="utf-8" />',
+        f"  <title>{html.escape(proj_slug)} - HyperFrames Studio</title>",
+        "  <style>",
+        "    * { box-sizing: border-box; margin: 0; padding: 0; }",
+        f"    html, body {{ width: {CANVAS_WIDTH}px; height: {CANVAS_HEIGHT}px; background: #000; overflow: hidden; }}",
+        f"    #main {{ position: relative; width: {CANVAS_WIDTH}px; height: {CANVAS_HEIGHT}px; overflow: hidden; }}",
+        "    .track-layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }",
+        "  </style>",
+        "</head>",
+        "<body>",
+        '  <div id="main"',
+        '       data-composition-id="main"',
+        '       data-start="0"',
+        f'       data-duration="{total_dur:.4f}"',
+        f'       data-fps="{fps}"',
+        f'       data-width="{CANVAS_WIDTH}"',
+        f'       data-height="{CANVAS_HEIGHT}">',
+        track_divs,
+        audio_tags,
+        "  </div>",
+        _offline_timeline_shim("main"),
+        "</body>",
         "</html>",
-        "",
-    ])
+    ]) + "\n"
 
 
 def export_hyperframes_draft(pipeline_dir: Path, simulate_failure: bool = False) -> Dict[str, Any]:
-    """将流水线剪辑包装成果导出为可双击打开的 HyperFrames Studio 工程目录。"""
+    """将流水线剪辑包装成果导出为全离线可打开的 HyperFrames Studio 工程目录。"""
     draft_dir = pipeline_dir / "hyperframes_draft"
     proj_slug = pipeline_dir.parent.name if pipeline_dir.name == "pipeline" else pipeline_dir.name
     try:
@@ -472,10 +416,11 @@ def export_hyperframes_draft(pipeline_dir: Path, simulate_failure: bool = False)
         audio_p = pipeline_dir / "03_audio_events.json"
         mix_p = pipeline_dir / "08_mix_metrics.json"
 
-        subs = read_json(subs_p) if subs_p.exists() else {"entries": [], "template_config": {}}
-        pkg = read_json(pkg_p) if pkg_p.exists() else {}
+        subs = read_json(subs_p) if subs_p.exists() else {"entries": [], "template_id": "style_01"}
+        pkg = read_json(pkg_p) if pkg_p.exists() else {"visual_elements": []}
         audio_events = read_json(audio_p) if audio_p.exists() else {}
         mix_metrics = read_json(mix_p) if mix_p.exists() else {}
+        templates = load_subtitle_templates()
 
         fps = int(edl.get("fps", DEFAULT_FPS))
         total_frames = int(edl.get("total_frames") or round(float(edl["total_duration_sec"]) * fps))
@@ -489,9 +434,11 @@ def export_hyperframes_draft(pipeline_dir: Path, simulate_failure: bool = False)
         fonts_dir = media_dir / "fonts"
         for d in (comp_dir, segments_dir, overlays_dir, audio_dir, fonts_dir):
             d.mkdir(parents=True, exist_ok=True)
+        for stale_comp in ("stage_win_track.html", "stage_card_track.html"):
+            (comp_dir / stale_comp).unlink(missing_ok=True)
 
         # 1. 视频分镜子组合
-        video_html, n_segs = _build_video_track_html(pipeline_dir, edl, segments_dir, fps, total_frames, total_dur)
+        video_html, n_segs = _build_video_track_html(edl, segments_dir, total_dur)
         (comp_dir / "video_track.html").write_text(video_html, encoding="utf-8")
 
         tracks: List[Dict[str, Any]] = [{
@@ -503,52 +450,39 @@ def export_hyperframes_draft(pipeline_dir: Path, simulate_failure: bool = False)
         }]
         next_track = 1
 
-        # 2. 风格谱画框 / 阶段卡 / 语义花字子组合（无该类元素时自动略过，保持时间线简洁）
-        font_path = subs.get("font_path") or find_commercial_font()
-        cur_style_id = str(subs.get("template_id") or pkg.get("style_id") or "style_14")
-        stage_all = list(pkg.get("stage_overlays", []))
-        stage_wins = [
-            e for e in stage_all
-            if ("_win_" in str(e.get("id", ""))) or (
-                int(e.get("bbox", {}).get("w", 0)) == CANVAS_WIDTH and int(e.get("bbox", {}).get("h", 0)) == CANVAS_HEIGHT
-            )
-        ]
-        stage_cards = [e for e in stage_all if e not in stage_wins]
-        flower_elems = list(pkg.get("visual_elements", []))
+        # 2. 视觉包装花字轨
+        tpl_id = subs.get("template_id") or "style_01"
+        tpl = templates.get(tpl_id) or next(iter(templates.values()))
+        cur_style_id = str(pkg.get("style_id") or load_style_applied(pipeline_dir) or "style_01")
+        flower_elems = list(pkg.get("visual_elements") or [])
         keep_overlays: set[str] = set()
 
-        def _maybe_add_overlay_sub(comp_id: str, title: str, fname: str, elems: List[Dict[str, Any]], z_idx: int) -> None:
-            nonlocal next_track
-            comp_file = comp_dir / fname
-            if not elems:
-                if comp_file.exists():
-                    comp_file.unlink()
-                return
-            html_str = _build_overlay_track_html(
-                comp_id, title, elems, next_track,
-                pipeline_dir, overlays_dir, font_path, cur_style_id, fps, total_dur, keep_overlays,
+        flower_file = comp_dir / "flower_track.html"
+        if flower_elems:
+            flower_html = _build_overlay_track_html(
+                "track-flower", "视觉包装花字轨", flower_elems, next_track,
+                pipeline_dir, overlays_dir, tpl.get("font_candidates"), cur_style_id, fps, total_dur, keep_overlays,
             )
-            comp_file.write_text(html_str, encoding="utf-8")
+            flower_file.write_text(flower_html, encoding="utf-8")
             tracks.append({
-                "id": comp_id,
-                "src": f"compositions/{fname}",
+                "id": "track-flower",
+                "src": "compositions/flower_track.html",
                 "track_index": next_track,
                 "kind": "graphics",
-                "z": z_idx,
+                "z": 30,
             })
             next_track += 1
-
-        _maybe_add_overlay_sub("track-stage-win", "风格画框背景窗轨", "stage_win_track.html", stage_wins, 10)
-        _maybe_add_overlay_sub("track-stage-card", "阶段知识卡与进度条轨", "stage_card_track.html", stage_cards, 20)
-        _maybe_add_overlay_sub("track-flower", "语义花字贴纸轨", "flower_track.html", flower_elems, 30)
+        elif flower_file.exists():
+            flower_file.unlink()
 
         for old_ov in overlays_dir.glob("*.png"):
             if old_ov.name not in keep_overlays:
                 old_ov.unlink()
 
-        # 3. 原生 HTML/CSS 双色高亮可编辑字幕子组合
+        # 3. 原生离线双色安全区字幕子组合
+        font_path = subs.get("font_path") or find_commercial_font(tpl.get("font_candidates"))
         font_info = _stage_font(font_path, fonts_dir)
-        cap_html, n_subs = _build_captions_track_html(subs, next_track, font_info, total_dur)
+        cap_html, n_subs = _build_captions_track_html(subs, templates, next_track, font_info, total_dur)
         (comp_dir / "captions_track.html").write_text(cap_html, encoding="utf-8")
         tracks.append({
             "id": "track-captions",
@@ -558,27 +492,36 @@ def export_hyperframes_draft(pipeline_dir: Path, simulate_failure: bool = False)
             "z": 40,
         })
 
-        # 4. 三轨独立 WAV 音频
+        # 4. 三轨同源独立 WAV 音频
         voice_src = next(
-            (cand for cand in [
-                str(pipeline_dir / "08_voice_denoised.wav"),
+            (c for c in (
+                mix_metrics.get("voice_master_wav"),
+                str(pipeline_dir / "08_voice_master.wav"),
                 str(pipeline_dir / "03_locked_voice.wav"),
-                mix_metrics.get("master_wav"),
-            ] if cand and Path(cand).is_file()),
+            ) if c and Path(c).is_file()),
             None,
         )
+        bgm_ducked = next(
+            (c for c in (
+                mix_metrics.get("bgm_ducked_wav"),
+                str(pipeline_dir / "08_bgm_ducked.wav"),
+            ) if c and Path(c).is_file()),
+            None,
+        )
+        bgm_src = bgm_ducked or audio_events.get("locked_bgm_wav")
+        sfx_src = str(pipeline_dir / "06_sfx_track.wav")
+
         audio_specs = [
-            ("audio-voice", voice_src, "voice.wav", 10, "1.0"),
-            ("audio-bgm", audio_events.get("locked_bgm_wav"), "bgm.wav", 11, "0.2"),
-            ("audio-sfx", str(pipeline_dir / "06_sfx_track.wav"), "sfx.wav", 12, "1.0"),
+            ("audio-voice", voice_src, "voice_master.wav", 10, "1.0"),
+            ("audio-bgm", bgm_src, "bgm_ducked.wav", 11, "1.0" if bgm_ducked else "0.2"),
+            ("audio-sfx", sfx_src, "sfx_track.wav", 12, "1.0"),
         ]
         audio_items: List[Dict[str, Any]] = []
         keep_audio: set[str] = set()
         for aid, src_str, dst_name, t_idx, vol in audio_specs:
             if not src_str or not Path(src_str).is_file():
                 continue
-            src_p = Path(src_str)
-            _link_or_copy(src_p, audio_dir / dst_name)
+            link_or_copy(Path(src_str), audio_dir / dst_name)
             keep_audio.add(dst_name)
             wav_sec = _measure_wav_sec(src_str)
             use_dur = round(min(total_dur, wav_sec if wav_sec > 0.05 else total_dur), 4)
@@ -593,50 +536,43 @@ def export_hyperframes_draft(pipeline_dir: Path, simulate_failure: bool = False)
             if old_au.name not in keep_audio:
                 old_au.unlink()
 
-        # 5. 生成根 index.html、hyperframes.json、使用说明与双击启动器
+        # 5. 生成根 index.html、hyperframes.json 与启动器
         root_html = _build_root_index_html(proj_slug, total_dur, fps, tracks, audio_items)
         (draft_dir / "index.html").write_text(root_html, encoding="utf-8")
         write_json(draft_dir / "hyperframes.json", {
-            "$schema": "https://hyperframes.heygen.com/schema/hyperframes.json",
+            "schema": "hyperframes-local-v1",
+            "offline": True,
             "media": {"autoProxy": True},
         })
         attach_hyperframes_launchers(draft_dir)
 
         readme = "\n".join([
-            f"【{proj_slug} HyperFrames Studio 可编辑多轨工程使用指南】",
+            f"【{proj_slug} HyperFrames 全离线相对路径工程使用指南】",
             "",
-            "1. 一键打开可视化时间线编辑器：",
-            "   直接双击本目录中的「启动HyperFrames工程.command」（macOS）或「启动HyperFrames工程.bat」（Windows）。",
-            "   前置要求：已安装 Node.js >= 22 与 FFmpeg（macOS 可运行 brew install node ffmpeg）。",
-            "",
-            "2. 工程内包含以下独立可编辑轨道：",
-            f"   - compositions/video_track.html      : {n_segs} 段精剪调色视频分镜",
-            f"   - compositions/stage_* / flower.html : {len(stage_wins) + len(stage_cards)} 个画框/阶段卡 + {len(flower_elems)} 个花字",
-            f"   - compositions/captions_track.html   : {n_subs} 句原生 HTML 双色高亮可编辑字幕（可直接改文案、颜色、字号与坐标）",
-            f"   - media/audio/                       : {len(audio_items)} 条独立音轨（人声干音 / BGM / SFX）",
-            "",
-            "3. 渲染最终 MP4（如需在 Studio 修改后重新出片）：",
-            "   可在打开的浏览器 Studio 中点击渲染，或在本目录终端运行：",
-            "   npx --yes hyperframes render --quality looks --output output_edited.mp4",
-            "",
-        ])
+            "1. 双击「启动HyperFrames工程.command」（macOS）或「启动HyperFrames工程.bat」（Windows）即可开启预览与编辑。",
+            "2. 所有视频、音频、字体、包装 PNG 均使用相对路径并内置离线 timeline 控制，不依赖外部 CDN：",
+            f"   - compositions/video_track.html    : {n_segs} 段精剪调色视频分镜",
+            f"   - compositions/flower_track.html   : {len(flower_elems)} 个视觉包装层",
+            f"   - compositions/captions_track.html : {n_subs} 条权威安全区双色字幕 (y <= {SUBTITLE_SAFE_ZONE['y_max']})",
+            f"   - media/audio/                     : {len(audio_items)} 条独立同源分轨 WAV",
+        ]) + "\n"
         (draft_dir / "README_HyperFrames使用说明.txt").write_text(readme, encoding="utf-8")
 
         status = {
             "status": "success",
             "degraded_to_mp4_only": False,
+            "offline_zero_cdn": True,
             "draft_dir": str(draft_dir.resolve()),
             "index_html": str((draft_dir / "index.html").resolve()),
             "launcher_command": str((draft_dir / "启动HyperFrames工程.command").resolve()),
             "segments_count": n_segs,
-            "stage_overlays_count": len(stage_wins) + len(stage_cards),
             "flower_texts_count": len(flower_elems),
             "captions_count": n_subs,
             "audio_tracks_count": len(audio_items),
-            "message": f"HyperFrames 可编辑工程导出成功（含 {n_segs} 段分镜 + {len(stage_wins)+len(stage_cards)+len(flower_elems)} 个包装层 + {n_subs} 条原生双色字幕 + 双击启动器）。",
+            "message": f"HyperFrames 全离线工程导出成功（{n_segs} 分镜 + {len(flower_elems)} 包装 + {n_subs} 字幕 + {len(audio_items)} 音轨）。",
         }
         write_json(pipeline_dir / "hyperframes_export_status.json", status)
-        print(f"[hyperframes] 可编辑工程 + 双击启动器导出成功 -> {draft_dir}")
+        print(f"[hyperframes] 全离线相对路径工程导出成功 -> {draft_dir}")
         return status
     except Exception as exc:
         status = {
@@ -644,7 +580,7 @@ def export_hyperframes_draft(pipeline_dir: Path, simulate_failure: bool = False)
             "degraded_to_mp4_only": True,
             "draft_dir": None,
             "error": str(exc),
-            "message": f"提示：HyperFrames 工程导出失败（{exc}），已自动降级，不影响 MP4 与剪映工程交付。",
+            "message": f"提示：HyperFrames 工程导出失败（{exc}），已自动降级。",
         }
         write_json(pipeline_dir / "hyperframes_export_status.json", status)
         print(f"[hyperframes][降级提示] {status['message']}")
@@ -652,8 +588,7 @@ def export_hyperframes_draft(pipeline_dir: Path, simulate_failure: bool = False)
 
 
 def main() -> None:
-    maybe_reexec_in_venv()
-    parser = argparse.ArgumentParser(description="出片3: HyperFrames Studio 全多轨可编辑工程 + 双击启动器导出")
+    parser = argparse.ArgumentParser(description="出片3: HyperFrames Studio 全离线相对路径可编辑工程导出")
     parser.add_argument("--pipeline-dir", required=True)
     parser.add_argument("--simulate-failure", action="store_true", help="模拟导出失败验证降级逻辑")
     args = parser.parse_args()

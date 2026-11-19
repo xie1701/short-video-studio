@@ -577,7 +577,7 @@
       "animation": "hard_cut",
       "punct_stripped": true,
       "lut_cube": "assets/style_spectrum/luts/style_18.cube",
-      "ass_style": "Style: Default,QingSongShouXieTi / Source Han Sans CN,64,&H001E1E1E,&H004FD5FF,&H00FFFFFF,&HFF000000,-1,0,0,0,100,100,1,0,1,0,2,2,100,220,440,1"
+      "ass_style": "Style: Default,QingSongShouXieTi1,64,&H001E1E1E,&H004FD5FF,&H00FFFFFF,&HFF000000,-1,0,0,0,100,100,1,0,1,0,2,2,100,220,440,1"
     },
     "style_19": {
       "name": "[style_19] 专业剪辑大师课 · 顶部细条章节 + 绿块冲击风",

@@ -1,12 +1,12 @@
 {
   "styles": {
     "style_14": {
-      "bgm_wav": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/bgm/style_14_bgm.wav",
+      "bgm_wav": "sound_vibe/bgm/style_14_bgm.wav",
       "bpm": 120.0,
       "sfx": {
-        "transition": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/sfx/style_14_transition.wav",
-        "accent": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/sfx/style_14_accent.wav",
-        "ui": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/sfx/style_14_ui.wav"
+        "transition": "sound_vibe/sfx/style_14_transition.wav",
+        "accent": "sound_vibe/sfx/style_14_accent.wav",
+        "ui": "sound_vibe/sfx/style_14_ui.wav"
       },
       "sfx_min_gap_sec": 7.5,
       "sfx_gain_db": -10.0,
@@ -14,12 +14,12 @@
       "duck_depth_db": -10.0
     },
     "style_02": {
-      "bgm_wav": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/bgm/style_02_bgm.wav",
+      "bgm_wav": "sound_vibe/bgm/style_02_bgm.wav",
       "bpm": 90.0,
       "sfx": {
-        "transition": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/sfx/style_02_transition.wav",
-        "accent": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/sfx/style_02_accent.wav",
-        "ui": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/sfx/style_02_ui.wav"
+        "transition": "sound_vibe/sfx/style_02_transition.wav",
+        "accent": "sound_vibe/sfx/style_02_accent.wav",
+        "ui": "sound_vibe/sfx/style_02_ui.wav"
       },
       "sfx_min_gap_sec": 6.0,
       "sfx_gain_db": -9.0,
@@ -27,12 +27,12 @@
       "duck_depth_db": -10.5
     },
     "style_03": {
-      "bgm_wav": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/bgm/style_03_bgm.wav",
+      "bgm_wav": "sound_vibe/bgm/style_03_bgm.wav",
       "bpm": 110.0,
       "sfx": {
-        "transition": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/sfx/style_03_transition.wav",
-        "accent": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/sfx/style_03_accent.wav",
-        "ui": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/sfx/style_03_ui.wav"
+        "transition": "sound_vibe/sfx/style_03_transition.wav",
+        "accent": "sound_vibe/sfx/style_03_accent.wav",
+        "ui": "sound_vibe/sfx/style_03_ui.wav"
       },
       "sfx_min_gap_sec": 6.5,
       "sfx_gain_db": -10.0,
@@ -40,12 +40,12 @@
       "duck_depth_db": -10.0
     },
     "style_12": {
-      "bgm_wav": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/bgm/style_12_bgm.wav",
+      "bgm_wav": "sound_vibe/bgm/style_12_bgm.wav",
       "bpm": 75.0,
       "sfx": {
-        "transition": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/sfx/style_12_transition.wav",
-        "accent": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/sfx/style_12_accent.wav",
-        "ui": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/sfx/style_12_ui.wav"
+        "transition": "sound_vibe/sfx/style_12_transition.wav",
+        "accent": "sound_vibe/sfx/style_12_accent.wav",
+        "ui": "sound_vibe/sfx/style_12_ui.wav"
       },
       "sfx_min_gap_sec": 7.5,
       "sfx_gain_db": -11.0,
@@ -53,12 +53,12 @@
       "duck_depth_db": -9.5
     },
     "style_06": {
-      "bgm_wav": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/bgm/style_06_bgm.wav",
+      "bgm_wav": "sound_vibe/bgm/style_06_bgm.wav",
       "bpm": 92.0,
       "sfx": {
-        "transition": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/sfx/style_06_transition.wav",
-        "accent": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/sfx/style_06_accent.wav",
-        "ui": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/sfx/style_06_ui.wav"
+        "transition": "sound_vibe/sfx/style_06_transition.wav",
+        "accent": "sound_vibe/sfx/style_06_accent.wav",
+        "ui": "sound_vibe/sfx/style_06_ui.wav"
       },
       "sfx_min_gap_sec": 11.0,
       "sfx_gain_db": -13.5,
@@ -66,12 +66,12 @@
       "duck_depth_db": -11.0
     },
     "style_05": {
-      "bgm_wav": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/bgm/style_05_bgm.wav",
+      "bgm_wav": "sound_vibe/bgm/style_05_bgm.wav",
       "bpm": 104.0,
       "sfx": {
-        "transition": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/sfx/style_05_transition.wav",
-        "accent": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/sfx/style_05_accent.wav",
-        "ui": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/sfx/style_05_ui.wav"
+        "transition": "sound_vibe/sfx/style_05_transition.wav",
+        "accent": "sound_vibe/sfx/style_05_accent.wav",
+        "ui": "sound_vibe/sfx/style_05_ui.wav"
       },
       "sfx_min_gap_sec": 6.5,
       "sfx_gain_db": -9.5,
@@ -79,18 +79,26 @@
       "duck_depth_db": -10.0
     },
     "style_15": {
-      "bgm_wav": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/bgm/style_15_bgm.wav",
+      "bgm_wav": "sound_vibe/bgm/style_15_bgm.wav",
       "bpm": 120.0,
       "sfx": {
-        "transition": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/sfx/style_15_transition.wav",
-        "accent": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/sfx/style_15_accent.wav",
-        "ui": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/sfx/style_15_ui.wav",
-        "receipt": "/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/short-video-studio/assets/sound_vibe/sfx/style_15_receipt.wav"
+        "transition": "sound_vibe/sfx/style_15_transition.wav",
+        "accent": "sound_vibe/sfx/style_15_accent.wav",
+        "ui": "sound_vibe/sfx/style_15_ui.wav",
+        "receipt": "sound_vibe/sfx/style_15_receipt.wav"
       },
       "sfx_min_gap_sec": 6.5,
       "sfx_gain_db": -10.0,
       "bgm_base_db": -12.5,
       "duck_depth_db": -10.0
     }
+  },
+  "archetype_fallback": {
+    "arch_01_tech_ui_console": "style_15",
+    "arch_02_high_contrast_story": "style_03",
+    "arch_03_editorial_matte_depth": "style_12",
+    "arch_04_punch_talking_head": "style_14",
+    "arch_05_cinema_slow_space": "style_06",
+    "arch_06_paper_stopmotion": "style_05"
   }
 }

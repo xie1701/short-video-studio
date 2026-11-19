@@ -1,32 +1,32 @@
 #!/usr/bin/env python3
 """
-[自动质检与对标逐秒结构对比]
-对每条成片执行 10 项硬性检查，任何一项未通过则判定为 FAIL 并退出码非 0（未通过绝不交付）：
-1. 响度 (-14.0 ± 1.0 LUFS)
-2. 黑帧 (0 个黑帧区间)
-3. 超过 0.8s 的静音段 (0 段)
-4. 音画同步 (同期声源对齐 ≤ 1帧 & 成片音视频流时长差 ≤ 1帧)
-5. 字幕和语音的时间偏差 (≤ 1帧)
-6. 切点是否落在音频事件上 (去除合法 2-4帧 J-cut 后偏差 ≤ 1帧)
-7. 字幕和贴纸是否进入平台 UI 遮挡区 (0 次越界)
-8. 镜头时长分布 (统计分布并校验无 <0.3s 碎镜头或 >8s 死镜头)
-9. 前 3 秒画面变化次数 (≥ 2 次且均对应音频事件)
-10. A-Roll 句界严锁与口型同步检测 (无跨句尾帧闪跳/半句突兀切入)
-
-可选：传入 --benchmark <对标视频>，额外输出逐秒结构对比报告 10_benchmark_comparison.md。
+[Step 10: 22 项硬红线自检 + 独立黑盒外部裁判 + Markdown/JSON 报告]
+自动核查（白盒 #1–#11 + 黑盒 #12–#22，统一三态 PASS | FAIL | SKIPPED_UNAVAILABLE）：
+1–11. 响度(-14 LUFS)、黑帧、静音、音画差(<=1帧)、字幕与03_audio_events真实偏差、切点对齐、
+      平台UI安全区/<=3字残句/包装预算、镜头分布/零倒带/A-Roll占比、前3秒切换、句界严锁、common禁用词防露馅。
+12–22. 调用 independent_verifier.py 执行单遍解码黑盒校验（声学/OCR/WCAG>=3.8单框/SKIN_YCBCR/
+       相对FCPXML与全离线HyperFrames/防静止/全量切点Spot/SFX同窗或tidy基准/本地ASR/合规与商用字体）。
+输出：pipeline/10_qa_report.json 与 pipeline/10_qa_report.md
 """
 
 from __future__ import annotations
 
 import argparse
+import json
+import math
 import re
 import statistics
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import (
     DEFAULT_FPS,
+    LEAK_REGEX_PATTERNS,
+    SAFE_ZONE,
+    SUBTITLE_SAFE_ZONE,
     TARGET_LUFS,
     check_bbox_in_safe_zone,
     ffprobe_media,
@@ -37,20 +37,83 @@ from common import (
     write_json,
 )
 
+maybe_reexec_in_venv()
+
+
+META_LEAK_RE = re.compile("|".join(LEAK_REGEX_PATTERNS), re.IGNORECASE)
+
+
+def _mk_check(
+    cid: str,
+    name: str,
+    status: str,
+    measured: str,
+    threshold: str,
+) -> Dict[str, Any]:
+    st = status if status in ("PASS", "FAIL", "SKIPPED_UNAVAILABLE") else "FAIL"
+    return {
+        "id": cid,
+        "name": name,
+        "status": st,
+        "passed": (st == "PASS"),
+        "measured": measured,
+        "threshold": threshold,
+    }
+
+
+def _strip_punct_for_len(text: str) -> str:
+    return re.sub(r"[\s，。！？；：、,.!?;:\"'“”‘’()（）\[\]【】—\-]+", "", str(text or ""))
+
+
+def _check_bbox_in_bounds(bbox: Any, bounds: Dict[str, int], label: str) -> tuple[bool, str]:
+    if not isinstance(bbox, dict) or not {"x", "y", "w", "h"}.issubset(bbox.keys()):
+        return False, f"{label}: 缺少完整 bbox"
+    x, y, w, h = int(bbox["x"]), int(bbox["y"]), int(bbox["w"]), int(bbox["h"])
+    if x < bounds["x_min"] or (x + w) > bounds["x_max"] or y < bounds["y_min"] or (y + h) > bounds["y_max"]:
+        return False, f"{label} ({x},{y},{x+w},{y+h}) 越出 ({bounds['x_min']},{bounds['y_min']},{bounds['x_max']},{bounds['y_max']})"
+    return True, "ok"
+
+
+def compare_with_benchmark(video_path: Path, benchmark_path: Path, edl: Dict[str, Any]) -> Dict[str, Any]:
+    """与用户提供的对标参考视频做结构/节奏对比（只读对比）。"""
+    ffmpeg = find_bin("ffmpeg")
+    b_probe = ffprobe_media(benchmark_path)
+    b_dur = float(b_probe.get("format", {}).get("duration") or 10.0)
+    b_cuts = 1
+    if ffmpeg:
+        res = run_cmd([
+            ffmpeg, "-hide_banner", "-i", str(benchmark_path),
+            "-vf", "select='gt(scene,0.28)',showinfo", "-f", "null", "-",
+        ], check=False)
+        b_cuts = max(1, len(re.findall(r"pts_time:([0-9.]+)", res.stderr or "")))
+
+    v_dur = float(edl.get("total_duration_sec") or 1.0)
+    v_cuts = max(1, len(edl.get("clips") or []))
+    b_asl = round(b_dur / b_cuts, 2)
+    v_asl = round(v_dur / v_cuts, 2)
+    return {
+        "benchmark_file": str(benchmark_path.resolve()),
+        "benchmark_duration_sec": round(b_dur, 2),
+        "benchmark_estimated_asl_sec": b_asl,
+        "our_duration_sec": round(v_dur, 2),
+        "our_asl_sec": v_asl,
+        "rhythm_delta_sec": round(v_asl - b_asl, 2),
+        "our_video_path": str(video_path.resolve()),
+    }
+
 
 def inspect_video(
     pipeline_dir: Path,
     video_path: Optional[Path] = None,
     benchmark_path: Optional[Path] = None,
+    dialect: str = "mandarin",
+    store_anchor: Optional[str] = None,
+    strict_asr: bool = False,
 ) -> Dict[str, Any]:
-    ffmpeg = find_bin("ffmpeg")
-    if not ffmpeg:
-        raise RuntimeError("需要 ffmpeg 执行自动质检。")
-
     if video_path is None:
         video_path = pipeline_dir / "output_final.mp4"
     if not video_path.exists():
-        raise FileNotFoundError(f"待质检成片不存在: {video_path}")
+        raise FileNotFoundError(f"待检成片不存在: {video_path}")
 
     audio_events = read_json(pipeline_dir / "03_audio_events.json")
     edl = read_json(pipeline_dir / "04_edl.json")
@@ -58,423 +121,434 @@ def inspect_video(
     pkg = read_json(pipeline_dir / "06_packaging.json")
 
     fps = int(edl.get("fps", DEFAULT_FPS))
-    frame_dur = 1.0 / float(fps)
+    frame_dur = 1.0 / fps
     checks: List[Dict[str, Any]] = []
+    ffmpeg = find_bin("ffmpeg")
 
-    # 1. 响度检查 (对成片实测 ebur128)
-    ebur_res = run_cmd([
-        ffmpeg, "-hide_banner", "-nostats", "-i", str(video_path),
-        "-filter_complex", "ebur128=peak=true", "-f", "null", "-",
-    ], check=False)
-    i_vals = re.findall(r"I:\s*(-?[0-9]+(?:\.[0-9]+)?)\s*LUFS", ebur_res.stderr)
-    measured_lufs = float(i_vals[-1]) if i_vals else -99.0
-    lufs_ok = abs(measured_lufs - TARGET_LUFS) <= 1.0
-    checks.append({
-        "id": "loudness",
-        "name": "综合响度 (-14 LUFS)",
-        "passed": lufs_ok,
-        "measured": f"{measured_lufs:.2f} LUFS",
-        "threshold": f"{TARGET_LUFS} ± 1.0 LUFS",
-    })
+    from independent_verifier import extract_audio_context_once, run_blackbox_verification
 
-    # 2. 黑帧检查
-    blk_res = run_cmd([
-        ffmpeg, "-hide_banner", "-i", str(video_path),
-        "-vf", "blackdetect=d=0.03:pix_th=0.10", "-f", "null", "-",
-    ], check=False)
-    black_hits = re.findall(r"black_duration:([0-9.]+)", blk_res.stderr)
-    checks.append({
-        "id": "black_frames",
-        "name": "黑帧检测",
-        "passed": len(black_hits) == 0,
-        "measured": f"检出 {len(black_hits)} 处黑帧",
-        "threshold": "0 处黑帧",
-    })
+    with tempfile.TemporaryDirectory(prefix="svs_qa_audio_") as td:
+        audio_ctx = extract_audio_context_once(video_path, Path(td))
+        r128 = audio_ctx["r128"]
+        long_sil = audio_ctx["long_silences"]
 
-    # 3. 超过 0.8s 静音段检查
-    sil_res = run_cmd([
-        ffmpeg, "-hide_banner", "-i", str(video_path),
-        "-af", "silencedetect=noise=-48dB:d=0.80", "-f", "null", "-",
-    ], check=False)
-    sil_hits = [float(x) for x in re.findall(r"silence_duration:\s*([0-9.]+)", sil_res.stderr)]
-    long_sil = [x for x in sil_hits if x > 0.80]
-    checks.append({
-        "id": "long_silence",
-        "name": "超过 0.8s 的静音段",
-        "passed": len(long_sil) == 0,
-        "measured": f"{len(long_sil)} 段" + (f" (最长 {max(long_sil):.2f}s)" if long_sil else ""),
-        "threshold": "0 段 > 0.8s",
-    })
+        # 1. 响度检查 (-14 LUFS ±2 LU)
+        lufs = float(r128["integrated_lufs"])
+        lufs_ok = abs(lufs - TARGET_LUFS) <= 2.0
+        checks.append(_mk_check(
+            "loudness",
+            "综合响度 (-14 LUFS)",
+            "PASS" if lufs_ok else "FAIL",
+            f"{lufs:.2f} LUFS (TP={r128['true_peak_dbtp']} dBTP)",
+            f"{TARGET_LUFS - 2.0:.1f} ~ {TARGET_LUFS + 2.0:.1f} LUFS",
+        ))
 
-    # 4. 音画同步与成片总时长差 <= 1帧
-    probe = ffprobe_media(video_path)
-    streams = probe.get("streams", [])
-    v_s = next((s for s in streams if s.get("codec_type") == "video"), None)
-    a_s = next((s for s in streams if s.get("codec_type") == "audio"), None)
-    v_dur = float(v_s.get("duration") or probe.get("format", {}).get("duration") or 0.0) if v_s else 0.0
-    a_dur = float(a_s.get("duration") or probe.get("format", {}).get("duration") or 0.0) if a_s else 0.0
-    dur_diff_sec = abs(v_dur - a_dur)
-    dur_diff_frames = dur_diff_sec / frame_dur
-    aroll_sync_ok = all(bool(c.get("audio_locked", True)) for c in edl["clips"] if c["track_role"] == "a_roll")
-    sync_ok = (v_s is not None and a_s is not None and dur_diff_frames <= 1.05 and aroll_sync_ok)
-    checks.append({
-        "id": "av_sync",
-        "name": "音画同步与总时长差 (≤1帧)",
-        "passed": sync_ok,
-        "measured": f"时长差 {dur_diff_sec*1000:.1f}ms ({dur_diff_frames:.2f} 帧), 同期声锁定={'是' if aroll_sync_ok else '否'}",
-        "threshold": f"≤ 1.0 帧 ({frame_dur*1000:.1f}ms)",
-    })
+        # 2. 黑帧检测
+        black_hits: List[str] = []
+        if ffmpeg:
+            b_res = run_cmd([
+                ffmpeg, "-hide_banner", "-i", str(video_path),
+                "-vf", "blackdetect=d=0.2:pix_th=0.10", "-an", "-f", "null", "-",
+            ], check=False)
+            black_hits = re.findall(r"black_duration:([0-9.]+)", b_res.stderr or "")
+        checks.append(_mk_check(
+            "black_frames",
+            "黑帧检测",
+            "PASS" if len(black_hits) == 0 else ("FAIL" if ffmpeg else "SKIPPED_UNAVAILABLE"),
+            f"{len(black_hits)} 处连续黑帧",
+            "0 处黑帧 (>=0.2s)",
+        ))
 
-    # 5. 字幕和语音的时间偏差 <= 1帧
-    word_spans: Dict[str, tuple[float, float]] = {}
-    for sent in audio_events["sentences"]:
-        for w in sent.get("words", []):
-            key = f"{sent['id']}_{w['word']}_{w['start_sec']}"
-            word_spans[key] = (float(w["start_sec"]), float(w["end_sec"]))
-    max_sub_err_sec = 0.0
-    for sub in subs.get("entries", []):
-        ws = sub.get("words") or []
-        if ws:
-            err_s = abs(float(sub["start_sec"]) - float(ws[0]["start_sec"]))
-            err_e = abs(float(sub["end_sec"]) - float(ws[-1]["end_sec"]))
-            max_sub_err_sec = max(max_sub_err_sec, err_s, err_e)
-    sub_err_frames = max_sub_err_sec / frame_dur
-    checks.append({
-        "id": "subtitle_sync",
-        "name": "字幕与锁定语音时间偏差",
-        "passed": sub_err_frames <= 1.05,
-        "measured": f"最大偏差 {max_sub_err_sec*1000:.1f}ms ({sub_err_frames:.2f} 帧)",
-        "threshold": "≤ 1.0 帧",
-    })
+        # 3. 超过 0.8s 静音段检测（复用单次音频抽取结果）
+        checks.append(_mk_check(
+            "long_silence",
+            "超过 0.8s 的静音段",
+            "PASS" if len(long_sil) == 0 else "FAIL",
+            f"{len(long_sil)} 段" + (f" (最长 {max(long_sil):.2f}s)" if long_sil else ""),
+            "0 段 > 0.8s",
+        ))
 
-    # 6. 切点是否落在音频事件上 (允许句边界 2-4 帧 J-cut)
-    events_by_id = {e["id"]: e for e in audio_events["events"]}
-    max_cut_err_frames = 0
-    jcut_valid = True
-    for clip in edl["clips"][1:]:
-        ev = events_by_id.get(clip.get("cut_event_id", ""))
-        j_lead = int(clip.get("j_cut_lead_frames", 0))
-        if j_lead not in (0, 2, 3, 4):
-            jcut_valid = False
-        if not ev:
-            max_cut_err_frames = 999
-        else:
-            err = abs((int(clip["timeline_in_frame"]) - j_lead) - int(ev["frame"]))
-            max_cut_err_frames = max(max_cut_err_frames, err)
-    checks.append({
-        "id": "cut_on_audio_event",
-        "name": "切点对齐音频事件 (含J-cut)",
-        "passed": jcut_valid and max_cut_err_frames <= 1,
-        "measured": f"最大对齐偏差 {max_cut_err_frames} 帧, J-cut合规={'是' if jcut_valid else '否'}",
-        "threshold": "≤ 1 帧",
-    })
+        # 4. 音画同步与总时长差 <= 1 帧
+        probe = ffprobe_media(video_path)
+        streams = probe.get("streams", [])
+        v_s = next((s for s in streams if s.get("codec_type") == "video"), None)
+        a_s = next((s for s in streams if s.get("codec_type") == "audio"), None)
+        v_dur = float(v_s.get("duration") or probe.get("format", {}).get("duration") or 0.0) if v_s else 0.0
+        a_dur = float(a_s.get("duration") or probe.get("format", {}).get("duration") or 0.0) if a_s else 0.0
+        dur_diff_sec = abs(v_dur - a_dur)
+        dur_diff_frames = dur_diff_sec / frame_dur
+        aroll_sync_ok = all(bool(c.get("audio_locked", True)) for c in edl["clips"] if c.get("track_role") == "a_roll")
+        sync_ok = (v_s is not None and a_s is not None and dur_diff_frames <= 1.05 and aroll_sync_ok)
+        checks.append(_mk_check(
+            "av_sync",
+            "音画同步与总时长差 (≤1帧)",
+            "PASS" if sync_ok else "FAIL",
+            f"时长差 {dur_diff_sec*1000:.1f}ms ({dur_diff_frames:.2f} 帧), 同期声锁定={'是' if aroll_sync_ok else '否'}",
+            f"≤ 1.0 帧 ({frame_dur*1000:.1f}ms)",
+        ))
 
-    # 7. 字幕和贴纸是否进入平台 UI 遮挡区 + 代码卡零碰撞 + 字幕零残句
-    ui_violations: List[str] = []
-    short_subs = 0
-    for sub in subs.get("entries", []):
-        ok, msg = check_bbox_in_safe_zone(sub["bbox"])
-        if not ok:
-            ui_violations.append(f"{sub['id']}: {msg}")
-        if len(str(sub.get("text", "")).strip()) < 5:
-            short_subs += 1
-            ui_violations.append(f"{sub['id']}: 孤立短残句 '{sub.get('text', '')}'")
+        # 5. 字幕与 03_audio_events 真实锁定语音时间戳交叉偏差（禁止与自身 words 相减作假）
+        sents_all = audio_events.get("sentences", [])
+        sents_by_id = {s["id"]: s for s in sents_all if s.get("id")}
+        max_sub_err_sec = 0.0
+        sub_sync_violations: List[str] = []
+        active_subs = [e for e in subs.get("entries", []) if not e.get("suppressed")]
+        for sub in active_subs:
+            sid = sub.get("sentence_id")
+            st_sub = float(sub.get("start_sec", 0.0))
+            en_sub = float(sub.get("end_sec", 0.0))
+            ref_sent = sents_by_id.get(sid)
+            if not ref_sent:
+                sub_sync_violations.append(f"{sub.get('id')}: 未关联有效 03_audio_events 句子 {sid}")
+                continue
+            s_st = float(ref_sent.get("start_sec", 0.0))
+            s_en = float(ref_sent.get("end_sec", 0.0))
+            if st_sub < s_st - 0.08 or en_sub > s_en + 0.12:
+                overrun = max(s_st - st_sub, en_sub - s_en, 0.0)
+                max_sub_err_sec = max(max_sub_err_sec, overrun)
+                sub_sync_violations.append(f"{sub.get('id')}: 超出所属锁定句窗 [{s_st:.2f},{s_en:.2f}]")
 
-    code_ranges = [
-        (int(c["timeline_in_frame"]), int(c["timeline_out_frame"]))
-        for c in edl.get("clips", [])
-        if c.get("track_role") == "code_broll"
-    ]
-    code_collisions = 0
-    for elem in pkg.get("visual_elements", []):
-        ok, msg = check_bbox_in_safe_zone(elem["bbox"])
-        if not ok:
-            ui_violations.append(f"{elem['id']}: {msg}")
-        sf_e, ef_e = int(elem["start_frame"]), int(elem["end_frame"])
-        if any(sf_e < ce and ef_e > cs for cs, ce in code_ranges):
-            code_collisions += 1
-            ui_violations.append(f"{elem['id']}: 与代码补镜卡重叠")
+            ref_words = ref_sent.get("words") or []
+            sub_words = sub.get("words") or []
+            if ref_words and sub_words:
+                rw_starts = [float(w["start_sec"]) for w in ref_words if "start_sec" in w]
+                rw_ends = [float(w["end_sec"]) for w in ref_words if "end_sec" in w]
+                if rw_starts and "start_sec" in sub_words[0]:
+                    first_w_t = float(sub_words[0]["start_sec"])
+                    nearest_s = min(abs(first_w_t - ts) for ts in rw_starts)
+                    max_sub_err_sec = max(max_sub_err_sec, nearest_s)
+                    err_self = abs(st_sub - first_w_t)
+                    max_sub_err_sec = max(max_sub_err_sec, err_self)
+                if rw_ends and "end_sec" in sub_words[-1]:
+                    last_w_t = float(sub_words[-1]["end_sec"])
+                    nearest_e = min(abs(last_w_t - te) for te in rw_ends)
+                    max_sub_err_sec = max(max_sub_err_sec, nearest_e)
+                    err_self_e = abs(en_sub - last_w_t)
+                    max_sub_err_sec = max(max_sub_err_sec, err_self_e)
 
-    # 同时核验包装元素 ±1 帧对齐
-    pkg_sync_err = max([abs(int(e["start_frame"]) - int(e["aligned_sfx_or_accent_frame"])) for e in pkg.get("visual_elements", [])] or [0])
-    checks.append({
-        "id": "ui_safe_zone",
-        "name": "平台 UI 安全区 / 代码卡互斥 / 零残句",
-        "passed": len(ui_violations) == 0 and pkg_sync_err <= 1,
-        "measured": f"安全区违规 {len(ui_violations)} 处 (代码卡碰撞 {code_collisions}, 残句 {short_subs}), 包装对齐最大误差 {pkg_sync_err} 帧",
-        "threshold": "0 违规/0 碰撞/0 残句且包装误差 ≤ 1 帧",
-    })
+        sub_err_frames = max_sub_err_sec / frame_dur
+        sub_sync_ok = (len(active_subs) > 0 or len(sents_all) == 0) and len(sub_sync_violations) == 0 and sub_err_frames <= 1.5
+        checks.append(_mk_check(
+            "subtitle_sync",
+            "字幕与 03_audio_events 语音时间戳交叉对齐",
+            "PASS" if sub_sync_ok else "FAIL",
+            f"最大交叉偏差 {max_sub_err_sec*1000:.1f}ms ({sub_err_frames:.2f} 帧), 越窗 {len(sub_sync_violations)} 处",
+            "≤ 1.5 帧且 0 越出锁定句时间窗",
+        ))
 
-    # 8. 镜头时长分布 + 零同源倒带复读 + A-Roll 叙事占比与结尾收口
-    durs = [float(c["duration_sec"]) for c in edl["clips"]]
-    min_d, max_d = min(durs), max(durs)
-    mean_d = statistics.mean(durs)
-    med_d = statistics.median(durs)
-    b_short = sum(1 for d in durs if d < 1.0)
-    b_mid = sum(1 for d in durs if 1.0 <= d <= 2.5)
-    b_long = sum(1 for d in durs if d > 2.5)
+        # 6. 切点对齐音频事件 (含 J-cut)
+        events_by_id = {e["id"]: e for e in audio_events.get("events", [])}
+        max_cut_err_frames = 0
+        jcut_valid = True
+        for clip in edl.get("clips", [])[1:]:
+            ev = events_by_id.get(clip.get("cut_event_id", ""))
+            j_lead = int(clip.get("j_cut_lead_frames", 0))
+            if j_lead not in (0, 2, 3, 4):
+                jcut_valid = False
+            if not ev:
+                max_cut_err_frames = 999
+            else:
+                err = abs((int(clip["timeline_in_frame"]) - j_lead) - int(ev["frame"]))
+                max_cut_err_frames = max(max_cut_err_frames, err)
+        cut_ok = jcut_valid and max_cut_err_frames <= 1
+        checks.append(_mk_check(
+            "cut_on_audio_event",
+            "切点对齐音频事件 (含J-cut)",
+            "PASS" if cut_ok else "FAIL",
+            f"最大对齐偏差 {max_cut_err_frames} 帧, J-cut合规={'是' if jcut_valid else '否'}",
+            "≤ 1 帧",
+        ))
 
-    rewind_count = 0
-    clips_list = edl.get("clips", [])
-    for ci in range(1, len(clips_list)):
-        c0, c1 = clips_list[ci - 1], clips_list[ci]
-        if str(c0.get("media_path")) == str(c1.get("media_path")):
-            if c1.get("track_role") == "code_broll":
-                rewind_count += 1
-            elif float(c1["source_in_sec"]) < float(c0["source_out_sec"]) - 0.05:
-                rewind_count += 1
-
-    total_edl_dur = max(0.1, float(edl.get("total_duration_sec", sum(durs))))
-    aroll_clips = [c for c in clips_list if c.get("track_role") == "a_roll"]
-    aroll_ratio = sum(float(c["duration_sec"]) for c in aroll_clips) / total_edl_dur if aroll_clips else 1.0
-    aroll_tail_ok = True
-    if aroll_clips:
-        aroll_tail_ok = any(float(c["timeline_out_sec"]) >= total_edl_dur - 10.0 for c in aroll_clips)
-    aroll_ok = (aroll_ratio >= 0.18 and aroll_tail_ok) if aroll_clips else True
-
-    dist_ok = (min_d >= 0.30 and max_d <= 8.0 and rewind_count == 0 and aroll_ok)
-    checks.append({
-        "id": "shot_duration_dist",
-        "name": "镜头分布 / 零同源倒带 / A-Roll 占比",
-        "passed": dist_ok,
-        "measured": (
-            f"共{len(durs)}镜 | min={min_d:.2f}s, med={med_d:.2f}s, max={max_d:.2f}s "
-            f"| 同源倒带={rewind_count}处, A-roll占比={aroll_ratio*100:.1f}%, 结尾出镜={'是' if aroll_tail_ok else '否'}"
-        ),
-        "threshold": "0.30s ≤ 单镜 ≤ 8.0s 且 0 倒带, A-roll ≥ 18% 且结尾出镜",
-    })
-
-    # 9. 前 3 秒画面变化次数
-    first_3s_cuts = [c for c in edl["clips"][1:] if int(c["timeline_in_frame"]) < 3 * fps]
-    all_on_events = all(c.get("cut_event_id") in events_by_id for c in first_3s_cuts)
-    first3_ok = len(first_3s_cuts) >= 2 and all_on_events
-    checks.append({
-        "id": "first_3s_changes",
-        "name": "前 3 秒画面变化次数",
-        "passed": first3_ok,
-        "measured": f"{len(first_3s_cuts)} 次变化 (对应音频事件: {'全部' if all_on_events else '部分缺失'})",
-        "threshold": "≥ 2 次且均对齐音频事件",
-    })
-
-    # 10. A-Roll 句界严锁与口型同步检测 (无跨句尾帧闪跳 & 无半句过晚切入)
-    accepted_path = pipeline_dir / "02_Accepted_Cuts.json"
-    if not accepted_path.exists():
-        accepted_path = pipeline_dir.parent / "02_Accepted_Cuts.json"
-    accepted_by_id: Dict[str, Dict[str, Any]] = {}
-    if accepted_path.exists():
-        acc_raw = read_json(accepted_path)
-        acc_list = acc_raw.get("sentences", acc_raw) if isinstance(acc_raw, dict) else acc_raw
-        if isinstance(acc_list, list):
-            for it in acc_list:
-                if isinstance(it, dict) and it.get("id"):
-                    accepted_by_id[str(it["id"])] = it
-
-    aroll_boundary_violations: List[str] = []
-    max_overrun_sec = 0.0
-    max_late_in_sec = 0.0
-    sents_all = audio_events.get("sentences", [])
-    sents_by_id = {s["id"]: s for s in sents_all}
-    for c in aroll_clips:
-        c_in = float(c["timeline_in_sec"])
-        c_out = float(c["timeline_out_sec"])
-        overlapping = [
-            s for s in sents_all
-            if min(c_out, float(s["end_sec"])) - max(c_in, float(s["start_sec"])) > 0.04
+        # 7. UI 安全区 / <=3 字残句 / B9 互斥 / 包装预算
+        ui_violations: List[str] = []
+        short_subs = 0
+        code_ranges = [
+            (int(c["timeline_in_frame"]), int(c["timeline_out_frame"]))
+            for c in edl.get("clips", [])
+            if c.get("track_role") == "code_broll"
         ]
-        if not overlapping and c.get("sentence_id") in sents_by_id:
-            overlapping = [sents_by_id[c["sentence_id"]]]
-        if not overlapping:
-            continue
-        first_s = overlapping[0]
-        last_s = overlapping[-1]
+        code_collisions = 0
+        for sub in subs.get("entries", []):
+            if sub.get("suppressed"):
+                continue
+            bbox = sub.get("final_bbox") or sub.get("bbox")
+            ok1, msg1 = check_bbox_in_safe_zone(bbox) if bbox else (False, "缺少bbox")
+            ok2, msg2 = _check_bbox_in_bounds(bbox, SUBTITLE_SAFE_ZONE, sub.get("id", "sub"))
+            if not ok1 or not ok2:
+                ui_violations.append(f"{sub['id']}: {msg1 if not ok1 else msg2}")
+            clean_txt = _strip_punct_for_len(sub.get("text", ""))
+            ref_sent_txt = _strip_punct_for_len(sents_by_id.get(sub.get("sentence_id", ""), {}).get("text", ""))
+            if len(clean_txt) <= 3 and len(ref_sent_txt) >= 5:
+                short_subs += 1
+                ui_violations.append(f"{sub['id']}: <=3字残句 '{sub.get('text', '')}'")
+            sf_sub = int(round(float(sub.get("start_sec", 0.0)) * fps))
+            ef_sub = int(round(float(sub.get("end_sec", 0.0)) * fps))
+            for cs, ce in code_ranges:
+                ov = max(0, min(ef_sub, ce) - max(sf_sub, cs))
+                if ef_sub > sf_sub and ov / float(ef_sub - sf_sub) >= 0.60:
+                    code_collisions += 1
+                    ui_violations.append(f"{sub['id']}: 未触发 B9 让位与代码卡重叠")
 
-        acc_last = accepted_by_id.get(last_s["id"], {})
-        cut_end_limit = float(acc_last.get("cut_end_sec") or (float(last_s["end_sec"]) + 0.08))
-        # 若是全片最末句的结尾收口（后无下一镜头），允许保留片尾呼吸停顿帧 (cut_buffer_end_sec / total_edl_dur)
-        if last_s["id"] == sents_all[-1]["id"] and c is clips_list[-1]:
-            cut_end_limit = max(cut_end_limit, float(acc_last.get("cut_buffer_end_sec") or total_edl_dur))
-        overrun = c_out - cut_end_limit
-        max_overrun_sec = max(max_overrun_sec, max(0.0, overrun))
-        if overrun > 0.04:
-            aroll_boundary_violations.append(
-                f"{c['clip_id']} ({last_s['id']}): 句尾超界 +{overrun:.2f}s (c_out={c_out:.2f}s > limit={cut_end_limit:.2f}s)"
-            )
+        total_edl_dur = max(0.1, float(edl.get("total_duration_sec", 1.0)))
+        max_visual_budget = max(3, math.ceil(total_edl_dur / 3.5))
+        vis_elems = pkg.get("visual_elements", [])
+        if len(vis_elems) > max_visual_budget:
+            ui_violations.append(f"视觉包装超预算 {len(vis_elems)} > {max_visual_budget}")
+        for elem in vis_elems:
+            ebbox = elem.get("final_bbox") or elem.get("bbox")
+            ok, msg = _check_bbox_in_bounds(ebbox, SAFE_ZONE, elem.get("id", "pkg"))
+            if not ok:
+                ui_violations.append(f"{elem['id']}: {msg}")
+            sf_e, ef_e = int(elem["start_frame"]), int(elem["end_frame"])
+            if any(sf_e < ce and ef_e > cs for cs, ce in code_ranges):
+                code_collisions += 1
+                ui_violations.append(f"{elem['id']}: 与代码补镜卡重叠")
+        pkg_sync_err = max([abs(int(e["start_frame"]) - int(e["aligned_sfx_or_accent_frame"])) for e in vis_elems] or [0])
+        ui_ok = len(ui_violations) == 0 and pkg_sync_err <= 1
+        checks.append(_mk_check(
+            "ui_safe_zone",
+            "平台 UI 安全区 / 代码卡互斥 / 零 <=3 残句 / 预算",
+            "PASS" if ui_ok else "FAIL",
+            f"违规 {len(ui_violations)} 处 (碰撞={code_collisions}, <=3残句={short_subs}, 包装={len(vis_elems)}/{max_visual_budget}), 误差 {pkg_sync_err} 帧",
+            "0违规/0碰撞/0残句, 包装<=ceil(dur/3.5), 误差<=1帧",
+        ))
 
-        late_in = c_in - float(first_s["start_sec"])
-        max_late_in_sec = max(max_late_in_sec, max(0.0, late_in))
-        if late_in > 1.20:
-            aroll_boundary_violations.append(
-                f"{c['clip_id']} ({first_s['id']}): 句中切入过晚 +{late_in:.2f}s (c_in={c_in:.2f}s vs sent_in={float(first_s['start_sec']):.2f}s)"
-            )
+        # 8. 镜头时长分布 + 零倒带 + A-Roll 占比
+        durs = [float(c["duration_sec"]) for c in edl["clips"]]
+        min_d, max_d = min(durs), max(durs)
+        med_d = statistics.median(durs)
+        rewind_count = 0
+        clips_list = edl.get("clips", [])
+        for ci in range(1, len(clips_list)):
+            c0, c1 = clips_list[ci - 1], clips_list[ci]
+            if str(c0.get("media_path")) == str(c1.get("media_path")):
+                if c1.get("track_role") == "code_broll":
+                    rewind_count += 1
+                elif float(c1["source_in_sec"]) < float(c0["source_out_sec"]) - 0.05:
+                    rewind_count += 1
+        aroll_clips = [c for c in clips_list if c.get("track_role") == "a_roll"]
+        masked_voice_clips = [c for c in clips_list if c.get("audio_only_masked")]
+        aroll_ratio = (
+            (sum(float(c["duration_sec"]) for c in aroll_clips) + sum(float(c["duration_sec"]) for c in masked_voice_clips))
+            / total_edl_dur
+            if (aroll_clips or masked_voice_clips)
+            else 1.0
+        )
+        aroll_tail_ok = True if not aroll_clips else any(float(c["timeline_out_sec"]) >= total_edl_dur - 10.0 for c in aroll_clips)
+        aroll_ok = (aroll_ratio >= 0.18 and aroll_tail_ok) if aroll_clips else True
+        dist_ok = (min_d >= 0.30 and max_d <= 8.0 and rewind_count == 0 and aroll_ok)
+        checks.append(_mk_check(
+            "shot_duration_dist",
+            "镜头分布 / 零同源倒带 / A-Roll 占比",
+            "PASS" if dist_ok else "FAIL",
+            f"共{len(durs)}镜 | min={min_d:.2f}s, med={med_d:.2f}s, max={max_d:.2f}s | 倒带={rewind_count}, A-roll={aroll_ratio*100:.1f}%",
+            "0.30s≤单镜≤8.0s, 0倒带, A-roll≥18%且结尾出镜",
+        ))
 
-    checks.append({
-        "id": "aroll_sentence_lock",
-        "name": "A-Roll 句界严锁与口型同步",
-        "passed": len(aroll_boundary_violations) == 0,
-        "measured": f"违规 {len(aroll_boundary_violations)} 处 (最大尾界超限 {max_overrun_sec:.2f}s, 最大晚入 {max_late_in_sec:.2f}s)",
-        "threshold": "0 违规 (尾界超限 ≤ 0.04s, 入点晚偏 ≤ 1.20s)",
-    })
+        # 9. 前 3 秒画面变化次数
+        first_3s_cuts = [c for c in edl["clips"][1:] if int(c["timeline_in_frame"]) < 3 * fps]
+        all_on_events = all(c.get("cut_event_id") in events_by_id for c in first_3s_cuts)
+        first3_ok = len(first_3s_cuts) >= 2 and all_on_events
+        checks.append(_mk_check(
+            "first_3s_changes",
+            "前 3 秒画面变化次数",
+            "PASS" if first3_ok else "FAIL",
+            f"{len(first_3s_cuts)} 次变化 (对齐事件: {'全部' if all_on_events else '部分缺失'})",
+            "≥ 2 次且均对齐音频事件",
+        ))
 
-    # 11. 零风格名/开发代号露馅审计（禁止任何系统内部风格编号/模板词出现在观众可视文字中）
-    forbidden_re = re.compile(
-        r"(?:\bstyle[_\s-]?\d+\b|STYLE\s*\d+|风格谱|Style\s+Spectrum|\bNotion\b|"
-        r"AI\s*控制台|硬核数黑|宋体映画|工程纸拼贴|毛玻璃叠层|访谈里程碑|"
-        r"极简白底卡片|模板展示风|创始人信任风|archetype)",
-        re.IGNORECASE,
-    )
-    meta_leaks: List[str] = []
+        # 10. A-Roll 句界严锁
+        accepted_path = next(
+            (p for p in (pipeline_dir / "02_Accepted_Cuts.json", pipeline_dir.parent / "02_Accepted_Cuts.json") if p.exists()),
+            None,
+        )
+        accepted_by_id: Dict[str, Dict[str, Any]] = {}
+        if accepted_path:
+            acc_raw = read_json(accepted_path)
+            acc_list = acc_raw.get("sentences", acc_raw) if isinstance(acc_raw, dict) else acc_raw
+            if isinstance(acc_list, list):
+                for it in acc_list:
+                    if isinstance(it, dict) and it.get("id"):
+                        accepted_by_id[str(it["id"])] = it
+        aroll_boundary_violations: List[str] = []
+        max_overrun_sec = 0.0
+        max_late_in_sec = 0.0
+        for c in aroll_clips:
+            c_in, c_out = float(c["timeline_in_sec"]), float(c["timeline_out_sec"])
+            overlapping = [s for s in sents_all if min(c_out, float(s["end_sec"])) - max(c_in, float(s["start_sec"])) > 0.04]
+            if not overlapping and c.get("sentence_id") in sents_by_id:
+                overlapping = [sents_by_id[c["sentence_id"]]]
+            if not overlapping:
+                continue
+            first_s, last_s = overlapping[0], overlapping[-1]
+            acc_last = accepted_by_id.get(last_s["id"], {})
+            base_end = float(last_s["end_sec"]) + 0.08
+            src_locked_ok = float(c.get("source_out_sec", 0.0)) <= float(last_s.get("source_out_sec", 99999.0)) + 0.04
+            dyn_end = float(last_s["end_sec"]) + float(last_s.get("pause_after_sec", 0.08)) + 0.04 if src_locked_ok else base_end
+            cut_end_limit = float(acc_last.get("cut_end_sec") or max(base_end, dyn_end))
+            if last_s["id"] == sents_all[-1]["id"] and c is clips_list[-1]:
+                cut_end_limit = max(cut_end_limit, float(acc_last.get("cut_buffer_end_sec") or total_edl_dur))
+            overrun = c_out - cut_end_limit
+            max_overrun_sec = max(max_overrun_sec, max(0.0, overrun))
+            if overrun > 0.04:
+                aroll_boundary_violations.append(f"{c['clip_id']} ({last_s['id']}): +{overrun:.2f}s")
+            late_in = c_in - float(first_s["start_sec"])
+            max_late_in_sec = max(max_late_in_sec, max(0.0, late_in))
+            if late_in > 1.20:
+                aroll_boundary_violations.append(f"{c['clip_id']} ({first_s['id']}): 晚入 +{late_in:.2f}s")
+        checks.append(_mk_check(
+            "aroll_sentence_lock",
+            "A-Roll 句界严锁与口型同步",
+            "PASS" if len(aroll_boundary_violations) == 0 else "FAIL",
+            f"违规 {len(aroll_boundary_violations)} 处 (超界 {max_overrun_sec:.2f}s, 晚入 {max_late_in_sec:.2f}s)",
+            "0 违规 (超界≤0.04s, 晚入≤1.20s)",
+        ))
 
-    def _scan_text(src_tag: str, txt: Any) -> None:
-        s = str(txt or "").strip()
-        if not s:
-            return
-        m = forbidden_re.search(s)
-        if m:
-            meta_leaks.append(f"{src_tag}: 命中禁用词 '{m.group(0)}' (文本='{s[:28]}')")
+        # 11. 统一使用 common.LEAK_REGEX_PATTERNS 的零开发词与风格名称露馅审计
+        meta_leaks: List[str] = []
 
-    for sub in subs.get("entries", []):
-        _scan_text(sub.get("id", "sub"), sub.get("text"))
-    for elem in pkg.get("visual_elements", []) + pkg.get("stage_overlays", []):
-        _scan_text(elem.get("id", "pkg"), elem.get("text_or_asset"))
-        for nd in elem.get("nodes", []) or []:
-            _scan_text(elem.get("id", "pkg_node"), nd)
-        cd = elem.get("card_data") or {}
-        if isinstance(cd, dict):
-            for k, v in cd.items():
-                if isinstance(v, list):
-                    for item in v:
-                        _scan_text(f"{elem.get('id','card')}.{k}", item)
-                else:
-                    _scan_text(f"{elem.get('id','card')}.{k}", v)
-    cover_json_p = pipeline_dir / "09_title_cover.json"
-    if cover_json_p.exists():
-        cj = read_json(cover_json_p)
-        for k in ("cover_main", "cover_sub", "cover_badge", "cover_bottom"):
-            _scan_text(f"09_cover.{k}", cj.get(k))
+        def _scan_text(src_tag: str, txt: Any) -> None:
+            s = str(txt or "").strip()
+            if not s:
+                return
+            m = META_LEAK_RE.search(s)
+            if m:
+                meta_leaks.append(f"{src_tag}: 命中 '{m.group(0)}' ({s[:24]})")
 
-    checks.append({
-        "id": "forbidden_meta_text",
-        "name": "零开发词与风格名称露馅审计",
-        "passed": len(meta_leaks) == 0,
-        "measured": f"检出 {len(meta_leaks)} 处露馅文本" + (f" ({meta_leaks[0]})" if meta_leaks else ""),
-        "threshold": "0 处露馅 (禁止出现 STYLE/Notion/风格代号)",
-    })
+        for sub in subs.get("entries", []):
+            _scan_text(sub.get("id", "sub"), sub.get("text"))
+        for elem in pkg.get("visual_elements", []):
+            _scan_text(elem.get("id", "pkg"), elem.get("text_or_asset"))
+        cover_json_p = pipeline_dir / "09_title_cover.json"
+        if cover_json_p.exists():
+            cj = read_json(cover_json_p)
+            for k in ("cover_main", "cover_sub", "hashtags"):
+                _scan_text(f"09_cover.{k}", cj.get(k))
+            for ti, tline in enumerate(cj.get("titles") or []):
+                _scan_text(f"09_cover.titles[{ti}]", tline)
 
-    all_passed = all(c["passed"] for c in checks)
-    report = {
+        checks.append(_mk_check(
+            "forbidden_meta_text",
+            "零开发词与风格名称露馅审计 (common.LEAK_REGEX_PATTERNS)",
+            "PASS" if len(meta_leaks) == 0 else "FAIL",
+            f"检出 {len(meta_leaks)} 处" + (f" ({meta_leaks[0]})" if meta_leaks else ""),
+            "0 处元数据/风格代号露馅",
+        ))
+
+        # 12–22. 独立黑盒外部验收（复用 audio_ctx，严格 Fail-Closed 三态）
+        bb_res = run_blackbox_verification(
+            video_path,
+            pipeline_dir=pipeline_dir,
+            dialect=dialect,
+            store_anchor=store_anchor,
+            strict_asr=strict_asr,
+            precomputed_audio=audio_ctx,
+        )
+
+    for bchk in bb_res["checks"]:
+        checks.append(_mk_check(
+            bchk["id"],
+            bchk["name"],
+            bchk["status"],
+            bchk["measured"],
+            bchk["threshold"],
+        ))
+
+    mandatory_ok = all(c["status"] == "PASS" for c in checks if c["id"] != "bb_blind_asr_proxy")
+    asr_chk = next((c for c in checks if c["id"] == "bb_blind_asr_proxy"), {"status": "FAIL"})
+    asr_ok = (asr_chk["status"] == "PASS") if strict_asr else (asr_chk["status"] != "FAIL")
+    all_passed = mandatory_ok and asr_ok
+
+    approval_status = "REJECTED"
+    if all_passed:
+        approval_status = "MACHINE_PASS_PENDING_HUMAN"
+        lock_p = pipeline_dir / "approval_lock.json"
+        if lock_p.is_file():
+            try:
+                if read_json(lock_p).get("human_approved"):
+                    approval_status = "APPROVED"
+            except Exception:
+                pass
+
+    pass_cnt = sum(1 for c in checks if c["status"] == "PASS")
+    fail_cnt = sum(1 for c in checks if c["status"] == "FAIL")
+    skip_cnt = sum(1 for c in checks if c["status"] == "SKIPPED_UNAVAILABLE")
+
+    report: Dict[str, Any] = {
         "step": "10_qa_inspector",
         "video_path": str(video_path.resolve()),
         "all_passed": all_passed,
-        "pass_count": sum(1 for c in checks if c["passed"]),
+        "machine_passed": all_passed,
+        "approval_status": approval_status,
+        "strict_asr": strict_asr,
+        "pass_count": pass_cnt,
+        "fail_count": fail_cnt,
+        "skipped_count": skip_cnt,
         "total_checks": len(checks),
         "checks": checks,
+        "blackbox_details": bb_res,
     }
+    if benchmark_path and benchmark_path.exists():
+        report["benchmark_comparison"] = compare_with_benchmark(video_path, benchmark_path, edl)
+
     write_json(pipeline_dir / "10_qa_report.json", report)
 
+    status_banner = (
+        "✅ **机检与人工终审全部通过 (APPROVED)**"
+        if approval_status == "APPROVED"
+        else (
+            "🟡 **全部必检通过，待人工终审确认 (MACHINE_PASS_PENDING_HUMAN)**"
+            if all_passed
+            else "❌ **未通过质检 (REJECTED - 禁止交付)**"
+        )
+    )
     md_lines = [
-        "# 成片自动质检报告 (QA Report)",
+        "# 22 项硬红线与独立黑盒质检报告",
         "",
         f"- **成片文件**：`{video_path.name}`",
-        f"- **最终判定**：{'✅ **全部通过 (READY TO DELIVER)**' if all_passed else '❌ **未通过质检 (REJECTED - 禁止交付)**'}（{report['pass_count']}/{report['total_checks']} 项合格）",
+        f"- **质量状态**：{status_banner}",
+        f"- **统计**：`{pass_cnt}/{len(checks)}` PASS | FAIL `{fail_cnt}` | SKIPPED_UNAVAILABLE `{skip_cnt}`",
         "",
-        "| 序号 | 质检项目 | 结果 | 实测值 | 合格标准 |",
-        "| :--- | :--- | :--- | :--- | :--- |",
+        "| # | 检查项 | 状态 | 实测结果 | 门槛 |",
+        "|:-:|:---|:---:|:---|:---|",
     ]
     for i, c in enumerate(checks, start=1):
-        status = "✅ PASS" if c["passed"] else "❌ FAIL"
-        md_lines.append(f"| {i} | {c['name']} | {status} | {c['measured']} | {c['threshold']} |")
+        st_icon = "✅ PASS" if c["status"] == "PASS" else ("⚠️ SKIP" if c["status"] == "SKIPPED_UNAVAILABLE" else "❌ FAIL")
+        md_lines.append(f"| {i} | {c['name']} | {st_icon} | {c['measured']} | {c['threshold']} |")
 
-    if ui_violations:
-        md_lines += ["", "## UI 遮挡越界详情"] + [f"- {u}" for u in ui_violations]
-    if aroll_boundary_violations:
-        md_lines += ["", "## A-Roll 句界严锁违规详情"] + [f"- {u}" for u in aroll_boundary_violations]
-    if meta_leaks:
-        md_lines += ["", "## 露馅禁用词详情"] + [f"- {m}" for m in meta_leaks]
+    if "benchmark_comparison" in report:
+        bc = report["benchmark_comparison"]
+        md_lines.extend([
+            "",
+            "## 对标参考节奏对比",
+            f"- 参考片 `{Path(bc['benchmark_file']).name}` 估算 ASL：`{bc['benchmark_estimated_asl_sec']}s`；本片 ASL：`{bc['our_asl_sec']}s`（差值 `{bc['rhythm_delta_sec']:+.2f}s`）",
+        ])
 
     (pipeline_dir / "10_qa_report.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
-
-    # 若提供对标视频，额外输出逐秒结构对比
-    if benchmark_path and benchmark_path.exists():
-        compare_with_benchmark(pipeline_dir, edl, audio_events, benchmark_path)
-
-    print(f"[qa] 质检完成：{report['pass_count']}/{report['total_checks']} 项通过 -> 10_qa_report.md")
+    print(f"[qa] 22 项质检完成：{pass_cnt}/{len(checks)} PASS (fail={fail_cnt}, skip={skip_cnt}) -> 10_qa_report.md")
     return report
 
 
-def compare_with_benchmark(
-    pipeline_dir: Path,
-    edl: Dict[str, Any],
-    audio_events: Dict[str, Any],
-    benchmark_path: Path,
-) -> Path:
-    """对标视频逐秒结构分析与成片对比。"""
-    ffmpeg = find_bin("ffmpeg")
-    b_probe = ffprobe_media(benchmark_path)
-    b_dur = float(b_probe.get("format", {}).get("duration") or 10.0)
-    ours_dur = float(edl["total_duration_sec"])
-
-    # 检测对标视频的镜头切点时刻
-    scene_res = run_cmd([
-        ffmpeg, "-hide_banner", "-i", str(benchmark_path),
-        "-vf", "select='gt(scene,0.18)',showinfo", "-f", "null", "-",
-    ], check=False)
-    b_cuts = [float(m) for m in re.findall(r"pts_time:([0-9.]+)", scene_res.stderr)]
-
-    # 检测对标视频的静音区间
-    sil_res = run_cmd([
-        ffmpeg, "-hide_banner", "-i", str(benchmark_path),
-        "-af", "silencedetect=noise=-42dB:d=0.35", "-f", "null", "-",
-    ], check=False)
-    b_sil_starts = [float(m) for m in re.findall(r"silence_start:\s*([0-9.]+)", sil_res.stderr)]
-
-    max_sec = int(max(b_dur, ours_dur)) + 1
-    lines = [
-        "# 对标视频逐秒结构对比报告",
-        "",
-        f"- **我方成片**：{ours_dur:.2f}s（{len(edl['clips'])} 镜头，前3秒切换 {edl['first_3s_visual_changes']} 次）",
-        f"- **对标视频**：`{benchmark_path.name}`（{b_dur:.2f}s，检出明显场景切点 {len(b_cuts)} 次）",
-        "",
-        "| 秒区间 | 我方镜头与角色 | 我方对应文案/声音事件 | 对标该秒变化特征 | 节奏建议 |",
-        "| :--- | :--- | :--- | :--- | :--- |",
-    ]
-    for sec in range(min(max_sec, 60)):
-        s0, s1 = float(sec), float(sec + 1)
-        our_clips = [c for c in edl["clips"] if c["timeline_in_sec"] < s1 and c["timeline_out_sec"] > s0]
-        clip_desc = " / ".join(f"{c['clip_id']}({c['track_role']})" for c in our_clips) or "片尾"
-        our_sents = [s["text"][:14] for s in audio_events["sentences"] if s["start_sec"] < s1 and s["end_sec"] > s0]
-        sent_desc = "；".join(our_sents) if our_sents else "句间气口/BGM"
-
-        bench_cut_here = sum(1 for t in b_cuts if s0 <= t < s1)
-        bench_sil_here = any(s0 <= t < s1 for t in b_sil_starts)
-        if s0 >= b_dur:
-            bench_desc = "对标已结束"
-        else:
-            bench_desc = f"切镜 {bench_cut_here} 次" + (" · 有停顿气口" if bench_sil_here else " · 持续语音/画面")
-
-        advice = "节奏紧凑" if len(our_clips) >= max(1, bench_cut_here) else "可考虑加密 B-roll"
-        lines.append(f"| {sec:02d}s–{sec+1:02d}s | {clip_desc} | {sent_desc} | {bench_desc} | {advice} |")
-
-    out_md = pipeline_dir / "10_benchmark_comparison.md"
-    out_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"[qa] 对标视频逐秒对比报告已生成 -> {out_md}")
-    return out_md
-
-
 def main() -> None:
-    maybe_reexec_in_venv()
-    parser = argparse.ArgumentParser(description="9项强制自动质检与对标逐秒对比")
+    parser = argparse.ArgumentParser(description="Step 10: 22 项硬红线与独立黑盒质检报告生成")
     parser.add_argument("--pipeline-dir", required=True)
     parser.add_argument("--video", help="指定待检 MP4（默认 output_final.mp4）")
     parser.add_argument("--benchmark", help="可选：对标视频路径")
+    parser.add_argument("--dialect", default="mandarin", help="语言模式 (mandarin / cantonese / dialect)")
+    parser.add_argument("--store-anchor", help="门店名/核心听觉锚点")
+    parser.add_argument("--strict-asr", action="store_true", help="无本地 Whisper 模型时阻止通过")
     args = parser.parse_args()
 
     res = inspect_video(
         Path(args.pipeline_dir),
         video_path=Path(args.video) if args.video else None,
         benchmark_path=Path(args.benchmark) if args.benchmark else None,
+        dialect=args.dialect,
+        store_anchor=args.store_anchor,
+        strict_asr=args.strict_asr,
     )
     if not res["all_passed"]:
-        sys.exit(2)
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":

@@ -6,9 +6,8 @@
 确定性生成全套跨平台风格谱资产：
 1. assets/style_spectrum/style_spectrum_library.json
 2. assets/subtitle_templates/templates.json (保留原4套基础模板 + 新增 style_01~style_20)
-3. assets/style_spectrum/jianying/jianying_style_presets.json
-4. assets/style_spectrum/remotion/StyleSpectrumPresets.ts
-5. assets/style_spectrum/hyperframes/style-spectrum-presets.css
+3. assets/style_spectrum/hyperframes/style-spectrum-presets.css
+4. assets/style_spectrum/STYLE_SPECTRUM_REPORT.md
 """
 
 from __future__ import annotations
@@ -940,8 +939,6 @@ def build_all_assets() -> None:
         if not k.startswith("style_")
     }
 
-    remotion_presets: Dict[str, Any] = {}
-    jianying_presets: Dict[str, Any] = {}
     css_blocks: List[str] = [
         "/* 自动生成的 20 套参考视频「风格谱」HyperFrames CSS 变量预设 */",
         ":root {",
@@ -1021,7 +1018,6 @@ def build_all_assets() -> None:
             "transition_and_packaging": cur["packaging_notes"],
             "assets": {
                 "lut_cube": f"luts/{sid}.cube",
-                "contact_sheet": f"keyframes/{sid}_contact.jpg",
             },
         }
         merged_styles.append(merged)
@@ -1059,89 +1055,8 @@ def build_all_assets() -> None:
             ),
         }
 
-        # 2) Remotion Preset 条目
+        # 2) HyperFrames CSS 主题块
         accent_palette = color.get("top5_palette_hex", ["#111111", "#FFFFFF", "#FFD54F"])
-        remotion_presets[sid] = {
-            "styleId": sid,
-            "styleName": cur["style_name_cn"],
-            "archetypeId": cur["archetype_id"],
-            "orientation": meta["orientation"],
-            "fps": int(round(meta["fps"])),
-            "bpm": audio.get("estimated_bpm", 110.0),
-            "shotMedianSec": shots["median_sec"],
-            "first3sCutsTarget": max(2, shots["first_3s_cuts_count"]),
-            "jCutFrames": 3 if audio.get("j_cut_detected_pct", 0) >= 8.0 else 0,
-            "subtitle": {
-                "fontFamily": f"'{sub['font_family']}', 'Noto Sans SC', sans-serif",
-                "fontSizePx": sub["font_size_1080p_px"],
-                "englishFontSizePx": sub.get("english_font_size_px", 22),
-                "bilingual": sub["bilingual"],
-                "keywordScale": sub["keyword_scale"],
-                "primaryColor": sub["primary_color"],
-                "keywordColor": sub["keyword_color"],
-                "strokeColor": sub["stroke_color"],
-                "strokeWidth": sub["stroke_width"],
-                "bgBoxColor": sub["bg_box_color"],
-                "bgRadius": sub["bg_radius"],
-                "safeYRatio": sub["safe_y_ratio"],
-                "animation": sub["animation"],
-            },
-            "cover": {
-                "layoutId": cur["title_cover_layout"]["layout_id"],
-                "layoutName": cur["title_cover_layout"]["layout_name"],
-                "mainSubRatio": cur["title_cover_layout"]["main_sub_ratio"],
-                "highlightStyle": cur["title_cover_layout"]["highlight_style"],
-            },
-            "color": {
-                "yMean255": color["y_mean_255"],
-                "satMeanPct": color["sat_mean_pct"],
-                "warmthIndex": color["warmth_index"],
-                "toneMood": color["tone_mood"],
-                "paletteHex": accent_palette,
-                "lutFile": color["lut_file"],
-                "cssFilter": color["css_filter_approx"],
-            },
-            "packaging": {
-                "transitions": cur["packaging_notes"]["transitions"],
-                "elements": cur["packaging_notes"]["elements"],
-                "sfxPerMinTarget": cur["packaging_notes"]["sfx_per_min_target"],
-                "visualPerMinTarget": cur["packaging_notes"]["visual_per_min_target"],
-            },
-        }
-
-        # 3) 剪映专业版预设条目
-        jianying_presets[sid] = {
-            "style_id": sid,
-            "name": cur["style_name_cn"],
-            "archetype_id": cur["archetype_id"],
-            "canvas": {"width": 1080, "height": 1920, "ratio": "9:16"} if is_portrait else {"width": 1920, "height": 1080, "ratio": "16:9"},
-            "fps": 30.0 if abs(meta["fps"] - 30.0) < 1.0 else 24.0,
-            "rhythm": {
-                "bpm": audio.get("estimated_bpm", 110.0),
-                "target_median_shot_sec": shots["median_sec"],
-                "j_cut_lead_us": 100000 if audio.get("j_cut_detected_pct", 0) >= 8.0 else 0,
-            },
-            "text_style": {
-                "font_name": sub["font_family"],
-                "font_candidates": sub["font_candidates"],
-                "font_size_jy": round(sub["font_size_1080p_px"] / 6.0, 1),
-                "primary_color_hex": sub["primary_color"],
-                "keyword_color_hex": sub["keyword_color"],
-                "stroke_color_hex": sub["stroke_color"],
-                "stroke_width_jy": round(sub["stroke_width"] * 0.02, 3),
-                "transform_y": round(1.0 - 2.0 * sub["safe_y_ratio"], 3),
-                "animation_name": sub["animation"],
-            },
-            "color_grade": {
-                "lut_file": str((STYLE_DIR / "luts" / f"{sid}.cube").resolve()),
-                "lut_intensity": 0.85,
-                "tone_mood": color["tone_mood"],
-                "warmth_index": color["warmth_index"],
-            },
-            "cover_layout": cur["title_cover_layout"],
-        }
-
-        # 4) HyperFrames CSS 主题块
         font_var = (
             "var(--hf-font-serif)" if "Serif" in sub["font_family"]
             else "var(--hf-font-hand)" if "QingSong" in sub["font_family"]
@@ -1180,85 +1095,12 @@ def build_all_assets() -> None:
     # 写出 2. subtitle_templates/templates.json
     write_json(tpl_path, {"templates": base_templates})
 
-    # 写出 3. jianying_style_presets.json
-    write_json(STYLE_DIR / "jianying" / "jianying_style_presets.json", {
-        "version": "1.0.0",
-        "archetypes": ARCHETYPES,
-        "presets": jianying_presets,
-    })
-
-    # 写出 4. Remotion StyleSpectrumPresets.ts
-    ts_lines = [
-        "// 自动生成的 20 套参考视频「风格谱」Remotion 预设库",
-        "export interface StyleSubtitlePreset {",
-        "  fontFamily: string;",
-        "  fontSizePx: number;",
-        "  englishFontSizePx: number;",
-        "  bilingual: boolean;",
-        "  keywordScale: number;",
-        "  primaryColor: string;",
-        "  keywordColor: string;",
-        "  strokeColor: string;",
-        "  strokeWidth: number;",
-        "  bgBoxColor: string;",
-        "  bgRadius: number;",
-        "  safeYRatio: number;",
-        "  animation: 'hard_cut' | 'pop_spring' | 'fade_slide_up' | 'karaoke_highlight';",
-        "}",
-        "",
-        "export interface StyleSpectrumPreset {",
-        "  styleId: string;",
-        "  styleName: string;",
-        "  archetypeId: string;",
-        "  orientation: 'portrait_9_16' | 'landscape_16_9';",
-        "  fps: number;",
-        "  bpm: number;",
-        "  shotMedianSec: number;",
-        "  first3sCutsTarget: number;",
-        "  jCutFrames: number;",
-        "  subtitle: StyleSubtitlePreset;",
-        "  cover: {",
-        "    layoutId: string;",
-        "    layoutName: string;",
-        "    mainSubRatio: number;",
-        "    highlightStyle: string;",
-        "  };",
-        "  color: {",
-        "    yMean255: number;",
-        "    satMeanPct: number;",
-        "    warmthIndex: number;",
-        "    toneMood: string;",
-        "    paletteHex: string[];",
-        "    lutFile: string;",
-        "    cssFilter: string;",
-        "  };",
-        "  packaging: {",
-        "    transitions: string[];",
-        "    elements: string[];",
-        "    sfxPerMinTarget: number;",
-        "    visualPerMinTarget: number;",
-        "  };",
-        "}",
-        "",
-        f"export const STYLE_SPECTRUM_ARCHETYPES = {json.dumps(ARCHETYPES, ensure_ascii=False, indent=2)} as const;",
-        "",
-        f"export const STYLE_SPECTRUM_PRESETS: Record<string, StyleSpectrumPreset> = {json.dumps(remotion_presets, ensure_ascii=False, indent=2)};",
-        "",
-        "export function getStylePreset(styleId: string): StyleSpectrumPreset {",
-        "  return STYLE_SPECTRUM_PRESETS[styleId] ?? STYLE_SPECTRUM_PRESETS['style_02'];",
-        "}",
-        "",
-    ]
-    remotion_ts = STYLE_DIR / "remotion" / "StyleSpectrumPresets.ts"
-    remotion_ts.parent.mkdir(parents=True, exist_ok=True)
-    remotion_ts.write_text("\n".join(ts_lines), encoding="utf-8")
-
-    # 写出 5. HyperFrames CSS
+    # 写出 3. HyperFrames CSS
     hf_css = STYLE_DIR / "hyperframes" / "style-spectrum-presets.css"
     hf_css.parent.mkdir(parents=True, exist_ok=True)
     hf_css.write_text("\n".join(css_blocks), encoding="utf-8")
 
-    # 写出 6. STYLE_SPECTRUM_REPORT.md 深度拆解手册
+    # 写出 4. STYLE_SPECTRUM_REPORT.md 深度拆解手册
     report_path = STYLE_DIR / "STYLE_SPECTRUM_REPORT.md"
     generate_markdown_report(lib, report_path)
 
@@ -1266,25 +1108,25 @@ def build_all_assets() -> None:
         f"[build-assets] 成功构建风格谱资产库：{len(merged_styles)} 套风格 + {len(ARCHETYPES)} 大母版 ->\n"
         f"  - {STYLE_DIR / 'style_spectrum_library.json'}\n"
         f"  - {tpl_path}\n"
-        f"  - {STYLE_DIR / 'jianying' / 'jianying_style_presets.json'}\n"
-        f"  - {remotion_ts}\n"
         f"  - {hf_css}\n"
         f"  - {report_path}"
     )
 
 
 def generate_markdown_report(lib: Dict[str, Any], out_md: Path) -> None:
-    """从 style_spectrum_library.json 确定性生成完整《20条参考视频逐帧分析与风格谱手册》。"""
+    """从 style_spectrum_library.json 确定性生成完整《参考视频逐帧分析与风格谱手册》。"""
     styles = lib["styles"]
     arches = lib["archetypes"]
 
     total_sec = sum(s["meta"]["duration_sec"] for s in styles)
     total_frames = sum(s["shot_distribution"]["total_frames_analyzed"] for s in styles)
+    n_portrait = sum(1 for s in styles if s.get("meta", {}).get("orientation") == "portrait_9_16")
+    n_landscape = len(styles) - n_portrait
 
     lines: List[str] = [
-        "# 20条参考包装视频逐帧拆解与「风格谱（Style Spectrum）」全量手册",
+        f"# {len(styles)}条参考包装视频逐帧拆解与「风格谱（Style Spectrum）」全量手册",
         "",
-        f"> **样本规模**：共 **20 条**参考视频（竖屏 9:16 13条 / 横屏 16:9 7条），累计时长 **{total_sec:.1f} 秒（{total_sec/60:.1f} 分钟）**，全帧扫描 **{total_frames:,} 帧**。",
+        f"> **样本规模**：共 **{len(styles)} 条**参考视频（竖屏 9:16 {n_portrait}条 / 横屏 16:9 {n_landscape}条），累计时长 **{total_sec:.1f} 秒（{total_sec/60:.1f} 分钟）**，全帧扫描 **{total_frames:,} 帧**。",
         f"> **生成时间**：`{lib['generated_at']}` | **数据主库**：[style_spectrum_library.json](style_spectrum_library.json)",
         "",
         "---",
@@ -1352,7 +1194,6 @@ def generate_markdown_report(lib: Dict[str, Any], out_md: Path) -> None:
             f"### {sid.upper()} · {s['style_name_cn']}",
             f"- **原片文件**：`{s['source_filename']}`（`{m['width']}×{m['height']}` · `{m['fps']} fps` · `{m['duration_sec']:.1f}s` · `{sh['total_frames_analyzed']} 帧`）",
             f"- **所属流派**：`{s['archetype_id']}` | **推荐轨道**：`{s['recommended_track']}` | **适用标签**：{' · '.join(s['domain_tags'])}",
-            f"- **关键帧采样图谱**：[{sid}_contact.jpg](keyframes/{sid}_contact.jpg)",
             "",
             "| 风格谱维度 | 逐帧实测与视觉精校参数 |",
             "| :--- | :--- |",
@@ -1366,10 +1207,8 @@ def generate_markdown_report(lib: Dict[str, Any], out_md: Path) -> None:
             f"| **8. 标题封面版式** | **版式类型**：`{cv['layout_id']}`（{cv['layout_name']}）<br>**构图网格**：{cv['grid_desc']}<br>**主副标题字号比**：`{cv['main_sub_ratio']}x` | **高亮手法**：{cv['highlight_style']} |",
             "",
             "```bash",
-            f"# 一键复刻 {sid} 至 剪映草稿 / Remotion Props / HyperFrames HTML：",
+            f"# 一键应用 {sid} 并导出 HyperFrames 样板 HTML：",
             f"python3 short-video-studio/scripts/apply_style_spectrum.py --style-id {sid} \\",
-            f"  --export-jianying-template ./out_{sid}/jianying_draft \\",
-            f"  --export-remotion-props ./out_{sid}/remotion_props.json \\",
             f"  --export-hyperframes ./out_{sid}/hyperframes_comp.html",
             "```",
             "",
@@ -1378,12 +1217,10 @@ def generate_markdown_report(lib: Dict[str, Any], out_md: Path) -> None:
     lines.extend([
         "---",
         "",
-        "## 四、 跨平台复刻接入指南",
+        "## 四、 复刻接入指南",
         "",
-        "1. **Remotion 复刻**：在 `assets/remotion_templates/` 中直接引入 `StyleSpectrumShowcase` 或原子组件 (`StyleCoverCard`, `StyleSubtitleBar`, `StyleChapterBar`, `StyleGraphicCard`)，传入 `styleId: 'style_01'..'style_20'` 或用 `--export-remotion-props` 导出的 JSON 渲染。",
-        "2. **HyperFrames 复刻**：直接使用 [style-spectrum-template.html](hyperframes/style-spectrum-template.html)?style=style_02 预览，或用 `apply_style_spectrum.py --export-hyperframes` 生成内联样式的独立 HTML 交由 `npx hyperframes check && npx hyperframes render` 出片。",
-        "3. **剪映专业版复刻**：运行 `apply_style_spectrum.py --export-jianying-template <目录>` 生成包含对应 `.cube` 3D LUT、节拍切分视频轨与字幕样式轨的剪映草稿，拷入剪映草稿目录即可打开精修。",
-        "4. **`short-video-studio` 流水线一键应用**：运行 `apply_style_spectrum.py --style-id style_XX --apply-pipeline <project>/pipeline`，自动同步 `.cube` LUT 与字幕模板至当前项目。",
+        "1. **HyperFrames 复刻**：使用 `apply_style_spectrum.py --style-id style_XX --export-hyperframes <out.html>` 导出零外链样板预览。",
+        "2. **`short-video-studio` 流水线一键应用**：运行 `apply_style_spectrum.py --style-id style_XX --apply-pipeline <project>/pipeline`，自动同步 `.cube` LUT 与字幕模板至当前项目。",
         "",
     ])
 

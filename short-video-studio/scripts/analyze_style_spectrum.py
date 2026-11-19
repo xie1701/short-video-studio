@@ -28,98 +28,27 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from common import ASSETS_DIR, find_bin, maybe_reexec_in_venv, parse_fps, run_cmd, write_json
+from common import (
+    ASSETS_DIR,
+    ffprobe_media,
+    find_bin,
+    maybe_reexec_in_venv,
+    measure_lufs_ebur128,
+    parse_fps,
+    parse_video_stream_geometry,
+    run_cmd,
+    write_cube_lut,
+    write_json,
+)
+from vision_inspector import inspect_images
 
 maybe_reexec_in_venv()
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
-DEFAULT_INPUT_DIR = Path("/Users/jerry/Downloads/参考包装视频")
+DEFAULT_INPUT_DIR = ASSETS_DIR / "style_spectrum" / "samples"
 DEFAULT_OUT_DIR = ASSETS_DIR / "style_spectrum"
-
-VISION_OCR_SWIFT_SRC = r"""
-import Foundation
-import Vision
-import ImageIO
-
-let args = CommandLine.arguments
-if args.count < 2 { exit(1) }
-for path in args.dropFirst() {
-    let url = URL(fileURLWithPath: path)
-    guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
-          let cgImg = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
-        print("{\"file\":\"\(path)\",\"boxes\":[]}")
-        continue
-    }
-    let req = VNRecognizeTextRequest()
-    req.recognitionLevel = .accurate
-    req.recognitionLanguages = ["zh-Hans", "en-US"]
-    req.usesLanguageCorrection = true
-    let handler = VNImageRequestHandler(cgImage: cgImg, options: [:])
-    try? handler.perform([req])
-    var items: [[String: Any]] = []
-    for obs in req.results ?? [] {
-        if let cand = obs.topCandidates(1).first {
-            let b = obs.boundingBox
-            items.append([
-                "text": cand.string,
-                "x": b.origin.x,
-                "y": 1.0 - b.origin.y - b.size.height,
-                "w": b.size.width,
-                "h": b.size.height,
-                "conf": cand.confidence
-            ])
-        }
-    }
-    let out: [String: Any] = ["file": path, "boxes": items]
-    if let data = try? JSONSerialization.data(withJSONObject: out),
-       let s = String(data: data, encoding: .utf8) {
-        print(s)
-    }
-}
-"""
-
-
-def ensure_vision_ocr_bin() -> Optional[Path]:
-    """在 macOS 上编译并缓存原生 Vision OCR CLI（无外部依赖），非 macOS 返回 None。"""
-    if os.uname().sysname != "Darwin":
-        return None
-    swiftc = shutil.which("swiftc")
-    if not swiftc:
-        return None
-    cache_dir = Path.home() / ".short-video-studio" / "cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    bin_path = cache_dir / "svs_vision_ocr"
-    src_path = cache_dir / "svs_vision_ocr.swift"
-    if bin_path.exists():
-        return bin_path
-    src_path.write_text(VISION_OCR_SWIFT_SRC.strip() + "\n", encoding="utf-8")
-    res = subprocess.run([swiftc, "-O", str(src_path), "-o", str(bin_path)], capture_output=True, text=True)
-    if res.returncode == 0 and bin_path.exists():
-        return bin_path
-    return None
-
-
-def run_batch_ocr(ocr_bin: Optional[Path], image_paths: List[Path]) -> Dict[str, List[Dict[str, Any]]]:
-    """批量调用 Vision OCR 提取图片中的所有文字与归一化坐标。"""
-    if not ocr_bin or not image_paths:
-        return {}
-    cmd = [str(ocr_bin)] + [str(p) for p in image_paths]
-    res = subprocess.run(cmd, capture_output=True, text=True)
-    out: Dict[str, List[Dict[str, Any]]] = {}
-    if res.returncode != 0:
-        return out
-    for line in res.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-            out[obj["file"]] = obj.get("boxes", [])
-        except Exception:
-            continue
-    return out
 
 
 def rgb_to_hex(rgb: Tuple[float, float, float]) -> str:
@@ -130,20 +59,13 @@ def rgb_to_hex(rgb: Tuple[float, float, float]) -> str:
 
 
 def probe_video_meta(video_path: Path) -> Dict[str, Any]:
-    """调用 ffprobe 获取视频基础物理规格。"""
-    ffprobe = find_bin("ffprobe")
-    if not ffprobe:
-        raise RuntimeError("未找到 ffprobe")
-    cmd = [
-        ffprobe, "-v", "quiet", "-print_format", "json",
-        "-show_format", "-show_streams", str(video_path),
-    ]
-    res = run_cmd(cmd)
-    info = json.loads(res.stdout or "{}")
+    """复用 common.ffprobe_media 与 parse_video_stream_geometry 获取视频物理规格。"""
+    info = ffprobe_media(video_path)
     v_stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), {})
     a_stream = next((s for s in info.get("streams", []) if s.get("codec_type") == "audio"), {})
-    w = int(v_stream.get("width") or 0)
-    h = int(v_stream.get("height") or 0)
+    geom = parse_video_stream_geometry(v_stream)
+    w = int(geom["display_width"])
+    h = int(geom["display_height"])
     fps = parse_fps(v_stream.get("r_frame_rate") or v_stream.get("avg_frame_rate") or "24/1")
     if fps <= 0:
         fps = 24.0
@@ -485,18 +407,9 @@ def generate_reverse_cube_lut(color_stats: Dict[str, Any], out_lut_path: Path, t
     )
     rgb_out = np.clip(rgb_s + tint_map, 0.0, 1.0)
 
-    flat = rgb_out.reshape(-1, 3)
-    out_lut_path.parent.mkdir(parents=True, exist_ok=True)
-    header = [
-        f'TITLE "{title}"',
-        f"LUT_3D_SIZE {size}",
-        "DOMAIN_MIN 0.0 0.0 0.0",
-        "DOMAIN_MAX 1.0 1.0 1.0",
-    ]
-    body = [f"{r:.6f} {g:.6f} {b:.6f}" for r, g, b in flat]
-    out_lut_path.write_text("\n".join(header + body) + "\n", encoding="utf-8")
+    write_cube_lut(out_lut_path, rgb_out, size, title)
 
-    # 返回近似 CSS Filter（用于 Remotion / HyperFrames 浏览器端无 LUT 实时预览）
+    # 返回近似 CSS Filter（用于 HyperFrames 浏览器端无 LUT 实时预览）
     css_brightness = round(1.0 + mid_gamma_shift * 1.1, 3)
     css_contrast = round(contrast_gain, 3)
     css_saturate = round(sat_scale, 3)
@@ -529,17 +442,11 @@ def analyze_audio_and_alignment(
     if not meta["has_audio"]:
         return {"has_audio": False}
 
-    # 1. EBU R128 响度 + silencedetect
-    ebur_res = run_cmd([
-        ffmpeg, "-hide_banner", "-nostats", "-i", str(video_path),
-        "-filter_complex", "ebur128=peak=true", "-f", "null", "-",
-    ], check=False)
-    i_vals = re.findall(r"I:\s*(-?[0-9]+(?:\.[0-9]+)?)\s*LUFS", ebur_res.stderr)
-    lra_vals = re.findall(r"LRA:\s*([0-9]+(?:\.[0-9]+)?)\s*LU", ebur_res.stderr)
-    tp_vals = re.findall(r"Peak:\s*(-?[0-9]+(?:\.[0-9]+)?)\s*dBFS", ebur_res.stderr)
-    integrated_lufs = float(i_vals[-1]) if i_vals else -23.0
-    lra_lu = float(lra_vals[-1]) if lra_vals else 6.0
-    true_peak = float(tp_vals[-1]) if tp_vals else -1.0
+    # 1. 复用 common.measure_lufs_ebur128
+    r128 = measure_lufs_ebur128(video_path, raise_on_error=False)
+    integrated_lufs = float(r128.get("integrated_lufs", -23.0))
+    lra_lu = float(r128.get("lra_lu", 6.0))
+    true_peak = float(r128.get("true_peak_dbtp", -1.0))
 
     sil_res = run_cmd([
         ffmpeg, "-hide_banner", "-i", str(video_path),
@@ -737,8 +644,7 @@ def analyze_audio_and_alignment(
 def extract_frames_and_analyze_subtitles(
     video_path: Path,
     meta: Dict[str, Any],
-    contact_out: Path,
-    ocr_bin: Optional[Path],
+    contact_out: Optional[Path],
     video_id: str,
 ) -> Dict[str, Any]:
     """
@@ -794,10 +700,15 @@ def extract_frames_and_analyze_subtitles(
         ], check=False)
         anim_frames = sorted(anim_dir.glob("f_*.jpg"))
 
-        ocr_map = run_batch_ocr(ocr_bin, frame_paths)
+        vis_raw = inspect_images(frame_paths)
+        ocr_map: Dict[str, List[Dict[str, Any]]] = {}
+        for k, v in vis_raw.items():
+            texts = v.get("texts") or []
+            ocr_map[str(k)] = texts
+            ocr_map[str(Path(k).resolve())] = texts
 
-        # 构建 3x3 Contact Sheet
-        if frame_paths:
+        # 可选构建 3x3 Contact Sheet
+        if frame_paths and contact_out is not None:
             first_im = Image.open(frame_paths[0])
             fw, fh = first_im.size
             is_portrait = fh > fw
@@ -822,7 +733,6 @@ def extract_frames_and_analyze_subtitles(
                 im = Image.open(fp).convert("RGB").resize((tile_w, tile_h), Image.Resampling.LANCZOS)
                 x0, y0 = c * tile_w, header_h + r * tile_h
                 canvas.paste(im, (x0, y0))
-                # 标签角标
                 draw.rectangle([x0 + 8, y0 + 8, x0 + 165, y0 + 36], fill=(15, 23, 42))
                 draw.text((x0 + 14, y0 + 11), f"{sample_labels[i]} ({sample_times[i]:.1f}s)", fill=(255, 213, 79), font=fnt_sm)
 
@@ -833,7 +743,7 @@ def extract_frames_and_analyze_subtitles(
         sub_boxes: List[Tuple[Path, Dict[str, Any]]] = []
         cover_boxes: List[Dict[str, Any]] = []
         for idx, fp in enumerate(frame_paths):
-            boxes = ocr_map.get(str(fp), [])
+            boxes = ocr_map.get(str(fp.resolve()), [])
             if idx == 0:
                 cover_boxes = boxes
             # 通常主字幕位于画面下半部分 Y ∈ [0.58, 0.94]（去掉极边缘水印）
@@ -962,12 +872,12 @@ def extract_frames_and_analyze_subtitles(
                 for b in cover_boxes[:10]
             ],
             "sample_subtitle_texts": [b["text"] for _, b in sub_boxes[:6]],
-            "contact_sheet": str(contact_out),
+            "contact_sheet": str(contact_out) if contact_out else None,
         }
 
 
-def analyze_single_video(args_tuple: Tuple[int, Path, Path, Optional[Path]]) -> Dict[str, Any]:
-    idx, video_path, out_dir, ocr_bin = args_tuple
+def analyze_single_video(args_tuple: Tuple[int, Path, Path, bool]) -> Dict[str, Any]:
+    idx, video_path, out_dir, save_contacts = args_tuple
     style_id = f"style_{idx:02d}"
     t0 = time.time()
     meta = probe_video_meta(video_path)
@@ -975,8 +885,8 @@ def analyze_single_video(args_tuple: Tuple[int, Path, Path, Optional[Path]]) -> 
     lut_path = out_dir / "luts" / f"{style_id}.cube"
     lut_info = generate_reverse_cube_lut(vis_stats["color_stats"], lut_path, title=f"Style {idx:02d}")
     audio_stats = analyze_audio_and_alignment(video_path, meta, vis_stats["shot_stats"])
-    contact_path = out_dir / "keyframes" / f"{style_id}_contact.jpg"
-    sub_cover_stats = extract_frames_and_analyze_subtitles(video_path, meta, contact_path, ocr_bin, style_id)
+    contact_path = (out_dir / "keyframes" / f"{style_id}_contact.jpg") if save_contacts else None
+    sub_cover_stats = extract_frames_and_analyze_subtitles(video_path, meta, contact_path, style_id)
 
     elapsed = round(time.time() - t0, 2)
     print(
@@ -1003,22 +913,23 @@ def main() -> None:
     parser.add_argument("--input-dir", default=str(DEFAULT_INPUT_DIR))
     parser.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR))
     parser.add_argument("--workers", type=int, default=6)
+    parser.add_argument("--save-contact-sheets", action="store_true", help="可选：保存 3x3 关键帧采样图谱至 keyframes/")
     args = parser.parse_args()
 
     in_dir = Path(args.input_dir)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "luts").mkdir(parents=True, exist_ok=True)
-    (out_dir / "keyframes").mkdir(parents=True, exist_ok=True)
+    if args.save_contact_sheets:
+        (out_dir / "keyframes").mkdir(parents=True, exist_ok=True)
 
-    videos = sorted(in_dir.glob("*.mp4"))
+    videos = sorted(in_dir.glob("*.mp4")) if in_dir.exists() else []
     if not videos:
-        raise FileNotFoundError(f"未在 {in_dir} 找到 mp4 文件")
+        raise FileNotFoundError(f"未在 {in_dir} 找到 mp4 参考样本，请通过 --input-dir 指定目录")
 
-    ocr_bin = ensure_vision_ocr_bin()
-    print(f"[style-analyzer] 共发现 {len(videos)} 条参考视频，Vision OCR={'已就绪' if ocr_bin else '不可用'}，开始并行逐帧分析...")
+    print(f"[style-analyzer] 共发现 {len(videos)} 条参考视频，开始并行逐帧分析...")
 
-    tasks = [(i + 1, vp, out_dir, ocr_bin) for i, vp in enumerate(videos)]
+    tasks = [(i + 1, vp, out_dir, bool(args.save_contact_sheets)) for i, vp in enumerate(videos)]
     results: List[Dict[str, Any]] = []
     with concurrent.futures.ProcessPoolExecutor(max_workers=max(1, args.workers)) as ex:
         for res in ex.map(analyze_single_video, tasks):
