@@ -174,19 +174,17 @@ def _prepare_static_overlay_layers(
             "file_path": full_png,
         })
 
-    # 2. 双色字幕层（跳过被抑制条，优先复用 render_mp4 已渲染的 sub_XXX.png）
+    # 2. 双色字幕层（跳过被抑制条，按 0-based idx-1 精准复用 render_mp4 已渲染的 sub_XXX.png）
     work_tmp = pipeline_dir / "_render_final"
     work_tmp.mkdir(parents=True, exist_ok=True)
-    active_idx = 0
     for idx, sub in enumerate(subs.get("entries") or [], start=1):
         if sub.get("suppressed"):
             continue
-        active_idx += 1
         sf = max(0, sec_to_frames(float(sub.get("start_sec", 0.0)), fps))
         ef = min(total_frames, sec_to_frames(float(sub.get("end_sec", 0.0)), fps))
         if ef <= sf:
             continue
-        pre_sub_png = work_tmp / f"sub_{active_idx:03d}.png"
+        pre_sub_png = work_tmp / f"sub_{idx - 1:03d}.png"
         if pre_sub_png.is_file() and pre_sub_png.stat().st_size > 64:
             with Image.open(pre_sub_png) as im_s:
                 sw_px, sh_px = im_s.size

@@ -24,7 +24,9 @@ from common import (
     CANVAS_WIDTH,
     DEFAULT_FPS,
     SAFE_ZONE,
+    SUBTITLE_CENTER_X,
     SUBTITLE_SAFE_ZONE,
+    SUBTITLE_SYMMETRIC_MAX_W,
     find_bin,
     find_commercial_font,
     frames_to_sec,
@@ -552,7 +554,7 @@ def _build_captions_track_html(
 
     body_lines: List[str] = []
     rendered_count = 0
-    max_sub_w = SUBTITLE_SAFE_ZONE["x_max"] - SUBTITLE_SAFE_ZONE["x_min"]
+    max_sub_w = SUBTITLE_SYMMETRIC_MAX_W  # 640px ([220, 860]，绝对正中 540px)
 
     for idx, sub in enumerate(subs.get("entries") or [], start=1):
         if sub.get("suppressed"):
@@ -562,8 +564,8 @@ def _build_captions_track_html(
 
         fb = sub.get("final_bbox") or sub.get("bbox")
         if isinstance(fb, dict) and {"x", "y", "w", "h"}.issubset(fb.keys()):
-            bx = max(SUBTITLE_SAFE_ZONE["x_min"], min(int(fb["x"]), SUBTITLE_SAFE_ZONE["x_max"] - 80))
-            bw = min(max_sub_w, max(80, int(fb["w"])))
+            bw = min(max_sub_w, max(160, int(fb["w"])))
+            bx = SUBTITLE_CENTER_X - bw // 2
             bh = min(SUBTITLE_SAFE_ZONE["y_max"] - SUBTITLE_SAFE_ZONE["y_min"], max(48, int(fb["h"])))
             by = max(SUBTITLE_SAFE_ZONE["y_min"], min(int(fb["y"]), SUBTITLE_SAFE_ZONE["y_max"] - bh))
         else:

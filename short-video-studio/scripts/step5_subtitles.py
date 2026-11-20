@@ -25,7 +25,9 @@ if _SCRIPTS_DIR not in sys.path:
 from common import (
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
+    SUBTITLE_CENTER_X,
     SUBTITLE_SAFE_ZONE,
+    SUBTITLE_SYMMETRIC_MAX_W,
     bbox_iou,
     check_bbox_in_safe_zone,
     find_commercial_font,
@@ -118,20 +120,21 @@ def _compute_authoritative_subtitle_bbox(
     font_path: Optional[str],
     face_boxes_px: List[Dict[str, Any]],
 ) -> Dict[str, int]:
-    """按唯一 SUBTITLE_SAFE_ZONE 精确计算尺寸并一次性避开人脸五官，产出四端统一 final_bbox。"""
-    base_fs = int(tpl.get("font_size", 54))
-    kw_scale = float(tpl.get("keyword_scale", 1.16))
-    eff_fs = int(round(base_fs * min(1.22, max(1.0, (1.0 + kw_scale) * 0.5))))
-    safe_w_cap = SUBTITLE_SAFE_ZONE["x_max"] - SUBTITLE_SAFE_ZONE["x_min"]  # 780px
-    center_x = (SUBTITLE_SAFE_ZONE["x_min"] + SUBTITLE_SAFE_ZONE["x_max"]) // 2  # 470
+    """按画布绝对正中 x=540 对称安全带 [220, 860] 计算尺寸并仅在垂直方向避开人脸五官，产出四端统一 final_bbox。"""
+    base_fs = int(tpl.get("font_size", 62))
+    kw_scale = float(tpl.get("keyword_scale", 1.133))
+    eff_fs = int(round(base_fs * min(1.20, max(1.0, (1.0 + kw_scale) * 0.5))))
+    safe_w_cap = SUBTITLE_SYMMETRIC_MAX_W  # 640px ([220, 860]，中心严格锁定 540px)
+    center_x = SUBTITLE_CENTER_X  # 540px
 
     est_w, est_h = _measure_text_px(text, font_path, eff_fs)
-    box_w = min(safe_w_cap, max(200, est_w + 36))
+    box_w = min(safe_w_cap, max(160, est_w + 32))
     box_h = min(220, max(84, est_h + 16))
-    box_x = max(SUBTITLE_SAFE_ZONE["x_min"], min(SUBTITLE_SAFE_ZONE["x_max"] - box_w, center_x - box_w // 2))
+    # 水平中心 100% 锁定画布正中央 540px，且 box_w <= 640 保证永不触发右侧 860px 单侧推偏
+    box_x = center_x - box_w // 2
 
-    # 钳位 safe_y_center，杜绝越出 SUBTITLE_SAFE_ZONE
-    safe_yc = int(tpl.get("safe_y_center", 1340))
+    # 钳位 safe_y_center，默认对齐《11月14日延期》黄金水位 1310px
+    safe_yc = int(tpl.get("safe_y_center", 1310))
     box_y = max(SUBTITLE_SAFE_ZONE["y_min"], min(SUBTITLE_SAFE_ZONE["y_max"] - box_h, safe_yc - box_h // 2))
     cand = {"x": int(box_x), "y": int(box_y), "w": int(box_w), "h": int(box_h)}
 
@@ -167,10 +170,10 @@ def _compute_authoritative_subtitle_bbox(
 
 def split_sentence_into_chunks(
     sent: Dict[str, Any],
-    max_chars: int = 13,
+    max_chars: int = 10,
     font_path: Optional[str] = None,
-    font_size: int = 54,
-    max_safe_px: int = 698,
+    font_size: int = 62,
+    max_safe_px: int = 608,
     strip_punct: bool = True,
 ) -> List[Dict[str, Any]]:
     """把长句按真静音 (>=0.30s) 呼吸组与 92% 安全宽拆分为无残句字幕块（放行 4 字，严禁 <=3 字残组）。"""
@@ -268,7 +271,7 @@ def split_sentence_into_chunks(
 
 
 def _build_safe_ass_style(raw_ass_style: str, font_path: Optional[str]) -> str:
-    """动态对齐 ASS Style 中的字体名为当前解析的商用字体，且确保 MarginV >= 1920 - SUBTITLE_SAFE_ZONE['y_max']。"""
+    """动态对齐 ASS Style 中的商用字体名、对称左右边距 (MarginL=MarginR=220 保正中 540px) 与 MarginV >= 452。"""
     parts = [p.strip() for p in str(raw_ass_style or "").split(",")]
     if len(parts) < 23:
         return str(raw_ass_style or "")
@@ -282,6 +285,9 @@ def _build_safe_ass_style(raw_ass_style: str, font_path: Optional[str]) -> str:
             parts[1] = "Noto Sans CJK SC"
         elif "PingFang" not in stem and "STHeiti" not in stem:
             parts[1] = stem
+    sym_margin_x = str(CANVAS_WIDTH - SUBTITLE_SAFE_ZONE["x_max"])  # 220 -> [220, 860] 轴心 540px
+    parts[19] = sym_margin_x
+    parts[20] = sym_margin_x
     min_margin_v = CANVAS_HEIGHT - SUBTITLE_SAFE_ZONE["y_max"]  # 452
     try:
         cur_mv = int(float(parts[21]))

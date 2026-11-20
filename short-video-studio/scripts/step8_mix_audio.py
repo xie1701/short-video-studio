@@ -219,6 +219,55 @@ def run_step8(
 
     pre_mix_nosfx = voice_arr * 0.95 + ducked_bgm
 
+    # B-roll 现场动作同期声轻混（复刻《11月14日延期》8.47s 说到「敲敲敲」保留 -10dB 工地现场声）
+    edl_p = pipeline_dir / "04_edl.json"
+    if edl_p.is_file():
+        try:
+            import tempfile
+            edl_clips = read_json(edl_p).get("clips") or []
+            amb_clips = [c for c in edl_clips if c.get("keep_broll_ambient") and c.get("media_path") and Path(str(c["media_path"])).is_file()]
+            if amb_clips:
+                with tempfile.TemporaryDirectory(prefix="svs_amb_") as amb_td:
+                    for ai, ac in enumerate(amb_clips):
+                        t0 = max(0.0, float(ac.get("timeline_in_sec", 0.0)))
+                        t1 = min(n_samples / float(SR), float(ac.get("timeline_out_sec", t0)))
+                        dur_a = t1 - t0
+                        if dur_a < 0.25:
+                            continue
+                        src_in = max(0.0, float(ac.get("source_in_sec", 0.0)))
+                        amb_wav = Path(amb_td) / f"amb_{ai:02d}.wav"
+                        res_a = run_cmd([
+                            ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+                            "-ss", f"{src_in:.4f}", "-t", f"{dur_a:.4f}",
+                            "-i", str(ac["media_path"]),
+                            "-vn", "-af", "highpass=f=150,lowpass=f=7500",
+                            "-ar", str(SR), "-ac", "2", "-acodec", "pcm_s16le",
+                            str(amb_wav),
+                        ], check=False)
+                        if res_a.returncode != 0 or not amb_wav.is_file():
+                            continue
+                        amb_arr, _ = load_stereo_wav_np(amb_wav)
+                        if len(amb_arr) < 128 or float(np.max(np.abs(amb_arr))) < 1e-4:
+                            continue
+                        s_i = int(round(t0 * SR))
+                        e_i = min(n_samples, s_i + len(amb_arr))
+                        seg_len = e_i - s_i
+                        if seg_len < 128:
+                            continue
+                        seg_amb = amb_arr[:seg_len].copy()
+                        # 增益上限严格低于该段人声至少 9.5dB，保证现场动作质感且不干扰人声清晰度与 ASR
+                        gain_db = min(-9.5, float(ac.get("ambient_gain_db", -10.0)))
+                        v_seg_rms = float(np.sqrt(np.mean((voice_arr[s_i:e_i] * 0.95) ** 2) + 1e-10))
+                        a_seg_rms = float(np.sqrt(np.mean(seg_amb ** 2) + 1e-10))
+                        lin_g = min(10.0 ** (gain_db / 20.0), (v_seg_rms * 0.28) / max(1e-5, a_seg_rms))
+                        fade_n = min(int(0.035 * SR), seg_len // 4)
+                        if fade_n > 1:
+                            seg_amb[:fade_n] *= np.linspace(0.0, 1.0, fade_n, dtype=np.float32)[:, None]
+                            seg_amb[-fade_n:] *= np.linspace(1.0, 0.0, fade_n, dtype=np.float32)[:, None]
+                        pre_mix_nosfx[s_i:e_i] += seg_amb * lin_g
+        except Exception:
+            pass
+
     # 局部防掩蔽校准：逐条核对 06_packaging SFX 峰值窗口 [t-0.04, t+0.16] 的 2–8kHz 可听度（不加噪、统一写入 pre_mix 与 08_sfx_master）
     pkg_p = pipeline_dir / "06_packaging.json"
     cues_early = read_json(pkg_p).get("sfx_cues", []) if pkg_p.exists() else []

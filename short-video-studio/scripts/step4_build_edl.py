@@ -27,6 +27,7 @@ from common import (
     DEFAULT_FPS,
     frames_to_sec,
     load_style_applied,
+    load_style_spectrum_entry,
     maybe_reexec_in_venv,
     read_json,
     write_json,
@@ -204,10 +205,18 @@ def run_step4(
     if deictic_gaps:
         print(f"[step4] [WARN] A3 视觉指代缺口 {len(deictic_gaps)} 处: {[g['matched_cue'] for g in deictic_gaps]}")
 
+    style_entry = load_style_spectrum_entry(style_id) if style_id else None
+    broll_target_ratio = float((style_entry or {}).get("broll_overlay_ratio_target", 0.53))
+    ambient_policy = (style_entry or {}).get("broll_ambient_sound_policy") or {}
+    ambient_enabled = bool(ambient_policy.get("enabled", True))
+    ambient_gain_db = float(ambient_policy.get("gain_db", -10.0))
+    ambient_words = tuple(ambient_policy.get("trigger_action_words") or ("敲", "响", "滋啦", "切", "倒", "沸", "烤", "炒", "砸", "摔"))
+
     eff_prof = account_profile if (account_profile and account_profile.get("sample_sufficient") is True) else {}
     min_shot_gap = max(0.95, min(2.4, float(eff_prof.get("target_median_shot_sec", 1.55)) * 0.85))
     micro_hook_max_sec = float(eff_prof.get("micro_hook_max_sec", 6.2))
-    target_aroll_ratio = max(0.20, min(0.85, float(eff_prof.get("target_aroll_ratio", 0.48))))
+    default_aroll_r = max(0.25, min(0.65, 1.0 - broll_target_ratio))
+    target_aroll_ratio = max(0.20, min(0.85, float(eff_prof.get("target_aroll_ratio", default_aroll_r))))
 
     first_3s_evts = pick_first_3s_events(events, fps)
     sent_by_id = {s["id"]: s for s in sentences}
@@ -646,6 +655,13 @@ def run_step4(
             else:
                 b_purpose = "语义互文B-roll保持声音不变"
 
+            keep_amb = bool(
+                ambient_enabled
+                and eff_role == "b_roll"
+                and br.get("has_audio", False)
+                and not br.get("source_is_code_scene", False)
+                and any(w in str(sent.get("text", "")) for w in ambient_words)
+            )
             clips.append({
                 "clip_id": f"clip_{idx+1:03d}",
                 "track_role": eff_role,
@@ -664,6 +680,8 @@ def run_step4(
                 "audio_locked": False,
                 "b_roll_overlay": True,
                 "underlying_audio_untouched": True,
+                "keep_broll_ambient": keep_amb,
+                "ambient_gain_db": ambient_gain_db if keep_amb else None,
                 "j_cut_lead_frames": j_leads[idx],
                 "punch_in_zoom": 1.0,
                 "ken_burns": kb_cfg,

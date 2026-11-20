@@ -31,6 +31,7 @@ from common import (
     fit_text_line,
     hex_to_rgba,
     load_style_applied,
+    load_style_spectrum_entry,
     maybe_reexec_in_venv,
     read_json,
     run_cmd,
@@ -273,6 +274,10 @@ def run_step9(pipeline_dir: Path, track: str = "store", style_id: Optional[str] 
         else:
             base_img = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), hex_to_rgba(pal["bg_hex"], 255))
 
+    style_entry = load_style_spectrum_entry(eff_style) if eff_style else None
+    cover_layout_id = str(((style_entry or {}).get("title_cover_layout") or {}).get("layout_id") or "")
+    use_jianying_poster = (cover_layout_id == "jianying_poster_4zone") or (eff_style == "style_14")
+
     card_x1, card_x2 = 80, SAFE_ZONE["x_max"] - 20  # [80, 860] -> w=780
     card_h = 340
     card_y = _choose_cover_card_y(best_meta.get("face_bbox"), card_h=card_h)
@@ -281,34 +286,90 @@ def run_step9(pipeline_dir: Path, track: str = "store", style_id: Optional[str] 
     draw = ImageDraw.Draw(overlay)
     font_path = find_commercial_font(pal.get("font_candidates"))
 
-    # 采用与当前 style_id 同步的高级极简杂志风/暖食风卡片（废除深蓝底+5px粗黄框）
-    card_fill = hex_to_rgba(pal["card_bg_hex"], 224 if pal.get("is_light") else 212)
-    border_col = hex_to_rgba(pal["border_hex"], 230)
-    accent_col = hex_to_rgba(pal["accent_hex"], 255)
-    badge_txt_col = hex_to_rgba(pal["badge_text_hex"], 255)
-    main_txt_col = hex_to_rgba(pal["title_hex"], 255)
+    if use_jianying_poster:
+        # 复刻《11月14日延期》四区高低错落无闷框爆款封面（左上引子+正红巨字 / 中左微斜黄字签 / 下方白引子+红白大字）
+        # 上下轻柔暗角护底（不挡主实景和人脸，纯增文字对比）
+        grad = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
+        gd = ImageDraw.Draw(grad)
+        for gy in range(0, 520, 4):
+            a = int(115 * (1.0 - gy / 520.0))
+            gd.rectangle([0, gy, CANVAS_WIDTH, gy + 4], fill=(10, 12, 16, a))
+        for gy in range(1060, CANVAS_HEIGHT, 4):
+            a = int(135 * min(1.0, (gy - 1060) / 520.0))
+            gd.rectangle([0, gy, CANVAS_WIDTH, gy + 4], fill=(10, 12, 16, a))
+        overlay = Image.alpha_composite(overlay, grad)
+        draw = ImageDraw.Draw(overlay)
 
-    # 若主色或强调色与卡片填充色对比度低于 WCAG 4.5，自动拉高对比色防 180px 缩略图糊成一团
-    if contrast_ratio(main_txt_col[:3], card_fill[:3]) < 4.5:
-        main_txt_col = (17, 24, 39, 255) if pal.get("is_light") else (255, 255, 255, 255)
-    l2_col = accent_col if contrast_ratio(accent_col[:3], card_fill[:3]) >= 3.2 else main_txt_col
+        safe_w = SAFE_ZONE["x_max"] - 80  # 800px，严格在 [80, 880] 内不触碰右侧栏
+        lead_small = "门店真实记录" if track == "store" else "实操真相拆解"
+        f_lead, fit_lead = _fit_text(draw, lead_small, font_path, 48, 420, min_size=28)
+        draw.text((88, 220), fit_lead, fill=(255, 255, 255, 255), font=f_lead, stroke_width=5, stroke_fill=(0, 0, 0, 255))
 
-    draw.rounded_rectangle([card_x1, card_y, card_x2, card_y + card_h], radius=22, fill=card_fill, outline=border_col, width=2)
-    draw.rounded_rectangle([card_x1, card_y + 24, card_x1 + 8, card_y + card_h - 24], radius=4, fill=accent_col)
+        f_l1, fit_l1 = _fit_text(draw, cover_main_l1, font_path, 108, safe_w - 20, min_size=56)
+        draw.text((84 + 4, 286 + 6), fit_l1, fill=(0, 0, 0, 220), font=f_l1, stroke_width=7, stroke_fill=(0, 0, 0, 220))
+        draw.text((84, 286), fit_l1, fill=(255, 42, 36, 255), font=f_l1, stroke_width=7, stroke_fill=(0, 0, 0, 255))
 
-    # 副标签胶囊：实测宽度后自适应宽，绝不超出胶囊或卡片
-    inner_x = card_x1 + 32
-    max_inner_w = (card_x2 - 28) - inner_x
-    f_sub, fit_sub = _fit_text(draw, cover_sub, font_path, 34, max_inner_w - 44, min_size=22)
-    sub_bb = draw.textbbox((0, 0), fit_sub, font=f_sub)
-    cap_w = min(max_inner_w, max(220, int(sub_bb[2] - sub_bb[0]) + 44))
-    draw.rounded_rectangle([inner_x, card_y + 28, inner_x + cap_w, card_y + 84], radius=12, fill=accent_col)
-    draw.text((inner_x + cap_w // 2, card_y + 56), fit_sub, fill=badge_txt_col, font=f_sub, anchor="mm")
+        # 中左区：微倾斜 -4.5° 明黄黑边贴纸字（cover_main_l2）
+        f_l2, fit_l2 = _fit_text(draw, cover_main_l2, font_path, 82, safe_w - 60, min_size=44)
+        l2_tmp = Image.new("RGBA", (safe_w + 80, 180), (0, 0, 0, 0))
+        l2_d = ImageDraw.Draw(l2_tmp)
+        l2_d.text((28 + 3, 42 + 4), fit_l2, fill=(0, 0, 0, 220), font=f_l2, stroke_width=6, stroke_fill=(0, 0, 0, 220))
+        l2_d.text((28, 42), fit_l2, fill=(255, 226, 52, 255), font=f_l2, stroke_width=6, stroke_fill=(0, 0, 0, 255))
+        l2_rot = l2_tmp.rotate(4.5, resample=Image.Resampling.BICUBIC, expand=True)
+        l2_bb = l2_rot.getbbox()
+        if l2_bb:
+            l2_rot = l2_rot.crop(l2_bb)
+        l2_y = 1040 if (best_meta.get("face_bbox") and best_meta["face_bbox"].get("y", 999) < 880) else 860
+        overlay.alpha_composite(l2_rot, dest=(84, min(1120, l2_y)))
 
-    f_l1, fit_l1 = _fit_text(draw, cover_main_l1, font_path, 78, max_inner_w, min_size=40)
-    f_l2, fit_l2 = _fit_text(draw, cover_main_l2, font_path, 72, max_inner_w, min_size=36)
-    draw.text((inner_x, card_y + 114), fit_l1, fill=main_txt_col, font=f_l1)
-    draw.text((inner_x, card_y + 216), fit_l2, fill=l2_col, font=f_l2)
+        # 下方转化区：白字黑边副标 + 红白双色大字（严格落在 y <= 1460 安全区内）
+        f_sub, fit_sub = _fit_text(draw, cover_sub, font_path, 44, safe_w - 20, min_size=26)
+        draw.text((88 + 2, 1228 + 3), fit_sub, fill=(0, 0, 0, 220), font=f_sub, stroke_width=4, stroke_fill=(0, 0, 0, 220))
+        draw.text((88, 1228), fit_sub, fill=(255, 255, 255, 255), font=f_sub, stroke_width=4, stroke_fill=(0, 0, 0, 255))
+
+        cta_punch = (top_kw[:4] + "实测") if len(top_kw) >= 2 else "一线实拍"
+        f_cta, fit_cta = _fit_text(draw, cta_punch, font_path, 86, safe_w - 20, min_size=46)
+        split_at = max(1, len(fit_cta) // 2)
+        p_left, p_right = fit_cta[:split_at], fit_cta[split_at:]
+        draw.text((86 + 3, 1296 + 5), p_left, fill=(0, 0, 0, 225), font=f_cta, stroke_width=6, stroke_fill=(0, 0, 0, 225))
+        draw.text((86, 1296), p_left, fill=(255, 36, 56, 255), font=f_cta, stroke_width=6, stroke_fill=(0, 0, 0, 255))
+        lw = int(draw.textbbox((0, 0), p_left, font=f_cta, stroke_width=6)[2])
+        if p_right:
+            draw.text((86 + lw + 3, 1296 + 5), p_right, fill=(0, 0, 0, 225), font=f_cta, stroke_width=6, stroke_fill=(0, 0, 0, 225))
+            draw.text((86 + lw, 1296), p_right, fill=(255, 255, 255, 255), font=f_cta, stroke_width=6, stroke_fill=(0, 0, 0, 255))
+
+        card_y = 220
+        main_txt_col = (255, 255, 255, 255)
+        card_fill = (0, 0, 0, 255)
+        thumb_eval_box = (80, 220, 860, 440)
+    else:
+        # 其余风格沿用同步色板杂志卡片封套
+        card_fill = hex_to_rgba(pal["card_bg_hex"], 224 if pal.get("is_light") else 212)
+        border_col = hex_to_rgba(pal["border_hex"], 230)
+        accent_col = hex_to_rgba(pal["accent_hex"], 255)
+        badge_txt_col = hex_to_rgba(pal["badge_text_hex"], 255)
+        main_txt_col = hex_to_rgba(pal["title_hex"], 255)
+
+        if contrast_ratio(main_txt_col[:3], card_fill[:3]) < 4.5:
+            main_txt_col = (17, 24, 39, 255) if pal.get("is_light") else (255, 255, 255, 255)
+        l2_col = accent_col if contrast_ratio(accent_col[:3], card_fill[:3]) >= 3.2 else main_txt_col
+
+        draw.rounded_rectangle([card_x1, card_y, card_x2, card_y + card_h], radius=22, fill=card_fill, outline=border_col, width=2)
+        draw.rounded_rectangle([card_x1, card_y + 24, card_x1 + 8, card_y + card_h - 24], radius=4, fill=accent_col)
+
+        inner_x = card_x1 + 32
+        max_inner_w = (card_x2 - 28) - inner_x
+        f_sub, fit_sub = _fit_text(draw, cover_sub, font_path, 34, max_inner_w - 44, min_size=22)
+        sub_bb = draw.textbbox((0, 0), fit_sub, font=f_sub)
+        cap_w = min(max_inner_w, max(220, int(sub_bb[2] - sub_bb[0]) + 44))
+        draw.rounded_rectangle([inner_x, card_y + 28, inner_x + cap_w, card_y + 84], radius=12, fill=accent_col)
+        draw.text((inner_x + cap_w // 2, card_y + 56), fit_sub, fill=badge_txt_col, font=f_sub, anchor="mm")
+
+        f_l1, fit_l1 = _fit_text(draw, cover_main_l1, font_path, 78, max_inner_w, min_size=40)
+        f_l2, fit_l2 = _fit_text(draw, cover_main_l2, font_path, 72, max_inner_w, min_size=36)
+        draw.text((inner_x, card_y + 114), fit_l1, fill=main_txt_col, font=f_l1)
+        draw.text((inner_x, card_y + 216), fit_l2, fill=l2_col, font=f_l2)
+        thumb_eval_box = (card_x1, card_y, card_x2, card_y + card_h)
 
     composed = Image.alpha_composite(base_img, overlay).convert("RGB")
     composed.save(cover_path, quality=92)
@@ -320,10 +381,10 @@ def run_step9(pipeline_dir: Path, track: str = "store", style_id: Optional[str] 
     # 180px 缩略图可读性验收：确认缩放后文字区域保留清晰对比与结构，不糊连
     thumb_180 = composed.resize((180, 320))
     thumb_box = (
-        int(card_x1 * 180 / CANVAS_WIDTH),
-        int(card_y * 320 / CANVAS_HEIGHT),
-        int(card_x2 * 180 / CANVAS_WIDTH),
-        int((card_y + card_h) * 320 / CANVAS_HEIGHT),
+        int(thumb_eval_box[0] * 180 / CANVAS_WIDTH),
+        int(thumb_eval_box[1] * 320 / CANVAS_HEIGHT),
+        int(thumb_eval_box[2] * 180 / CANVAS_WIDTH),
+        int(thumb_eval_box[3] * 320 / CANVAS_HEIGHT),
     )
     thumb_patch = np.asarray(thumb_180.crop(thumb_box), dtype=np.float32)
     thumb_luma_std = float(np.std(0.2126 * thumb_patch[:, :, 0] + 0.7152 * thumb_patch[:, :, 1] + 0.0722 * thumb_patch[:, :, 2]))

@@ -25,12 +25,15 @@ from common import (
     CANVAS_WIDTH,
     DEFAULT_FPS,
     SAFE_ZONE,
+    SUBTITLE_CENTER_X,
+    SUBTITLE_SYMMETRIC_MAX_W,
     bbox_iou,
     check_bbox_in_safe_zone,
     find_commercial_font,
     fit_text_line,
     frames_to_sec,
     load_style_applied,
+    load_style_spectrum_entry,
     maybe_reexec_in_venv,
     parse_manifest_faces,
     read_json,
@@ -328,24 +331,32 @@ def run_step6(
     save_stereo_wav_np(sfx_wav_path, sfx_track, SR)
 
     pkg_font_path = find_commercial_font()
+    style_entry = load_style_spectrum_entry(style_id) or {}
+    flower_spec = style_entry.get("multi_zone_flower_spec") or (style_entry.get("transition_and_packaging") or {}).get("multi_zone_flower_spec") or {}
+    is_borderless_flower = bool(flower_spec.get("borderless", False))
+
     visual_elements: List[Dict[str, Any]] = []
     first_sent = audio_events["sentences"][0] if audio_events["sentences"] else {"text": "必看重点", "keywords": []}
-    hook_badge_text = first_sent["keywords"][0] if first_sent.get("keywords") else first_sent["text"][:8]
-    hook_label = f"重点：{hook_badge_text}"
-    max_pkg_w = SAFE_ZONE["x_max"] - 88 - 12  # 780px
-    hook_w = _measure_pkg_badge_width(hook_label, pkg_font_path, max_pkg_w, target_fs=42, min_w=280)
-    hook_ef = min(int(2.0 * fps), int(total_dur * fps))
+    hook_badge_text = first_sent["keywords"][0] if first_sent.get("keywords") else first_sent["text"][:6]
+    hook_label = hook_badge_text[:6] if is_borderless_flower else f"重点：{hook_badge_text}"
+    max_pkg_w = SUBTITLE_SYMMETRIC_MAX_W if is_borderless_flower else (SAFE_ZONE["x_max"] - 88 - 12)
+    hook_w = _measure_pkg_badge_width(hook_label, pkg_font_path, max_pkg_w, target_fs=66 if is_borderless_flower else 42, min_w=260)
+    hook_x = (SUBTITLE_CENTER_X - hook_w // 2) if is_borderless_flower else 88
+    hook_h = 112 if is_borderless_flower else 92
+    hook_ef = min(int(2.2 * fps), int(total_dur * fps))
     if not overlaps_code(0, hook_ef):
         active_faces_0 = []
         for c in edl.get("clips", []):
             if int(c["timeline_in_frame"]) < hook_ef and int(c["timeline_out_frame"]) > 0:
                 active_faces_0.extend(faces_by_mp4.get(str(c.get("media_path", "")), []))
-        hook_bbox = _avoid_faces_for_pkg({"x": 88, "y": 210, "w": hook_w, "h": 92}, active_faces_0)
+        hook_bbox = _avoid_faces_for_pkg({"x": hook_x, "y": 210, "w": hook_w, "h": hook_h}, active_faces_0)
         safe_ok, _ = check_bbox_in_safe_zone(hook_bbox)
         visual_elements.append({
             "id": "pkg_001",
-            "kind": "flower_text",
-            "overlay_mode": "corner",
+            "kind": "center_burst_title" if is_borderless_flower else "flower_text",
+            "overlay_mode": "borderless" if is_borderless_flower else "corner",
+            "fg_hex": str(flower_spec.get("center_burst_color") or "#FF4C2C"),
+            "stroke_hex": str(flower_spec.get("stroke_color") or "#000000"),
             "text_or_asset": hook_label,
             "start_frame": 0,
             "end_frame": hook_ef,
@@ -355,10 +366,11 @@ def run_step6(
             "bbox": hook_bbox,
             "final_bbox": hook_bbox,
             "safe_zone_ok": safe_ok,
-            "reason": "首帧高密度视觉钩子（第0帧零淡入直接落位）",
+            "reason": "首帧高冲击无底框居大字（复刻《11月14日延期》开头爆点）" if is_borderless_flower else "首帧高密度视觉钩子（第0帧零淡入直接落位）",
         })
 
     last_vis_end = hook_ef + int(2.5 * fps)
+    last_sent = audio_events["sentences"][-1] if audio_events["sentences"] else None
     for cue in sfx_cues:
         if len(visual_elements) >= max_visual_budget:
             break
@@ -375,17 +387,23 @@ def run_step6(
         ef = min(int(total_dur * fps), sf + int(math.ceil(min(3.0, est_hold) * fps)))
         if overlaps_code(sf, ef):
             continue
-        box_w = _measure_pkg_badge_width(kw_label, pkg_font_path, max_pkg_w, target_fs=40, min_w=240)
+        is_end_cta = bool(is_borderless_flower and last_sent and sent.get("id") == last_sent.get("id"))
+        box_w = _measure_pkg_badge_width(kw_label, pkg_font_path, max_pkg_w, target_fs=54 if is_borderless_flower else 40, min_w=240)
+        box_x = (SUBTITLE_CENTER_X - box_w // 2) if is_borderless_flower else 88
+        box_h = 128 if is_end_cta else (96 if is_borderless_flower else 86)
         active_faces = []
         for c in edl.get("clips", []):
             if int(c["timeline_in_frame"]) < ef and int(c["timeline_out_frame"]) > sf:
                 active_faces.extend(faces_by_mp4.get(str(c.get("media_path", "")), []))
-        final_bbox = _avoid_faces_for_pkg({"x": 88, "y": 210, "w": box_w, "h": 86}, active_faces)
+        final_bbox = _avoid_faces_for_pkg({"x": box_x, "y": 210, "w": box_w, "h": box_h}, active_faces)
         ok, _ = check_bbox_in_safe_zone(final_bbox)
-        visual_elements.append({
+        elem_kind = "end_card_cta" if is_end_cta else ("stamp_tag" if is_borderless_flower else "flower_text")
+        elem_obj: Dict[str, Any] = {
             "id": f"pkg_{len(visual_elements)+1:03d}",
-            "kind": "flower_text",
-            "overlay_mode": "focus_blur" if sent.get("emotion_or_info") == "twist" else "corner",
+            "kind": elem_kind,
+            "overlay_mode": "borderless" if is_borderless_flower else ("focus_blur" if sent.get("emotion_or_info") == "twist" else "corner"),
+            "fg_hex": str(flower_spec.get("end_card_color" if is_end_cta else "flank_color") or "#FFE28A"),
+            "stroke_hex": str(flower_spec.get("stroke_color") or "#000000"),
             "text_or_asset": kw_label,
             "start_frame": sf,
             "end_frame": ef,
@@ -396,7 +414,10 @@ def run_step6(
             "final_bbox": final_bbox,
             "safe_zone_ok": ok,
             "reason": cue["reason"],
-        })
+        }
+        if is_end_cta:
+            elem_obj["subtext"] = "评论区聊聊你的看法"
+        visual_elements.append(elem_obj)
         last_vis_end = ef + int(2.5 * fps)
 
     packaging = {

@@ -132,7 +132,7 @@ python3 scripts/content_log_review.py --account <账号> --track <store|creator>
 
 ## 七、 「风格谱 (Style Spectrum)」参考包装复刻库
 
-已内置基于 20 条标杆视频（103,981 帧）逐帧提炼的 **6 大包装流派母版** 与 **20 套「风格谱 (`style_01` ~ `style_20`)」**（详尽拆解见 [STYLE_SPECTRUM_REPORT.md](assets/style_spectrum/STYLE_SPECTRUM_REPORT.md)，主数据库见 [style_spectrum_library.json](assets/style_spectrum/style_spectrum_library.json)）：
+已内置基于 20 条标杆视频 + 剪映实操标杆《11月14日延期》提炼的 **6 大包装流派母版** 与 **20 套「风格谱 (`style_01` ~ `style_20`)」**（其中 **`style_14`** 为默认门店旗舰风格谱：无底框 62px 居中粗黑体 + 1.133x 暖金 `#FFE28A` 关键词高亮 + `x=540px` 绝对正中对称带 `[220, 860]` + 无底框高冲击花字 + 53% B-roll 现场动作声轻混 + 四区爆款封面；详尽拆解见 [STYLE_SPECTRUM_REPORT.md](assets/style_spectrum/STYLE_SPECTRUM_REPORT.md)，主数据库见 [style_spectrum_library.json](assets/style_spectrum/style_spectrum_library.json)）：
 
 | 流派 ID | 流派名称 | 代表风格 ID | 典型场景 |
 | :--- | :--- | :--- | :--- |

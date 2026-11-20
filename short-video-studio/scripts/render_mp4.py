@@ -27,7 +27,9 @@ from common import (
     CANVAS_WIDTH,
     DEFAULT_FPS,
     SAFE_ZONE,
+    SUBTITLE_CENTER_X,
     SUBTITLE_SAFE_ZONE,
+    SUBTITLE_SYMMETRIC_MAX_W,
     compute_crop_transform,
     contrast_ratio,
     ffprobe_media,
@@ -80,9 +82,11 @@ def _char_is_tofu(font_key: str, font_size: int, ch: str) -> bool:
 
 
 def compute_subtitle_place_xy(img_w: int, img_h: int, tpl: Dict[str, Any]) -> Tuple[int, int]:
-    """在唯一 SUBTITLE_SAFE_ZONE 内计算默认居中放置坐标（同步读取 safe_y_center）。"""
-    y_center = int(tpl.get("safe_y_center", tpl.get("y_center", 1360)))
-    px = max(SUBTITLE_SAFE_ZONE["x_min"], min((CANVAS_WIDTH - img_w) // 2, SUBTITLE_SAFE_ZONE["x_max"] - img_w))
+    """按画布绝对水平正中 x=540px 居中放置字幕（对称安全带 [220, 860]），垂直默认对齐黄金水位 1310px。"""
+    y_center = int(tpl.get("safe_y_center", tpl.get("y_center", 1310)))
+    px = SUBTITLE_CENTER_X - img_w // 2
+    if img_w > SUBTITLE_SYMMETRIC_MAX_W:
+        px = max(SUBTITLE_SAFE_ZONE["x_min"], min(px, SUBTITLE_SAFE_ZONE["x_max"] - img_w))
     py = max(SUBTITLE_SAFE_ZONE["y_min"], min(y_center - img_h // 2, SUBTITLE_SAFE_ZONE["y_max"] - img_h))
     return int(px), int(py)
 
@@ -93,17 +97,24 @@ def render_subtitle_png(
     font_path: Optional[str],
     out_png: Path,
 ) -> Tuple[int, int]:
-    """按模板样式与字词高亮信息渲染透明字幕 PNG（严格尊重 stroke_width=0）。"""
+    """按模板样式与字词高亮信息渲染透明字幕 PNG：整行按真实墨迹包围盒严格几何居中，且宽度严格 <=640px 保绝对居中。"""
     words = entry.get("words") or []
     raw_text = str(entry.get("text") or "").strip()
     if not raw_text and words:
         raw_text = "".join(str(w.get("word", "")) for w in words)
 
-    orig_fs = max(24, int(tpl.get("font_size", 58)))
+    orig_fs = max(24, int(tpl.get("font_size", 62)))
     orig_stroke_w = int(tpl.get("stroke_width", 4))
-    kw_scale = float(tpl.get("keyword_scale", 1.15))
+    kw_scale = float(tpl.get("keyword_scale", 1.133))
 
-    max_line_w = SUBTITLE_SAFE_ZONE["x_max"] - SUBTITLE_SAFE_ZONE["x_min"] - 40
+    bg_hex = str(tpl.get("bg_box_color") or tpl.get("bg_box") or "none").strip()
+    bg_rgba = parse_hex_rgba(bg_hex, 210) if (bg_hex and bg_hex.lower() != "none") else (0, 0, 0, 0)
+    has_bg = bool(bg_hex and bg_hex.lower() != "none" and bg_rgba[3] > 0)
+    bg_radius = int(tpl.get("bg_radius", 18))
+    pad_x = 28 if has_bg else 14
+    pad_y = 18 if has_bg else 12
+
+    max_line_w = SUBTITLE_SYMMETRIC_MAX_W - pad_x * 2
     lines_text = raw_text.splitlines() if "\n" in raw_text else [raw_text]
     if not lines_text:
         lines_text = [""]
@@ -112,9 +123,12 @@ def render_subtitle_png(
     probe_img = Image.new("RGBA", (8, 8), (0, 0, 0, 0))
     probe_draw = ImageDraw.Draw(probe_img)
     while base_sz > 28:
-        fnt_probe = get_cached_font(font_path, int(round(base_sz * kw_scale)))
+        fnt_probe = get_cached_font(font_path, int(round(base_sz * max(1.0, (1.0 + kw_scale) * 0.5))))
+        sw_p = 0 if orig_stroke_w <= 0 else max(1, int(round(orig_stroke_w * max(0.75, base_sz / float(orig_fs)))))
         widest = max(
-            probe_draw.textbbox((0, 0), ln, font=fnt_probe)[2] - probe_draw.textbbox((0, 0), ln, font=fnt_probe)[0]
+            (probe_draw.textbbox((0, 0), ln, font=fnt_probe, stroke_width=sw_p)[2]
+             - probe_draw.textbbox((0, 0), ln, font=fnt_probe, stroke_width=sw_p)[0]
+             + max(0, len(ln) - 1) * max(1, sw_p // 2))
             for ln in lines_text
         )
         if widest <= max_line_w:
@@ -123,12 +137,9 @@ def render_subtitle_png(
 
     stroke_w = 0 if orig_stroke_w <= 0 else max(1, int(round(orig_stroke_w * max(0.75, base_sz / float(orig_fs)))))
     primary_rgba = parse_hex_rgba(tpl.get("primary_color", "#FFFFFF"))
-    kw_rgba = parse_hex_rgba(tpl.get("keyword_color", "#FFE066"))
-    stroke_rgba = parse_hex_rgba(tpl.get("stroke_color", "#0D1117"))
-    shadow_rgba = parse_hex_rgba(tpl.get("shadow_color", "#000000A8"), 168)
-    bg_hex = str(tpl.get("bg_box_color") or tpl.get("bg_box") or "none").strip()
-    has_bg = bool(bg_hex and bg_hex.lower() != "none")
-    bg_radius = int(tpl.get("bg_radius", 18))
+    kw_rgba = parse_hex_rgba(tpl.get("keyword_color", "#FFE28A"))
+    stroke_rgba = parse_hex_rgba(tpl.get("stroke_color", "#000000"))
+    shadow_rgba = parse_hex_rgba(tpl.get("shadow_color", "#000000C8"), 200)
 
     fallback_font = None
     if tpl.get("font_fallback"):
@@ -172,15 +183,14 @@ def render_subtitle_png(
         for ch, flag in zip(raw_text, kw_flags):
             tokens.append((ch, flag, ch == "\n"))
 
-    # 使用 font.getlength + font.getmetrics() 精确基准线对齐，消除字号切换时的错落与紧挤
+    # 逐行收集字符排版元信息
     lines: List[List[Tuple[str, Any, Tuple[int, int, int, int], int, int, int]]] = [[]]
-    line_heights: List[int] = [0]
     line_max_ascents: List[int] = [0]
     fk = font_path or "__default__"
+    inter_pad = max(1, stroke_w // 2) if stroke_w > 0 else 0
     for ch, is_kw, is_nl in tokens:
         if is_nl:
             lines.append([])
-            line_heights.append(0)
             line_max_ascents.append(0)
             continue
         ch_sz = int(round(base_sz * (kw_scale if is_kw else 1.0)))
@@ -189,46 +199,39 @@ def render_subtitle_png(
             fnt = get_cached_font(fallback_font, ch_sz)
         bb = probe_draw.textbbox((0, 0), ch, font=fnt, stroke_width=stroke_w)
         try:
-            adv_w = max(4, int(round(fnt.getlength(ch))) + max(1, stroke_w))
+            adv_w = max(4, int(round(fnt.getlength(ch))) + inter_pad)
         except Exception:
             adv_w = max(4, (bb[2] - bb[0]) + 2)
         try:
-            ascent, descent = fnt.getmetrics()
+            ascent, _descent = fnt.getmetrics()
         except Exception:
-            ascent, descent = ch_sz, max(4, ch_sz // 5)
-        gh = max(8, ascent + descent + stroke_w * 2)
+            ascent = ch_sz
         rgba = kw_rgba if is_kw else primary_rgba
         lines[-1].append((ch, fnt, rgba, adv_w, ch_sz, int(ascent)))
-        line_heights[-1] = max(line_heights[-1], gh)
         line_max_ascents[-1] = max(line_max_ascents[-1], int(ascent))
 
-    line_widths = [sum(item[3] for item in ln) for ln in lines]
-    pad_x = 28 if has_bg else 16
-    pad_y = 18 if has_bg else 12
-    line_gap = 10 if len(lines) > 1 else 0
-    total_w = max(80, min(SUBTITLE_SAFE_ZONE["x_max"] - SUBTITLE_SAFE_ZONE["x_min"], max(line_widths or [60]) + pad_x * 2))
-    total_h = max(48, sum(max(base_sz, h) for h in line_heights) + line_gap * max(0, len(lines) - 1) + pad_y * 2)
-
-    canvas = Image.new("RGBA", (total_w, total_h), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(canvas)
-    if has_bg:
-        bg_rgba = parse_hex_rgba(bg_hex, 210)
-        draw.rounded_rectangle([(0, 0), (total_w - 1, total_h - 1)], radius=bg_radius, fill=bg_rgba)
-
-    cur_y = pad_y
     use_shadow = bool(tpl.get("shadow", True))
     sh_off = tpl.get("shadow_offset") or [2, 3]
     sh_dx = int(sh_off[0]) if len(sh_off) >= 1 else 2
     sh_dy = int(sh_off[1]) if len(sh_off) >= 2 else 3
+
+    # 先将每行单独渲染至临时透明层并精确裁出真实墨迹包围盒，消除字形左轴承/末字尾距造成的不对称偏移
+    rendered_lines: List[Image.Image] = []
     for ln_idx, ln in enumerate(lines):
-        ln_w = line_widths[ln_idx]
-        ln_h = max(base_sz, line_heights[ln_idx])
+        if not ln:
+            rendered_lines.append(Image.new("RGBA", (40, max(36, base_sz)), (0, 0, 0, 0)))
+            continue
+        est_ln_w = sum(item[3] for item in ln) + max(80, stroke_w * 4 + abs(sh_dx) * 4 + base_sz * 2)
         max_asc = max(base_sz // 2, line_max_ascents[ln_idx])
-        cur_x = (total_w - ln_w) // 2
-        for ch, fnt, rgba, adv_w, ch_sz, asc in ln:
-            y_off = cur_y + max(0, max_asc - asc)
+        est_ln_h = int(max_asc * 2.2) + stroke_w * 4 + abs(sh_dy) * 4 + 40
+        tmp_ln = Image.new("RGBA", (est_ln_w, est_ln_h), (0, 0, 0, 0))
+        tdraw = ImageDraw.Draw(tmp_ln)
+        cur_x = 40 + stroke_w * 2
+        base_top = 24 + stroke_w * 2
+        for ch, fnt, rgba, adv_w, _ch_sz, asc in ln:
+            y_off = base_top + max(0, max_asc - asc)
             if use_shadow:
-                draw.text(
+                tdraw.text(
                     (cur_x + sh_dx, y_off + sh_dy),
                     ch,
                     font=fnt,
@@ -236,7 +239,7 @@ def render_subtitle_png(
                     stroke_width=stroke_w,
                     stroke_fill=shadow_rgba if stroke_w > 0 else None,
                 )
-            draw.text(
+            tdraw.text(
                 (cur_x, y_off),
                 ch,
                 font=fnt,
@@ -245,7 +248,37 @@ def render_subtitle_png(
                 stroke_fill=stroke_rgba if stroke_w > 0 else None,
             )
             cur_x += adv_w
-        cur_y += ln_h + line_gap
+        ink_bb = tmp_ln.getbbox()
+        if ink_bb is not None:
+            cropped = tmp_ln.crop(ink_bb)
+        else:
+            cropped = Image.new("RGBA", (40, max(36, base_sz)), (0, 0, 0, 0))
+        if cropped.width > max_line_w:
+            ratio = max_line_w / float(cropped.width)
+            cropped = cropped.resize(
+                (max_line_w, max(24, int(round(cropped.height * ratio)))),
+                Image.Resampling.LANCZOS,
+            )
+        rendered_lines.append(cropped)
+
+    line_gap = 10 if len(rendered_lines) > 1 else 0
+    max_ink_w = max((im.width for im in rendered_lines), default=60)
+    total_w = max(80, min(SUBTITLE_SYMMETRIC_MAX_W, max_ink_w + pad_x * 2))
+    # 保证偶数宽以便 (CANVAS_WIDTH - total_w) // 2 精准对称无 0.5px 抖动
+    if total_w % 2 == 1 and total_w < SUBTITLE_SYMMETRIC_MAX_W:
+        total_w += 1
+    total_h = max(48, sum(im.height for im in rendered_lines) + line_gap * max(0, len(rendered_lines) - 1) + pad_y * 2)
+
+    canvas = Image.new("RGBA", (total_w, total_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(canvas)
+    if has_bg:
+        draw.rounded_rectangle([(0, 0), (total_w - 1, total_h - 1)], radius=bg_radius, fill=bg_rgba)
+
+    cur_y = pad_y
+    for im_ln in rendered_lines:
+        paste_x = (total_w - im_ln.width) // 2
+        canvas.alpha_composite(im_ln, dest=(paste_x, cur_y))
+        cur_y += im_ln.height + line_gap
 
     out_png.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(out_png)
@@ -285,6 +318,51 @@ def render_packaging_png(
     elem_kind = str(elem.get("kind") or elem.get("type") or "flower_text")
     main_text = str(elem.get("text_or_asset") or elem.get("text") or "").strip()
     max_safe_w = SAFE_ZONE["x_max"] - SAFE_ZONE["x_min"]
+
+    if elem_kind in ("center_burst_title", "stamp_tag", "end_card_cta"):
+        # 复刻《11月14日延期》剪映原生无底框高冲击描边花字（头顶巨字/印章字/片尾互动大字）
+        fg_rgba = parse_hex_rgba(elem.get("fg_hex") or ("#FF4C2C" if elem_kind == "center_burst_title" else "#FFE28A"))
+        st_rgba = parse_hex_rgba(elem.get("stroke_hex") or "#000000")
+        sh_rgba = (0, 0, 0, 210)
+        max_w_cap = SUBTITLE_SYMMETRIC_MAX_W
+        target_fs = 74 if elem_kind == "center_burst_title" else (58 if elem_kind == "end_card_cta" else 56)
+        sw_draw = 6 if elem_kind == "center_burst_title" else 5
+        text = main_text or "核心重点"
+        sub_txt = str(elem.get("subtext") or "").strip() if elem_kind == "end_card_cta" else ""
+
+        tmp = Image.new("RGBA", (max_w_cap + 120, 260), (0, 0, 0, 0))
+        td = ImageDraw.Draw(tmp)
+        f1, t1 = _fit_line(td, text, font_path, max_w_cap - 36, target_fs, 32)
+        bb1 = td.textbbox((0, 0), t1, font=f1, stroke_width=sw_draw)
+        w1 = max(40, bb1[2] - bb1[0])
+        h1 = max(36, bb1[3] - bb1[1])
+        x1 = (tmp.width - w1) // 2 - bb1[0]
+        y1 = 24 - bb1[1]
+        td.text((x1 + 3, y1 + 4), t1, font=f1, fill=sh_rgba, stroke_width=sw_draw, stroke_fill=sh_rgba)
+        td.text((x1, y1), t1, font=f1, fill=fg_rgba, stroke_width=sw_draw, stroke_fill=st_rgba)
+
+        if sub_txt:
+            f2, t2 = _fit_line(td, sub_txt, font_path, max_w_cap - 48, 34, 22)
+            bb2 = td.textbbox((0, 0), t2, font=f2, stroke_width=3)
+            w2 = max(40, bb2[2] - bb2[0])
+            x2 = (tmp.width - w2) // 2 - bb2[0]
+            y2 = 24 + h1 + 14 - bb2[1]
+            td.text((x2 + 2, y2 + 3), t2, font=f2, fill=sh_rgba, stroke_width=3, stroke_fill=sh_rgba)
+            td.text((x2, y2), t2, font=f2, fill=(255, 255, 255, 255), stroke_width=3, stroke_fill=st_rgba)
+
+        ink = tmp.getbbox()
+        if ink is not None:
+            crop = tmp.crop(ink)
+            pad = 12
+            ow = min(max_w_cap, crop.width + pad * 2)
+            oh = crop.height + pad * 2
+            out_img = Image.new("RGBA", (ow, oh), (0, 0, 0, 0))
+            if crop.width > ow - pad * 2:
+                ratio = (ow - pad * 2) / float(crop.width)
+                crop = crop.resize((ow - pad * 2, max(24, int(round(crop.height * ratio)))), Image.Resampling.LANCZOS)
+            out_img.alpha_composite(crop, dest=((ow - crop.width) // 2, (oh - crop.height) // 2))
+            return out_img
+        return Image.new("RGBA", (240, 84), (0, 0, 0, 0))
 
     if elem_kind == "hook_title_card":
         line1 = main_text or "核心重点"

@@ -259,6 +259,47 @@
       "assets": {
         "lut_cube": "luts/style_01.cube",
         "contact_sheet": "keyframes/style_01_contact.jpg"
+      },
+      "subtitle_symmetry_lock": {
+        "x_center": 540,
+        "safe_x_min": 220,
+        "safe_x_max": 860,
+        "max_width_px": 640,
+        "max_chars_per_line": 11,
+        "vertical_face_avoid_only": true
+      },
+      "broll_overlay_ratio_target": 0.45,
+      "broll_ambient_sound_policy": {
+        "enabled": true,
+        "gain_db": -10.0,
+        "trigger_action_words": [
+          "敲",
+          "响",
+          "滋啦",
+          "切",
+          "倒",
+          "沸",
+          "烤",
+          "炒",
+          "砸",
+          "摔"
+        ]
+      },
+      "dual_bgm_structure": {
+        "enabled": false,
+        "intro_duration_sec": 2.83,
+        "intro_fade_out_sec": 0.57,
+        "main_bgm_gain_db": -11.0,
+        "main_fade_in_sec": 0.57,
+        "main_fade_out_sec": 1.0
+      },
+      "multi_zone_flower_spec": {
+        "center_burst_color": "#FF4C2C",
+        "flank_color": "#FFE28A",
+        "stamp_color": "#B71C1C",
+        "end_card_color": "#FFD637",
+        "stroke_color": "#000000",
+        "borderless": false
       }
     },
     {
@@ -434,6 +475,47 @@
       "assets": {
         "lut_cube": "luts/style_02.cube",
         "contact_sheet": "keyframes/style_02_contact.jpg"
+      },
+      "subtitle_symmetry_lock": {
+        "x_center": 540,
+        "safe_x_min": 220,
+        "safe_x_max": 860,
+        "max_width_px": 640,
+        "max_chars_per_line": 11,
+        "vertical_face_avoid_only": true
+      },
+      "broll_overlay_ratio_target": 0.45,
+      "broll_ambient_sound_policy": {
+        "enabled": true,
+        "gain_db": -10.0,
+        "trigger_action_words": [
+          "敲",
+          "响",
+          "滋啦",
+          "切",
+          "倒",
+          "沸",
+          "烤",
+          "炒",
+          "砸",
+          "摔"
+        ]
+      },
+      "dual_bgm_structure": {
+        "enabled": false,
+        "intro_duration_sec": 2.83,
+        "intro_fade_out_sec": 0.57,
+        "main_bgm_gain_db": -11.0,
+        "main_fade_in_sec": 0.57,
+        "main_fade_out_sec": 1.0
+      },
+      "multi_zone_flower_spec": {
+        "center_burst_color": "#FF4C2C",
+        "flank_color": "#FFE28A",
+        "stamp_color": "#B71C1C",
+        "end_card_color": "#FFD637",
+        "stroke_color": "#000000",
+        "borderless": false
       }
     },
     {
@@ -608,6 +690,47 @@
       "assets": {
         "lut_cube": "luts/style_03.cube",
         "contact_sheet": "keyframes/style_03_contact.jpg"
+      },
+      "subtitle_symmetry_lock": {
+        "x_center": 540,
+        "safe_x_min": 220,
+        "safe_x_max": 860,
+        "max_width_px": 640,
+        "max_chars_per_line": 11,
+        "vertical_face_avoid_only": true
+      },
+      "broll_overlay_ratio_target": 0.45,
+      "broll_ambient_sound_policy": {
+        "enabled": true,
+        "gain_db": -10.0,
+        "trigger_action_words": [
+          "敲",
+          "响",
+          "滋啦",
+          "切",
+          "倒",
+          "沸",
+          "烤",
+          "炒",
+          "砸",
+          "摔"
+        ]
+      },
+      "dual_bgm_structure": {
+        "enabled": false,
+        "intro_duration_sec": 2.83,
+        "intro_fade_out_sec": 0.57,
+        "main_bgm_gain_db": -11.0,
+        "main_fade_in_sec": 0.57,
+        "main_fade_out_sec": 1.0
+      },
+      "multi_zone_flower_spec": {
+        "center_burst_color": "#FF4C2C",
+        "flank_color": "#FFE28A",
+        "stamp_color": "#B71C1C",
+        "end_card_color": "#FFD637",
+        "stroke_color": "#000000",
+        "borderless": false
       }
     },
     {
@@ -784,6 +907,47 @@
       "assets": {
         "lut_cube": "luts/style_04.cube",
         "contact_sheet": "keyframes/style_04_contact.jpg"
+      },
+      "subtitle_symmetry_lock": {
+        "x_center": 540,
+        "safe_x_min": 220,
+        "safe_x_max": 860,
+        "max_width_px": 640,
+        "max_chars_per_line": 11,
+        "vertical_face_avoid_only": true
+      },
+      "broll_overlay_ratio_target": 0.45,
+      "broll_ambient_sound_policy": {
+        "enabled": true,
+        "gain_db": -10.0,
+        "trigger_action_words": [
+          "敲",
+          "响",
+          "滋啦",
+          "切",
+          "倒",
+          "沸",
+          "烤",
+          "炒",
+          "砸",
+          "摔"
+        ]
+      },
+      "dual_bgm_structure": {
+        "enabled": false,
+        "intro_duration_sec": 2.83,
+        "intro_fade_out_sec": 0.57,
+        "main_bgm_gain_db": -11.0,
+        "main_fade_in_sec": 0.57,
+        "main_fade_out_sec": 1.0
+      },
+      "multi_zone_flower_spec": {
+        "center_burst_color": "#FF4C2C",
+        "flank_color": "#FFE28A",
+        "stamp_color": "#B71C1C",
+        "end_card_color": "#FFD637",
+        "stroke_color": "#000000",
+        "borderless": false
       }
     },
     {
@@ -961,6 +1125,47 @@
       "assets": {
         "lut_cube": "luts/style_05.cube",
         "contact_sheet": "keyframes/style_05_contact.jpg"
+      },
+      "subtitle_symmetry_lock": {
+        "x_center": 540,
+        "safe_x_min": 220,
+        "safe_x_max": 860,
+        "max_width_px": 640,
+        "max_chars_per_line": 11,
+        "vertical_face_avoid_only": true
+      },
+      "broll_overlay_ratio_target": 0.5,
+      "broll_ambient_sound_policy": {
+        "enabled": true,
+        "gain_db": -10.0,
+        "trigger_action_words": [
+          "敲",
+          "响",
+          "滋啦",
+          "切",
+          "倒",
+          "沸",
+          "烤",
+          "炒",
+          "砸",
+          "摔"
+        ]
+      },
+      "dual_bgm_structure": {
+        "enabled": false,
+        "intro_duration_sec": 2.83,
+        "intro_fade_out_sec": 0.57,
+        "main_bgm_gain_db": -11.0,
+        "main_fade_in_sec": 0.57,
+        "main_fade_out_sec": 1.0
+      },
+      "multi_zone_flower_spec": {
+        "center_burst_color": "#FF4C2C",
+        "flank_color": "#FFE28A",
+        "stamp_color": "#B71C1C",
+        "end_card_color": "#FFD637",
+        "stroke_color": "#000000",
+        "borderless": false
       }
     },
     {
@@ -1137,6 +1342,47 @@
       "assets": {
         "lut_cube": "luts/style_06.cube",
         "contact_sheet": "keyframes/style_06_contact.jpg"
+      },
+      "subtitle_symmetry_lock": {
+        "x_center": 540,
+        "safe_x_min": 220,
+        "safe_x_max": 860,
+        "max_width_px": 640,
+        "max_chars_per_line": 11,
+        "vertical_face_avoid_only": true
+      },
+      "broll_overlay_ratio_target": 0.45,
+      "broll_ambient_sound_policy": {
+        "enabled": true,
+        "gain_db": -10.0,
+        "trigger_action_words": [
+          "敲",
+          "响",
+          "滋啦",
+          "切",
+          "倒",
+          "沸",
+          "烤",
+          "炒",
+          "砸",
+          "摔"
+        ]
+      },
+      "dual_bgm_structure": {
+        "enabled": false,
+        "intro_duration_sec": 2.83,
+        "intro_fade_out_sec": 0.57,
+        "main_bgm_gain_db": -11.0,
+        "main_fade_in_sec": 0.57,
+        "main_fade_out_sec": 1.0
+      },
+      "multi_zone_flower_spec": {
+        "center_burst_color": "#FF4C2C",
+        "flank_color": "#FFE28A",
+        "stamp_color": "#B71C1C",
+        "end_card_color": "#FFD637",
+        "stroke_color": "#000000",
+        "borderless": false
       }
     },
     {
@@ -1313,6 +1559,47 @@
       "assets": {
         "lut_cube": "luts/style_07.cube",
         "contact_sheet": "keyframes/style_07_contact.jpg"
+      },
+      "subtitle_symmetry_lock": {
+        "x_center": 540,
+        "safe_x_min": 220,
+        "safe_x_max": 860,
+        "max_width_px": 640,
+        "max_chars_per_line": 11,
+        "vertical_face_avoid_only": true
+      },
+      "broll_overlay_ratio_target": 0.45,
+      "broll_ambient_sound_policy": {
+        "enabled": true,
+        "gain_db": -10.0,
+        "trigger_action_words": [
+          "敲",
+          "响",
+          "滋啦",
+          "切",
+          "倒",
+          "沸",
+          "烤",
+          "炒",
+          "砸",
+          "摔"
+        ]
+      },
+      "dual_bgm_structure": {
+        "enabled": false,
+        "intro_duration_sec": 2.83,
+        "intro_fade_out_sec": 0.57,
+        "main_bgm_gain_db": -11.0,
+        "main_fade_in_sec": 0.57,
+        "main_fade_out_sec": 1.0
+      },
+      "multi_zone_flower_spec": {
+        "center_burst_color": "#FF4C2C",
+        "flank_color": "#FFE28A",
+        "stamp_color": "#B71C1C",
+        "end_card_color": "#FFD637",
+        "stroke_color": "#000000",
+        "borderless": false
       }
     },
     {
@@ -1486,6 +1773,47 @@
       "assets": {
         "lut_cube": "luts/style_08.cube",
         "contact_sheet": "keyframes/style_08_contact.jpg"
+      },
+      "subtitle_symmetry_lock": {
+        "x_center": 540,
+        "safe_x_min": 220,
+        "safe_x_max": 860,
+        "max_width_px": 640,
+        "max_chars_per_line": 11,
+        "vertical_face_avoid_only": true
+      },
+      "broll_overlay_ratio_target": 0.45,
+      "broll_ambient_sound_policy": {
+        "enabled": true,
+        "gain_db": -10.0,
+        "trigger_action_words": [
+          "敲",
+          "响",
+          "滋啦",
+          "切",
+          "倒",
+          "沸",
+          "烤",
+          "炒",
+          "砸",
+          "摔"
+        ]
+      },
+      "dual_bgm_structure": {
+        "enabled": false,
+        "intro_duration_sec": 2.83,
+        "intro_fade_out_sec": 0.57,
+        "main_bgm_gain_db": -11.0,
+        "main_fade_in_sec": 0.57,
+        "main_fade_out_sec": 1.0
+      },
+      "multi_zone_flower_spec": {
+        "center_burst_color": "#FF4C2C",
+        "flank_color": "#FFE28A",
+        "stamp_color": "#B71C1C",
+        "end_card_color": "#FFD637",
+        "stroke_color": "#000000",
+        "borderless": false
       }
     },
     {
@@ -1663,6 +1991,47 @@
       "assets": {
         "lut_cube": "luts/style_09.cube",
         "contact_sheet": "keyframes/style_09_contact.jpg"
+      },
+      "subtitle_symmetry_lock": {
+        "x_center": 540,
+        "safe_x_min": 220,
+        "safe_x_max": 860,
+        "max_width_px": 640,
+        "max_chars_per_line": 11,
+        "vertical_face_avoid_only": true
+      },
+      "broll_overlay_ratio_target": 0.45,
+      "broll_ambient_sound_policy": {
+        "enabled": true,
+        "gain_db": -10.0,
+        "trigger_action_words": [
+          "敲",
+          "响",
+          "滋啦",
+          "切",
+          "倒",
+          "沸",
+          "烤",
+          "炒",
+          "砸",
+          "摔"
+        ]
+      },
+      "dual_bgm_structure": {
+        "enabled": false,
+        "intro_duration_sec": 2.83,
+        "intro_fade_out_sec": 0.57,
+        "main_bgm_gain_db": -11.0,
+        "main_fade_in_sec": 0.57,
+        "main_fade_out_sec": 1.0
+      },
+      "multi_zone_flower_spec": {
+        "center_burst_color": "#FF4C2C",
+        "flank_color": "#FFE28A",
+        "stamp_color": "#B71C1C",
+        "end_card_color": "#FFD637",
+        "stroke_color": "#000000",
+        "borderless": false
       }
     },
     {
@@ -1836,6 +2205,47 @@
       "assets": {
         "lut_cube": "luts/style_10.cube",
         "contact_sheet": "keyframes/style_10_contact.jpg"
+      },
+      "subtitle_symmetry_lock": {
+        "x_center": 540,
+        "safe_x_min": 220,
+        "safe_x_max": 860,
+        "max_width_px": 640,
+        "max_chars_per_line": 11,
+        "vertical_face_avoid_only": true
+      },
+      "broll_overlay_ratio_target": 0.45,
+      "broll_ambient_sound_policy": {
+        "enabled": true,
+        "gain_db": -10.0,
+        "trigger_action_words": [
+          "敲",
+          "响",
+          "滋啦",
+          "切",
+          "倒",
+          "沸",
+          "烤",
+          "炒",
+          "砸",
+          "摔"
+        ]
+      },
+      "dual_bgm_structure": {
+        "enabled": false,
+        "intro_duration_sec": 2.83,
+        "intro_fade_out_sec": 0.57,
+        "main_bgm_gain_db": -11.0,
+        "main_fade_in_sec": 0.57,
+        "main_fade_out_sec": 1.0
+      },
+      "multi_zone_flower_spec": {
+        "center_burst_color": "#FF4C2C",
+        "flank_color": "#FFE28A",
+        "stamp_color": "#B71C1C",
+        "end_card_color": "#FFD637",
+        "stroke_color": "#000000",
+        "borderless": false
       }
     },
     {
@@ -2011,6 +2421,47 @@
       "assets": {
         "lut_cube": "luts/style_11.cube",
         "contact_sheet": "keyframes/style_11_contact.jpg"
+      },
+      "subtitle_symmetry_lock": {
+        "x_center": 540,
+        "safe_x_min": 220,
+        "safe_x_max": 860,
+        "max_width_px": 640,
+        "max_chars_per_line": 11,
+        "vertical_face_avoid_only": true
+      },
+      "broll_overlay_ratio_target": 0.45,
+      "broll_ambient_sound_policy": {
+        "enabled": true,
+        "gain_db": -10.0,
+        "trigger_action_words": [
+          "敲",
+          "响",
+          "滋啦",
+          "切",
+          "倒",
+          "沸",
+          "烤",
+          "炒",
+          "砸",
+          "摔"
+        ]
+      },
+      "dual_bgm_structure": {
+        "enabled": false,
+        "intro_duration_sec": 2.83,
+        "intro_fade_out_sec": 0.57,
+        "main_bgm_gain_db": -11.0,
+        "main_fade_in_sec": 0.57,
+        "main_fade_out_sec": 1.0
+      },
+      "multi_zone_flower_spec": {
+        "center_burst_color": "#FF4C2C",
+        "flank_color": "#FFE28A",
+        "stamp_color": "#B71C1C",
+        "end_card_color": "#FFD637",
+        "stroke_color": "#000000",
+        "borderless": false
       }
     },
     {
@@ -2186,6 +2637,47 @@
       "assets": {
         "lut_cube": "luts/style_12.cube",
         "contact_sheet": "keyframes/style_12_contact.jpg"
+      },
+      "subtitle_symmetry_lock": {
+        "x_center": 540,
+        "safe_x_min": 220,
+        "safe_x_max": 860,
+        "max_width_px": 640,
+        "max_chars_per_line": 11,
+        "vertical_face_avoid_only": true
+      },
+      "broll_overlay_ratio_target": 0.45,
+      "broll_ambient_sound_policy": {
+        "enabled": true,
+        "gain_db": -10.0,
+        "trigger_action_words": [
+          "敲",
+          "响",
+          "滋啦",
+          "切",
+          "倒",
+          "沸",
+          "烤",
+          "炒",
+          "砸",
+          "摔"
+        ]
+      },
+      "dual_bgm_structure": {
+        "enabled": false,
+        "intro_duration_sec": 2.83,
+        "intro_fade_out_sec": 0.57,
+        "main_bgm_gain_db": -11.0,
+        "main_fade_in_sec": 0.57,
+        "main_fade_out_sec": 1.0
+      },
+      "multi_zone_flower_spec": {
+        "center_burst_color": "#FF4C2C",
+        "flank_color": "#FFE28A",
+        "stamp_color": "#B71C1C",
+        "end_card_color": "#FFD637",
+        "stroke_color": "#000000",
+        "borderless": false
       }
     },
     {
@@ -2356,18 +2848,60 @@
       "assets": {
         "lut_cube": "luts/style_13.cube",
         "contact_sheet": "keyframes/style_13_contact.jpg"
+      },
+      "subtitle_symmetry_lock": {
+        "x_center": 540,
+        "safe_x_min": 220,
+        "safe_x_max": 860,
+        "max_width_px": 640,
+        "max_chars_per_line": 11,
+        "vertical_face_avoid_only": true
+      },
+      "broll_overlay_ratio_target": 0.5,
+      "broll_ambient_sound_policy": {
+        "enabled": true,
+        "gain_db": -10.0,
+        "trigger_action_words": [
+          "敲",
+          "响",
+          "滋啦",
+          "切",
+          "倒",
+          "沸",
+          "烤",
+          "炒",
+          "砸",
+          "摔"
+        ]
+      },
+      "dual_bgm_structure": {
+        "enabled": false,
+        "intro_duration_sec": 2.83,
+        "intro_fade_out_sec": 0.57,
+        "main_bgm_gain_db": -11.0,
+        "main_fade_in_sec": 0.57,
+        "main_fade_out_sec": 1.0
+      },
+      "multi_zone_flower_spec": {
+        "center_burst_color": "#FF4C2C",
+        "flank_color": "#FFE28A",
+        "stamp_color": "#B71C1C",
+        "end_card_color": "#FFD637",
+        "stroke_color": "#000000",
+        "borderless": false
       }
     },
     {
       "style_id": "style_14",
       "index": 14,
-      "style_name_cn": "毛玻璃卡片叠映 · 居家创始人信任风",
+      "style_name_cn": "剪映门店原生爆款风 · 居中双字号暖黄高亮（默认）",
       "archetype_id": "arch_04_punch_talking_head",
       "recommended_track": "store",
       "domain_tags": [
-        "门店创始人",
-        "家居服务",
-        "口碑转化"
+        "门店老板",
+        "同城获客",
+        "实拍口播",
+        "默认旗舰风格"
       ],
       "source_filename": "家是用来享受的，不是用来忍受的 #家是用来享受的 #MAJOR名家 #墙面家的体面 #家装设计 #治愈系家居.mp4",
       "meta": {
@@ -2425,29 +2959,38 @@
         "sfx_per_min_target": 92
       },
       "subtitle_spec": {
-        "font_family": "Source Han Sans CN",
+        "font_family": "Alimama ShuHeiTi",
         "font_candidates": [
-          "SourceHanSansCN-Medium.otf",
-          "NotoSansSC-Medium.ttf",
-          "STHeiti Medium.ttc"
+          "AlimamaShuHeiTi-Bold.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
         ],
-        "font_weight": "Medium",
+        "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 50,
-        "keyword_scale": 1.15,
+        "font_size_1080p_px": 62,
+        "keyword_scale": 1.133,
         "primary_color": "#FFFFFF",
-        "keyword_color": "#FFD54F",
-        "stroke_color": "#2B3242",
-        "stroke_width": 3,
+        "keyword_color": "#FFE28A",
+        "stroke_color": "#000000",
+        "stroke_width": 4,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
-        "safe_y_ratio": 0.74,
-        "animation": "fade_slide_up",
+        "safe_y_ratio": 0.682,
+        "animation": "none_crisp_cut",
         "punct_stripped": true,
         "measured_y_center_ratio": 0.712,
         "measured_animation_raw": "smooth_pop_or_fade",
-        "safe_y_px_1080x1920": 1421,
-        "safe_y_px_1920x1080": 799
+        "safe_y_px_1080x1920": 1310,
+        "safe_y_px_1920x1080": 799,
+        "shadow": true,
+        "shadow_color": "#000000C8",
+        "shadow_offset": [
+          2,
+          3
+        ],
+        "max_chars_per_line": 10,
+        "symmetry_center_x": 540,
+        "symmetry_max_width_px": 640
       },
       "color_and_lut": {
         "y_mean_255": 142.8,
@@ -2500,35 +3043,112 @@
         "lut_relative_path": "assets/style_spectrum/luts/style_14.cube"
       },
       "opening_structure": {
-        "0_to_3s_pattern": "0.0s 顶部渐显优雅白色宋体标题「一个家 / 住了几年」+ 胸前创始人细字名牌 → 1.55s~2.65s 下半屏人物背景虚化，上半屏随口播节奏连弹 4 条圆角发霉开裂墙面实拍对比卡",
-        "hook_formula": "共鸣痛点场景具象化 + 连续4图强视觉证据",
-        "first_frame_density": "高（创始人稳重坐姿 + 顶部宋体主题 + 快速弹出的痛点图卡）"
+        "0_to_3s_pattern": "0.00–1.37s 老板在门店实景前正脸开讲第一句 → 1.37–2.83s 切强动作/态度的关键定格帧 + 1.43s 锣声/重音起音 + 1.53–2.83s 同步弹出五层多方位无底框花字（头顶居中巨型红字 + 左右双翼金黄字 + 底部暗红自省印章标签）",
+        "hook_formula": "门店真事冲突 + 定格强态度 + 多方位花字连环炸 + 引子BGM切主BGM",
+        "first_frame_density": "极高（门店真实背景 + 老板主体 + 无底框高反差红黄大字 + 利益引导）"
       },
       "title_cover_layout": {
-        "layout_id": "frosted_top_cards_founder",
-        "layout_name": "顶部渐显宋体主题 + 半屏毛玻璃实拍对比图卡",
-        "grid_desc": "利用人物上方大片干净窗帘留白作为实拍B-roll卡片展示舞台，结合深灰毛玻璃背景大数字章节页（如 `02 能力二`）做结构清晰分段",
-        "main_sub_ratio": 1.65,
-        "highlight_style": "圆角横向对比图条 + 毛玻璃叠层大数字章节卡"
+        "layout_id": "jianying_poster_4zone",
+        "layout_name": "门店老板白边人像 + 四区高低错落爆款封面",
+        "grid_desc": "门店门头实景铺底 + 右下老板半身人像白边轮廓 + 左上『小白字引子 + 正红黑边巨字主标题』 + 中左微倾斜明黄黑边状态签 + 右下『白字福利引子 + 红白双色毛笔大字行动钩子』",
+        "main_sub_ratio": 1.75,
+        "highlight_style": "正红黑边主爆字(#FF2222) + 明黄黑边倾斜贴纸(#FFE234) + 红白双色福利大字"
       },
       "transition_and_packaging": {
-        "ui_cadence": "切点/卡片弹出与 120 BPM 音频事件对齐率高达 91.7%，音效密度 94.6/min 全库最高",
+        "ui_cadence": "主轨口播物理切净气口零缝紧拼（中位1.87s），句群级B-roll覆盖率53.3%（中位1.67s），动作指代句保留-10dB现场动作真声；开头2.8s引子BGM切正文轻快主BGM；片尾2.7s独立金黄大字+评论区引导尾卡",
         "transitions": [
-          "背景高斯虚化过渡",
-          "圆角图条连续弹窗"
+          "零缝紧剪硬切",
+          "定格爆点切入",
+          "句群B-roll覆盖切回"
         ],
         "elements": [
-          "宋体顶部渐显标题",
-          "细字创始人名牌",
-          "4连横条实拍图卡",
-          "毛玻璃02大数字卡"
+          "无底框头顶红字爆点",
+          "左右双翼金黄花字",
+          "底部暗红印章小字",
+          "片尾金黄大字尾卡"
         ],
-        "sfx_per_min_target": 92,
-        "visual_per_min_target": 18
+        "sfx_per_min_target": 24,
+        "visual_per_min_target": 8,
+        "broll_overlay_ratio_target": 0.53,
+        "broll_ambient_sound_policy": {
+          "enabled": true,
+          "gain_db": -10.0,
+          "trigger_action_words": [
+            "敲",
+            "响",
+            "滋啦",
+            "切",
+            "倒",
+            "沸",
+            "烤",
+            "炒",
+            "砸",
+            "摔"
+          ]
+        },
+        "dual_bgm_structure": {
+          "enabled": true,
+          "intro_duration_sec": 2.83,
+          "intro_fade_out_sec": 0.57,
+          "main_bgm_gain_db": -11.0,
+          "main_fade_in_sec": 0.57,
+          "main_fade_out_sec": 1.0
+        },
+        "multi_zone_flower_spec": {
+          "center_burst_color": "#FF4C2C",
+          "flank_color": "#FFE28A",
+          "stamp_color": "#B71C1C",
+          "end_card_color": "#FFD637",
+          "stroke_color": "#000000",
+          "borderless": true
+        }
       },
       "assets": {
         "lut_cube": "luts/style_14.cube",
         "contact_sheet": "keyframes/style_14_contact.jpg"
+      },
+      "subtitle_symmetry_lock": {
+        "x_center": 540,
+        "safe_x_min": 220,
+        "safe_x_max": 860,
+        "max_width_px": 640,
+        "max_chars_per_line": 10,
+        "vertical_face_avoid_only": true
+      },
+      "is_default_store_style": true,
+      "benchmark_reference": "jianying_project_1114_delay_68.5s",
+      "broll_overlay_ratio_target": 0.53,
+      "broll_ambient_sound_policy": {
+        "enabled": true,
+        "gain_db": -10.0,
+        "trigger_action_words": [
+          "敲",
+          "响",
+          "滋啦",
+          "切",
+          "倒",
+          "沸",
+          "烤",
+          "炒",
+          "砸",
+          "摔"
+        ]
+      },
+      "dual_bgm_structure": {
+        "enabled": true,
+        "intro_duration_sec": 2.83,
+        "intro_fade_out_sec": 0.57,
+        "main_bgm_gain_db": -11.0,
+        "main_fade_in_sec": 0.57,
+        "main_fade_out_sec": 1.0
+      },
+      "multi_zone_flower_spec": {
+        "center_burst_color": "#FF4C2C",
+        "flank_color": "#FFE28A",
+        "stamp_color": "#B71C1C",
+        "end_card_color": "#FFD637",
+        "stroke_color": "#000000",
+        "borderless": true
       }
     },
     {
@@ -2702,6 +3322,47 @@
       "assets": {
         "lut_cube": "luts/style_15.cube",
         "contact_sheet": "keyframes/style_15_contact.jpg"
+      },
+      "subtitle_symmetry_lock": {
+        "x_center": 540,
+        "safe_x_min": 220,
+        "safe_x_max": 860,
+        "max_width_px": 640,
+        "max_chars_per_line": 11,
+        "vertical_face_avoid_only": true
+      },
+      "broll_overlay_ratio_target": 0.45,
+      "broll_ambient_sound_policy": {
+        "enabled": true,
+        "gain_db": -10.0,
+        "trigger_action_words": [
+          "敲",
+          "响",
+          "滋啦",
+          "切",
+          "倒",
+          "沸",
+          "烤",
+          "炒",
+          "砸",
+          "摔"
+        ]
+      },
+      "dual_bgm_structure": {
+        "enabled": false,
+        "intro_duration_sec": 2.83,
+        "intro_fade_out_sec": 0.57,
+        "main_bgm_gain_db": -11.0,
+        "main_fade_in_sec": 0.57,
+        "main_fade_out_sec": 1.0
+      },
+      "multi_zone_flower_spec": {
+        "center_burst_color": "#FF4C2C",
+        "flank_color": "#FFE28A",
+        "stamp_color": "#B71C1C",
+        "end_card_color": "#FFD637",
+        "stroke_color": "#000000",
+        "borderless": false
       }
     },
     {
@@ -2878,6 +3539,47 @@
       "assets": {
         "lut_cube": "luts/style_16.cube",
         "contact_sheet": "keyframes/style_16_contact.jpg"
+      },
+      "subtitle_symmetry_lock": {
+        "x_center": 540,
+        "safe_x_min": 220,
+        "safe_x_max": 860,
+        "max_width_px": 640,
+        "max_chars_per_line": 11,
+        "vertical_face_avoid_only": true
+      },
+      "broll_overlay_ratio_target": 0.45,
+      "broll_ambient_sound_policy": {
+        "enabled": true,
+        "gain_db": -10.0,
+        "trigger_action_words": [
+          "敲",
+          "响",
+          "滋啦",
+          "切",
+          "倒",
+          "沸",
+          "烤",
+          "炒",
+          "砸",
+          "摔"
+        ]
+      },
+      "dual_bgm_structure": {
+        "enabled": false,
+        "intro_duration_sec": 2.83,
+        "intro_fade_out_sec": 0.57,
+        "main_bgm_gain_db": -11.0,
+        "main_fade_in_sec": 0.57,
+        "main_fade_out_sec": 1.0
+      },
+      "multi_zone_flower_spec": {
+        "center_burst_color": "#FF4C2C",
+        "flank_color": "#FFE28A",
+        "stamp_color": "#B71C1C",
+        "end_card_color": "#FFD637",
+        "stroke_color": "#000000",
+        "borderless": false
       }
     },
     {
@@ -3053,6 +3755,47 @@
       "assets": {
         "lut_cube": "luts/style_17.cube",
         "contact_sheet": "keyframes/style_17_contact.jpg"
+      },
+      "subtitle_symmetry_lock": {
+        "x_center": 540,
+        "safe_x_min": 220,
+        "safe_x_max": 860,
+        "max_width_px": 640,
+        "max_chars_per_line": 11,
+        "vertical_face_avoid_only": true
+      },
+      "broll_overlay_ratio_target": 0.45,
+      "broll_ambient_sound_policy": {
+        "enabled": true,
+        "gain_db": -10.0,
+        "trigger_action_words": [
+          "敲",
+          "响",
+          "滋啦",
+          "切",
+          "倒",
+          "沸",
+          "烤",
+          "炒",
+          "砸",
+          "摔"
+        ]
+      },
+      "dual_bgm_structure": {
+        "enabled": false,
+        "intro_duration_sec": 2.83,
+        "intro_fade_out_sec": 0.57,
+        "main_bgm_gain_db": -11.0,
+        "main_fade_in_sec": 0.57,
+        "main_fade_out_sec": 1.0
+      },
+      "multi_zone_flower_spec": {
+        "center_burst_color": "#FF4C2C",
+        "flank_color": "#FFE28A",
+        "stamp_color": "#B71C1C",
+        "end_card_color": "#FFD637",
+        "stroke_color": "#000000",
+        "borderless": false
       }
     },
     {
@@ -3229,6 +3972,47 @@
       "assets": {
         "lut_cube": "luts/style_18.cube",
         "contact_sheet": "keyframes/style_18_contact.jpg"
+      },
+      "subtitle_symmetry_lock": {
+        "x_center": 540,
+        "safe_x_min": 220,
+        "safe_x_max": 860,
+        "max_width_px": 640,
+        "max_chars_per_line": 11,
+        "vertical_face_avoid_only": true
+      },
+      "broll_overlay_ratio_target": 0.5,
+      "broll_ambient_sound_policy": {
+        "enabled": true,
+        "gain_db": -10.0,
+        "trigger_action_words": [
+          "敲",
+          "响",
+          "滋啦",
+          "切",
+          "倒",
+          "沸",
+          "烤",
+          "炒",
+          "砸",
+          "摔"
+        ]
+      },
+      "dual_bgm_structure": {
+        "enabled": false,
+        "intro_duration_sec": 2.83,
+        "intro_fade_out_sec": 0.57,
+        "main_bgm_gain_db": -11.0,
+        "main_fade_in_sec": 0.57,
+        "main_fade_out_sec": 1.0
+      },
+      "multi_zone_flower_spec": {
+        "center_burst_color": "#FF4C2C",
+        "flank_color": "#FFE28A",
+        "stamp_color": "#B71C1C",
+        "end_card_color": "#FFD637",
+        "stroke_color": "#000000",
+        "borderless": false
       }
     },
     {
@@ -3404,6 +4188,47 @@
       "assets": {
         "lut_cube": "luts/style_19.cube",
         "contact_sheet": "keyframes/style_19_contact.jpg"
+      },
+      "subtitle_symmetry_lock": {
+        "x_center": 540,
+        "safe_x_min": 220,
+        "safe_x_max": 860,
+        "max_width_px": 640,
+        "max_chars_per_line": 11,
+        "vertical_face_avoid_only": true
+      },
+      "broll_overlay_ratio_target": 0.45,
+      "broll_ambient_sound_policy": {
+        "enabled": true,
+        "gain_db": -10.0,
+        "trigger_action_words": [
+          "敲",
+          "响",
+          "滋啦",
+          "切",
+          "倒",
+          "沸",
+          "烤",
+          "炒",
+          "砸",
+          "摔"
+        ]
+      },
+      "dual_bgm_structure": {
+        "enabled": false,
+        "intro_duration_sec": 2.83,
+        "intro_fade_out_sec": 0.57,
+        "main_bgm_gain_db": -11.0,
+        "main_fade_in_sec": 0.57,
+        "main_fade_out_sec": 1.0
+      },
+      "multi_zone_flower_spec": {
+        "center_burst_color": "#FF4C2C",
+        "flank_color": "#FFE28A",
+        "stamp_color": "#B71C1C",
+        "end_card_color": "#FFD637",
+        "stroke_color": "#000000",
+        "borderless": false
       }
     },
     {
@@ -3580,7 +4405,49 @@
       "assets": {
         "lut_cube": "luts/style_20.cube",
         "contact_sheet": "keyframes/style_20_contact.jpg"
+      },
+      "subtitle_symmetry_lock": {
+        "x_center": 540,
+        "safe_x_min": 220,
+        "safe_x_max": 860,
+        "max_width_px": 640,
+        "max_chars_per_line": 11,
+        "vertical_face_avoid_only": true
+      },
+      "broll_overlay_ratio_target": 0.45,
+      "broll_ambient_sound_policy": {
+        "enabled": true,
+        "gain_db": -10.0,
+        "trigger_action_words": [
+          "敲",
+          "响",
+          "滋啦",
+          "切",
+          "倒",
+          "沸",
+          "烤",
+          "炒",
+          "砸",
+          "摔"
+        ]
+      },
+      "dual_bgm_structure": {
+        "enabled": false,
+        "intro_duration_sec": 2.83,
+        "intro_fade_out_sec": 0.57,
+        "main_bgm_gain_db": -11.0,
+        "main_fade_in_sec": 0.57,
+        "main_fade_out_sec": 1.0
+      },
+      "multi_zone_flower_spec": {
+        "center_burst_color": "#FF4C2C",
+        "flank_color": "#FFE28A",
+        "stamp_color": "#B71C1C",
+        "end_card_color": "#FFD637",
+        "stroke_color": "#000000",
+        "borderless": false
       }
     }
-  ]
+  ],
+  "default_style_id": "style_14"
 }
