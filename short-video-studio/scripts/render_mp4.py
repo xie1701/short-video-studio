@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import sys
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -28,91 +29,59 @@ from common import (
     SAFE_ZONE,
     SUBTITLE_SAFE_ZONE,
     compute_crop_transform,
+    contrast_ratio,
     ffprobe_media,
     find_bin,
     find_commercial_font,
+    fit_text_line,
     frames_to_sec,
+    get_cached_font,
     get_wav_duration_sec,
+    hex_to_rgba,
     load_style_applied,
-    load_style_spectrum_entry,
     load_subtitle_templates,
     maybe_reexec_in_venv,
+    parse_manifest_faces,
     parse_video_stream_geometry,
     read_json,
     run_cmd,
     sec_to_frames,
 )
+from generate_code_broll import resolve_style_palette
 
 maybe_reexec_in_venv()
 
-from PIL import Image, ImageDraw, ImageFont
-
-
-_PIL_FONT_CACHE: Dict[Tuple[str, int], Any] = {}
-_TOFU_SIG_CACHE: Dict[Tuple[str, int], bytes] = {}
-_MISSING_FONT_WARNED = False
+from PIL import Image, ImageDraw
 
 
 def parse_hex_rgba(hex_str: str, default_alpha: int = 255) -> Tuple[int, int, int, int]:
-    s = str(hex_str or "#FFFFFF").strip().lstrip("#")
-    if len(s) == 6:
-        return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16), int(default_alpha))
-    if len(s) == 8:
-        return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16), int(s[6:8], 16))
-    return (255, 255, 255, int(default_alpha))
+    return hex_to_rgba(hex_str, default=(255, 255, 255, int(default_alpha)), default_alpha=int(default_alpha))
 
 
-def _get_cached_font(font_path: Optional[str], size: int) -> Any:
-    key = (font_path or "__default__", int(size))
-    if key in _PIL_FONT_CACHE:
-        return _PIL_FONT_CACHE[key]
-    fnt = None
-    if font_path and Path(font_path).exists():
-        try:
-            fnt = ImageFont.truetype(font_path, int(size))
-        except Exception:
-            fnt = None
-    if fnt is None:
-        global _MISSING_FONT_WARNED
-        fb = find_commercial_font(verified_only=True)
-        if fb and Path(fb).exists():
-            try:
-                fnt = ImageFont.truetype(fb, int(size))
-            except Exception:
-                fnt = None
-    if fnt is None:
-        if not _MISSING_FONT_WARNED:
-            sys.stderr.write("[render_mp4] WARN: 未找到可用 TrueType 商业字体，回退 Pillow 默认字体\n")
-            _MISSING_FONT_WARNED = True
-        fnt = ImageFont.load_default()
-    _PIL_FONT_CACHE[key] = fnt
-    return fnt
-
-
-def _render_glyph_bytes(font: Any, ch: str) -> bytes:
+@lru_cache(maxsize=256)
+def _render_glyph_bytes(font_path_key: str, font_size: int, ch: str) -> bytes:
+    fnt = get_cached_font(None if font_path_key == "__default__" else font_path_key, font_size)
     img = Image.new("L", (48, 48), 0)
-    ImageDraw.Draw(img).text((4, 4), ch, font=font, fill=255)
+    ImageDraw.Draw(img).text((4, 4), ch, font=fnt, fill=255)
     return img.tobytes()
 
 
-def _char_is_tofu(font: Any, font_key: str, ch: str) -> bool:
+@lru_cache(maxsize=2048)
+def _char_is_tofu(font_key: str, font_size: int, ch: str) -> bool:
     if ch.isspace():
         return False
-    sz = int(getattr(font, "size", 32) or 32)
-    sig_key = (font_key, sz)
-    if sig_key not in _TOFU_SIG_CACHE:
-        _TOFU_SIG_CACHE[sig_key] = _render_glyph_bytes(font, "\ufffe")
     if ch in ("\ufffe", "\ufffd"):
         return True
-    ch_bytes = _render_glyph_bytes(font, ch)
+    ch_bytes = _render_glyph_bytes(font_key, font_size, ch)
     if not any(ch_bytes):
         return True
-    return ch_bytes == _TOFU_SIG_CACHE[sig_key]
+    tofu_sig = _render_glyph_bytes(font_key, font_size, "\ufffe")
+    return ch_bytes == tofu_sig
 
 
 def compute_subtitle_place_xy(img_w: int, img_h: int, tpl: Dict[str, Any]) -> Tuple[int, int]:
-    """在唯一 SUBTITLE_SAFE_ZONE 内计算默认居中放置坐标。"""
-    y_center = int(tpl.get("y_center", 1360))
+    """在唯一 SUBTITLE_SAFE_ZONE 内计算默认居中放置坐标（同步读取 safe_y_center）。"""
+    y_center = int(tpl.get("safe_y_center", tpl.get("y_center", 1360)))
     px = max(SUBTITLE_SAFE_ZONE["x_min"], min((CANVAS_WIDTH - img_w) // 2, SUBTITLE_SAFE_ZONE["x_max"] - img_w))
     py = max(SUBTITLE_SAFE_ZONE["y_min"], min(y_center - img_h // 2, SUBTITLE_SAFE_ZONE["y_max"] - img_h))
     return int(px), int(py)
@@ -143,7 +112,7 @@ def render_subtitle_png(
     probe_img = Image.new("RGBA", (8, 8), (0, 0, 0, 0))
     probe_draw = ImageDraw.Draw(probe_img)
     while base_sz > 28:
-        fnt_probe = _get_cached_font(font_path, int(round(base_sz * kw_scale)))
+        fnt_probe = get_cached_font(font_path, int(round(base_sz * kw_scale)))
         widest = max(
             probe_draw.textbbox((0, 0), ln, font=fnt_probe)[2] - probe_draw.textbbox((0, 0), ln, font=fnt_probe)[0]
             for ln in lines_text
@@ -157,8 +126,9 @@ def render_subtitle_png(
     kw_rgba = parse_hex_rgba(tpl.get("keyword_color", "#FFE066"))
     stroke_rgba = parse_hex_rgba(tpl.get("stroke_color", "#0D1117"))
     shadow_rgba = parse_hex_rgba(tpl.get("shadow_color", "#000000A8"), 168)
-    bg_hex = str(tpl.get("bg_box", "none"))
+    bg_hex = str(tpl.get("bg_box_color") or tpl.get("bg_box") or "none").strip()
     has_bg = bool(bg_hex and bg_hex.lower() != "none")
+    bg_radius = int(tpl.get("bg_radius", 18))
 
     fallback_font = None
     if tpl.get("font_fallback"):
@@ -202,26 +172,37 @@ def render_subtitle_png(
         for ch, flag in zip(raw_text, kw_flags):
             tokens.append((ch, flag, ch == "\n"))
 
-    lines: List[List[Tuple[str, Any, Tuple[int, int, int, int], int, int]]] = [[]]
+    # 使用 font.getlength + font.getmetrics() 精确基准线对齐，消除字号切换时的错落与紧挤
+    lines: List[List[Tuple[str, Any, Tuple[int, int, int, int], int, int, int]]] = [[]]
     line_heights: List[int] = [0]
+    line_max_ascents: List[int] = [0]
+    fk = font_path or "__default__"
     for ch, is_kw, is_nl in tokens:
         if is_nl:
             lines.append([])
             line_heights.append(0)
+            line_max_ascents.append(0)
             continue
         ch_sz = int(round(base_sz * (kw_scale if is_kw else 1.0)))
-        fnt = _get_cached_font(font_path, ch_sz)
-        fk = font_path or "__default__"
-        if _char_is_tofu(fnt, fk, ch) and fallback_font and fallback_font != font_path:
-            fnt = _get_cached_font(fallback_font, ch_sz)
+        fnt = get_cached_font(font_path, ch_sz)
+        if _char_is_tofu(fk, ch_sz, ch) and fallback_font and fallback_font != font_path:
+            fnt = get_cached_font(fallback_font, ch_sz)
         bb = probe_draw.textbbox((0, 0), ch, font=fnt, stroke_width=stroke_w)
-        gw = max(4, bb[2] - bb[0])
-        gh = max(8, bb[3] - bb[1])
+        try:
+            adv_w = max(4, int(round(fnt.getlength(ch))) + max(1, stroke_w))
+        except Exception:
+            adv_w = max(4, (bb[2] - bb[0]) + 2)
+        try:
+            ascent, descent = fnt.getmetrics()
+        except Exception:
+            ascent, descent = ch_sz, max(4, ch_sz // 5)
+        gh = max(8, ascent + descent + stroke_w * 2)
         rgba = kw_rgba if is_kw else primary_rgba
-        lines[-1].append((ch, fnt, rgba, gw, ch_sz))
+        lines[-1].append((ch, fnt, rgba, adv_w, ch_sz, int(ascent)))
         line_heights[-1] = max(line_heights[-1], gh)
+        line_max_ascents[-1] = max(line_max_ascents[-1], int(ascent))
 
-    line_widths = [sum(item[3] + 2 for item in ln) - (2 if ln else 0) for ln in lines]
+    line_widths = [sum(item[3] for item in ln) for ln in lines]
     pad_x = 28 if has_bg else 16
     pad_y = 18 if has_bg else 12
     line_gap = 10 if len(lines) > 1 else 0
@@ -231,20 +212,24 @@ def render_subtitle_png(
     canvas = Image.new("RGBA", (total_w, total_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
     if has_bg:
-        bg_rgba = parse_hex_rgba(bg_hex, 195)
-        draw.rounded_rectangle([(0, 0), (total_w - 1, total_h - 1)], radius=18, fill=bg_rgba)
+        bg_rgba = parse_hex_rgba(bg_hex, 210)
+        draw.rounded_rectangle([(0, 0), (total_w - 1, total_h - 1)], radius=bg_radius, fill=bg_rgba)
 
     cur_y = pad_y
     use_shadow = bool(tpl.get("shadow", True))
+    sh_off = tpl.get("shadow_offset") or [2, 3]
+    sh_dx = int(sh_off[0]) if len(sh_off) >= 1 else 2
+    sh_dy = int(sh_off[1]) if len(sh_off) >= 2 else 3
     for ln_idx, ln in enumerate(lines):
         ln_w = line_widths[ln_idx]
         ln_h = max(base_sz, line_heights[ln_idx])
+        max_asc = max(base_sz // 2, line_max_ascents[ln_idx])
         cur_x = (total_w - ln_w) // 2
-        for ch, fnt, rgba, gw, ch_sz in ln:
-            y_off = cur_y + max(0, ln_h - ch_sz) // 2
+        for ch, fnt, rgba, adv_w, ch_sz, asc in ln:
+            y_off = cur_y + max(0, max_asc - asc)
             if use_shadow:
                 draw.text(
-                    (cur_x + 2, y_off + 3),
+                    (cur_x + sh_dx, y_off + sh_dy),
                     ch,
                     font=fnt,
                     fill=shadow_rgba,
@@ -259,7 +244,7 @@ def render_subtitle_png(
                 stroke_width=stroke_w,
                 stroke_fill=stroke_rgba if stroke_w > 0 else None,
             )
-            cur_x += gw + 2
+            cur_x += adv_w
         cur_y += ln_h + line_gap
 
     out_png.parent.mkdir(parents=True, exist_ok=True)
@@ -267,55 +252,24 @@ def render_subtitle_png(
     return total_w, total_h
 
 
-def _resolve_packaging_palette(style_id: str) -> Dict[str, Tuple[int, int, int, int]]:
-    spec = load_style_spectrum_entry(style_id) or {}
-    pal = spec.get("palette") or {}
-    if pal.get("bg_hex") and pal.get("accent_hex"):
-        return {
-            "bg": parse_hex_rgba(pal["bg_hex"], 232),
-            "accent": parse_hex_rgba(pal["accent_hex"], 255),
-            "text": parse_hex_rgba(pal.get("text_hex", "#FFFFFF"), 255),
-            "border": parse_hex_rgba(pal.get("border_hex", pal["accent_hex"]), 220),
-        }
-    archetype = str(spec.get("archetype") or "").lower()
-    if any(k in archetype for k in ("极简", "高端", "杂志", "冷调", "科技")):
-        return {
-            "bg": (18, 22, 29, 232),
-            "accent": (90, 200, 250, 255),
-            "text": (248, 250, 252, 255),
-            "border": (90, 200, 250, 190),
-        }
-    if any(k in archetype for k in ("复古", "烟火", "日常", "探店")):
-        return {
-            "bg": (34, 24, 18, 234),
-            "accent": (255, 169, 64, 255),
-            "text": (255, 248, 235, 255),
-            "border": (255, 169, 64, 210),
-        }
+def _resolve_packaging_palette(style_id: str, track: str = "store") -> Dict[str, Tuple[int, int, int, int]]:
+    pal = resolve_style_palette(style_id, track=track)
+    bg_rgba = parse_hex_rgba(pal.get("card_bg_hex") or pal.get("bg_hex", "#12151E"), 232)
+    accent_rgba = parse_hex_rgba(pal.get("accent_hex", "#FFD54F"), 255)
+    text_rgba = parse_hex_rgba(pal.get("title_hex", "#F8FAFC"), 255)
+    border_rgba = parse_hex_rgba(pal.get("border_hex") or pal.get("accent_hex", "#FFD54F"), 220)
+    if contrast_ratio(text_rgba[:3], bg_rgba[:3]) < 4.5:
+        text_rgba = (17, 24, 39, 255) if pal.get("is_light") else (255, 255, 255, 255)
     return {
-        "bg": (15, 23, 42, 232),
-        "accent": (250, 204, 21, 255),
-        "text": (248, 250, 252, 255),
-        "border": (250, 204, 21, 200),
+        "bg": bg_rgba,
+        "accent": accent_rgba,
+        "text": text_rgba,
+        "border": border_rgba,
     }
 
 
 def _fit_line(draw: Any, text: str, font_path: Optional[str], max_w: int, start_sz: int, min_sz: int = 24) -> Tuple[Any, str]:
-    txt = str(text or "").strip()
-    if not txt:
-        return _get_cached_font(font_path, start_sz), ""
-    for sz in range(start_sz, min_sz - 1, -2):
-        fnt = _get_cached_font(font_path, sz)
-        bb = draw.textbbox((0, 0), txt, font=fnt)
-        if (bb[2] - bb[0]) <= max_w:
-            return fnt, txt
-    fnt = _get_cached_font(font_path, min_sz)
-    while len(txt) > 2:
-        bb = draw.textbbox((0, 0), txt + "…", font=fnt)
-        if (bb[2] - bb[0]) <= max_w:
-            return fnt, txt + "…"
-        txt = txt[:-1]
-    return fnt, txt
+    return fit_text_line(draw, str(text or ""), font_path, max_width=max_w, max_size=start_sz, min_size=min_sz)
 
 
 def render_packaging_png(
@@ -460,19 +414,7 @@ def _manifest_lookups(manifest: Dict[str, Any]) -> Tuple[Dict[str, List[Dict[str
         mp = str(item.get("normalized_mp4") or "")
         if not mp:
             continue
-        norm_faces: List[Dict[str, int]] = []
-        for f_obj in (item.get("faces") or []):
-            bb = f_obj.get("bbox")
-            if isinstance(bb, (list, tuple)) and len(bb) == 4:
-                x1, y1, x2, y2 = [float(v) for v in bb]
-                norm_faces.append({
-                    "x": int(round(x1 * CANVAS_WIDTH)),
-                    "y": int(round(y1 * CANVAS_HEIGHT)),
-                    "w": max(1, int(round((x2 - x1) * CANVAS_WIDTH))),
-                    "h": max(1, int(round((y2 - y1) * CANVAS_HEIGHT))),
-                })
-            elif isinstance(bb, dict) and {"x", "y", "w", "h"}.issubset(bb.keys()):
-                norm_faces.append({k: int(bb[k]) for k in ("x", "y", "w", "h")})
+        norm_faces = parse_manifest_faces(item)
         for key in {mp, str(Path(mp).resolve())}:
             faces_by_mp4[key] = norm_faces
             if item.get("eye_anchor"):
@@ -576,10 +518,11 @@ def build_base_video_track(
                 vf_parts.append(
                     f"scale=w='trunc({tx['scaled_w']}*{z_expr}/2)*2':h='trunc({tx['scaled_h']}*{z_expr}/2)*2':eval=frame:flags=bicubic"
                 )
-                cx0 = tx["crop_x"]
-                cy0 = tx["crop_y"]
-                x_off = f"{cx0}*({z_expr})+(iw-{tw})/2*0.0+({pan_x:.4f}*iw*{prog})" if tx["scaled_w"] == tw else f"(iw-{tw})*{fx:.4f}+({pan_x:.4f}*iw*{prog})"
-                y_off = f"{cy0}*({z_expr})+({pan_y:.4f}*ih*{prog})" if tx["scaled_h"] == th else f"(ih-{th})*{fy:.4f}+({pan_y:.4f}*ih*{prog})"
+                # 以眼部重心 (fx, fy) 为缩放不动点，保证 1080x1920 原生竖屏也能精准向眼部推近而不锁死在 (0,0)
+                focal_px_x = float(tx["crop_x"]) + fx * tw
+                focal_px_y = float(tx["crop_y"]) + fy * th
+                x_off = f"{z_expr}*{focal_px_x:.2f}-{fx * tw:.2f}+({pan_x:.4f}*iw*{prog})"
+                y_off = f"{z_expr}*{focal_px_y:.2f}-{fy * th:.2f}+({pan_y:.4f}*ih*{prog})"
                 vf_parts.append(f"crop={tw}:{th}:x='max(0,min(iw-{tw},{x_off}))':y='max(0,min(ih-{th},{y_off}))'")
             elif sw != tw or sh != th:
                 vf_parts.append(f"scale={tx['scaled_w']}:{tx['scaled_h']}:flags=bicubic")
@@ -690,7 +633,7 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
     font_path = subs_data.get("font_path") or find_commercial_font(tpl.get("font_candidates"))
     style_id = pkg_data.get("style_id") or load_style_applied(pipeline_dir) or "style_01"
 
-    overlays: List[Tuple[Path, int, int, float, float]] = []
+    overlays: List[Tuple[Path, int, int, float, float, Optional[Tuple[int, int, int, int]], bool]] = []
 
     for idx, elem in enumerate(pkg_data.get("visual_elements") or []):
         s_t = max(0.0, frames_to_sec(int(elem.get("start_frame", 0)), fps))
@@ -706,7 +649,9 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
         def_x = max(SAFE_ZONE["x_min"], (CANVAS_WIDTH - pw) // 2)
         def_y = SAFE_ZONE["y_min"] + 40
         px, py = _place_from_final_bbox(elem, pw, ph, SAFE_ZONE, (def_x, def_y), _faces_at_time(s_t))
-        overlays.append((png_path, px, py, s_t, e_t))
+        blur_rect = (px, py, pw, ph) if elem.get("overlay_mode") == "focus_blur" else None
+        fade_in = bool(int(elem.get("start_frame", 0)) > 0)
+        overlays.append((png_path, px, py, s_t, e_t, blur_rect, fade_in))
 
     for idx, sub in enumerate(subs_data.get("entries") or []):
         if sub.get("suppressed"):
@@ -719,7 +664,7 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
         sw_px, sh_px = render_subtitle_png(sub, tpl, font_path, sub_png)
         def_x, def_y = compute_subtitle_place_xy(sw_px, sh_px, tpl)
         px, py = _place_from_final_bbox(sub, sw_px, sh_px, SUBTITLE_SAFE_ZONE, (def_x, def_y), _faces_at_time(s_t))
-        overlays.append((sub_png, px, py, s_t, e_t))
+        overlays.append((sub_png, px, py, s_t, e_t, None, False))
 
     if not overlays:
         run_cmd([
@@ -736,29 +681,68 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
         return out_mp4
 
     cmd = [ffmpeg_bin, "-y", "-i", str(base_mp4), "-i", str(master_wav)]
-    for png_p, *_ in overlays:
-        cmd.extend(["-i", str(png_p)])
+    for png_p, _px, _py, s_t, e_t, _blur_rect, fade_in in overlays:
+        if fade_in:
+            cmd.extend(["-loop", "1", "-framerate", str(fps), "-t", f"{max(0.1, e_t - s_t + 0.05):.4f}", "-i", str(png_p)])
+        else:
+            cmd.extend(["-i", str(png_p)])
 
     filter_chains: List[str] = []
     cur_label = "[0:v]"
-    for i, (_, px, py, s_t, e_t) in enumerate(overlays):
+    step_idx = 0
+    for i, (_, px, py, s_t, e_t, blur_rect, fade_in) in enumerate(overlays):
         in_idx = i + 2
+        if blur_rect is not None:
+            bx, by, bw, bh = blur_rect
+            bx = max(0, min(CANVAS_WIDTH - 16, int(bx)))
+            by = max(0, min(CANVAS_HEIGHT - 16, int(by)))
+            bw = max(16, min(CANVAS_WIDTH - bx, int(bw)))
+            bh = max(16, min(CANVAS_HEIGHT - by, int(bh)))
+            base_copy = f"[bc_{step_idx}]"
+            blur_crop_in = f"[bi_{step_idx}]"
+            blur_crop_out = f"[bo_{step_idx}]"
+            blur_merged = f"[bm_{step_idx}]"
+            filter_chains.append(f"{cur_label}split=2{base_copy}{blur_crop_in}")
+            filter_chains.append(f"{blur_crop_in}crop={bw}:{bh}:{bx}:{by},boxblur=10:2{blur_crop_out}")
+            filter_chains.append(
+                f"{base_copy}{blur_crop_out}overlay=x={bx}:y={by}:enable='between(t,{s_t:.4f},{e_t:.4f})'{blur_merged}"
+            )
+            cur_label = blur_merged
+
+        if fade_in:
+            prep_lbl = f"[ovf_{step_idx}]"
+            filter_chains.append(
+                f"[{in_idx}:v]format=rgba,fade=t=in:st=0:d=0.133:alpha=1,setpts=PTS+{s_t:.4f}/TB{prep_lbl}"
+            )
+            ov_in = prep_lbl
+            eof_mode = "pass"
+        else:
+            ov_in = f"[{in_idx}:v]"
+            eof_mode = "repeat"
+
         out_label = "[vout]" if i == len(overlays) - 1 else f"[v{i}]"
         filter_chains.append(
-            f"{cur_label}[{in_idx}:v]overlay=x={px}:y={py}:enable='between(t,{s_t:.4f},{e_t:.4f})'{out_label}"
+            f"{cur_label}{ov_in}overlay=x={px}:y={py}:eof_action={eof_mode}:enable='between(t,{s_t:.4f},{e_t:.4f})'{out_label}"
         )
         cur_label = out_label
+        step_idx += 1
 
+    filter_str = ";\n".join(filter_chains)
     filter_script = work_dir / "overlay_filter.txt"
-    filter_expr = ";".join(filter_chains)
-    filter_script.write_text(";\n".join(filter_chains), encoding="utf-8")
+    filter_script.write_text(filter_str, encoding="utf-8")
+
+    if len(filter_str) < 32768:
+        fc_args = ["-filter_complex", filter_str]
+    else:
+        help_txt = run_cmd([ffmpeg, "-hide_banner", "-h", "long"], check=False).stdout or ""
+        fc_flag = "-filter_complex_script" if "filter_complex_script" in help_txt else "-/filter_complex"
+        fc_args = [fc_flag, str(filter_script)]
 
     cmd.extend([
-        "-filter_complex", filter_expr,
+        *fc_args,
         "-map", "[vout]",
         "-map", "1:a:0",
         "-c:v", "libx264", "-preset", "medium", "-crf", "17",
-        "-pix_fmt", "yuv420p",
         *BT709_FFMPEG_ARGS,
         "-c:a", "aac", "-b:a", "192k", "-ar", "48000",
         "-t", f"{exact_dur:.4f}",

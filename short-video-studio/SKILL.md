@@ -49,7 +49,7 @@ description: 面向零拍摄剪辑基础用户的全流程短视频生产智能�
 ### 专属工作区零污染与多账号物理隔离铁律（MUST）
 - **原素材严格只读**：所有剪辑加工、转码、临时帧和成片导出统一写入独立专属加工目录（默认 `~/.short-video-studio/workspaces/accounts/<account_slug>/projects/<project_id>/`，可用 `--workspace-root` 指定），**严禁向用户原素材 `--raw-dir` 写入任何文件**。若误将 `--project-dir` 配到 `--raw-dir` 内部，流水线自动重定向隔离并告警。
 - **多账号隔离 (`--account`)**：按账号隔离 `account_profile.json`、`compliance_whitelist.json` 与 `content-log/records.jsonl`，跨店代运营互不串味。
-- **完工自动清理 (`tidy_workspace`)**：正式成片通过 22 项质检并同步交付物至 `out/` 后，自动清理 `_render_final/`、`01_normalized/`、`08_stem_nosfx.wav`、`08_voice_master.wav`、`08_bgm_ducked.wav` 等大体积过程文件（剪映/HyperFrames 工程已内置硬链接或独立媒体副本零断链，且保留 `08_sfx_audit_window.json` 支持 `tidy` 后二次复验 `#20`，`--mode reedit-visuals` 检测到缺少 `01_normalized` 时可从只读源按需重建）；调试时可用 `--keep-temp` 暂留。
+- **完工自动清理 (`tidy_workspace`)**：正式成片通过 22 项质检并同步交付物至 `out/` 后，默认清理 `_render_final/`、`01_normalized/`、`08_voice_denoised.wav`、`08_premix_*.wav` 等高体积中间临时文件，同时保留锁轨音视频分轨与 `08_sfx_audit_window.json` 以支持 `tidy` 后二次复验 `#20` 及 `--mode reedit-visuals` / `--mode render-locked` 无损重剪（传入 `--deep-clean` 才全清，`--keep-temp` 可全留调试）。
 
 ### 广告法与平台合规前置 + 诚实基线
 - **文本/转写双级审校 (`compliance_guard.py`)**：`must` 级违禁词（极限词/绝对承诺/功效/机关背书，精准排除「最近/最后/最怕/第一口」零误杀）必须改写或弃用；`warn` 级支持账号白名单 `ack`。**实拍真人口播命中 `must` 时严禁靠改字幕遮掩，必须整句弃用或重拍并留痕**（`00_compliance_report.json/.md`）。
@@ -76,37 +76,37 @@ description: 面向零拍摄剪辑基础用户的全流程短视频生产智能�
 
 ---
 
-## 四、 「先音后画，以音定画」v4 剪辑流水线与 22 项 Fail-Closed 质检门禁
+## 四、 「先音后画，以音定画」v5 剪辑流水线与 22 项 Fail-Closed 质检门禁
 
 所有中间文件契约见 [references/pipeline-schemas.md](references/pipeline-schemas.md)，安全区与预算规范见 [references/platform-safe-zones.md](references/platform-safe-zones.md)。
 
-一键完整跑通流水线（盘点+接触表 → Step 1–9 → MP4/全相对路径离线双工程 → 22 项 Fail-Closed 验收 → 《我替你做的决定》+ 防 XSS 打点审片页 `review_player.html` → 归档 `out/` → 自动清理临时文件）：
+一键完整跑通流水线（盘点+接触表 → Step 1–9 → MP4/自包含剪映/可播放离线 HyperFrames → 22 项 Fail-Closed 验收 → 《我替你做的决定》+ 防 XSS 打点审片页 `review_player.html` → 归档 `out/` → 自动分级清理）：
 ```bash
 python3 scripts/run_pipeline.py --account <账号> --raw-dir <原素材目录> --track <store|creator> --mode full [--style-id style_14] [--visual-index <00_visual_index.json>] [--licenses-json <licenses.json>] [--hook-variants 2] [--dialect mandarin|cantonese|dialect] [--store-anchor <店名>]
 ```
 
-各环节硬核机制（吸收五大对标精华 + 影视反 NG 五原则 A1–A5 + 广电包装五原则 B6–B15）：
-- **`inventory_media.py` & `step1_normalize.py`**：EXIF 方向校准 Vision；**2D FFT 相位相关二阶加速度稳度**；`00_visual_index.json` 外部语义接入；声画分离双评级；物理几何裁剪仿射映射 `faces` / `eye_anchor` 至 `1080x1920`；HDR→Rec.709 Hable 映射。
-- **`step2_transcribe.py` & `step3_lock_audio.py`**：无脚本且无本地 ASR 时 Fail-Fast；抗混叠 48kHz/16kHz 音频加载；30ms Hann Overlap-Add 真 Room Tone；200ms 交叉淡化 BGM；`tanh` 软拉平 + 过零点精剪；导出 `03_blind_audio.m4a`。
-- **`step4_build_edl.py`**：**A1** `0.40s` Handles；**A2** `audio_only` 保声遮脸；**A3/A4** 指代词与禁忌标签守卫；局部 `±0.85s` 推进防切点吞噬；支持 `0 帧` 直切 J-cut 与双向 Ken Burns；`code_broll` 占比 ≤50%。
-- **`step5_subtitles.py` & `render_mp4.py` & `step6/7/8/9`**：真静音呼吸断句 + 数字旁标点安全清洗；四端统一权威 `final_bbox` 与 `SUBTITLE_SAFE_ZONE` (`y<=1468`)；`stroke_width=0` 零强加描边；严卡 `source_out_sec` 防 NG 尾帧穿透 `tpad`；YCbCr 肤色矢量掩膜中间调校色+LUT闭环；三端同源分轨 + `08_sfx_audit_window.json` + 验证商用字体强制清单；去模板味风格化封面。
+各环节硬核机制（v5 全链路进化 + 影视反 NG 五原则 A1–A5 + 广电包装五原则 B6–B15）：
+- **`inventory_media.py` & `step1_normalize.py`**：EXIF 方向校准 Vision 多时点采样；单遍 BT.709 亮度与等面积锐度/急甩惩罚 + Stereo PCM 动态范围体检；**2D FFT 相位相关稳度**；物理几何裁切与人脸眼部居中构图、HDR→Rec.709 Hable 映射及声道不平衡智能挽救。
+- **`step2_transcribe.py` & `step3_lock_audio.py`**：合规与字数刷新前置于 TTS 合成前；切头去噪与修音后重算韵律停顿；分源文件隔离防混叠 `retake` 优胜；零漂移整小节循环 BGM、全局静默底噪抽样真 Room Tone、Equal-Power 渐变。
+- **`step4_build_edl.py`**：**A1** `0.40s` Handles；**A2** `audio_only` 保声遮脸与首镜门控；**A3/A4** 指代词缺失告警；单向不回退 B-roll 游标、真 J-cut + 真 L-cut 声画错位、`1.15x` 锁眼微推拉。
+- **`step5_subtitles.py` & `render_mp4.py` & `step6/7/8/9`**：保护跨词数字冒号/小数点、透传 `keywords`、动态重写合规 ASS 样式、7点避脸 `final_bbox` (`y<=1468`)；Peak-aligned SFX（零 `+18dB` 噪点注水）；中点测光与全部人脸镜 BT.709 皮肤保护；锁定一致 `-14.0 LUFS` 四端三轨 (`voice_master` / `bgm_ducked` / `sfx_master`)；`focus_blur` 毛玻璃背板 + 不动点眼部 Ken Burns；封面去套话、`09_ui_safe_preview.jpg` 遮罩验收与真 3 秒 `--hook-variants` (`09_hook_v*.mp4`)。
 
 ### 22 项 Fail-Closed 门禁与双态终审 (`qa_inspector.py` + `independent_verifier.py`)
 - 全部 22 项统一输出 **`PASS | FAIL | SKIPPED_UNAVAILABLE`**（缺依赖/缺草稿绝不伪装通过，`PASS` 方计入 `passed=True`）：
-  - **1–11 项流水线契约**（响度/黑帧/静音/音画同步/字幕与 `03_audio_events` 交叉校准/切点对齐/安全区与零 `<=3` 残句及预算/镜头分布与保声遮脸/前3秒切镜/A-Roll句界严锁/`common.LEAK_REGEX_PATTERNS` 防露馅）；
-  - **12–22 项单遍解码黑盒裁判**（声学 TP/LRA/相位/爆音/画外音与A轨覆盖、OCR安全区与字幕回环、人脸零遮挡与单框 WCAG `>=3.8:1`、`common.SKIN_YCBCR_RANGE` 肤色、纯相对路径 `timeline.fcpxml` 与全离线零 CDN HyperFrames、OCR元数据防露馅、屏蔽字幕静止检测、全量切点 `showinfo` Spot-Verify、SFX 净抬升含 `tidy` 后回退、尊重 `HF_HOME` 的独立 ASR 盲听复核、广告法与 `is_verified_commercial_font` 强制授权清单）。
-- **双态终审**：必检全过输出 `MACHINE_PASS_PENDING_HUMAN`；人工结合 `review_player.html` 复核后，运行 `workflow_guard.py approve-final --pipeline-dir <dir>` 升级签字为 `APPROVED` 并同步更新 `out/10_qa_report.*`。
-- **风格复刻洁净室 (`workflow_guard.py replication-diff`)**：pHash 距离 `≤6` 或 OCR 连续 12 字重合直接 `BLOCK`，明暗背景自适应文字 ΔE 采样，盲测页支持导出 JSON。
+  - **1–11 项流水线契约**（响度/黑帧/静音/音画同步/字幕与 `03_audio_events` 交叉校准/切点含 L-cut 对齐/安全区与零 `<=3` 残句及预算/非相邻零倒带与保声遮脸/前3秒切镜/A-Roll句界严锁/`common.LEAK_REGEX_PATTERNS` 防露馅）；
+  - **12–22 项单遍解码黑盒裁判**（300–3400Hz 语谱画外音与 A 轨覆盖、OCR 安全区+字幕内容回环 Recall、人脸零遮挡与实测单框 WCAG `>=3.8:1`、BT.709 矩阵 `common.SKIN_YCBCR_RANGE` 肤色与 `max_luma_jump`、URL 编码相对 FCPXML 与归属子元素检验及 `<template>` 可播放离线 HyperFrames、OCR 防露馅、屏蔽字幕静止检测、双带遮罩+相对 MAD 全量切点 Spot-Verify、统一 `compute_sfx_band_windows` 全量 cues 净抬升、`large-v3` 优先+粤语 `yue` 独立 ASR 盲听、严格只读广告法复核与 `is_verified_commercial_font` 清单）。
+- **双态终审**：必检全过输出 `MACHINE_PASS_PENDING_HUMAN`；人工结合 `review_player.html` 复核后，运行 `workflow_guard.py approve-final --pipeline-dir <dir>` 校验 `plan_sha256` + `output_final_sha256` 升级签字为 `APPROVED` 并同步更新 `out/10_qa_report.*`。
+- **风格复刻洁净室 (`workflow_guard.py replication-diff`)**：pHash 距离 `≤6` 或 OCR 连续 12 字重合直接 `BLOCK`，明暗自适应采样 ΔE，`secrets.SystemRandom` 真随机洗牌并将答案键分离至 `blind_test_answer_key.json`。
 
 ---
 
 ## 五、 平台微观留存诊断与参数基因真闭环
 
-每条发布后收集微观留存与转化数据（2 秒跳出率 `bounce_2s`、3 秒/5 秒留存、`drop_off_sec` 留存断崖秒数、关联 `edl_path`、完播率、评论与有效询单），写入本地 `content-log`：
+每条发布后收集微观留存与转化数据（2 秒跳出率 `bounce_2s`、3 秒/5 秒留存、复播率 `rewatch_rate`、同城占比 `local_traffic_pct`、有效询单率 `inquiry_rate`、`drop_off_sec` 留存断崖秒数、关联 `edl_path`），写入按 `--account` 与 `--track` 双重隔离的 `content-log`：
 ```bash
-python3 scripts/content_log_review.py --log-dir <项目目录>/content-log --add-json '<数据JSON>'
+python3 scripts/content_log_review.py --account <账号> --track <store|creator> --add-json '<数据JSON>'
 ```
-输出 `weekly_review.md` 与 `account_profile.json`：将后台掉粉断崖秒数反查回 `04_edl.json` 具体镜头开出诊断处方，并把跑赢基线的镜长/动态停顿/首选风格谱自动写回 `account_profile.json` 驱动下一条视频进化。
+输出 `weekly_review.md` 与 `account_profile.json`：将后台掉粉断崖秒数反查回 `04_edl.json` 具体镜头开出诊断处方，并把跑赢基线的镜长/动态停顿（含 `persona_pause_sec`）/首选风格谱自动写回 `account_profile.json` 驱动下一条视频进化。
 
 ---
 

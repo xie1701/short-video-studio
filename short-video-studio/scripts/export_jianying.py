@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import shutil
 import sys
+import urllib.parse
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -21,11 +22,16 @@ from xml.dom import minidom
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import (
+    BT709_FFMPEG_ARGS,
+    BT709_VF_SUFFIX,
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
     DEFAULT_FPS,
     SAFE_ZONE,
     SUBTITLE_SAFE_ZONE,
+    compute_crop_transform,
+    ffprobe_media,
+    find_bin,
     find_commercial_font,
     frames_to_sec,
     get_wav_duration_sec,
@@ -33,7 +39,10 @@ from common import (
     load_style_applied,
     load_subtitle_templates,
     maybe_reexec_in_venv,
+    parse_video_stream_geometry,
     read_json,
+    resolve_audio_stems,
+    run_cmd,
     sec_to_frames,
     write_json,
 )
@@ -219,67 +228,227 @@ def _prepare_static_overlay_layers(
     return _assign_non_overlapping_lanes(layers)
 
 
+def _url_quote_rel(rel_src: str) -> str:
+    return urllib.parse.quote(str(rel_src).replace("\\", "/"), safe="/")
+
+
+def _probe_video_duration_frames(path: Path, fps: int) -> int:
+    try:
+        info = ffprobe_media(path)
+        vs = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), {})
+        dur = float(vs.get("duration") or info.get("format", {}).get("duration") or 0.0)
+        if dur > 0.0:
+            return max(1, sec_to_frames(dur, fps))
+    except Exception:
+        pass
+    return 0
+
+
+def _export_graded_segment(
+    ffmpeg_bin: str,
+    clip: Dict[str, Any],
+    color_vf: Optional[str],
+    eye_by_mp4: Dict[str, Dict[str, Any]],
+    out_mp4: Path,
+    fps: int,
+) -> None:
+    mp = str(clip.get("media_path") or "")
+    src_in = max(0.0, float(clip.get("source_in_sec", 0.0)))
+    if clip.get("timeline_out_frame") is not None and clip.get("timeline_in_frame") is not None:
+        clip_frames = max(1, int(clip["timeline_out_frame"]) - int(clip["timeline_in_frame"]))
+    else:
+        clip_frames = max(1, sec_to_frames(float(clip.get("duration_sec", 1.0)), fps))
+    clip_dur = frames_to_sec(clip_frames, fps)
+    src_out = float(clip.get("source_out_sec", src_in + clip_dur))
+    src_avail = max(0.1, src_out - src_in)
+
+    probe = ffprobe_media(Path(mp))
+    vs = next((s for s in probe.get("streams", []) if s.get("codec_type") == "video"), {})
+    g = parse_video_stream_geometry(vs)
+    sw, sh = g["display_width"], g["display_height"]
+    eye = clip.get("eye_anchor") or eye_by_mp4.get(mp) or eye_by_mp4.get(str(Path(mp).resolve())) or {}
+    fx = float(eye.get("cx", eye.get("eye_cx", 0.50)))
+    fy = float(eye.get("cy", eye.get("eye_cy", 0.36)))
+    tx = compute_crop_transform(sw, sh, CANVAS_WIDTH, CANVAS_HEIGHT, fx, fy)
+
+    trim_dur = min(src_avail, clip_dur) if src_avail >= clip_dur - 0.01 else src_avail
+    vf_parts: List[str] = [f"fps=fps={fps}", f"trim=duration={trim_dur:.4f},setpts=PTS-STARTPTS"]
+
+    vf_extra = str(clip.get("vf_extra") or "").strip()
+    kb = clip.get("ken_burns")
+    has_kb = isinstance(kb, dict) and ("zoom_start" in kb or "zoom_end" in kb)
+    if has_kb and not vf_extra:
+        z0 = max(1.0, float(kb.get("zoom_start", 1.0)))
+        z1 = max(1.0, float(kb.get("zoom_end", 1.06)))
+        pan_x = float(kb.get("pan_x", 0.0))
+        pan_y = float(kb.get("pan_y", 0.0))
+        if abs(z1 - z0) > 1e-4 or abs(pan_x) > 1e-4 or abs(pan_y) > 1e-4:
+            prog = f"min(t/{clip_dur:.4f},1)"
+            z_expr = f"({z0:.4f}+({z1 - z0:.4f})*{prog})"
+            vf_parts.append(
+                f"scale=w='trunc({tx['scaled_w']}*{z_expr}/2)*2':h='trunc({tx['scaled_h']}*{z_expr}/2)*2':eval=frame:flags=bicubic"
+            )
+            focal_px_x = float(tx["crop_x"]) + fx * CANVAS_WIDTH
+            focal_px_y = float(tx["crop_y"]) + fy * CANVAS_HEIGHT
+            x_off = f"{z_expr}*{focal_px_x:.2f}-{fx * CANVAS_WIDTH:.2f}+({pan_x:.4f}*iw*{prog})"
+            y_off = f"{z_expr}*{focal_px_y:.2f}-{fy * CANVAS_HEIGHT:.2f}+({pan_y:.4f}*ih*{prog})"
+            vf_parts.append(
+                f"crop={CANVAS_WIDTH}:{CANVAS_HEIGHT}:x='max(0,min(iw-{CANVAS_WIDTH},{x_off}))':y='max(0,min(ih-{CANVAS_HEIGHT},{y_off}))'"
+            )
+        elif sw != CANVAS_WIDTH or sh != CANVAS_HEIGHT:
+            vf_parts.append(f"scale={tx['scaled_w']}:{tx['scaled_h']}:flags=bicubic")
+            vf_parts.append(f"crop={CANVAS_WIDTH}:{CANVAS_HEIGHT}:{tx['crop_x']}:{tx['crop_y']}")
+    else:
+        if sw != CANVAS_WIDTH or sh != CANVAS_HEIGHT:
+            vf_parts.append(f"scale={tx['scaled_w']}:{tx['scaled_h']}:flags=bicubic")
+            vf_parts.append(f"crop={CANVAS_WIDTH}:{CANVAS_HEIGHT}:{tx['crop_x']}:{tx['crop_y']}")
+        if vf_extra:
+            vf_parts.append(vf_extra)
+
+    if color_vf:
+        vf_parts.append(color_vf)
+    if src_avail < clip_dur - 0.01:
+        pad_sec = (clip_dur - src_avail) + 0.3
+        vf_parts.append(f"tpad=stop_mode=clone:stop_duration={pad_sec:.4f}")
+    vf_parts.extend(BT709_VF_SUFFIX)
+
+    run_cmd([
+        ffmpeg_bin, "-y",
+        "-ss", f"{src_in:.4f}",
+        "-t", f"{src_avail + 0.1:.4f}",
+        "-i", mp,
+        "-an",
+        "-vf", ",".join(vf_parts),
+        "-frames:v", str(clip_frames),
+        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+        "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS,
+        str(out_mp4),
+    ])
+
+
 def _stage_media_assets(
     pipeline_dir: Path,
     draft_dir: Path,
     edl: Dict[str, Any],
+    color_plan: Dict[str, Any],
     mix_metrics: Dict[str, Any],
     audio_events: Dict[str, Any],
-) -> Tuple[Dict[str, str], Dict[str, Dict[str, Any]]]:
-    """将全部视频片段与 3 轨 WAV 链接/复制至 draft_dir/media/，并返回严格相对路径。"""
+    fps: int,
+) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+    """按需生成或链接自包含调色分镜段 + 3 轨同源定电平 WAV 至 draft_dir/media/。"""
     seg_dir = draft_dir / "media" / "segments"
     aud_dir = draft_dir / "media" / "audio"
     seg_dir.mkdir(parents=True, exist_ok=True)
     aud_dir.mkdir(parents=True, exist_ok=True)
 
-    video_rel_map: Dict[str, str] = {}
-    used_names: set[str] = set()
-    for clip in (edl.get("clips") or []):
-        mp = str(clip.get("media_path") or "")
-        if not mp or mp in video_rel_map:
-            continue
-        src_p = Path(mp)
-        if not src_p.is_file():
-            raise FileNotFoundError(f"剪映导出缺失视频素材: {src_p}")
-        dst_name = src_p.name
-        if dst_name in used_names:
-            dst_name = f"{len(used_names) + 1:02d}_{src_p.name}"
-        used_names.add(dst_name)
-        link_or_copy(src_p, seg_dir / dst_name)
-        video_rel_map[mp] = f"media/segments/{dst_name}"
+    ffmpeg_bin = find_bin("ffmpeg")
+    man_p = pipeline_dir / "01_manifest.json"
+    manifest = read_json(man_p) if man_p.exists() else {"items": []}
+    eye_by_mp4: Dict[str, Dict[str, Any]] = {}
+    for item in (manifest.get("items") or []):
+        mp = str(item.get("normalized_mp4") or "")
+        if mp and item.get("eye_anchor"):
+            eye_by_mp4[mp] = item["eye_anchor"]
+            eye_by_mp4[str(Path(mp).resolve())] = item["eye_anchor"]
 
-    voice_cand = next(
-        (p for p in (
-            mix_metrics.get("voice_master_wav"),
-            str(pipeline_dir / "08_voice_master.wav"),
-            str(pipeline_dir / "03_locked_voice.wav"),
-        ) if p and Path(p).is_file()),
-        None,
-    )
-    bgm_ducked_cand = next(
-        (p for p in (
-            mix_metrics.get("bgm_ducked_wav"),
-            str(pipeline_dir / "08_bgm_ducked.wav"),
-        ) if p and Path(p).is_file()),
-        None,
-    )
-    bgm_is_ducked = bgm_ducked_cand is not None
-    bgm_cand = bgm_ducked_cand or (
-        audio_events.get("locked_bgm_wav") if audio_events.get("locked_bgm_wav") and Path(audio_events["locked_bgm_wav"]).is_file() else None
-    )
-    sfx_cand = str(pipeline_dir / "06_sfx_track.wav") if (pipeline_dir / "06_sfx_track.wav").is_file() else None
+    color_by_cid = {
+        str(p.get("clip_id")): str(p.get("vf_filter") or "").strip()
+        for p in (color_plan.get("clip_plans") or [])
+        if p.get("apply_color_grade") and p.get("vf_filter")
+    }
+
+    clip_media_map: Dict[str, Dict[str, Any]] = {}
+    keep_seg_names: set[str] = set()
+    raw_link_map: Dict[str, Tuple[str, int]] = {}
+    used_names: set[str] = set()
+    render_work_dir = pipeline_dir / "_render_final"
+
+    for c_idx, clip in enumerate(edl.get("clips") or []):
+        cid = str(clip.get("clip_id") or f"clip_{c_idx:03d}")
+        mp = str(clip.get("media_path") or "")
+        src_p = Path(mp)
+        if not mp or not src_p.is_file():
+            raise FileNotFoundError(f"剪映导出缺失视频素材: {src_p}")
+
+        color_vf = str(clip.get("color_filter") or color_by_cid.get(cid) or "").strip() or None
+        kb = clip.get("ken_burns")
+        has_kb = isinstance(kb, dict) and ("zoom_start" in kb or "zoom_end" in kb)
+        has_vf_extra = bool(str(clip.get("vf_extra") or "").strip())
+
+        if clip.get("timeline_out_frame") is not None and clip.get("timeline_in_frame") is not None:
+            clip_frames = max(1, int(clip["timeline_out_frame"]) - int(clip["timeline_in_frame"]))
+        else:
+            clip_frames = max(1, sec_to_frames(float(clip.get("duration_sec", 1.0)), fps))
+        clip_dur = frames_to_sec(clip_frames, fps)
+        src_in = max(0.0, float(clip.get("source_in_sec", 0.0)))
+        src_avail = max(0.1, float(clip.get("source_out_sec", src_in + clip_dur)) - src_in)
+        needs_pad = src_avail < clip_dur - 0.01
+
+        needs_bake = bool(color_vf or has_kb or has_vf_extra or needs_pad)
+        prebaked_seg = render_work_dir / f"seg_{c_idx:03d}_f.mp4"
+
+        if needs_bake and ffmpeg_bin:
+            seg_name = f"seg_{c_idx:03d}.mp4"
+            dst_seg = seg_dir / seg_name
+            if prebaked_seg.is_file() and prebaked_seg.stat().st_size > 1024:
+                link_or_copy(prebaked_seg, dst_seg)
+            else:
+                _export_graded_segment(ffmpeg_bin, clip, color_vf, eye_by_mp4, dst_seg, fps)
+            real_frames = _probe_video_duration_frames(dst_seg, fps) or clip_frames
+            keep_seg_names.add(seg_name)
+            clip_media_map[cid] = {
+                "asset_key": seg_name,
+                "rel_src": f"media/segments/{seg_name}",
+                "name": Path(seg_name).stem,
+                "src_start_f": 0,
+                "asset_dur_frames": real_frames,
+            }
+        else:
+            if mp not in raw_link_map:
+                dst_name = src_p.name
+                if dst_name in used_names:
+                    dst_name = f"{len(used_names) + 1:02d}_{src_p.name}"
+                used_names.add(dst_name)
+                dst_p = seg_dir / dst_name
+                link_or_copy(src_p, dst_p)
+                real_frames = _probe_video_duration_frames(dst_p, fps) or max(fps, sec_to_frames(float(clip.get("source_out_sec", clip_dur)), fps))
+                raw_link_map[mp] = (f"media/segments/{dst_name}", real_frames)
+                keep_seg_names.add(dst_name)
+            rel_src, real_frames = raw_link_map[mp]
+            clip_media_map[cid] = {
+                "asset_key": mp,
+                "rel_src": rel_src,
+                "name": Path(rel_src).stem,
+                "src_start_f": sec_to_frames(src_in, fps),
+                "asset_dur_frames": real_frames,
+            }
+
+    for stale_seg in seg_dir.glob("*"):
+        if stale_seg.name not in keep_seg_names and stale_seg.is_file():
+            stale_seg.unlink()
+
+    stems = resolve_audio_stems(pipeline_dir, audio_events=audio_events, mix_metrics=mix_metrics)
+    voice_cand = stems.get("voice")
+    bgm_cand = stems.get("bgm")
+    sfx_cand = stems.get("sfx")
+
+    bgm_is_ducked = bgm_cand is not None and "08_bgm_ducked" in str(bgm_cand.name)
+    sfx_is_master = sfx_cand is not None and "08_sfx_master" in str(sfx_cand.name)
+    master_gain = float(mix_metrics.get("master_gain_db", 0.0) or 0.0)
 
     audio_map: Dict[str, Dict[str, Any]] = {}
+    keep_audio_names: set[str] = set()
     specs = [
         ("voice", voice_cand, "voice_master.wav", -1, "dialogue.dialogue-1", "0dB"),
         ("bgm", bgm_cand, "bgm_ducked.wav", -2, "music.music-1", "0dB" if bgm_is_ducked else "-14dB"),
-        ("sfx", sfx_cand, "sfx_track.wav", -3, "effects.effects-1", "0dB"),
+        ("sfx", sfx_cand, "sfx_master.wav", -3, "effects.effects-1", "0dB" if sfx_is_master else f"{master_gain:.2f}dB"),
     ]
-    for key, src_str, dst_name, lane, role, gain_db in specs:
-        if not src_str:
+    for key, src_path, dst_name, lane, role, gain_db in specs:
+        if not src_path or not Path(src_path).is_file():
             continue
         dst_p = aud_dir / dst_name
-        link_or_copy(Path(src_str), dst_p)
+        link_or_copy(Path(src_path), dst_p)
+        keep_audio_names.add(dst_name)
         audio_map[key] = {
             "rel_src": f"media/audio/{dst_name}",
             "abs_src": str(dst_p),
@@ -288,17 +457,22 @@ def _stage_media_assets(
             "gain_db": gain_db,
             "name": Path(dst_name).stem,
         }
-    return video_rel_map, audio_map
+    for stale_au in aud_dir.glob("*"):
+        if stale_au.name not in keep_audio_names and stale_au.is_file():
+            stale_au.unlink()
+
+    return clip_media_map, audio_map
 
 
 def build_fcpxml_tree(
     pipeline_dir: Path,
     project_name: str,
     overlay_layers: List[Dict[str, Any]],
-    video_rel_map: Dict[str, str],
+    clip_media_map: Dict[str, Dict[str, Any]],
     audio_map: Dict[str, Dict[str, Any]],
+    subs: Dict[str, Any],
 ) -> str:
-    """构建全相对路径 FCPXML 1.10 XML 树（主视频轨 + 静态 PNG 叠加层 + 3 轨音频）。"""
+    """构建全相对路径 FCPXML 1.10 XML 树（独立调色片段 + 按时间归属精准挂载子层 + 可编辑 <title> 字幕 + 3 轨音频）。"""
     edl = read_json(pipeline_dir / "04_edl.json")
     audio_events = read_json(pipeline_dir / "03_audio_events.json")
 
@@ -324,26 +498,33 @@ def build_fcpxml_tree(
         height=str(CANVAS_HEIGHT),
         colorSpace="1-1-1 (Rec. 709)",
     )
+    ET.SubElement(
+        resources, "effect",
+        id="r_title_eff",
+        name="Basic Title",
+        uid=".../Titles.localized/Bumper:Opener.localized/Basic Title.localized/Basic Title.moti",
+    )
 
     vid_ids: Dict[str, str] = {}
     clips = edl.get("clips") or []
-    for mp, rel_src in video_rel_map.items():
+    for c_idx, c in enumerate(clips):
+        cid = str(c.get("clip_id") or f"clip_{c_idx:03d}")
+        c_info = clip_media_map[cid]
+        akey = c_info["asset_key"]
+        if akey in vid_ids:
+            continue
         rid = f"r_vid_{len(vid_ids) + 1:02d}"
-        vid_ids[mp] = rid
-        max_end_sec = max(
-            [float(c.get("source_out_sec", 1.0)) for c in clips if str(c.get("media_path") or "") == mp] or [10.0]
-        )
-        asset_dur_frames = max(fps, sec_to_frames(max_end_sec + 1.0, fps))
+        vid_ids[akey] = rid
         asset = ET.SubElement(
             resources, "asset",
             id=rid,
-            name=Path(rel_src).stem,
+            name=c_info["name"],
             start="0s",
-            duration=_frames_to_rational(asset_dur_frames, fps),
+            duration=_frames_to_rational(int(c_info["asset_dur_frames"]), fps),
             hasVideo="1",
             format="r_fmt",
         )
-        ET.SubElement(asset, "media-rep", kind="original-media", src=rel_src)
+        ET.SubElement(asset, "media-rep", kind="original-media", src=_url_quote_rel(c_info["rel_src"]))
 
     aud_ids: Dict[str, str] = {}
     for idx, (akey, info) in enumerate(audio_map.items(), start=1):
@@ -361,7 +542,7 @@ def build_fcpxml_tree(
             audioChannels="2",
             audioRate="48000",
         )
-        ET.SubElement(asset, "media-rep", kind="original-media", src=info["rel_src"])
+        ET.SubElement(asset, "media-rep", kind="original-media", src=_url_quote_rel(info["rel_src"]))
         aud_ids[akey] = rid
 
     ov_ids: Dict[str, str] = {}
@@ -377,7 +558,7 @@ def build_fcpxml_tree(
             hasVideo="1",
             format="r_fmt_still",
         )
-        ET.SubElement(asset, "media-rep", kind="original-media", src=layer["rel_src"])
+        ET.SubElement(asset, "media-rep", kind="original-media", src=_url_quote_rel(layer["rel_src"]))
 
     library = ET.SubElement(fcpxml, "library")
     event = ET.SubElement(library, "event", name=f"{project_name}_Event")
@@ -393,32 +574,46 @@ def build_fcpxml_tree(
     )
     spine = ET.SubElement(sequence, "spine")
 
-    first_clip_elem: Optional[ET.Element] = None
-    first_clip_start_frames = 0
-
+    spine_records: List[Dict[str, Any]] = []
     for c_idx, c in enumerate(clips):
-        mp = str(c.get("media_path") or "")
+        cid = str(c.get("clip_id") or f"clip_{c_idx:03d}")
+        c_info = clip_media_map[cid]
         in_f = int(c.get("timeline_in_frame", 0))
         out_f = int(c.get("timeline_out_frame", in_f + fps))
         dur_f = max(1, out_f - in_f)
-        src_start_f = sec_to_frames(float(c.get("source_in_sec", 0.0)), fps)
+        src_start_f = int(c_info["src_start_f"])
 
         c_elem = ET.SubElement(
             spine, "asset-clip",
-            ref=vid_ids[mp],
+            ref=vid_ids[c_info["asset_key"]],
             offset=_frames_to_rational(in_f, fps),
-            name=f"{c.get('clip_id', c_idx)}_{c.get('track_role', 'shot')}",
+            name=f"{cid}_{c.get('track_role', 'shot')}",
             start=_frames_to_rational(src_start_f, fps),
             duration=_frames_to_rational(dur_f, fps),
             format="r_fmt",
             tcFormat="NDF",
         )
-        if c_idx == 0:
-            first_clip_elem = c_elem
-            first_clip_start_frames = src_start_f
+        spine_records.append({
+            "elem": c_elem,
+            "tl_in": in_f,
+            "tl_out": out_f,
+            "src_start": src_start_f,
+        })
 
-    if first_clip_elem is not None:
-        base_offset = _frames_to_rational(first_clip_start_frames, fps)
+    def _find_host_clip(tl_frame: int) -> Tuple[Optional[ET.Element], int]:
+        if not spine_records:
+            return None, 0
+        for rec in spine_records:
+            if rec["tl_in"] <= tl_frame < rec["tl_out"]:
+                local_off = rec["src_start"] + (tl_frame - rec["tl_in"])
+                return rec["elem"], local_off
+        target_rec = spine_records[0] if tl_frame < spine_records[0]["tl_in"] else spine_records[-1]
+        local_off = max(target_rec["src_start"], target_rec["src_start"] + (tl_frame - target_rec["tl_in"]))
+        return target_rec["elem"], local_off
+
+    if spine_records:
+        first_clip_elem = spine_records[0]["elem"]
+        base_offset = _frames_to_rational(spine_records[0]["src_start"], fps)
         # 挂载三轨同源独立 WAV 音轨
         for akey in ("voice", "bgm", "sfx"):
             if akey not in audio_map:
@@ -439,11 +634,13 @@ def build_fcpxml_tree(
             )
             ET.SubElement(ac, "adjust-volume", amount=info["gain_db"])
 
-        # 挂载无重叠静态全画布透明 PNG 层 (lane >= 1)
+        # 按所属镜头区间精准挂载静态透明 PNG 包装与字幕层 (lane >= 1)
         for layer in overlay_layers:
-            anchor_f = first_clip_start_frames + int(layer["start_frame"])
+            host_elem, anchor_f = _find_host_clip(int(layer["start_frame"]))
+            if host_elem is None:
+                continue
             ET.SubElement(
-                first_clip_elem, "video",
+                host_elem, "video",
                 ref=ov_ids[layer["id"]],
                 lane=str(layer["lane"]),
                 offset=_frames_to_rational(anchor_f, fps),
@@ -453,11 +650,44 @@ def build_fcpxml_tree(
                 format="r_fmt_still",
             )
 
-        # 挂载切点/语义标记
+        # 追加可编辑字幕 <title> 备用轨（放在最高 lane，导入 NLE 后可直接双击微调文本）
+        title_lane = max([int(l["lane"]) for l in overlay_layers] or [0]) + 1
+        for s_idx, sub in enumerate(subs.get("entries") or [], start=1):
+            if sub.get("suppressed"):
+                continue
+            sub_txt = str(sub.get("text") or "").strip()
+            if not sub_txt:
+                continue
+            sf = max(0, sec_to_frames(float(sub.get("start_sec", 0.0)), fps))
+            ef = min(total_frames, sec_to_frames(float(sub.get("end_sec", 0.0)), fps))
+            if ef <= sf:
+                continue
+            host_elem, anchor_f = _find_host_clip(sf)
+            if host_elem is None:
+                continue
+            t_elem = ET.SubElement(
+                host_elem, "title",
+                ref="r_title_eff",
+                lane=str(title_lane),
+                offset=_frames_to_rational(anchor_f, fps),
+                name=f"可编辑字幕_{s_idx:03d}",
+                start="0s",
+                duration=_frames_to_rational(ef - sf, fps),
+                enabled="0",
+            )
+            ts_id = f"ts_sub_{s_idx:03d}"
+            text_el = ET.SubElement(t_elem, "text")
+            ET.SubElement(text_el, "text-style", ref=ts_id).text = sub_txt
+            tsd = ET.SubElement(t_elem, "text-style-def", id=ts_id)
+            ET.SubElement(tsd, "text-style", font="AlimamaShuHeiTi-Bold", fontSize="54", fontColor="1 1 1 1", alignment="center")
+
+        # 按所属镜头区间精准挂载切点/语义 <marker>
         for ev in (audio_events.get("events") or []):
-            ef = first_clip_start_frames + int(ev.get("frame", 0))
+            host_elem, ef = _find_host_clip(int(ev.get("frame", 0)))
+            if host_elem is None:
+                continue
             ET.SubElement(
-                first_clip_elem, "marker",
+                host_elem, "marker",
                 start=_frames_to_rational(ef, fps),
                 duration=f"1/{fps}s",
                 value=str(ev.get("reason", ev.get("id", "cut")))[:48],
@@ -516,9 +746,11 @@ def export_jianying_draft(pipeline_dir: Path, simulate_failure: bool = False) ->
         overlay_layers = _prepare_static_overlay_layers(
             pipeline_dir, draft_dir / "overlays", edl, subs, pkg, color_plan, fps, total_frames,
         )
-        video_rel_map, audio_map = _stage_media_assets(pipeline_dir, draft_dir, edl, mix_metrics, audio_events)
+        clip_media_map, audio_map = _stage_media_assets(
+            pipeline_dir, draft_dir, edl, color_plan, mix_metrics, audio_events, fps,
+        )
 
-        fcpxml_text = build_fcpxml_tree(pipeline_dir, safe_name, overlay_layers, video_rel_map, audio_map)
+        fcpxml_text = build_fcpxml_tree(pipeline_dir, safe_name, overlay_layers, clip_media_map, audio_map, subs)
         fcpxml_path = draft_dir / "timeline.fcpxml"
         fcpxml_path.write_text(fcpxml_text, encoding="utf-8")
 
@@ -542,7 +774,7 @@ def export_jianying_draft(pipeline_dir: Path, simulate_failure: bool = False) ->
             "2. 所有媒体与透明 PNG 图层均采用相对路径存储，整包拷贝不丢素材：",
             f"   - 主视频轨 V1：{len(edl.get('clips') or [])} 段分镜（相对路径 media/segments/）",
             f"   - 上层透明图层：{n_pkg} 个视觉包装 PNG + {n_sub} 条双色字幕 PNG（overlays/，零额外转码损失）",
-            f"   - 三轨独立音频：{len(audio_map)} 轨（media/audio/voice_master.wav / bgm_ducked.wav / sfx_track.wav，0dB 定电平）",
+            f"   - 三轨独立音频：{len(audio_map)} 轨（media/audio/voice_master.wav / bgm_ducked.wav / sfx_master.wav）",
             "   - 备选外挂字幕：subtitles.srt / subtitles.ass",
         ]) + "\n"
         (draft_dir / "README_剪映导入使用指南.txt").write_text(readme, encoding="utf-8")

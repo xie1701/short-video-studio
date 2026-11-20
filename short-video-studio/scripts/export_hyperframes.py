@@ -25,6 +25,7 @@ from common import (
     DEFAULT_FPS,
     SAFE_ZONE,
     SUBTITLE_SAFE_ZONE,
+    find_bin,
     find_commercial_font,
     frames_to_sec,
     get_wav_duration_sec,
@@ -34,12 +35,15 @@ from common import (
     load_subtitle_templates,
     maybe_reexec_in_venv,
     read_json,
+    resolve_audio_stems,
+    sec_to_frames,
     write_json,
 )
 
 maybe_reexec_in_venv()
 
 from PIL import Image
+from export_jianying import _export_graded_segment
 from render_mp4 import compute_subtitle_place_xy, resolve_packaging_source
 
 
@@ -100,46 +104,206 @@ def attach_hyperframes_launchers(out_dir: Path) -> None:
     (out_dir / "启动HyperFrames工程.bat").write_text(bat_script, encoding="utf-8")
 
 
-def _offline_timeline_shim(comp_id: str) -> str:
+def _offline_subcomp_timeline_script(comp_id: str) -> str:
     return "\n".join([
-        "  <script>",
-        "    (function () {",
-        "      window.__timelines = window.__timelines || {};",
-        "      var state = { paused: true, time: 0 };",
-        "      window.__timelines['" + comp_id + "'] = {",
-        "        pause: function (t) { state.paused = true; if (typeof t === 'number') state.time = t; return this; },",
-        "        play: function () { state.paused = false; return this; },",
-        "        seek: function (t) { state.time = Number(t) || 0; return this; },",
-        "        time: function (t) { if (typeof t === 'number') state.time = t; return state.time; }",
-        "      };",
-        "    })();",
-        "  </script>",
+        "      <script>",
+        "        (function () {",
+        "          window.__timelines = window.__timelines || {};",
+        f"          var compId = '{comp_id}';",
+        "          var state = { paused: true, time: 0 };",
+        "          function syncNodes(t) {",
+        f"            var root = document.getElementById('{comp_id}-root');",
+        "            if (!root) return;",
+        "            var clips = root.querySelectorAll('.clip[data-start]');",
+        "            for (var i = 0; i < clips.length; i++) {",
+        "              var el = clips[i];",
+        "              var st = parseFloat(el.getAttribute('data-start') || '0');",
+        "              var dur = parseFloat(el.getAttribute('data-duration') || '0');",
+        "              var vis = (t >= st && t < st + dur);",
+        "              el.style.visibility = vis ? 'visible' : 'hidden';",
+        "            }",
+        "          }",
+        "          window.__timelines[compId] = {",
+        "            pause: function (t) { state.paused = true; if (typeof t === 'number') { state.time = t; syncNodes(t); } return this; },",
+        "            play: function () { state.paused = false; return this; },",
+        "            seek: function (t) { state.time = Number(t) || 0; syncNodes(state.time); return this; },",
+        "            time: function (t) { if (typeof t === 'number') { state.time = t; syncNodes(t); } return state.time; }",
+        "          };",
+        "        })();",
+        "      </script>",
     ])
 
 
 def _wrap_subcomposition(title: str, comp_id: str, style_css: str, body_html: str) -> str:
+    """严格遵循 hyperframes-core <template> 传输契约：样式、唯一 ID 根与脚本全置于 <template> 内。"""
+    root_id = f"{comp_id}-root"
     return "\n".join([
         "<!DOCTYPE html>",
         '<html lang="zh-CN">',
         "<head>",
         '  <meta charset="utf-8" />',
         f"  <title>{html.escape(title)}</title>",
-        "  <style>",
-        "    * { box-sizing: border-box; margin: 0; padding: 0; }",
-        f"    html, body {{ width: {CANVAS_WIDTH}px; height: {CANVAS_HEIGHT}px; overflow: hidden; background: transparent; }}",
-        f"    #root {{ position: relative; width: {CANVAS_WIDTH}px; height: {CANVAS_HEIGHT}px; overflow: hidden; }}",
-        "    .clip { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }",
-        style_css,
-        "  </style>",
         "</head>",
         "<body>",
-        f'  <div id="root" data-composition-id="{html.escape(comp_id)}" data-width="{CANVAS_WIDTH}" data-height="{CANVAS_HEIGHT}">',
+        "  <template>",
+        "    <style>",
+        "      * { box-sizing: border-box; margin: 0; padding: 0; }",
+        f"      #{root_id} {{ position: absolute; inset: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }}",
+        "      .clip { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }",
+        style_css,
+        "    </style>",
+        f'    <div id="{html.escape(root_id)}" data-composition-id="{html.escape(comp_id)}">',
         body_html,
-        "  </div>",
-        _offline_timeline_shim(comp_id),
+        "    </div>",
+        _offline_subcomp_timeline_script(comp_id),
+        "  </template>",
         "</body>",
         "</html>",
     ]) + "\n"
+
+
+def _offline_main_engine(total_dur: float, fps: int) -> str:
+    """完整可播放/可 seek 离线时间线驱动引擎（挂载 <template> 子合成并逐帧同步音画显隐）。"""
+    return "\n".join([
+        "  <script>",
+        "    (function () {",
+        "      window.__timelines = window.__timelines || {};",
+        f"      var TOTAL_DUR = {total_dur:.4f};",
+        f"      var FPS = {fps};",
+        "      var state = { paused: true, time: 0, lastTs: 0, raf: 0 };",
+        "      var isHeadless = !!(navigator.webdriver || window.__HYPERFRAMES_RUNTIME__);",
+        "      var mountedPromise = null;",
+        "",
+        "      function hydrateSubCompositions() {",
+        "        if (mountedPromise) return mountedPromise;",
+        "        var hosts = Array.prototype.slice.call(document.querySelectorAll('[data-composition-src]'));",
+        "        mountedPromise = Promise.all(hosts.map(function (host) {",
+        "          if (host.getAttribute('data-hf-hydrated') === '1') return Promise.resolve();",
+        "          var src = host.getAttribute('data-composition-src');",
+        "          if (!src) return Promise.resolve();",
+        "          return fetch(src).then(function (r) { return r.ok ? r.text() : ''; }).then(function (txt) {",
+        "            if (!txt) return;",
+        "            var doc = new DOMParser().parseFromString(txt, 'text/html');",
+        "            var tpl = doc.querySelector('template');",
+        "            var frag = tpl ? document.importNode(tpl.content, true) : document.createDocumentFragment();",
+        "            var mediaNodes = frag.querySelectorAll('[src]');",
+        "            for (var i = 0; i < mediaNodes.length; i++) {",
+        "              var s = mediaNodes[i].getAttribute('src') || '';",
+        "              if (s.indexOf('../media/') === 0) mediaNodes[i].setAttribute('src', s.slice(3));",
+        "            }",
+        "            host.innerHTML = '';",
+        "            host.appendChild(frag);",
+        "            host.setAttribute('data-hf-hydrated', '1');",
+        "          }).catch(function () {});",
+        "        }));",
+        "        return mountedPromise;",
+        "      }",
+        "",
+        "      function applyAudioVolumes() {",
+        "        var audios = document.querySelectorAll('audio[data-volume]');",
+        "        for (var i = 0; i < audios.length; i++) {",
+        "          var v = parseFloat(audios[i].getAttribute('data-volume') || '1');",
+        "          if (!isNaN(v)) audios[i].volume = Math.max(0, Math.min(1, v));",
+        "        }",
+        "      }",
+        "",
+        "      function syncTime(t) {",
+        "        var clamped = Math.max(0, Math.min(TOTAL_DUR, Number(t) || 0));",
+        "        state.time = clamped;",
+        "        var clips = document.querySelectorAll('.clip[data-start]');",
+        "        for (var i = 0; i < clips.length; i++) {",
+        "          var el = clips[i];",
+        "          var st = parseFloat(el.getAttribute('data-start') || '0');",
+        "          var dur = parseFloat(el.getAttribute('data-duration') || '0');",
+        "          var active = (clamped >= st && clamped < st + dur);",
+        "          el.style.visibility = active ? 'visible' : 'hidden';",
+        "          if (el.tagName === 'VIDEO') {",
+        "            var ms = parseFloat(el.getAttribute('data-media-start') || '0');",
+        "            var targetVidT = ms + Math.max(0, clamped - st);",
+        "            if (active && Math.abs((el.currentTime || 0) - targetVidT) > 0.12) {",
+        "              try { el.currentTime = targetVidT; } catch (e) {}",
+        "            }",
+        "            if (active && !state.paused && el.paused) { el.play().catch(function(){}); }",
+        "            else if ((!active || state.paused) && !el.paused) { el.pause(); }",
+        "          }",
+        "        }",
+        "        var audios = document.querySelectorAll('audio[data-start]');",
+        "        for (var j = 0; j < audios.length; j++) {",
+        "          var au = audios[j];",
+        "          var ast = parseFloat(au.getAttribute('data-start') || '0');",
+        "          var adur = parseFloat(au.getAttribute('data-duration') || '0');",
+        "          var aActive = (clamped >= ast && clamped < ast + adur);",
+        "          var targetAuT = Math.max(0, clamped - ast);",
+        "          if (aActive && Math.abs((au.currentTime || 0) - targetAuT) > 0.15) {",
+        "            try { au.currentTime = targetAuT; } catch (e) {}",
+        "          }",
+        "          if (aActive && !state.paused && au.paused) { au.play().catch(function(){}); }",
+        "          else if ((!aActive || state.paused) && !au.paused) { au.pause(); }",
+        "        }",
+        "        var rng = document.getElementById('hf-scrubber');",
+        "        var tc = document.getElementById('hf-timecode');",
+        "        if (rng && Math.abs(parseFloat(rng.value) - clamped) > 0.02) rng.value = clamped.toFixed(2);",
+        "        if (tc) tc.textContent = clamped.toFixed(2) + 's / ' + TOTAL_DUR.toFixed(2) + 's';",
+        "      }",
+        "",
+        "      function tick(ts) {",
+        "        if (state.paused) return;",
+        "        if (!state.lastTs) state.lastTs = ts;",
+        "        var dt = Math.min(0.1, (ts - state.lastTs) / 1000.0);",
+        "        state.lastTs = ts;",
+        "        var nxt = state.time + dt;",
+        "        if (nxt >= TOTAL_DUR) { syncTime(TOTAL_DUR); api.pause(); return; }",
+        "        syncTime(nxt);",
+        "        state.raf = requestAnimationFrame(tick);",
+        "      }",
+        "",
+        "      var api = {",
+        "        pause: function (t) {",
+        "          state.paused = true; state.lastTs = 0;",
+        "          if (state.raf) cancelAnimationFrame(state.raf);",
+        "          if (typeof t === 'number') syncTime(t); else syncTime(state.time);",
+        "          var btn = document.getElementById('hf-play-btn');",
+        "          if (btn) btn.textContent = '播放';",
+        "          return this;",
+        "        },",
+        "        play: function () {",
+        "          applyAudioVolumes();",
+        "          if (state.time >= TOTAL_DUR - 0.05) state.time = 0;",
+        "          state.paused = false; state.lastTs = 0;",
+        "          var btn = document.getElementById('hf-play-btn');",
+        "          if (btn) btn.textContent = '暂停';",
+        "          state.raf = requestAnimationFrame(tick);",
+        "          return this;",
+        "        },",
+        "        seek: function (t) { syncTime(t); return this; },",
+        "        time: function (t) { if (typeof t === 'number') syncTime(t); return state.time; }",
+        "      };",
+        "      window.__timelines['main'] = api;",
+        "",
+        "      if (!isHeadless) {",
+        "        hydrateSubCompositions().then(function () {",
+        "          applyAudioVolumes();",
+        "          syncTime(0);",
+        "          var bar = document.createElement('div');",
+        "          bar.id = 'hf-offline-controls';",
+        "          bar.style.cssText = 'position:fixed;bottom:14px;left:16px;right:16px;z-index:9999;background:rgba(15,23,42,0.88);border:1px solid #334155;border-radius:10px;padding:8px 12px;display:flex;align-items:center;gap:10px;font-family:sans-serif;font-size:13px;color:#f8fafc;';",
+        "          var btn = document.createElement('button');",
+        "          btn.id = 'hf-play-btn'; btn.textContent = '播放';",
+        "          btn.style.cssText = 'background:#facc15;color:#0f172a;border:none;border-radius:6px;padding:4px 12px;font-weight:700;cursor:pointer;';",
+        "          btn.onclick = function () { state.paused ? api.play() : api.pause(); };",
+        "          var rng = document.createElement('input');",
+        "          rng.id = 'hf-scrubber'; rng.type = 'range'; rng.min = '0'; rng.max = String(TOTAL_DUR); rng.step = (1 / FPS).toFixed(4); rng.value = '0';",
+        "          rng.style.cssText = 'flex:1;cursor:pointer;';",
+        "          rng.oninput = function () { api.seek(parseFloat(rng.value)); };",
+        "          var tc = document.createElement('span');",
+        "          tc.id = 'hf-timecode'; tc.textContent = '0.00s / ' + TOTAL_DUR.toFixed(2) + 's';",
+        "          bar.appendChild(btn); bar.appendChild(rng); bar.appendChild(tc);",
+        "          document.body.appendChild(bar);",
+        "        });",
+        "      }",
+        "    })();",
+        "  </script>",
+    ])
 
 
 def _stage_font(font_path: Optional[str], fonts_dir: Path) -> Optional[Tuple[str, str]]:
@@ -156,43 +320,96 @@ def _stage_font(font_path: Optional[str], fonts_dir: Path) -> Optional[Tuple[str
     dst = fonts_dir / src.name
     link_or_copy(src, dst)
     fmt = "opentype" if ext == ".otf" else ("woff2" if ext == ".woff2" else "truetype")
-    return f"../media/fonts/{src.name}", fmt
+    return f"media/fonts/{src.name}", fmt
 
 
 def _build_video_track_html(
+    pipeline_dir: Path,
     edl: Dict[str, Any],
     segments_dir: Path,
+    fps: int,
     total_dur: float,
 ) -> Tuple[str, int]:
     clips = edl.get("clips") or []
+    color_p = pipeline_dir / "07_color_plan.json"
+    color_plan = read_json(color_p) if color_p.exists() else {}
+    man_p = pipeline_dir / "01_manifest.json"
+    manifest = read_json(man_p) if man_p.exists() else {"items": []}
+
+    eye_by_mp4: Dict[str, Dict[str, Any]] = {}
+    for item in (manifest.get("items") or []):
+        mp = str(item.get("normalized_mp4") or "")
+        if mp and item.get("eye_anchor"):
+            eye_by_mp4[mp] = item["eye_anchor"]
+            eye_by_mp4[str(Path(mp).resolve())] = item["eye_anchor"]
+    color_by_cid = {
+        str(p.get("clip_id")): str(p.get("vf_filter") or "").strip()
+        for p in (color_plan.get("clip_plans") or [])
+        if p.get("apply_color_grade") and p.get("vf_filter")
+    }
+
+    ffmpeg_bin = find_bin("ffmpeg")
+    render_work_dir = pipeline_dir / "_render_final"
+
     src_to_rel: Dict[str, str] = {}
     used_names: set[str] = set()
+    keep_segs: set[str] = set()
     body_lines: List[str] = []
 
     for idx, c in enumerate(clips, start=1):
+        cid = str(c.get("clip_id") or f"seg_{idx:03d}")
         mp = str(c.get("media_path") or "")
         src_p = Path(mp)
         if not mp or not src_p.is_file():
             raise FileNotFoundError(f"HyperFrames 导出缺失分镜文件: {mp}")
-        if mp not in src_to_rel:
-            name = src_p.name
-            if name in used_names:
-                name = f"{len(used_names) + 1:02d}_{src_p.name}"
-            used_names.add(name)
-            link_or_copy(src_p, segments_dir / name)
-            src_to_rel[mp] = f"../media/segments/{name}"
+
+        c_idx = idx - 1
+        color_vf = str(c.get("color_filter") or color_by_cid.get(cid) or "").strip() or None
+        kb = c.get("ken_burns")
+        has_kb = isinstance(kb, dict) and ("zoom_start" in kb or "zoom_end" in kb)
+        has_vf_extra = bool(str(c.get("vf_extra") or "").strip())
 
         st_s, en_s = _clamp_window(float(c.get("timeline_in_sec", 0.0)), float(c.get("timeline_out_sec", 0.0)), total_dur)
         dur_s = round(max(0.04, en_s - st_s), 4)
         src_in = max(0.0, float(c.get("source_in_sec", 0.0)))
-        vid_id = _safe_id(str(c.get("clip_id") or f"seg_{idx:03d}"), "seg")
+        src_avail = max(0.1, float(c.get("source_out_sec", src_in + dur_s)) - src_in)
+        needs_bake = bool(color_vf or has_kb or has_vf_extra or (src_avail < dur_s - 0.01))
+
+        prebaked_seg = render_work_dir / f"seg_{c_idx:03d}_f.mp4"
+        if needs_bake and ffmpeg_bin:
+            seg_name = f"seg_{c_idx:03d}.mp4"
+            dst_seg = segments_dir / seg_name
+            if prebaked_seg.is_file() and prebaked_seg.stat().st_size > 1024:
+                link_or_copy(prebaked_seg, dst_seg)
+            else:
+                _export_graded_segment(ffmpeg_bin, c, color_vf, eye_by_mp4, dst_seg, fps)
+            keep_segs.add(seg_name)
+            rel_vid_src = f"../media/segments/{seg_name}"
+            eff_media_start = 0.0
+        else:
+            if mp not in src_to_rel:
+                name = src_p.name
+                if name in used_names:
+                    name = f"{len(used_names) + 1:02d}_{src_p.name}"
+                used_names.add(name)
+                link_or_copy(src_p, segments_dir / name)
+                keep_segs.add(name)
+                src_to_rel[mp] = f"../media/segments/{name}"
+            rel_vid_src = src_to_rel[mp]
+            eff_media_start = src_in
+
+        vid_id = _safe_id(cid, "seg")
         body_lines.append(
-            f'    <video class="clip" id="{vid_id}" src="{html.escape(src_to_rel[mp])}" '
+            f'      <video class="clip" id="track-video-{vid_id}" src="{html.escape(rel_vid_src)}" '
             f'muted playsinline preload="metadata" '
-            f'data-media-start="{src_in:.4f}" data-start="{st_s:.4f}" data-duration="{dur_s:.4f}" data-track-index="0"></video>'
+            f'data-media-start="{eff_media_start:.4f}" data-start="{st_s:.4f}" data-duration="{dur_s:.4f}" data-track-index="0"></video>'
         )
 
-    css = "    video.clip { object-fit: cover; }"
+    for stale_seg in segments_dir.glob("*"):
+        if stale_seg.name not in keep_segs and stale_seg.is_file():
+            stale_seg.unlink()
+
+    css = "      video.clip { object-fit: cover; }"
     return _wrap_subcomposition("主视频分镜轨", "track-video", css, "\n".join(body_lines)), len(clips)
 
 
@@ -247,12 +464,12 @@ def _build_overlay_track_html(
 
         oid = _safe_id(str(elem.get("id") or f"ov_{idx:03d}"), "ov")
         lines.append(
-            f'    <img class="clip ov-img" id="{oid}" src="../media/overlays/{dst_name}" '
+            f'      <img class="clip ov-img" id="{comp_id}-{oid}" src="../media/overlays/{dst_name}" '
             f'style="left:{px}px;top:{py}px;width:{pw}px;height:{ph}px;" '
             f'data-start="{st_s:.4f}" data-duration="{dur_s:.4f}" data-track-index="{track_index}" />'
         )
 
-    css = "    .ov-img { position: absolute; object-fit: contain; pointer-events: none; }"
+    css = "      .ov-img { position: absolute; object-fit: contain; pointer-events: none; }"
     return _wrap_subcomposition(title, comp_id, css, "\n".join(lines))
 
 
@@ -277,19 +494,20 @@ def _build_captions_track_html(
     orig_stroke_w = int(tpl.get("stroke_width", 4))
     font_sz = max(24, int(tpl.get("font_size", 58)))
     kw_scale = float(tpl.get("keyword_scale", 1.15))
-    bg_hex = str(tpl.get("bg_box", "none"))
-    bg_css = f"background: {bg_hex}; padding: 12px 24px; border-radius: 16px;" if _hex_has_alpha(bg_hex) else ""
+    bg_hex = str(tpl.get("bg_box_color") or tpl.get("bg_box") or "none")
+    bg_radius = int(tpl.get("bg_radius", 16))
+    bg_css = f"background: {bg_hex}; padding: 12px 24px; border-radius: {bg_radius}px;" if _hex_has_alpha(bg_hex) else ""
 
     font_css = ""
-    font_stack = '"AlimamaShuHeiTi", "PingFang SC", "Noto Sans CJK SC", sans-serif'
+    font_stack = '"AlimamaShuHeiTi", "Noto Sans CJK SC", sans-serif'
     if font_info:
         f_url, f_fmt = font_info
         font_css = (
-            "    @font-face {\n"
-            '      font-family: "CustomStudioFont";\n'
-            f'      src: url("{f_url}") format("{f_fmt}");\n'
-            "      font-display: swap;\n"
-            "    }\n"
+            "      @font-face {\n"
+            '        font-family: "CustomStudioFont";\n'
+            f'        src: url("{f_url}") format("{f_fmt}");\n'
+            "        font-display: swap;\n"
+            "      }\n"
         )
         font_stack = f'"CustomStudioFont", {font_stack}'
 
@@ -298,11 +516,11 @@ def _build_captions_track_html(
 
     css = "\n".join([
         font_css,
-        "    .cap-clip { position: absolute; display: flex; align-items: center; justify-content: center; text-align: center; }",
-        f"    .cap-box {{ display: inline-flex; flex-wrap: wrap; align-items: baseline; justify-content: center; "
+        "      .cap-clip { position: absolute; display: flex; align-items: center; justify-content: center; text-align: center; }",
+        f"      .cap-box {{ display: inline-flex; flex-wrap: wrap; align-items: baseline; justify-content: center; "
         f"font-family: {font_stack}; font-size: {font_sz}px; font-weight: 800; line-height: 1.18; "
         f"color: {c_primary}; paint-order: stroke fill; -webkit-text-stroke: {stroke_css}; {shadow_css} {bg_css} }}",
-        f"    .cap-kw {{ color: {c_kw}; font-size: {int(round(font_sz * kw_scale))}px; }}",
+        f"      .cap-kw {{ color: {c_kw}; font-size: {int(round(font_sz * kw_scale))}px; }}",
     ])
 
     body_lines: List[str] = []
@@ -326,20 +544,24 @@ def _build_captions_track_html(
             bx, by = compute_subtitle_place_xy(bw, bh, tpl)
             by = max(SUBTITLE_SAFE_ZONE["y_min"], min(by, SUBTITLE_SAFE_ZONE["y_max"] - bh))
 
+        kw_set = set(str(k) for k in (sub.get("keywords") or []))
         words = sub.get("words") or []
         if words:
             spans = "".join(
                 f'<span class="cap-kw">{html.escape(str(w.get("word", "")))}</span>'
-                if w.get("is_keyword")
+                if (w.get("is_keyword") or str(w.get("word", "")) in kw_set)
                 else html.escape(str(w.get("word", "")))
                 for w in words
+                if str(w.get("word", "")).strip()
             )
         else:
+            spans = ""
+        if not spans:
             spans = html.escape(str(sub.get("text") or ""))
 
         sid = _safe_id(str(sub.get("id") or f"sub_{idx:03d}"), "sub")
         body_lines.append(
-            f'    <div class="clip cap-clip" id="{sid}" '
+            f'      <div class="clip cap-clip" id="track-captions-{sid}" '
             f'style="left:{bx}px;top:{by}px;width:{bw}px;height:{bh}px;" '
             f'data-start="{st_s:.4f}" data-duration="{dur_s:.4f}" data-track-index="{track_index}">'
             f'<div class="cap-box">{spans}</div></div>'
@@ -355,9 +577,20 @@ def _build_root_index_html(
     fps: int,
     tracks: List[Dict[str, Any]],
     audio_items: List[Dict[str, Any]],
+    font_info: Optional[Tuple[str, str]] = None,
 ) -> str:
+    font_css = ""
+    if font_info:
+        f_url, f_fmt = font_info
+        font_css = (
+            "    @font-face {\n"
+            '      font-family: "CustomStudioFont";\n'
+            f'      src: url("{f_url}") format("{f_fmt}");\n'
+            "      font-display: swap;\n"
+            "    }\n"
+        )
     track_divs = "\n".join(
-        f'    <div class="track-layer" style="z-index:{tr["z"]};" '
+        f'    <div id="host-{html.escape(tr["id"])}" class="track-layer" style="z-index:{tr["z"]};" '
         f'data-composition-id="{html.escape(tr["id"])}" '
         f'data-composition-src="{html.escape(tr["src"])}" '
         f'data-start="0" data-duration="{total_dur:.4f}" '
@@ -379,9 +612,10 @@ def _build_root_index_html(
         '  <meta charset="utf-8" />',
         f"  <title>{html.escape(proj_slug)} - HyperFrames Studio</title>",
         "  <style>",
+        font_css,
         "    * { box-sizing: border-box; margin: 0; padding: 0; }",
         f"    html, body {{ width: {CANVAS_WIDTH}px; height: {CANVAS_HEIGHT}px; background: #000; overflow: hidden; }}",
-        f"    #main {{ position: relative; width: {CANVAS_WIDTH}px; height: {CANVAS_HEIGHT}px; overflow: hidden; }}",
+        "    #main { position: relative; width: 100%; height: 100%; overflow: hidden; }",
         "    .track-layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }",
         "  </style>",
         "</head>",
@@ -396,14 +630,14 @@ def _build_root_index_html(
         track_divs,
         audio_tags,
         "  </div>",
-        _offline_timeline_shim("main"),
+        _offline_main_engine(total_dur, fps),
         "</body>",
         "</html>",
     ]) + "\n"
 
 
 def export_hyperframes_draft(pipeline_dir: Path, simulate_failure: bool = False) -> Dict[str, Any]:
-    """将流水线剪辑包装成果导出为全离线可打开的 HyperFrames Studio 工程目录。"""
+    """将流水线剪辑包装成果导出为符合 hyperframes-core 契约且可离线播放的工程目录。"""
     draft_dir = pipeline_dir / "hyperframes_draft"
     proj_slug = pipeline_dir.parent.name if pipeline_dir.name == "pipeline" else pipeline_dir.name
     try:
@@ -437,8 +671,8 @@ def export_hyperframes_draft(pipeline_dir: Path, simulate_failure: bool = False)
         for stale_comp in ("stage_win_track.html", "stage_card_track.html"):
             (comp_dir / stale_comp).unlink(missing_ok=True)
 
-        # 1. 视频分镜子组合
-        video_html, n_segs = _build_video_track_html(edl, segments_dir, total_dur)
+        # 1. 视频分镜子组合（带调色/KB/防尾帧裁切独立片段）
+        video_html, n_segs = _build_video_track_html(pipeline_dir, edl, segments_dir, fps, total_dur)
         (comp_dir / "video_track.html").write_text(video_html, encoding="utf-8")
 
         tracks: List[Dict[str, Any]] = [{
@@ -482,6 +716,11 @@ def export_hyperframes_draft(pipeline_dir: Path, simulate_failure: bool = False)
         # 3. 原生离线双色安全区字幕子组合
         font_path = subs.get("font_path") or find_commercial_font(tpl.get("font_candidates"))
         font_info = _stage_font(font_path, fonts_dir)
+        if font_info:
+            keep_font_name = Path(font_info[0]).name
+            for old_f in fonts_dir.glob("*"):
+                if old_f.name != keep_font_name and old_f.is_file():
+                    old_f.unlink()
         cap_html, n_subs = _build_captions_track_html(subs, templates, next_track, font_info, total_dur)
         (comp_dir / "captions_track.html").write_text(cap_html, encoding="utf-8")
         tracks.append({
@@ -492,29 +731,20 @@ def export_hyperframes_draft(pipeline_dir: Path, simulate_failure: bool = False)
             "z": 40,
         })
 
-        # 4. 三轨同源独立 WAV 音频
-        voice_src = next(
-            (c for c in (
-                mix_metrics.get("voice_master_wav"),
-                str(pipeline_dir / "08_voice_master.wav"),
-                str(pipeline_dir / "03_locked_voice.wav"),
-            ) if c and Path(c).is_file()),
-            None,
-        )
-        bgm_ducked = next(
-            (c for c in (
-                mix_metrics.get("bgm_ducked_wav"),
-                str(pipeline_dir / "08_bgm_ducked.wav"),
-            ) if c and Path(c).is_file()),
-            None,
-        )
-        bgm_src = bgm_ducked or audio_events.get("locked_bgm_wav")
-        sfx_src = str(pipeline_dir / "06_sfx_track.wav")
+        # 4. 三轨同源独立 WAV 音频（通过 common.resolve_audio_stems 优先挂载 08_sfx_master.wav）
+        stems = resolve_audio_stems(pipeline_dir, audio_events=audio_events, mix_metrics=mix_metrics)
+        voice_src = stems.get("voice")
+        bgm_src = stems.get("bgm")
+        sfx_src = stems.get("sfx")
+        bgm_ducked = bgm_src is not None and "08_bgm_ducked" in str(bgm_src.name)
+        sfx_master = sfx_src is not None and "08_sfx_master" in str(sfx_src.name)
+        master_gain_db = float(mix_metrics.get("master_gain_db", 0.0) or 0.0)
+        sfx_vol = "1.0" if sfx_master else f"{min(1.0, max(0.05, 10.0 ** (master_gain_db / 20.0))):.3f}"
 
         audio_specs = [
-            ("audio-voice", voice_src, "voice_master.wav", 10, "1.0"),
-            ("audio-bgm", bgm_src, "bgm_ducked.wav", 11, "1.0" if bgm_ducked else "0.2"),
-            ("audio-sfx", sfx_src, "sfx_track.wav", 12, "1.0"),
+            ("audio-voice", str(voice_src) if voice_src else None, "voice_master.wav", 10, "1.0"),
+            ("audio-bgm", str(bgm_src) if bgm_src else None, "bgm_ducked.wav", 11, "1.0" if bgm_ducked else "0.2"),
+            ("audio-sfx", str(sfx_src) if sfx_src else None, "sfx_master.wav", 12, sfx_vol),
         ]
         audio_items: List[Dict[str, Any]] = []
         keep_audio: set[str] = set()
@@ -533,11 +763,11 @@ def export_hyperframes_draft(pipeline_dir: Path, simulate_failure: bool = False)
                 "volume": vol,
             })
         for old_au in audio_dir.glob("*"):
-            if old_au.name not in keep_audio:
+            if old_au.name not in keep_audio and old_au.is_file():
                 old_au.unlink()
 
         # 5. 生成根 index.html、hyperframes.json 与启动器
-        root_html = _build_root_index_html(proj_slug, total_dur, fps, tracks, audio_items)
+        root_html = _build_root_index_html(proj_slug, total_dur, fps, tracks, audio_items, font_info=font_info)
         (draft_dir / "index.html").write_text(root_html, encoding="utf-8")
         write_json(draft_dir / "hyperframes.json", {
             "schema": "hyperframes-local-v1",
@@ -550,11 +780,11 @@ def export_hyperframes_draft(pipeline_dir: Path, simulate_failure: bool = False)
             f"【{proj_slug} HyperFrames 全离线相对路径工程使用指南】",
             "",
             "1. 双击「启动HyperFrames工程.command」（macOS）或「启动HyperFrames工程.bat」（Windows）即可开启预览与编辑。",
-            "2. 所有视频、音频、字体、包装 PNG 均使用相对路径并内置离线 timeline 控制，不依赖外部 CDN：",
+            "2. 所有子合成遵循 <template> 传输契约，内建可播放/可拖拽 Seek 时间线预览引擎（不依赖外部 CDN）：",
             f"   - compositions/video_track.html    : {n_segs} 段精剪调色视频分镜",
             f"   - compositions/flower_track.html   : {len(flower_elems)} 个视觉包装层",
             f"   - compositions/captions_track.html : {n_subs} 条权威安全区双色字幕 (y <= {SUBTITLE_SAFE_ZONE['y_max']})",
-            f"   - media/audio/                     : {len(audio_items)} 条独立同源分轨 WAV",
+            f"   - media/audio/                     : {len(audio_items)} 条独立同源分轨 WAV (voice_master / bgm_ducked / sfx_master)",
         ]) + "\n"
         (draft_dir / "README_HyperFrames使用说明.txt").write_text(readme, encoding="utf-8")
 

@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
 """
-生成 100% 原创 CC0 可商用的内置资产（NumPy 向量化高速版本）：
-1. BGM (.wav + 节拍元数据 .json): upbeat_store_120bpm, chill_story_100bpm
+生成 100% 原创 CC0 可商用的内置资产（NumPy 向量化 + 160kbps M4A 轻量化版本）：
+1. BGM (.m4a + 节拍元数据 .json): upbeat_store_120bpm, chill_story_100bpm
 2. SFX (.wav): whoosh, ding, pop, bass_drop, shutter
-3. 3D LUTs (.cube): warm_store, clean_creator, high_contrast
+3. 3D LUTs (.cube): warm_store, clean_creator
 """
 
 from __future__ import annotations
 
+import subprocess
+import sys
 import wave
 from pathlib import Path
-from typing import Callable, List, Tuple
+from typing import List
 
-from common import ASSETS_DIR, maybe_reexec_in_venv, write_cube_lut, write_json
+SCRIPTS_ROOT = Path(__file__).resolve().parent
+if str(SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_ROOT))
+
+from common import ASSETS_DIR, find_bin, maybe_reexec_in_venv, write_cube_lut, write_json
 
 maybe_reexec_in_venv()
 
@@ -39,7 +45,7 @@ def write_stereo_wav(path: Path, samples_l: np.ndarray, samples_r: np.ndarray, s
 
 
 def generate_bgm(name: str, bpm: float, duration_sec: float, chord_freqs: List[List[float]]) -> None:
-    """向量化合成节拍清晰、听感温暖的免版税 CC0 背景音乐。"""
+    """向量化合成免版税 CC0 背景音乐，优先封装为轻量化 160kbps M4A。"""
     total_samples = int(duration_sec * SAMPLE_RATE)
     beat_sec = 60.0 / bpm
     rng = np.random.default_rng(42)
@@ -107,8 +113,17 @@ def generate_bgm(name: str, bpm: float, duration_sec: float, chord_freqs: List[L
                 samples_r[start_s : start_s + hat_len] += hat * 1.1
 
     wav_path = ASSETS_DIR / "bgm" / f"{name}.wav"
+    m4a_path = ASSETS_DIR / "bgm" / f"{name}.m4a"
     meta_path = ASSETS_DIR / "bgm" / f"{name}.json"
     write_stereo_wav(wav_path, samples_l, samples_r)
+    ffmpeg = find_bin("ffmpeg")
+    if ffmpeg:
+        subprocess.run([
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+            "-i", str(wav_path), "-c:a", "aac", "-b:a", "160k", "-ar", str(SAMPLE_RATE), "-ac", "2",
+            "-movflags", "+faststart", str(m4a_path),
+        ], check=True)
+        wav_path.unlink(missing_ok=True)
     write_json(meta_path, {
         "name": name,
         "bpm": bpm,
@@ -123,7 +138,6 @@ def generate_sfx_all() -> None:
     """合成 5 种通用 CC0 基础兜底音效（主流程优先使用 vibe_sound 真实物理材质 CC0 SFX）。"""
     rng = np.random.default_rng(101)
 
-    # 1. whoosh.wav
     n_w = int(0.35 * SAMPLE_RATE)
     t_w = np.arange(n_w, dtype=np.float64) / SAMPLE_RATE
     env_w = np.sin(np.pi * np.minimum(1.0, t_w / 0.35)) ** 1.5
@@ -134,25 +148,21 @@ def generate_sfx_all() -> None:
     w_sig = lfilter(b_coef, a_coef, raw_w) * env_w * 0.85
     write_stereo_wav(ASSETS_DIR / "sfx" / "whoosh.wav", w_sig, w_sig)
 
-    # 2. ding.wav
     n_d = int(0.55 * SAMPLE_RATE)
     t_d = np.arange(n_d, dtype=np.float64) / SAMPLE_RATE
     d_sig = (np.sin(2 * np.pi * 1046.5 * t_d) * 0.65 + np.sin(2 * np.pi * 2093.0 * t_d) * 0.3) * np.exp(-t_d * 7.5) * np.minimum(1.0, t_d / 0.005)
     write_stereo_wav(ASSETS_DIR / "sfx" / "ding.wav", d_sig, d_sig)
 
-    # 3. pop.wav
     n_p = int(0.16 * SAMPLE_RATE)
     t_p = np.arange(n_p, dtype=np.float64) / SAMPLE_RATE
     p_sig = np.sin(2 * np.pi * (320.0 + 980.0 * (t_p / 0.16)) * t_p) * np.exp(-t_p * 22.0) * np.minimum(1.0, t_p / 0.004)
     write_stereo_wav(ASSETS_DIR / "sfx" / "pop.wav", p_sig, p_sig)
 
-    # 4. bass_drop.wav
     n_b = int(0.65 * SAMPLE_RATE)
     t_b = np.arange(n_b, dtype=np.float64) / SAMPLE_RATE
     b_sig = np.sin(2 * np.pi * (110.0 * np.exp(-t_b * 3.2) + 38.0) * t_b) * np.exp(-t_b * 4.5) * np.minimum(1.0, t_b / 0.006)
     write_stereo_wav(ASSETS_DIR / "sfx" / "bass_drop.wav", b_sig, b_sig)
 
-    # 5. shutter.wav
     n_s = int(0.12 * SAMPLE_RATE)
     t_s = np.arange(n_s, dtype=np.float64) / SAMPLE_RATE
     s_sig = (rng.uniform(-1.0, 1.0, n_s) * 0.55 + np.sin(2 * np.pi * 1600.0 * t_s) * 0.35) * np.exp(-t_s * 40.0)
@@ -160,7 +170,7 @@ def generate_sfx_all() -> None:
 
 
 def generate_luts_all() -> None:
-    """使用向量化与共享 common.write_cube_lut 生成 3 套基础通用 3D LUT。"""
+    """使用向量化与共享 common.write_cube_lut 生成通用 3D LUT。"""
     size = 17
     grid = np.linspace(0.0, 1.0, size, dtype=np.float32)
     bb, gg, rr = np.meshgrid(grid, grid, grid, indexing="ij")
@@ -180,12 +190,6 @@ def generate_luts_all() -> None:
         np.stack([s_curve(r * 1.01, 1.07), s_curve(g * 1.02 + 0.005, 1.07), s_curve(b * 1.04 + 0.01, 1.07)], axis=-1),
         size,
         "Clean Creator",
-    )
-    write_cube_lut(
-        ASSETS_DIR / "luts" / "high_contrast.cube",
-        np.stack([s_curve(r, 1.18), s_curve(g, 1.18), s_curve(b * 0.98, 1.18)], axis=-1),
-        size,
-        "High Contrast",
     )
 
 

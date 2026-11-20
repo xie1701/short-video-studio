@@ -13,11 +13,17 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import math
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
 from common import (
     TARGET_LUFS,
+    compute_sfx_band_windows,
     find_bin,
     load_style_applied,
     maybe_reexec_in_venv,
@@ -84,36 +90,6 @@ def compute_mono_phase_correlation(audio: np.ndarray) -> float:
     return round(float(np.dot(l_ch, r_ch) / denom), 4)
 
 
-def _compute_sfx_audit_windows(pipeline_dir: Path, nosfx_arr: np.ndarray, sr: int = SR) -> List[Dict[str, Any]]:
-    """测量 06_packaging 各 SFX 窗期内的无 SFX 基准 2–8kHz RMS，落盘轻量化 JSON 以支持 tidy 后复验 #20。"""
-    pkg_p = pipeline_dir / "06_packaging.json"
-    if not pkg_p.exists() or len(nosfx_arr) < 128 or importlib.util.find_spec("scipy") is None:
-        return []
-    try:
-        from scipy.signal import butter, sosfiltfilt
-        pkg = read_json(pkg_p)
-        sos = butter(4, [2000.0, 8000.0], btype="bandpass", fs=sr, output="sos")
-        hb_base = sosfiltfilt(sos, nosfx_arr.mean(axis=1).astype(np.float64))
-        rows: List[Dict[str, Any]] = []
-        for cue in pkg.get("sfx_cues", [])[:8]:
-            t_center = float(cue.get("peak_time_sec", cue.get("time_sec", 0.0)))
-            i0 = max(0, int((t_center - 0.10) * sr))
-            i1 = min(len(hb_base), int((t_center + 0.14) * sr))
-            if i1 - i0 < 200:
-                continue
-            r_no = float(np.sqrt(np.mean(hb_base[i0:i1] ** 2) + 1e-12))
-            rows.append({
-                "sfx_id": cue.get("id"),
-                "sfx_name": cue.get("sfx_name"),
-                "win_start_sec": round(i0 / float(sr), 4),
-                "win_end_sec": round(i1 / float(sr), 4),
-                "nosfx_2_8k_rms": round(r_no, 8),
-            })
-        return rows
-    except Exception:
-        return []
-
-
 def run_step8(
     pipeline_dir: Path,
     target_lufs: float = TARGET_LUFS,
@@ -148,6 +124,14 @@ def run_step8(
 
     raw_v_arr, _ = load_stereo_wav_np(voice_in)
     noise_floor_db = _estimate_raw_noise_floor_db(pipeline_dir, raw_v_arr)
+    # 按输入人声活性电平动态确定压缩阈值，避免小声片段压缩不触发或大声过压
+    act_samples = raw_v_arr[np.abs(raw_v_arr) > 0.005]
+    if len(act_samples) > 100:
+        act_rms_db = 20.0 * math.log10(max(1e-5, float(np.sqrt(np.mean(act_samples.astype(np.float64) ** 2)))))
+        comp_thresh_db = round(max(-28.0, min(-12.0, act_rms_db - 2.0)), 1)
+    else:
+        comp_thresh_db = -18.0
+
     # 仅真实采得有效低静音噪底 (-55dB <= nf <= -28dB) 才启轻量降噪；高于 -28dB 说明无静音采样、绝不误杀持续信号
     use_denoise = (not is_tts) and (-55.0 <= noise_floor_db <= -28.0)
     afftdn_nf = max(-55.0, min(-38.0, noise_floor_db - 4.0))
@@ -157,7 +141,7 @@ def run_step8(
         "equalizer=f=240:t=q:w=1.2:g=-2.5,"
         "equalizer=f=3400:t=q:w=1.4:g=2.2,"
         "deesser=i=0.35:m=0.5:f=0.5:s=o,"
-        "acompressor=threshold=-16dB:ratio=2.0:attack=8:release=140:makeup=1.5"
+        f"acompressor=threshold={comp_thresh_db:.1f}dB:ratio=2.0:attack=8:release=140:makeup=1.5"
     )
 
     voice_clean_wav = pipeline_dir / "08_voice_denoised.wav"
@@ -219,7 +203,6 @@ def run_step8(
     duck_factor = np.interp(np.arange(n_samples, dtype=np.float32), t_hops, duck_ctrl).astype(np.float32)
 
     bgm_mid, bgm_outer, dual_band_ok = split_bgm_dual_band(bgm_arr, SR)
-    # 在 dB 域平滑插值增益后再转线性振幅，消除听觉骤降阶梯
     mid_gain_db = bgm_base_gain_db + duck_depth_db * duck_factor
     outer_gain_db = bgm_base_gain_db + (duck_depth_db * 0.32) * duck_factor
     mid_lin = np.power(10.0, mid_gain_db / 20.0).astype(np.float32)
@@ -235,13 +218,63 @@ def run_step8(
         voice_bgm_snr_db = 20.0
 
     pre_mix_nosfx = voice_arr * 0.95 + ducked_bgm
+
+    # 局部防掩蔽校准：逐条核对 06_packaging SFX 峰值窗口 [t-0.04, t+0.16] 的 2–8kHz 可听度（不加噪、统一写入 pre_mix 与 08_sfx_master）
+    pkg_p = pipeline_dir / "06_packaging.json"
+    cues_early = read_json(pkg_p).get("sfx_cues", []) if pkg_p.exists() else []
+    if cues_early and float(np.max(np.abs(sfx_arr))) > 1e-6:
+        try:
+            from scipy import signal as sp_sig
+            from common import SFX_AUDIT_POST_SEC, SFX_AUDIT_PRE_SEC
+
+            sos_hf = sp_sig.butter(4, [2000.0, 8000.0], btype="bandpass", fs=float(SR), output="sos")
+            nosfx_hf = sp_sig.sosfiltfilt(sos_hf, pre_mix_nosfx.mean(axis=1).astype(np.float64))
+            sfx_hf = sp_sig.sosfiltfilt(sos_hf, (sfx_arr * 0.95).mean(axis=1).astype(np.float64))
+            fade_n = int(0.020 * SR)
+            for cue in cues_early:
+                pk_t = float(cue.get("peak_time_sec", cue.get("time_sec", 0.0)))
+                on_t = float(cue.get("onset_time_sec", max(0.0, pk_t - 0.04)))
+                ws_i = max(0, int(round((pk_t - SFX_AUDIT_PRE_SEC) * SR)))
+                we_i = min(n_samples, int(round((pk_t + SFX_AUDIT_POST_SEC) * SR)))
+                if we_i - ws_i < 64:
+                    continue
+                bg_rms = float(np.sqrt(np.mean(nosfx_hf[ws_i:we_i] ** 2) + 1e-12))
+                cur_sfx_rms = float(np.sqrt(np.mean(sfx_hf[ws_i:we_i] ** 2) + 1e-12))
+                if cur_sfx_rms < 1e-5:
+                    continue
+                # 若直接合成后的 2–8kHz 增量未显著高出人声掩蔽基底（预留 +4.2dB 压限余量），按平滑窗局部抬升
+                comb_rms = float(np.sqrt(np.mean((nosfx_hf[ws_i:we_i] + sfx_hf[ws_i:we_i]) ** 2) + 1e-12))
+                cur_lift_db = 20.0 * math.log10(max(1e-8, comb_rms) / max(1e-8, bg_rms))
+                if cur_lift_db >= 4.2:
+                    continue
+                target_sfx_rms = bg_rms * (10.0 ** (4.4 / 20.0))
+                need_scale = min(3.2, max(1.0, target_sfx_rms / cur_sfx_rms))
+                if need_scale <= 1.05:
+                    continue
+                loc0 = max(0, int(round((on_t - 0.02) * SR)))
+                loc1 = min(n_samples, int(round((on_t + 0.45) * SR)))
+                if loc1 <= loc0 + 16:
+                    continue
+                loc_pk = float(np.max(np.abs(sfx_arr[loc0:loc1])))
+                safe_scale = min(need_scale, 0.72 / max(1e-4, loc_pk))
+                if safe_scale <= 1.05:
+                    continue
+                env_loc = np.full(loc1 - loc0, safe_scale, dtype=np.float32)
+                fn = min(fade_n, (loc1 - loc0) // 4)
+                if fn > 1:
+                    env_loc[:fn] = np.linspace(1.0, safe_scale, fn, dtype=np.float32)
+                    env_loc[-fn:] = np.linspace(safe_scale, 1.0, fn, dtype=np.float32)
+                sfx_arr[loc0:loc1] *= env_loc[:, None]
+        except Exception:
+            pass
+
     pre_mix = pre_mix_nosfx + sfx_arr * 0.95
     pre_mix_wav = pipeline_dir / "08_premix_raw.wav"
     pre_mix_nosfx_wav = pipeline_dir / "08_premix_nosfx_raw.wav"
     save_stereo_wav_np(pre_mix_wav, pre_mix, SR)
     save_stereo_wav_np(pre_mix_nosfx_wav, pre_mix_nosfx, SR)
 
-    # 3. 单源叠加迭代增益校准：每次从 pre_mix 原始未限幅源重算，绝对禁止反复过限幅器多代叠加！
+    # 3. 单源叠加迭代增益校准：保证最终磁盘 WAV 与 final_gain_db 100% 锁定一致
     master_wav = pipeline_dir / "08_mixed_master.wav"
     stem_nosfx_wav = pipeline_dir / "08_stem_nosfx.wav"
     init_metrics = measure_lufs_ebur128(pre_mix_wav)
@@ -250,38 +283,45 @@ def run_step8(
     else:
         cur_gain_db = max(-24.0, min(24.0, target_lufs - init_metrics["integrated_lufs"]))
 
-    for attempt in range(3):
-        cur_gain_db = max(-24.0, min(24.0, cur_gain_db))
+    def _render_master_pair(gain_db: float) -> Dict[str, float]:
+        g_clamped = max(-24.0, min(24.0, gain_db))
         for wav_src, wav_dst in ((pre_mix_wav, master_wav), (pre_mix_nosfx_wav, stem_nosfx_wav)):
             run_cmd([
                 ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
                 "-i", str(wav_src),
-                "-af", f"volume={cur_gain_db:.2f}dB,alimiter=limit=0.851:attack=2:release=45:level=disabled",
+                "-af", f"volume={g_clamped:.2f}dB,alimiter=limit=0.881:attack=2:release=45:level=disabled:latency=true",
                 "-ar", str(SR), "-ac", "2", "-acodec", "pcm_s16le",
                 str(wav_dst),
             ])
-        metrics = measure_lufs_ebur128(master_wav)
-        if init_metrics["integrated_lufs"] <= -65.0:
-            break
-        err = target_lufs - metrics["integrated_lufs"]
-        if abs(err) <= 0.35 and metrics["true_peak_dbtp"] <= -1.0:
-            break
-        if metrics["true_peak_dbtp"] > -1.0:
-            cur_gain_db -= max(0.5, metrics["true_peak_dbtp"] + 1.0)
-        else:
-            cur_gain_db += err
-        cur_gain_db = max(-24.0, min(24.0, cur_gain_db))
+        return measure_lufs_ebur128(master_wav)
 
-    # 同步导出三端同源分离分轨 (人声规范母带轨 + 已闪避定电平 BGM 轨) 给剪映 & HyperFrames 使用
+    metrics = _render_master_pair(cur_gain_db)
+    if init_metrics["integrated_lufs"] > -65.0:
+        for _attempt in range(3):
+            err = target_lufs - metrics["integrated_lufs"]
+            if abs(err) <= 0.35 and metrics["true_peak_dbtp"] <= -1.0:
+                break
+            if metrics["true_peak_dbtp"] > -1.0:
+                cur_gain_db -= max(0.5, metrics["true_peak_dbtp"] + 1.0)
+            else:
+                cur_gain_db += err
+            cur_gain_db = max(-24.0, min(24.0, cur_gain_db))
+            metrics = _render_master_pair(cur_gain_db)
+
+    # 同步导出四端同源分离分轨 (人声规范母带 + 已闪避定电平 BGM + 定电平 SFX) 给剪映 & HyperFrames 使用
     final_scale = 10.0 ** (cur_gain_db / 20.0)
     voice_master_path = pipeline_dir / "08_voice_master.wav"
     bgm_ducked_path = pipeline_dir / "08_bgm_ducked.wav"
+    sfx_master_path = pipeline_dir / "08_sfx_master.wav"
     save_stereo_wav_np(voice_master_path, 0.96 * np.tanh((voice_arr * 0.95 * final_scale) / 0.96), SR)
     save_stereo_wav_np(bgm_ducked_path, 0.96 * np.tanh((ducked_bgm * final_scale) / 0.96), SR)
+    save_stereo_wav_np(sfx_master_path, 0.96 * np.tanh((sfx_arr * 0.95 * final_scale) / 0.96), SR)
 
-    # 持久化轻量级 SFX 窗口基准供 tidy 后复验 #20 使用
+    # 使用 common 唯一权威函数 compute_sfx_band_windows 持久化全量 SFX 基准，供 #20 复验
+    pkg_p = pipeline_dir / "06_packaging.json"
+    cues = read_json(pkg_p).get("sfx_cues", []) if pkg_p.exists() else []
     scaled_nosfx, _ = load_stereo_wav_np(stem_nosfx_wav)
-    sfx_windows = _compute_sfx_audit_windows(pipeline_dir, scaled_nosfx, SR)
+    sfx_windows = compute_sfx_band_windows(cues, scaled_nosfx.mean(axis=1).astype(np.float64), SR)
     write_json(pipeline_dir / "08_sfx_audit_window.json", {
         "step": "08_sfx_audit_window",
         "master_gain_db": round(cur_gain_db, 2),
@@ -289,6 +329,9 @@ def run_step8(
     })
 
     pre_mix_nosfx_wav.unlink(missing_ok=True)
+    pre_mix_wav.unlink(missing_ok=True)
+    voice_clean_wav.unlink(missing_ok=True)
+
     master_arr, _ = load_stereo_wav_np(master_wav)
     mono_phase_corr = compute_mono_phase_correlation(master_arr)
 
@@ -298,6 +341,7 @@ def run_step8(
         "stem_nosfx_wav": str(stem_nosfx_wav.resolve()),
         "voice_master_wav": str(voice_master_path.resolve()),
         "bgm_ducked_wav": str(bgm_ducked_path.resolve()),
+        "sfx_master_wav": str(sfx_master_path.resolve()),
         "target_lufs": target_lufs,
         "master_gain_db": round(cur_gain_db, 2),
         "measured_lufs": metrics["integrated_lufs"],
@@ -306,6 +350,7 @@ def run_step8(
         "voice_bgm_snr_db": voice_bgm_snr_db,
         "mono_phase_corr": mono_phase_corr,
         "noise_floor_db": round(noise_floor_db, 1),
+        "vocal_comp_threshold_db": comp_thresh_db,
         "vocal_broadcast_chain": True,
         "dual_band_ducking": dual_band_ok,
         "voice_denoised": bool(use_denoise),

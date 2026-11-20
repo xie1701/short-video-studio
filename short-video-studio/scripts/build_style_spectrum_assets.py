@@ -13,9 +13,14 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
+
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
 
 from common import ASSETS_DIR, maybe_reexec_in_venv, read_json, write_json
 
@@ -1051,7 +1056,7 @@ def build_all_assets() -> None:
             "ass_style": (
                 f"Style: Default,{sub['font_family']},{sub['font_size_1080p_px']},"
                 f"{ass_pri},{ass_sec},{ass_out},{ass_bak},-1,0,0,0,100,100,1,0,1,"
-                f"{sub['stroke_width']},2,2,100,220,440,1"
+                f"{sub['stroke_width']},2,2,100,220,460,1"
             ),
         }
 
@@ -1083,7 +1088,7 @@ def build_all_assets() -> None:
 
     # 写出 1. style_spectrum_library.json
     lib = {
-        "version": "1.0.0",
+        "version": "1.1.0",
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "source_dir": raw["source_dir"],
         "total_videos": len(merged_styles),
@@ -1092,15 +1097,19 @@ def build_all_assets() -> None:
     }
     write_json(STYLE_DIR / "style_spectrum_library.json", lib)
 
-    # 写出 2. subtitle_templates/templates.json
+    # 写出 2. subtitle_templates/templates.json（确保零不可商用系统字体残留）
+    for _tname, _tpl in base_templates.items():
+        if isinstance(_tpl, dict) and "font_candidates" in _tpl:
+            cleaned_fc = [
+                f for f in (_tpl["font_candidates"] or [])
+                if "stheiti" not in str(f).lower() and "pingfang" not in str(f).lower() and "msyh" not in str(f).lower()
+            ]
+            if "AlimamaShuHeiTi-Bold.otf" not in cleaned_fc:
+                cleaned_fc.append("AlimamaShuHeiTi-Bold.otf")
+            _tpl["font_candidates"] = cleaned_fc
     write_json(tpl_path, {"templates": base_templates})
 
-    # 写出 3. HyperFrames CSS
-    hf_css = STYLE_DIR / "hyperframes" / "style-spectrum-presets.css"
-    hf_css.parent.mkdir(parents=True, exist_ok=True)
-    hf_css.write_text("\n".join(css_blocks), encoding="utf-8")
-
-    # 写出 4. STYLE_SPECTRUM_REPORT.md 深度拆解手册
+    # 写出 3. STYLE_SPECTRUM_REPORT.md 深度拆解手册（废除已删冗余 assets/style_spectrum/hyperframes）
     report_path = STYLE_DIR / "STYLE_SPECTRUM_REPORT.md"
     generate_markdown_report(lib, report_path)
 
@@ -1108,7 +1117,6 @@ def build_all_assets() -> None:
         f"[build-assets] 成功构建风格谱资产库：{len(merged_styles)} 套风格 + {len(ARCHETYPES)} 大母版 ->\n"
         f"  - {STYLE_DIR / 'style_spectrum_library.json'}\n"
         f"  - {tpl_path}\n"
-        f"  - {hf_css}\n"
         f"  - {report_path}"
     )
 

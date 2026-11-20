@@ -14,8 +14,13 @@ from __future__ import annotations
 import argparse
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
 
 from common import (
     SKIN_YCBCR_RANGE,
@@ -57,7 +62,7 @@ def _resolve_style_grade_profile(style_id: Optional[str]) -> Dict[str, float]:
         return {}
     arch = str(entry.get("archetype_id", ""))
     cl = entry.get("color_and_lut", {}) or {}
-    warm = float(cl.get("warm_cool_score", 0.0))  # 正偏暖，负偏冷
+    warm = float(cl.get("warmth_index", cl.get("warm_cool_score", 0.0)))  # 正偏暖，负偏冷
     if arch == "arch_01_tech_ui_console":
         return {"b_off": -0.025, "contrast": 1.15, "sat": 0.94, "rm_off": -0.018, "bm_off": 0.028}
     if arch == "arch_02_high_contrast_story":
@@ -87,17 +92,18 @@ def probe_clip_color_stats(
     start_sec: float = 0.0,
     dur_sec: float = 3.0,
 ) -> Dict[str, float]:
-    """针对 EDL 实际使用的 [start_sec, start_sec + dur_sec] 切段窗口抽样测光（绝不错拿片头代表中后段）。"""
+    """针对 EDL 实际切片区间 [start_sec, start_sec + dur_sec] 的中点窗口抽样测光。"""
     ffmpeg = find_bin("ffmpeg")
     if not ffmpeg or not media_path.exists():
         return {"yavg": 125.0, "uavg": 128.0, "vavg": 128.0}
-    win_start = max(0.0, float(start_sec))
-    win_dur = max(0.3, min(4.0, float(dur_sec)))
+    c_dur = max(0.3, float(dur_sec))
+    win_dur = min(4.0, c_dur)
+    win_start = max(0.0, float(start_sec) + max(0.0, (c_dur - win_dur) * 0.5))
     cmd = [
         ffmpeg, "-v", "info",
         "-ss", f"{win_start:.3f}", "-t", f"{win_dur:.3f}",
         "-i", str(media_path),
-        "-vf", "select='not(mod(n,12))',format=yuv420p,signalstats,metadata=print",
+        "-vf", "select='not(mod(n,12))',scale=in_color_matrix=bt709:out_color_matrix=bt709,format=yuv420p,signalstats,metadata=print",
         "-an", "-f", "null", "-",
     ]
     res = run_cmd(cmd, check=False)
@@ -120,6 +126,8 @@ def _compute_masked_skin_ycbcr_from_rgb(
     """使用 BT.709 矩阵 + 皮肤色度粗掩膜提取人脸真实肤色画素（剔除眼镜/眉毛/胡须/背景）。"""
     h_s, w_s, _ = arr_rgb.shape
     fx, fy, fw, fh = float(face_bbox["x"]), float(face_bbox["y"]), float(face_bbox["w"]), float(face_bbox["h"])
+    if max(fx, fy, fw, fh) > 1.01:
+        fx, fy, fw, fh = fx / 1080.0, fy / 1920.0, fw / 1080.0, fh / 1920.0
     x0 = max(0, int((fx + fw * 0.22) * w_s))
     x1 = min(w_s, max(x0 + 4, int((fx + fw * 0.78) * w_s)))
     y0 = max(0, int((fy + fh * 0.22) * h_s))
@@ -160,7 +168,8 @@ def probe_face_skin_ycbcr(
     if not ffmpeg or not media_path.exists():
         return None
     w_s, h_s = 270, 480
-    vf_arg = f"{extra_vf},scale={w_s}:{h_s}" if extra_vf else f"scale={w_s}:{h_s}"
+    scale_bt709 = f"scale={w_s}:{h_s}:in_color_matrix=bt709:out_color_matrix=bt709,format=rgb24"
+    vf_arg = f"{extra_vf},{scale_bt709}" if extra_vf else scale_bt709
     res = subprocess.run(
         [
             ffmpeg, "-hide_banner", "-loglevel", "error",
@@ -184,9 +193,21 @@ def compute_hero_and_shot_correction(
     skin_ycbcr: Optional[Dict[str, float]],
     style_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """基于 Hero 锚定与中间调皮肤矢量保护计算校色参数（仅作用于 rm/bm 中间调，不错调暗部）。"""
+    """基于 Hero 锚定与中间调皮肤矢量保护计算校色参数（仅作用于 rm/bm 中间调，同时护航含人脸副镜头）。"""
     prof = _resolve_style_grade_profile(style_id)
     y, u, v = stats["yavg"], stats["uavg"], stats["vavg"]
+
+    skin_bm, skin_rm = 0.0, 0.0
+    if skin_ycbcr:
+        cb, cr = skin_ycbcr["skin_cb"], skin_ycbcr["skin_cr"]
+        if cb > SKIN_YCBCR_RANGE["cb_max"] - 6.0:
+            skin_bm = -(cb - 118.0) / 360.0
+        elif cb < SKIN_YCBCR_RANGE["cb_min"] + 6.0:
+            skin_bm = (100.0 - cb) / 360.0
+        if cr < SKIN_YCBCR_RANGE["cr_min"] + 6.0:
+            skin_rm = (142.0 - cr) / 360.0
+        elif cr > SKIN_YCBCR_RANGE["cr_max"] - 6.0:
+            skin_rm = -(cr - 160.0) / 360.0
 
     if is_hero:
         y_corr = 0.0
@@ -195,27 +216,20 @@ def compute_hero_and_shot_correction(
         elif y > 175.0:
             y_corr = (165.0 - y) / 480.0
         brightness = round(max(-0.14, min(0.14, y_corr + float(prof.get("b_off", 0.0)))), 3)
-
-        bm_base, rm_base = 0.0, 0.0
-        if skin_ycbcr:
-            cb, cr = skin_ycbcr["skin_cb"], skin_ycbcr["skin_cr"]
-            if cb > SKIN_YCBCR_RANGE["cb_max"] - 6.0:
-                bm_base = -(cb - 118.0) / 360.0
-            elif cb < SKIN_YCBCR_RANGE["cb_min"] + 6.0:
-                bm_base = (100.0 - cb) / 360.0
-            if cr < SKIN_YCBCR_RANGE["cr_min"] + 6.0:
-                rm_base = (142.0 - cr) / 360.0
-            elif cr > SKIN_YCBCR_RANGE["cr_max"] - 6.0:
-                rm_base = -(cr - 160.0) / 360.0
-        bm_shift = round(max(-0.08, min(0.08, bm_base + float(prof.get("bm_off", 0.0)))), 3)
-        rm_shift = round(max(-0.08, min(0.08, rm_base + float(prof.get("rm_off", 0.0)))), 3)
+        bm_shift = round(max(-0.08, min(0.08, skin_bm + float(prof.get("bm_off", 0.0)))), 3)
+        rm_shift = round(max(-0.08, min(0.08, skin_rm + float(prof.get("rm_off", 0.0)))), 3)
     else:
         y_diff = hero_stats["yavg"] - y
         u_diff = hero_stats["uavg"] - u
         v_diff = hero_stats["vavg"] - v
         brightness = round(max(-0.12, min(0.12, (y_diff * 0.45) / 380.0 + float(prof.get("b_off", 0.0)))), 3)
-        bm_shift = round(max(-0.06, min(0.06, (u_diff * 0.30) / 420.0 + float(prof.get("bm_off", 0.0)))), 3)
-        rm_shift = round(max(-0.06, min(0.06, (v_diff * 0.30) / 420.0 + float(prof.get("rm_off", 0.0)))), 3)
+        bm_base = (u_diff * 0.30) / 420.0
+        rm_base = (v_diff * 0.30) / 420.0
+        if skin_ycbcr:
+            bm_base = bm_base * 0.5 + skin_bm * 0.7
+            rm_base = rm_base * 0.5 + skin_rm * 0.7
+        bm_shift = round(max(-0.07, min(0.07, bm_base + float(prof.get("bm_off", 0.0)))), 3)
+        rm_shift = round(max(-0.07, min(0.07, rm_base + float(prof.get("rm_off", 0.0)))), 3)
 
     return {
         "brightness": brightness,
@@ -271,7 +285,9 @@ def _build_vf_for_corr(corr: Dict[str, Any], lut_path: Path) -> str:
     return (
         f"eq=brightness={corr['brightness']}:contrast={corr['contrast']}:saturation={corr['saturation']},"
         f"colorbalance=rm={corr['rm']}:bm={corr['bm']},"
-        f"lut3d='{lut_escaped}'"
+        f"scale=in_color_matrix=bt709:out_color_matrix=bt709,format=rgb24,"
+        f"lut3d='{lut_escaped}',"
+        f"scale=in_color_matrix=bt709:out_color_matrix=bt709,format=yuv420p"
     )
 
 
@@ -294,7 +310,8 @@ def run_step7(
     if lut_strength is None:
         lut_strength = 0.72 if style_id in ("style_06", "style_08", "style_13") else 0.60
 
-    blended_lut, eff_strength = build_blended_cube_lut(lut_path, lut_strength, pipeline_dir / "07_blended_lut.cube")
+    blended_out_path = pipeline_dir / "07_blended_lut.cube"
+    blended_lut, eff_strength = build_blended_cube_lut(lut_path, lut_strength, blended_out_path)
 
     manifest_by_mp4 = {it.get("normalized_mp4"): it for it in manifest.get("items", [])}
     hero_clip = next((c for c in edl["clips"] if c["track_role"] == "a_roll"), None)
@@ -308,31 +325,40 @@ def run_step7(
 
     skin_ycbcr: Optional[Dict[str, float]] = None
     hero_face_bbox: Optional[Dict[str, float]] = None
-    hero_at_sec = round(hero_in + min(0.5, hero_dur * 0.4), 2)
+    hero_at_sec = round(hero_in + min(1.5, hero_dur * 0.5), 2)
     if hero_mp and hero_mp in manifest_by_mp4:
         faces = manifest_by_mp4[hero_mp].get("faces") or []
         if faces:
             hero_face_bbox = faces[0]["bbox"]
             skin_ycbcr = probe_face_skin_ycbcr(Path(hero_mp), hero_face_bbox, at_sec=hero_at_sec)
 
-    # 闭环 LUT 肤色保护验证：套用建议滤镜回测 Hero 肤色是否跌出健康扇区，超标自动步进降低强度
+    # 闭环 LUT 肤色保护验证：套用建议滤镜回测 Hero 肤色是否跌出健康扇区，仅沿严格不增强度阶梯下探
     skin_post_grade: Optional[Dict[str, float]] = None
     if hero_mp and hero_face_bbox and skin_ycbcr:
         hero_corr = compute_hero_and_shot_correction(hero_stats, hero_stats, True, skin_ycbcr, style_id=style_id)
-        for cand_str in (eff_strength, 0.45, 0.32):
-            blended_lut, eff_strength = build_blended_cube_lut(lut_path, cand_str, pipeline_dir / "07_blended_lut.cube")
-            test_vf = _build_vf_for_corr(hero_corr, blended_lut)
+        raw_cands = [eff_strength, min(eff_strength, 0.45), min(eff_strength, 0.30), 0.15]
+        cand_strengths: List[float] = []
+        for cs in raw_cands:
+            cs_r = round(float(cs), 2)
+            if cs_r <= eff_strength + 1e-6 and cs_r not in cand_strengths:
+                cand_strengths.append(cs_r)
+        min_cand = min(cand_strengths) if cand_strengths else 0.15
+        for cand_str in cand_strengths:
+            cand_lut, cand_eff = build_blended_cube_lut(lut_path, cand_str, blended_out_path)
+            test_vf = _build_vf_for_corr(hero_corr, cand_lut)
             skin_post_grade = probe_face_skin_ycbcr(Path(hero_mp), hero_face_bbox, at_sec=hero_at_sec, extra_vf=test_vf)
+            blended_lut, eff_strength = cand_lut, cand_eff
             if not skin_post_grade:
                 break
             in_sector = (
                 SKIN_YCBCR_RANGE["cb_min"] <= skin_post_grade["skin_cb"] <= SKIN_YCBCR_RANGE["cb_max"]
                 and SKIN_YCBCR_RANGE["cr_min"] <= skin_post_grade["skin_cr"] <= SKIN_YCBCR_RANGE["cr_max"]
             )
-            if in_sector or cand_str <= 0.32:
+            if in_sector or cand_str <= min_cand:
                 break
 
     clip_stats_cache: Dict[str, Dict[str, float]] = {}
+    clip_skin_cache: Dict[str, Optional[Dict[str, float]]] = {}
     clip_plans: List[Dict[str, Any]] = []
 
     for clip in edl["clips"]:
@@ -350,16 +376,26 @@ def run_step7(
 
         c_in = float(clip.get("source_in_sec", 0.0))
         c_dur = float(clip.get("duration_sec", 2.0))
-        cache_key = f"{mp}@{c_in:.1f}"
+        cache_key = f"{mp}@{c_in:.2f}@{c_dur:.2f}"
         if cache_key not in clip_stats_cache:
             clip_stats_cache[cache_key] = probe_clip_color_stats(Path(mp), c_in, c_dur)
         stats = clip_stats_cache[cache_key]
-        is_hero = (mp == hero_mp)
+        is_hero = (mp == hero_mp and abs(c_in - hero_in) < 0.5)
+
+        shot_skin: Optional[Dict[str, float]] = skin_ycbcr if is_hero else None
+        if not is_hero and mp in manifest_by_mp4:
+            clip_faces = manifest_by_mp4[mp].get("faces") or []
+            if clip_faces:
+                if cache_key not in clip_skin_cache:
+                    c_at = round(c_in + min(1.5, c_dur * 0.5), 2)
+                    clip_skin_cache[cache_key] = probe_face_skin_ycbcr(Path(mp), clip_faces[0]["bbox"], at_sec=c_at)
+                shot_skin = clip_skin_cache[cache_key]
+
         corr = compute_hero_and_shot_correction(
             stats,
             hero_stats=hero_stats,
             is_hero=is_hero,
-            skin_ycbcr=skin_ycbcr if is_hero else None,
+            skin_ycbcr=shot_skin,
             style_id=style_id,
         )
         vf_str = _build_vf_for_corr(corr, blended_lut)

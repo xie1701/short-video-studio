@@ -23,8 +23,10 @@
 
 | 文件名 | 节奏/风格 | 版权与来源 | 授权协议 |
 | :--- | :--- | :--- | :--- |
-| `assets/bgm/upbeat_store_120bpm.wav` | 120 BPM 轻快律动（适配门店探店/美食/快节奏干货） | 由 `scripts/generate_builtin_assets.py` 程序化数字音频合成（零第三方采样） | **CC0 1.0 公共领域（完全免费可商用）** |
-| `assets/bgm/chill_story_100bpm.wav` | 100 BPM 温暖叙事（适配老板故事/原则初心/人设科普） | 由 `scripts/generate_builtin_assets.py` 程序化数字音频合成（零第三方采样） | **CC0 1.0 公共领域（完全免费可商用）** |
+| `assets/bgm/upbeat_store_120bpm.m4a` | 120 BPM 轻快律动（适配门店探店/美食/快节奏干货，48kHz AAC 160kbps） | 由 `scripts/generate_builtin_assets.py` 程序化数字音频合成（零第三方采样） | **CC0 1.0 公共领域（完全免费可商用）** |
+| `assets/bgm/chill_story_100bpm.m4a` | 100 BPM 温暖叙事（适配老板故事/原则初心/人设科普，48kHz AAC 160kbps） | 由 `scripts/generate_builtin_assets.py` 程序化数字音频合成（零第三方采样） | **CC0 1.0 公共领域（完全免费可商用）** |
+
+> 注：如果文案流程使用在线 `edge-tts` 生成配音，仅面向演示与内部测试；`compliance_guard.py` 会在 `asset_license_manifest.json` 显式输出 `tts_commercial_notice` 告警，正式商业投放前建议替换为真人实拍口播或已采购商授权语音。
 
 ---
 
@@ -48,7 +50,6 @@
 | :--- | :--- | :--- | :--- |
 | `assets/luts/warm_store.cube` | 门店暖调提亮 LUT (17³) | 本项目三维色彩映射表生成 | **CC0 1.0 可商用** |
 | `assets/luts/clean_creator.cube` | 博主清透自然 LUT (17³) | 本项目三维色彩映射表生成 | **CC0 1.0 可商用** |
-| `assets/luts/high_contrast.cube` | 高反差纪实 LUT (17³) | 本项目三维色彩映射表生成 | **CC0 1.0 可商用** |
 
 - 信息图表与 7 种修辞补镜（`kinetic_text / data_chart / flow_diagram / proportion / day_night / chips / versus`）均由 `scripts/generate_code_broll.py` 使用纯 Python (`Pillow` + `ffmpeg rawvideo` 管道) 现场原创绘制，无第三方 UI 素材版权负担。
 
@@ -56,14 +57,14 @@
 
 ## 五、 「风格谱 (Style Spectrum)」参考包装资产库
 
-- `assets/style_spectrum/luts/style_01.cube` ~ `style_20.cube`（`33³` 3D LUT）：由 `scripts/analyze_style_spectrum.py` 基于参考样片色彩分布逆向生成的数学色彩映射矩阵，**CC0 1.0 可商用**。
-- `assets/style_spectrum/hyperframes/`、`assets/style_spectrum/style_spectrum_library.json`、`assets/subtitle_templates/templates.json`：本项目原创风格谱 CSS/JSON 配置，**MIT / CC0 可商用**；全部字体候选链严格映射至 SIL OFL / 阿里妈妈免费商用字体。
+- `assets/style_spectrum/luts/style_01.cube` ~ `style_20.cube`（超精简 **`17³`** 3D LUT）：由 `scripts/analyze_style_spectrum.py` 基于参考样片色彩分布逆向生成的数学色彩映射矩阵，**CC0 1.0 可商用**。
+- `assets/style_spectrum/style_spectrum_library.json`、`assets/subtitle_templates/templates.json`：本项目原创风格谱 JSON 配置与 24 套模板，**MIT / CC0 可商用**；全部字体候选链严格映射至 SIL OFL / 阿里妈妈免费商用字体，`assets/` 总仓压缩控制在约 12 MB 以内。
 
 ---
 
 ## 六、 Vibe Sound CC0 真实物理音效与流派背景音乐 (`assets/sound_vibe/`)
 
-由 [scripts/vibe_sound.py](../scripts/vibe_sound.py) 基于 [vibe-motion/sound](https://github.com/vibe-motion/sound) 检索框架筛选 **Creative Commons 0 (CC0)** 免版税真实录音素材并生成（现全库 BGM 元数据已完整覆盖 `beat_times_sec` / `downbeat_times_sec` 且支持全部 20 套 `style_01`–`style_20` 映射）：
+由 [scripts/vibe_sound.py](../scripts/vibe_sound.py) 基于 [vibe-motion/sound](https://github.com/vibe-motion/sound) 检索框架筛选 **Creative Commons 0 (CC0)** 免版税真实录音素材并生成（BGM 统一转为 48kHz `.m4a`，音效库去重精简，元数据完整覆盖 `beat_times_sec` / `downbeat_times_sec` 且支持全部 20 套 `style_01`–`style_20` 映射）：
 
 | 流派样式 | 真实 BGM 来源 (Freesound ID · CC0) | 物理材质 SFX 来源 (Freesound ID · CC0) |
 | :--- | :--- | :--- |

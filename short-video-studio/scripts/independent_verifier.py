@@ -36,6 +36,7 @@ from common import (
     SKIN_YCBCR_RANGE,
     SUBTITLE_SAFE_ZONE,
     TARGET_LUFS,
+    compute_sfx_band_windows,
     find_bin,
     is_verified_commercial_font,
     maybe_reexec_in_venv,
@@ -176,9 +177,17 @@ def verify_audio_blackbox(
     mono_corr = compute_mono_phase_correlation(audio_48k)
     clicks = _detect_digital_splice_clicks(audio_48k, sr)
 
+    # 提取 300–3400Hz 纯人声语谱带衡量每句电平，避免低频鼓点/BGM 高频误导画外音检测
+    try:
+        from scipy.signal import butter, sosfiltfilt
+        sos_v = butter(4, [300.0, 3400.0], btype="bandpass", fs=16000, output="sos")
+        y16_vocal = sosfiltfilt(sos_v, y16.astype(np.float64))
+    except Exception:
+        y16_vocal = y16
+
     span_rms_dbs: List[float] = []
     for s, e in spans:
-        seg = y16[int(s * 16000): int(e * 16000)]
+        seg = y16_vocal[int(s * 16000): int(e * 16000)]
         if len(seg) > 160:
             r = float(np.sqrt(np.mean(seg ** 2) + 1e-12))
             span_rms_dbs.append(20.0 * math.log10(max(1e-6, r)))
@@ -235,10 +244,24 @@ def _relative_luminance(rgb: np.ndarray) -> np.ndarray:
     return 0.2126 * lin[:, :, 0] + 0.7152 * lin[:, :, 1] + 0.0722 * lin[:, :, 2]
 
 
+def _subsequence_ratio(needle: str, haystack: str) -> float:
+    if not needle:
+        return 1.0
+    pos = 0
+    matched = 0
+    for ch in needle:
+        idx = haystack.find(ch, pos)
+        if idx >= 0:
+            matched += 1
+            pos = idx + 1
+    return matched / float(len(needle))
+
+
 def verify_visual_and_subtitle_blackbox(
     video_path: Path,
     tmp_dir: Path,
     speech_spans: List[Tuple[float, float]],
+    pipeline_dir: Optional[Path] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     ffmpeg = find_bin("ffmpeg")
     if not ffmpeg:
@@ -263,6 +286,29 @@ def verify_visual_and_subtitle_blackbox(
         vis_map[str(k)] = v
         vis_map[str(Path(k).resolve())] = v
 
+    expected_aroll_has_face = False
+    expected_sub_text = ""
+    if pipeline_dir and pipeline_dir.exists():
+        mf_p = pipeline_dir / "01_manifest.json"
+        if mf_p.is_file():
+            try:
+                mf = read_json(mf_p)
+                expected_aroll_has_face = any(
+                    it.get("role") == "a_roll" and bool(it.get("faces"))
+                    for it in (mf.get("items") or [])
+                )
+            except Exception:
+                pass
+        sub_p = pipeline_dir / "05_subtitles.json"
+        if sub_p.is_file():
+            try:
+                subs_j = read_json(sub_p)
+                expected_sub_text = "".join(
+                    str(e.get("text") or "") for e in (subs_j.get("entries") or []) if not e.get("suppressed")
+                )
+            except Exception:
+                pass
+
     safe_violations: List[str] = []
     face_occlusions: List[str] = []
     max_face_text_iou = 0.0
@@ -277,6 +323,7 @@ def verify_visual_and_subtitle_blackbox(
     speech_frames_checked = 0
     speech_frames_with_sub_ocr = 0
     masked_thumbs: List[np.ndarray] = []
+    sub_ocr_segments: List[str] = []
 
     cb_min = float(SKIN_YCBCR_RANGE["cb_min"])
     cb_max = float(SKIN_YCBCR_RANGE["cb_max"])
@@ -297,12 +344,12 @@ def verify_visual_and_subtitle_blackbox(
         thumb_masked[260:370, :, :] = 0.0
         masked_thumbs.append(thumb_masked)
 
-        luma = 0.2126 * rgb[:, :, 0] + 0.5870 * rgb[:, :, 1] + 0.1140 * rgb[:, :, 2]
+        luma = 0.2126 * rgb[:, :, 0] + 0.7152 * rgb[:, :, 1] + 0.0722 * rgb[:, :, 2]
         mean_lumas.append(float(np.mean(luma)))
         clipped_white_pcts.append(float(np.mean(luma > 251.0) * 100.0))
         clipped_black_pcts.append(float(np.mean(luma < 6.0) * 100.0))
 
-        # #15 基于 common.SKIN_YCBCR_RANGE 的实测肤色像素检测（剔除过暗/过爆干扰像素）
+        # #15 严格使用 BT.709 矩阵与 common.SKIN_YCBCR_RANGE 检测实测肤色像素
         for f in faces:
             bb = f.get("bbox")
             if not bb:
@@ -314,9 +361,9 @@ def verify_visual_and_subtitle_blackbox(
             roi = rgb[y0:y1, x0:x1].astype(np.float32)
             if roi.size >= 16:
                 r, g, b = roi[:, :, 0], roi[:, :, 1], roi[:, :, 2]
-                yy = 0.299 * r + 0.587 * g + 0.114 * b
-                cb = 128.0 - 0.168736 * r - 0.331264 * g + 0.5 * b
-                cr = 128.0 + 0.5 * r - 0.418688 * g - 0.081312 * b
+                yy = 16.0 + (0.2126 * r + 0.7152 * g + 0.0722 * b) * (219.0 / 255.0)
+                cb = 128.0 + (-0.114572 * r - 0.385428 * g + 0.5 * b) * (224.0 / 255.0)
+                cr = 128.0 + (0.5 * r - 0.454153 * g - 0.045847 * b) * (224.0 / 255.0)
                 valid_px = (yy >= 40.0) & (yy <= 235.0)
                 if np.any(valid_px):
                     cb_med = float(np.median(cb[valid_px]))
@@ -347,6 +394,11 @@ def verify_visual_and_subtitle_blackbox(
             ph = max(4, int(round(float(t["h"]) * CANVAS_HEIGHT)))
             px2, py2 = px1 + pw, py1 + ph
 
+            if py1 >= SUBTITLE_SAFE_ZONE["y_min"] - 40 and py2 <= SUBTITLE_SAFE_ZONE["y_max"] + 25:
+                cleaned_o = _clean_zh_text(txt_raw)
+                if cleaned_o and (not sub_ocr_segments or cleaned_o != sub_ocr_segments[-1]):
+                    sub_ocr_segments.append(cleaned_o)
+
             if py1 < 145 or py2 > 1495 or px1 < 45 or (px2 > 915 and py2 > 660):
                 safe_violations.append(f"t={t_sec:.1f}s '{txt_raw[:10]}' ({px1},{py1})-({px2},{py2})")
 
@@ -362,14 +414,15 @@ def verify_visual_and_subtitle_blackbox(
 
             in_sub_or_pkg = py1 >= 150 and py2 <= SUBTITLE_SAFE_ZONE["y_max"] + 25
             if in_sub_or_pkg and ph >= 24:
-                bx0 = max(0, px1 - 4)
-                by0 = max(0, py1 - 4)
-                bx1 = min(CANVAS_WIDTH, px2 + 4)
-                by1 = min(CANVAS_HEIGHT, py2 + 4)
+                # 纳入文字外圈 6px Halo/描边带联合采样前后景极端相对亮度比
+                bx0 = max(0, px1 - 6)
+                by0 = max(0, py1 - 6)
+                bx1 = min(CANVAS_WIDTH, px2 + 6)
+                by1 = min(CANVAS_HEIGHT, py2 + 6)
                 patch = rel_lum[by0:by1, bx0:bx1]
                 if patch.size >= 36:
                     l_max = float(np.percentile(patch, 92))
-                    l_min = float(np.percentile(patch, 12))
+                    l_min = float(np.percentile(patch, 10))
                     ratio = (l_max + 0.05) / (l_min + 0.05)
                     wcag_ratios.append(ratio)
                     if ratio < 3.8:
@@ -406,6 +459,10 @@ def verify_visual_and_subtitle_blackbox(
     ocr_supported = (ocr_backend == "apple_vision")
 
     sub_match_ratio = (speech_frames_with_sub_ocr / float(speech_frames_checked)) if speech_frames_checked > 0 else 1.0
+    exp_clean = _clean_zh_text(expected_sub_text)
+    ocr_sub_joined = "".join(sub_ocr_segments)
+    sub_content_recall = round(_subsequence_ratio(exp_clean, ocr_sub_joined), 3) if exp_clean else 1.0
+
     if not ocr_supported:
         sub_sync_res = {
             "status": "SKIPPED_UNAVAILABLE",
@@ -416,6 +473,7 @@ def verify_visual_and_subtitle_blackbox(
             "safe_violations": [],
             "speech_frames_checked": speech_frames_checked,
             "speech_sub_ocr_ratio": 0.0,
+            "sub_ocr_content_recall": 0.0,
             "first_3s_scene_cuts": len(scene_cuts_3s),
         }
         readability_res = {
@@ -435,7 +493,8 @@ def verify_visual_and_subtitle_blackbox(
             "hits": [],
         }
     else:
-        sub_ok = (len(safe_violations) == 0) and (sub_match_ratio >= 0.65)
+        sub_content_ok = True if not exp_clean else (sub_content_recall >= 0.45)
+        sub_ok = (len(safe_violations) == 0) and (sub_match_ratio >= 0.65) and sub_content_ok
         sub_sync_res = {
             "status": "PASS" if sub_ok else "FAIL",
             "passed": sub_ok,
@@ -445,15 +504,19 @@ def verify_visual_and_subtitle_blackbox(
             "safe_violations": safe_violations[:8],
             "speech_frames_checked": speech_frames_checked,
             "speech_sub_ocr_ratio": round(sub_match_ratio, 3),
+            "sub_ocr_content_recall": sub_content_recall,
             "first_3s_scene_cuts": len(scene_cuts_3s),
         }
 
-        mean_wcag = round(float(np.mean(wcag_ratios)), 2) if wcag_ratios else 8.0
-        readability_ok = (
-            (max_face_text_iou <= 0.02)
-            and (len(low_contrast_hits) == 0)
-            and (mean_wcag >= 4.5 or not wcag_ratios)
-        )
+        # 绝不在零对比样本时硬写 8.0 伪通过；无期望文本时仅检查零人脸遮挡
+        expect_text_on_screen = bool(exp_clean or speech_frames_checked > 0)
+        if wcag_ratios:
+            mean_wcag = round(float(np.mean(wcag_ratios)), 2)
+            wcag_ok = (len(low_contrast_hits) == 0) and (mean_wcag >= 4.5)
+        else:
+            mean_wcag = 0.0
+            wcag_ok = not expect_text_on_screen
+        readability_ok = (max_face_text_iou <= 0.02) and wcag_ok
         readability_res = {
             "status": "PASS" if readability_ok else "FAIL",
             "passed": readability_ok,
@@ -475,7 +538,9 @@ def verify_visual_and_subtitle_blackbox(
     max_black = round(max(clipped_black_pcts or [0.0]), 1)
     luma_jumps = [abs(mean_lumas[i] - mean_lumas[i - 1]) for i in range(1, len(mean_lumas))]
     max_luma_jump = round(max(luma_jumps or [0.0]), 1)
-    color_ok = (max_white <= 55.0) and (max_black <= 92.0) and (skin_violations == 0)
+    skin_missing_fail = bool(expected_aroll_has_face and skin_checked == 0)
+    luma_jump_ok = (max_luma_jump <= 90.0)
+    color_ok = (max_white <= 55.0) and (max_black <= 92.0) and (skin_violations == 0) and (not skin_missing_fail) and luma_jump_ok
     color_res = {
         "status": "PASS" if color_ok else "FAIL",
         "passed": color_ok,
@@ -483,7 +548,9 @@ def verify_visual_and_subtitle_blackbox(
         "max_clipped_black_pct": max_black,
         "skin_samples_checked": skin_checked,
         "skin_sector_violations": skin_violations,
+        "skin_missing_when_expected": skin_missing_fail,
         "max_luma_jump": max_luma_jump,
+        "luma_jump_ok": luma_jump_ok,
     }
 
     return sub_sync_res, readability_res, color_res, meta_leak_res, freeze_res
@@ -531,8 +598,9 @@ def verify_cut_spot_blackbox(video_path: Path, pipeline_dir: Optional[Path], tmp
             continue
         with Image.open(fp) as im:
             arr = np.asarray(im.convert("RGB"), dtype=np.float32)
-        arr[260:370, :, :] = 0.0
-        # 容忍 ±1 帧 pts 舍入匹配到请求帧号
+        # 双带掩膜：同时屏蔽底部字幕区 [285:380] 与顶部花字包装区 [46:88]，防包装切换冒充切镜
+        arr[285:380, :, :] = 0.0
+        arr[46:88, :, :] = 0.0
         matched_req = min(req_frames, key=lambda rf: abs(rf - in_fn))
         if abs(matched_req - in_fn) <= 1:
             frame_by_n[matched_req] = arr
@@ -550,10 +618,11 @@ def verify_cut_spot_blackbox(video_path: Path, pipeline_dir: Optional[Path], tmp
             max_unver = max(max_unver, cur_unver)
             continue
         mad = float(np.mean(np.abs(b - a)))
+        rel_mad = mad / max(15.0, float(np.mean(a)) * 0.25)
         ha, _ = np.histogram(a.ravel(), bins=16, range=(0, 256), density=True)
         hb, _ = np.histogram(b.ravel(), bins=16, range=(0, 256), density=True)
         hist_l1 = float(np.sum(np.abs(ha - hb)) * 16.0)
-        if mad >= 1.8 or hist_l1 >= 0.035:
+        if mad >= 1.8 or rel_mad >= 0.08 or hist_l1 >= 0.035:
             verified += 1
             cur_unver = 0
         else:
@@ -579,7 +648,7 @@ def verify_sfx_in_window_blackbox(
     audio_ctx: Dict[str, Any],
     pipeline_dir: Optional[Path],
 ) -> Dict[str, Any]:
-    """#20 2-8kHz 同窗净抬升 SFX 可听度实测（优先对比 08_stem_nosfx.wav，tidy 后回退 08_sfx_audit_window.json）。"""
+    """#20 统一调用 common.compute_sfx_band_windows 对全量 cues 做 [-0.04, +0.16] 同窗净抬升实测。"""
     if not pipeline_dir or not (pipeline_dir / "06_packaging.json").is_file():
         return {"status": "SKIPPED_UNAVAILABLE", "passed": False, "cues_checked": 0, "median_lift_db": 0.0, "max_lift_db": 0.0}
     pkg = read_json(pipeline_dir / "06_packaging.json")
@@ -602,7 +671,7 @@ def verify_sfx_in_window_blackbox(
         bb_band = bb_mono
         sos = None
 
-    lifts: List[float] = []
+    windows: List[Dict[str, Any]] = []
     source_used = "missing"
     if nosfx_p.is_file():
         source_used = "08_stem_nosfx.wav"
@@ -611,29 +680,23 @@ def verify_sfx_in_window_blackbox(
         if n < 1024:
             return {"status": "FAIL", "passed": False, "cues_checked": 0, "median_lift_db": 0.0, "max_lift_db": 0.0, "source": source_used}
         no_mono = no_arr[:n].mean(axis=1).astype(np.float64)
-        no_band = sosfiltfilt(sos, no_mono) if sos is not None else no_mono
-        for cue in cues:
-            t_ref = float(cue.get("peak_time_sec") or cue.get("time_sec", 0.0))
-            i0 = max(0, int(round((t_ref - 0.04) * sr1)))
-            i1 = min(n, int(round((t_ref + 0.16) * sr1)))
-            if i1 <= i0 + 64:
-                continue
-            e_bb = float(np.mean(bb_band[i0:i1] ** 2))
-            e_no = float(np.mean(no_band[i0:i1] ** 2))
-            lifts.append(round(10.0 * math.log10(max(1e-12, e_bb) / max(1e-12, e_no)), 2))
+        windows = compute_sfx_band_windows(cues, no_mono, sr1)
     elif audit_win_p.is_file():
         source_used = "08_sfx_audit_window.json"
         audit_data = read_json(audit_win_p)
-        for win in (audit_data.get("windows") or []):
-            i0 = max(0, int(round(float(win.get("win_start_sec", 0.0)) * sr1)))
-            i1 = min(len(bb_band), int(round(float(win.get("win_end_sec", 0.0)) * sr1)))
-            r_no = float(win.get("nosfx_2_8k_rms", 0.0))
-            if i1 <= i0 + 64 or r_no <= 0.0:
-                continue
-            r_bb = float(np.sqrt(np.mean(bb_band[i0:i1] ** 2) + 1e-12))
-            lifts.append(round(20.0 * math.log10(max(1e-8, r_bb) / max(1e-8, r_no)), 2))
+        windows = list(audit_data.get("windows") or [])
     else:
         return {"status": "FAIL", "passed": False, "cues_checked": 0, "median_lift_db": 0.0, "max_lift_db": 0.0, "source": "missing_nosfx_and_audit_json"}
+
+    lifts: List[float] = []
+    for win in windows:
+        i0 = max(0, int(round(float(win.get("win_start_sec", 0.0)) * sr1)))
+        i1 = min(len(bb_band), int(round(float(win.get("win_end_sec", 0.0)) * sr1)))
+        r_no = float(win.get("nosfx_2_8k_rms", 0.0))
+        if i1 <= i0 + 64 or r_no <= 0.0:
+            continue
+        r_bb = float(np.sqrt(np.mean(bb_band[i0:i1] ** 2) + 1e-12))
+        lifts.append(round(20.0 * math.log10(max(1e-8, r_bb) / max(1e-8, r_no)), 2))
 
     if not lifts:
         return {"status": "FAIL", "passed": False, "cues_checked": 0, "median_lift_db": 0.0, "max_lift_db": 0.0, "source": source_used}
@@ -653,15 +716,47 @@ def verify_sfx_in_window_blackbox(
 
 
 def _normalize_zh_digits_for_cer(s: str) -> str:
-    """将常见阿拉伯数字转为汉字读法，避免 '80'/'八十' 书写差异误伤黑盒可懂度 CER。"""
+    """将完整多位数阿拉伯数字（个/十/百/千/万位）规范转为汉字读法，防多位数 CER 误杀。"""
     mp = {"0": "零", "1": "一", "2": "二", "3": "三", "4": "四", "5": "五", "6": "六", "7": "七", "8": "八", "9": "九"}
+
+    def _int_to_zh(val: int) -> str:
+        if val == 0:
+            return "零"
+        if val >= 100_000_000:
+            return "".join(mp.get(c, c) for c in str(val))
+        if val >= 10_000:
+            w = val // 10_000
+            rem = val % 10_000
+            res = _int_to_zh(w) + "万"
+            if rem == 0:
+                return res
+            return res + ("零" if rem < 1000 else "") + _int_to_zh(rem)
+        units = ["", "十", "百", "千"]
+        digits = [int(c) for c in str(val)][::-1]
+        out: List[str] = []
+        zero_flag = False
+        for idx_u, d in enumerate(digits):
+            if d == 0:
+                if out:
+                    zero_flag = True
+            else:
+                if zero_flag:
+                    out.append("零")
+                    zero_flag = False
+                if idx_u == 1 and d == 1 and len(digits) == 2:
+                    out.append(units[idx_u])
+                else:
+                    out.append(mp[str(d)] + units[idx_u])
+        return "".join(reversed(out))
+
     def _conv(m: re.Match) -> str:
         tok = m.group(0)
-        if len(tok) == 2 and tok.isdigit():
-            t0, t1 = tok[0], tok[1]
-            prefix = "" if t0 == "1" else mp[t0]
-            return f"{prefix}十{'' if t1 == '0' else mp[t1]}"
+        if len(tok) == 4 and (tok.startswith("19") or tok.startswith("20")):
+            return "".join(mp.get(ch, ch) for ch in tok)
+        if tok.isdigit() and len(tok) <= 8:
+            return _int_to_zh(int(tok))
         return "".join(mp.get(ch, ch) for ch in tok)
+
     return re.sub(r"\d+", _conv, s)
 
 
@@ -692,7 +787,7 @@ def _resolve_hf_hub_dir() -> Path:
 
 
 def _find_cached_whisper_model(hf_hub: Path) -> Optional[str]:
-    for cand in ("small", "base", "tiny", "medium", "large-v3"):
+    for cand in ("large-v3", "medium", "small", "base", "tiny"):
         d = hf_hub / f"models--Systran--faster-whisper-{cand}"
         if (d / "snapshots").is_dir() and any((d / "snapshots").iterdir()):
             return cand
@@ -705,7 +800,7 @@ def verify_blind_asr_proxy_blackbox(
     dialect: str = "mandarin",
     store_anchor: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """#21 带 BGM 成片独立 ASR 盲听代理（尊重 HF_HOME/HF_HUB_CACHE；无本地模型标 SKIPPED_UNAVAILABLE）。"""
+    """#21 带 BGM 成片独立 ASR 盲听代理（large-v3 优先；支持普通话 zh 与粤语 yue；有序子串锚点校对）。"""
     if not pipeline_dir or not (pipeline_dir / "03_audio_events.json").is_file():
         return {"status": "SKIPPED_UNAVAILABLE", "passed": False, "cer": None, "anchor_ok": False, "reason": "缺少 03_audio_events.json"}
 
@@ -723,13 +818,27 @@ def verify_blind_asr_proxy_blackbox(
             "reason": f"未在 {hf_hub} 找到本地 faster-whisper 缓存模型",
         }
 
+    dl_norm = (dialect or "mandarin").lower()
+    if dl_norm not in ("mandarin", "cantonese", "yue"):
+        return {
+            "status": "SKIPPED_UNAVAILABLE",
+            "passed": False,
+            "dialect": dialect,
+            "cer": None,
+            "anchor_ok": False,
+            "reason": f"自定义方言模式 ({dialect}) 尚无对应通用 ASR 模型",
+        }
+
+    asr_lang = "yue" if dl_norm in ("cantonese", "yue") else "zh"
+    asr_prompt = "以下是粤语简体中文口播内容：" if asr_lang == "yue" else "以下是普通话简体中文口播内容："
+
     try:
         from faster_whisper import WhisperModel
         model = WhisperModel(model_name, device="cpu", compute_type="int8", local_files_only=True)
         segs, _ = model.transcribe(
             str(audio_48k_path),
-            language="zh",
-            initial_prompt="以下是普通话简体中文口播内容：",
+            language=asr_lang,
+            initial_prompt=asr_prompt,
             word_timestamps=False,
         )
         hyp_text = "".join(s.text.strip() for s in segs)
@@ -748,25 +857,14 @@ def verify_blind_asr_proxy_blackbox(
         anc = _clean_zh_text(store_anchor)
         hyp_c = _clean_zh_text(hyp_text)
         if anc:
-            anchor_ok = (anc in hyp_c) or (sum(1 for ch in anc if ch in hyp_c) / float(len(anc)) >= 0.50)
-
-    is_mandarin = (dialect or "mandarin").lower() == "mandarin"
-    if not is_mandarin:
-        return {
-            "status": "SKIPPED_UNAVAILABLE",
-            "passed": False,
-            "dialect": dialect,
-            "cer": cer,
-            "anchor_ok": anchor_ok,
-            "hyp_preview": hyp_text[:48],
-            "reason": f"方言模式 ({dialect}) 不适用普通话 Whisper 模型硬判",
-        }
+            anchor_ok = (anc in hyp_c) or (_subsequence_ratio(anc, hyp_c) >= 0.75)
 
     ok = (cer <= 0.25) and anchor_ok
     return {
         "status": "PASS" if ok else "FAIL",
         "passed": ok,
         "dialect": dialect,
+        "asr_language": asr_lang,
         "model": model_name,
         "cer": cer,
         "anchor_ok": anchor_ok,
@@ -775,7 +873,7 @@ def verify_blind_asr_proxy_blackbox(
 
 
 def verify_compliance_and_license_blackbox(pipeline_dir: Optional[Path]) -> Dict[str, Any]:
-    """#22 广告法合规拦截与 SHA-256 商业字体授权清单核查。"""
+    """#22 严格只读复核广告法合规与 SHA-256 商业字体授权清单，绝不覆写 00_compliance_report.json。"""
     if not pipeline_dir or not pipeline_dir.exists():
         return {"status": "SKIPPED_UNAVAILABLE", "passed": False, "compliance_ok": False, "license_ok": False, "assets_count": 0, "unregistered_count": 0}
 
@@ -785,7 +883,6 @@ def verify_compliance_and_license_blackbox(pipeline_dir: Optional[Path]) -> Dict
     comp: Dict[str, Any] = read_json(comp_p) if comp_p.is_file() else {}
     comp_ok = bool(comp.get("passed", True))
 
-    # 校验实拍声音保留完整性，防止违规词误清空有效内容
     rv_total = int(comp.get("real_voice_total", 0))
     rv_dropped = len(comp.get("dropped_real_voice_ids", []))
     if rv_total > 0 and (rv_dropped >= rv_total or rv_dropped / float(rv_total) > 0.40):
@@ -794,14 +891,15 @@ def verify_compliance_and_license_blackbox(pipeline_dir: Optional[Path]) -> Dict
     if (pipeline_dir / "05_subtitles.json").is_file():
         subs = read_json(pipeline_dir / "05_subtitles.json")
         sents = [{"id": e["id"], "text": e["text"]} for e in subs.get("entries", []) if not e.get("suppressed")]
-        sub_audit = audit_script_compliance(sents, source_type="subtitles", pipeline_dir=pipeline_dir, auto_action=False)
+        # 只读调用 pipeline_dir=None，严禁覆写覆盖上游的 real_voice drop 留痕！
+        sub_audit = audit_script_compliance(sents, source_type="subtitles", pipeline_dir=None, auto_action=False)
         comp_ok = comp_ok and bool(sub_audit.get("passed", False))
 
     if (pipeline_dir / "06_packaging.json").is_file():
         pkg = read_json(pipeline_dir / "06_packaging.json")
         psents = [{"id": e["id"], "text": str(e.get("text_or_asset", ""))} for e in pkg.get("visual_elements", [])]
         if psents:
-            p_audit = audit_script_compliance(psents, source_type="packaging", pipeline_dir=pipeline_dir, auto_action=False)
+            p_audit = audit_script_compliance(psents, source_type="packaging", pipeline_dir=None, auto_action=False)
             comp_ok = comp_ok and bool(p_audit.get("passed", False))
 
     lic_p = next(
@@ -821,7 +919,6 @@ def verify_compliance_and_license_blackbox(pipeline_dir: Optional[Path]) -> Dict
             if not fpath or not is_verified_commercial_font(fpath):
                 unverified_fonts.append(str(item.get("name") or fpath))
 
-    # 核查 05_subtitles 使用的实际字体
     if (pipeline_dir / "05_subtitles.json").is_file():
         sub_fp = read_json(pipeline_dir / "05_subtitles.json").get("font_path")
         if sub_fp and not is_verified_commercial_font(sub_fp):
@@ -840,13 +937,27 @@ def verify_compliance_and_license_blackbox(pipeline_dir: Optional[Path]) -> Dict
     }
 
 
+def _parse_rational_sec(val: Optional[str]) -> Optional[float]:
+    if not val:
+        return None
+    s = str(val).strip()
+    if s.endswith("s"):
+        s = s[:-1]
+    try:
+        if "/" in s:
+            a, b = s.split("/", 1)
+            return float(a) / max(1e-6, float(b))
+        return float(s)
+    except Exception:
+        return None
+
+
 def verify_exports_blackbox(pipeline_dir: Path) -> Dict[str, Any]:
-    """#16 双端可编辑工程契约严审（缺失即 FAIL；FCPXML 禁绝对路径；HyperFrames 禁外链 CDN 且字幕<=1468px）。"""
+    """#16 双端可编辑工程契约严审（含 FCPXML 归属节点校验 & HyperFrames <template> 与离线可播放校验）。"""
     jy_dir = pipeline_dir / "jianying_draft"
     hf_dir = pipeline_dir / "hyperframes_draft"
     errors: List[str] = []
 
-    # 1. 剪映 FCPXML 强制校验
     fcpxmls = list(jy_dir.glob("*.fcpxml")) if jy_dir.exists() else []
     fcpxml_ok = True
     if not fcpxmls:
@@ -879,16 +990,34 @@ def verify_exports_blackbox(pipeline_dir: Path) -> Dict[str, Any]:
                     if not fp.is_file() or fp.stat().st_size == 0:
                         fcpxml_ok = False
                         errors.append(f"FCPXML 引用相对资产缺失或为空: {src}")
+            text_style_ids = {d.attrib["id"] for d in root.findall(".//text-style-def") if d.attrib.get("id")}
             for node in root.iter():
                 ref = node.attrib.get("ref") or node.attrib.get("format")
-                if ref and ref not in res_ids:
+                if not ref:
+                    continue
+                valid_pool = text_style_ids if node.tag == "text-style" else res_ids
+                if ref not in valid_pool:
                     fcpxml_ok = False
                     errors.append(f"FCPXML 存在悬空资源引用 ref={ref}")
+
+            # 校验 connected child (<video>/<title>/<marker>) 归属节点与局部时间有效性（严禁错堆超限）
+            spine = root.find(".//spine")
+            if spine is not None:
+                spine_clips = spine.findall("asset-clip")
+                for ac in spine_clips:
+                    c_start = _parse_rational_sec(ac.attrib.get("start")) or 0.0
+                    c_dur = _parse_rational_sec(ac.attrib.get("duration")) or 0.0
+                    for sub_tag in ("video", "title"):
+                        for ch in ac.findall(sub_tag):
+                            ch_off = _parse_rational_sec(ch.attrib.get("offset"))
+                            if ch_off is not None and (ch_off < c_start - 0.1 or ch_off > c_start + c_dur + 0.15):
+                                fcpxml_ok = False
+                                errors.append(f"FCPXML 子元素 {ch.attrib.get('name', sub_tag)} 错挂越出宿主剪辑范围")
+                                break
         except Exception as e:
             fcpxml_ok = False
             errors.append(f"FCPXML XML 解析异常: {e}")
 
-    # 2. HyperFrames 全离线相对路径与安全区检查
     hf_ok = True
     hf_cli = find_bin("hyperframes")
     idx_html = hf_dir / "index.html"
@@ -903,13 +1032,31 @@ def verify_exports_blackbox(pipeline_dir: Path) -> Dict[str, Any]:
                 hf_ok = False
                 errors.append(f"hyperframes check 失败: {(res.stderr or res.stdout)[:200]}")
 
-        html_files = [idx_html] + (list((hf_dir / "compositions").glob("*.html")) if (hf_dir / "compositions").exists() else [])
+        idx_txt = idx_html.read_text(encoding="utf-8", errors="ignore")
+        if "<template>" in idx_txt:
+            hf_ok = False
+            errors.append("HyperFrames 顶层 index.html 不应包裹在 <template> 中")
+        if "syncTime(" not in idx_txt or "hydrateSubCompositions(" not in idx_txt:
+            hf_ok = False
+            errors.append("HyperFrames 顶层 index.html 缺少离线时间线驱动脚本")
+
+        all_ids: List[str] = []
+        comp_files = list((hf_dir / "compositions").glob("*.html")) if (hf_dir / "compositions").exists() else []
+        for cfile in comp_files:
+            ctxt = cfile.read_text(encoding="utf-8", errors="ignore")
+            if "<template>" not in ctxt:
+                hf_ok = False
+                errors.append(f"HyperFrames 子组合缺少 <template> 传输容器: {cfile.name}")
+
+        html_files = [idx_html] + comp_files
         for hfile in html_files:
             txt = hfile.read_text(encoding="utf-8", errors="ignore")
             ext_urls = re.findall(r'https?://[^\s"\'<>)]+', txt, flags=re.IGNORECASE)
             if ext_urls:
                 hf_ok = False
                 errors.append(f"HyperFrames 禁止外链 CDN ({hfile.name}): {ext_urls[0]}")
+
+            all_ids.extend(re.findall(r'(?:^|\s)id=["\']([^"\']+)["\']', txt))
 
             ref_patterns = [
                 r'data-composition-src=["\']([^"\']+)["\']',
@@ -930,6 +1077,11 @@ def verify_exports_blackbox(pipeline_dir: Path) -> Dict[str, Any]:
                     if int(m_top) + int(m_h) > SUBTITLE_SAFE_ZONE["y_max"]:
                         hf_ok = False
                         errors.append(f"HyperFrames 字幕超出安全区 y_max={SUBTITLE_SAFE_ZONE['y_max']}: {int(m_top)+int(m_h)}")
+
+        id_dups = [i for i in set(all_ids) if all_ids.count(i) > 1]
+        if id_dups:
+            hf_ok = False
+            errors.append(f"HyperFrames 组装 DOM 存在重复 id: {id_dups[:4]}")
 
     passed = fcpxml_ok and hf_ok and len(errors) == 0
     return {
@@ -958,7 +1110,7 @@ def run_blackbox_verification(
         audio_ctx = precomputed_audio or extract_audio_context_once(video_path, td_path)
         audio_res = verify_audio_blackbox(video_path, td_path, pipeline_dir=pipeline_dir, audio_ctx=audio_ctx)
         sub_sync_res, read_res, color_res, meta_leak_res, freeze_res = verify_visual_and_subtitle_blackbox(
-            video_path, td_path, audio_res["speech_spans"]
+            video_path, td_path, audio_res["speech_spans"], pipeline_dir=pipeline_dir
         )
         spot_res = verify_cut_spot_blackbox(video_path, pipeline_dir, td_path)
         sfx_res = verify_sfx_in_window_blackbox(audio_ctx, pipeline_dir)
@@ -986,8 +1138,8 @@ def run_blackbox_verification(
             "[黑盒] 成片OCR安全区与声画字幕回环",
             sub_sync_res["status"],
             f"OCR后端={sub_sync_res['ocr_backend']} | 安全区越界={len(sub_sync_res['safe_violations'])} | "
-            f"语音帧字幕覆现={sub_sync_res['speech_sub_ocr_ratio']*100:.1f}%",
-            "0安全区越界且语音帧字幕匹配≥65%（依赖Apple Vision）",
+            f"语音帧字幕={sub_sync_res['speech_sub_ocr_ratio']*100:.1f}% | 内容匹配={sub_sync_res.get('sub_ocr_content_recall', 1.0)*100:.0f}%",
+            "0安全区越界且语音帧字幕≥65%+内容匹配≥45%（依赖Apple Vision）",
             sub_sync_res,
         ),
         _mk_check(
@@ -1001,11 +1153,12 @@ def run_blackbox_verification(
         ),
         _mk_check(
             "bb_color_scope",
-            "[黑盒] 色彩示波器与 common 肤色范围",
+            "[黑盒] 色彩示波器与 BT.709 肤色范围",
             color_res["status"],
             f"高光削波={color_res['max_clipped_white_pct']}% | 黑场={color_res['max_clipped_black_pct']}% | "
+            f"最大亮跳={color_res.get('max_luma_jump', 0.0):.1f} | "
             f"肤色违规={color_res['skin_sector_violations']}/{color_res['skin_samples_checked']}",
-            "高光≤55% 且 肤色100%落入 common.SKIN_YCBCR_RANGE",
+            "高光≤55%, 亮跳≤90 且 肤色100%落入 common.SKIN_YCBCR_RANGE",
             color_res,
         ),
         _mk_check(

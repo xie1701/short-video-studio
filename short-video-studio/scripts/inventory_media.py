@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
 [入口 2：带素材进来] 深度素材盘点、分镜日志 (00_shot_log) 与多模态视觉索引融合脚本
-功能：
-1. 扫描输入目录的视音频素材，解析 side_data/rotation 真实展示尺寸、HDR/10-bit、VFR 状态。
-2. 2D FFT 相位相关二阶位移加速度稳度 + 拉普拉斯锐度，锁定精华入点 best_in_sec（免除管道死锁）。
-3. 抽取精华帧批量调用 vision_inspector（Apple Vision / 跨平台降级），并支持融合多模态视觉索引 00_visual_index.json。
-4. 声画分离双评级 (audio_grade × video_grade)、禁忌词标注、生成等比接触表 00_contact_sheet.jpg。
+v5 增强：
+1. 单遍 4fps 像素流同时测算 BT.709 YAVG、1%/99% 极值分位、等面积归一化拉普拉斯锐度与 2D FFT 二阶稳度；
+   修复 skip=True 甩镜/硬切帧奖励成 best_in_sec 与 TV-range Y=16 导致 ng 死分支的 Bug。
+2. 直接解析双声道原生 PCM（detect L/R 无线麦单边失效、0dBFS 削波率、动态范围 p95-p10），防止嘈杂空镜误判 A-roll。
+3. 复用 common.detect_vfr_hdr 与 common.get_cached_font；支持多时间点抽帧跑 Vision 防止首帧漏脸/漏物体。
 """
 
 from __future__ import annotations
@@ -14,19 +14,26 @@ import argparse
 import math
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+SCRIPTS_ROOT = Path(__file__).resolve().parent
+if str(SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_ROOT))
+
 from common import (
     MEDIA_EXTS,
+    detect_vfr_hdr,
     ffprobe_media,
     find_bin,
     find_commercial_font,
+    get_cached_font,
     maybe_reexec_in_venv,
-    parse_fps,
     parse_video_stream_geometry,
     read_json,
+    rescue_stereo_channels,
     run_cmd,
     write_json,
 )
@@ -34,7 +41,7 @@ from common import (
 maybe_reexec_in_venv()
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont, ImageOps
+from PIL import Image, ImageDraw, ImageOps
 from vision_inspector import compute_laplacian_sharpness, inspect_images
 
 TABOO_KEYWORD_MAP: Dict[str, Tuple[str, ...]] = {
@@ -46,7 +53,7 @@ TABOO_KEYWORD_MAP: Dict[str, Tuple[str, ...]] = {
 
 
 def estimate_phase_shift(prev_gray: np.ndarray, cur_gray: np.ndarray) -> Tuple[float, float, bool]:
-    """用 2D FFT 相位相关估算两帧全局像素位移 (dx, dy)；纹理缺失或硬切时跳过。"""
+    """用 2D FFT 相位相关估算两帧全局像素位移 (dx, dy)；纹理缺失或甩镜/硬切时返回 skip=True。"""
     if float(np.std(prev_gray)) < 2.5 or float(np.std(cur_gray)) < 2.5:
         return 0.0, 0.0, True
     mad = float(np.mean(np.abs(cur_gray - prev_gray))) / 255.0
@@ -74,14 +81,67 @@ def estimate_phase_shift(prev_gray: np.ndarray, cur_gray: np.ndarray) -> Tuple[f
     return float(px + sub_x - (w // 2)), float(py + sub_y - (h // 2)), False
 
 
-def analyze_video_quality(path: Path, duration: float, display_w: int, display_h: int) -> Dict[str, Any]:
-    """检测亮度曝光、静音比例、拉普拉斯锐度与 FFT 二阶加速度稳度（基于真实旋转后展示宽高）。"""
+def _analyze_audio_raw(ffmpeg: str, path: Path, has_audio: bool, duration: float) -> Dict[str, Any]:
+    """直接解析原始双声道 16k PCM：检测静音占比、动态范围、0dBFS 削波率与无线麦单边失效。"""
+    if not has_audio or duration <= 0.1:
+        return {"silence_ratio": 1.0, "dyn_range_db": 0.0, "clipping_ratio": 0.0, "stereo_diag": "silent"}
+    try:
+        res = subprocess.run(
+            [
+                ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+                "-t", f"{min(duration, 45.0):.2f}", "-i", str(path),
+                "-vn", "-f", "s16le", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "2", "pipe:1",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        pcm = np.frombuffer(res.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+        if len(pcm) < 3200:
+            return {"silence_ratio": 1.0, "dyn_range_db": 0.0, "clipping_ratio": 0.0, "stereo_diag": "silent"}
+        arr = pcm.reshape(-1, 2)
+        arr_fixed, st_diag = rescue_stereo_channels(arr, imbalance_db=8.0)
+        mono = arr_fixed.mean(axis=1)
+        clip_ratio = float(np.mean(np.abs(mono) >= 0.992))
+        hop = 320  # 20ms @ 16k
+        n_hops = len(mono) // hop
+        if n_hops < 2:
+            return {"silence_ratio": 1.0, "dyn_range_db": 0.0, "clipping_ratio": clip_ratio, "stereo_diag": st_diag}
+        blocks = mono[: n_hops * hop].reshape(n_hops, hop)
+        rms = np.sqrt(np.mean(blocks ** 2, axis=1) + 1e-12)
+        db = 20.0 * np.log10(np.maximum(1e-6, rms))
+        p10, p95 = float(np.percentile(db, 10)), float(np.percentile(db, 95))
+        dyn_range = max(0.0, p95 - p10)
+        sil_ratio = float(np.mean(db < -42.0))
+        return {
+            "silence_ratio": round(sil_ratio, 2),
+            "dyn_range_db": round(dyn_range, 1),
+            "clipping_ratio": round(clip_ratio, 5),
+            "stereo_diag": st_diag,
+        }
+    except Exception:
+        return {"silence_ratio": 0.5, "dyn_range_db": 10.0, "clipping_ratio": 0.0, "stereo_diag": "error"}
+
+
+def analyze_video_quality(
+    path: Path,
+    duration: float,
+    display_w: int,
+    display_h: int,
+    has_audio: bool = True,
+) -> Dict[str, Any]:
+    """单遍视频流 + 双声道 PCM 质检（BT.709 曝光分位、等面积锐度、FFT 稳度、最佳入点与双声道诊断）。"""
     ffmpeg = find_bin("ffmpeg")
     if not ffmpeg or duration <= 0.1:
         return {
             "exposure": "unknown",
             "avg_luma": None,
-            "silence_ratio": 0.0,
+            "luma_p1": None,
+            "luma_p99": None,
+            "silence_ratio": 1.0,
+            "dyn_range_db": 0.0,
+            "clipping_ratio": 0.0,
+            "stereo_diag": "silent",
             "sharpness_score": 0.0,
             "stability_score": 1.0,
             "motion_speed_px": 0.0,
@@ -91,37 +151,22 @@ def analyze_video_quality(path: Path, duration: float, display_w: int, display_h
         }
 
     issues: List[str] = []
-    # 1. 亮度采样
-    res = run_cmd([
-        ffmpeg, "-v", "info", "-t", str(min(duration, 15.0)), "-i", str(path),
-        "-vf", "select='not(mod(n,10))',format=yuv420p,signalstats,metadata=print",
-        "-an", "-f", "null", "-",
-    ], check=False)
-    yavg_vals = [float(m) for m in re.findall(r"lavfi\.signalstats\.YAVG=([0-9.]+)", res.stderr or "")]
-    avg_luma = round(sum(yavg_vals) / len(yavg_vals), 1) if yavg_vals else 128.0
-    if avg_luma < 55:
-        exposure = "underexposed"
-        issues.append(f"画面偏暗 (YAVG={avg_luma})，建议第7步适当提亮曝光")
-    elif avg_luma > 205:
-        exposure = "overexposed"
-        issues.append(f"画面过曝 (YAVG={avg_luma})，建议第7步压低高光")
-    else:
-        exposure = "normal"
+    aud = _analyze_audio_raw(ffmpeg, path, has_audio, duration)
+    sil_ratio = aud["silence_ratio"]
+    if aud["stereo_diag"] != "ok" and aud["stereo_diag"] != "silent":
+        issues.append(f"检测到无线麦单边音频异常 ({aud['stereo_diag']})，Step 2/3 将自动拯救完好声道")
+    if aud["clipping_ratio"] > 0.005:
+        issues.append(f"原声存在数字削波破音 ({aud['clipping_ratio']*100:.2f}%)")
+    if has_audio and sil_ratio > 0.6:
+        issues.append(f"有效人声较少(静音占比 {int(sil_ratio*100)}%)，适合作为 B-roll 或配音")
 
-    # 2. 静音检测
-    res_sil = run_cmd([
-        ffmpeg, "-v", "info", "-i", str(path),
-        "-vn", "-af", "silencedetect=noise=-42dB:d=0.6",
-        "-f", "null", "-",
-    ], check=False)
-    sil_durs = [float(m) for m in re.findall(r"silence_duration:\s*([0-9.]+)", res_sil.stderr or "")]
-    sil_ratio = round(min(1.0, sum(sil_durs) / max(duration, 0.1)), 2)
-    if sil_ratio > 0.6:
-        issues.append(f"有效人声较少(静音占比 {int(sil_ratio*100)}%)，适合作为 B-roll 或补拍/配音")
-
-    # 3. 真实展示尺寸等比缩放下采样测锐度与二阶加速度 (stderr=DEVNULL 杜绝 64KB 管道死锁)
-    w_s = 240
-    h_s = max(2, int(round(display_h * w_s / max(1, display_w))) // 2 * 2) if display_w > 0 and display_h > 0 else 426
+    # 等面积缩放 (等效 sqrt(W*H) ≈ 320)，彻底消除横屏与竖屏锐度双标
+    dw = max(1, display_w)
+    dh = max(1, display_h)
+    target_px = 320.0 * 320.0
+    scale_s = math.sqrt(target_px / float(dw * dh))
+    w_s = max(120, int(round(dw * scale_s)) // 2 * 2)
+    h_s = max(120, int(round(dh * scale_s)) // 2 * 2)
     frame_bytes = w_s * h_s * 3
     sample_fps = 4.0
     max_scan = min(duration, 30.0)
@@ -137,6 +182,9 @@ def analyze_video_quality(path: Path, duration: float, display_w: int, display_h
     )
     assert proc.stdout is not None
     sharps: List[float] = []
+    lumas_tv: List[float] = []
+    p1s: List[float] = []
+    p99s: List[float] = []
     shifts: List[Tuple[float, float, bool]] = []
     prev_gray: Optional[np.ndarray] = None
     while True:
@@ -144,34 +192,61 @@ def analyze_video_quality(path: Path, duration: float, display_w: int, display_h
         if len(raw) < frame_bytes:
             break
         arr = np.frombuffer(raw, dtype=np.uint8).reshape((h_s, w_s, 3))
-        gray = (
-            0.299 * arr[:, :, 0].astype(np.float32)
-            + 0.587 * arr[:, :, 1].astype(np.float32)
-            + 0.114 * arr[:, :, 2].astype(np.float32)
+        # BT.709 RGB -> 全范围灰度 & TV-range Y (16..235)
+        y_full = (
+            0.2126 * arr[:, :, 0].astype(np.float32)
+            + 0.7152 * arr[:, :, 1].astype(np.float32)
+            + 0.0722 * arr[:, :, 2].astype(np.float32)
         )
-        # 复用已计算的 gray，避免 compute_laplacian_sharpness 重复算灰度
-        sharps.append(compute_laplacian_sharpness(gray))
+        y_tv = 16.0 + (219.0 / 255.0) * y_full
+        lumas_tv.append(float(np.mean(y_tv)))
+        if len(p1s) < 60:
+            p1s.append(float(np.percentile(y_tv, 1)))
+            p99s.append(float(np.percentile(y_tv, 99)))
+        sharps.append(compute_laplacian_sharpness(y_full))
         if prev_gray is not None:
-            shifts.append(estimate_phase_shift(prev_gray, gray))
+            shifts.append(estimate_phase_shift(prev_gray, y_full))
         else:
             shifts.append((0.0, 0.0, True))
-        prev_gray = gray
+        prev_gray = y_full
     proc.wait()
+
+    avg_luma = round(float(np.mean(lumas_tv)), 1) if lumas_tv else 128.0
+    luma_p1 = round(float(np.mean(p1s)), 1) if p1s else 16.0
+    luma_p99 = round(float(np.mean(p99s)), 1) if p99s else 230.0
+    if avg_luma < 55:
+        exposure = "underexposed"
+        issues.append(f"画面偏暗 (BT709 YAVG={avg_luma})，建议第7步适当提亮曝光")
+    elif avg_luma > 205 or (luma_p99 > 233 and avg_luma > 180):
+        exposure = "overexposed"
+        issues.append(f"画面高光过曝 (YAVG={avg_luma}, P99={luma_p99})，建议第7步压低高光")
+    elif luma_p1 <= 20 and luma_p99 >= 230 and avg_luma < 90:
+        exposure = "high_contrast_backlit"
+        issues.append("检测到逆光大反差，Step 7 将优先提亮中间调/肤色")
+    else:
+        exposure = "normal"
 
     speeds: List[float] = [0.0] * len(sharps)
     accels: List[float] = [0.0] * len(sharps)
+    valid_speeds: List[float] = []
     valid_accels: List[float] = []
     for i in range(1, len(shifts)):
         dx1, dy1, skip1 = shifts[i]
         dx0, dy0, skip0 = shifts[i - 1]
-        speeds[i] = math.hypot(dx1, dy1)
-        if not skip1 and not skip0 and i >= 2:
+        if skip1:
+            # 甩镜或硬切跳过帧惩罚高加速度，绝不伪装成 0.0 稳定帧奖励入点！
+            accels[i] = 15.0
+            continue
+        sp = math.hypot(dx1, dy1)
+        speeds[i] = sp
+        valid_speeds.append(sp)
+        if not skip0 and i >= 2:
             acc = math.hypot(dx1 - dx0, dy1 - dy0)
             accels[i] = acc
             valid_accels.append(acc)
 
     sharpness_score = round(float(np.mean(sharps)), 1) if sharps else 0.0
-    med_speed = round(float(np.median([s for i, s in enumerate(speeds) if i > 0])) if len(speeds) > 1 else 0.0, 2)
+    med_speed = round(float(np.median(valid_speeds)) if valid_speeds else 0.0, 2)
     med_accel = round(float(np.median(valid_accels)) if valid_accels else 0.0, 2)
     stability_score = round(max(0.0, min(1.0, 1.0 - (max(0.0, med_accel - 0.6) / 10.0))), 3)
 
@@ -202,7 +277,12 @@ def analyze_video_quality(path: Path, duration: float, display_w: int, display_h
     return {
         "exposure": exposure,
         "avg_luma": avg_luma,
+        "luma_p1": luma_p1,
+        "luma_p99": luma_p99,
         "silence_ratio": sil_ratio,
+        "dyn_range_db": aud["dyn_range_db"],
+        "clipping_ratio": aud["clipping_ratio"],
+        "stereo_diag": aud["stereo_diag"],
         "sharpness_score": sharpness_score,
         "stability_score": stability_score,
         "motion_speed_px": med_speed,
@@ -226,7 +306,13 @@ def classify_clip(
         return "b_roll_candidate"
     if "aroll" in low or "a_roll" in low or "talk" in low:
         return "a_roll_candidate"
-    if a_stream and quality["silence_ratio"] < 0.55 and duration >= 2.0:
+    # 不仅看 silence_ratio，还需具备语音动态范围 >= 7dB（防止嘈杂环境空镜持续底噪误判成口播 A-roll）
+    if (
+        a_stream
+        and quality["silence_ratio"] < 0.55
+        and float(quality.get("dyn_range_db", 0.0)) >= 7.0
+        and duration >= 2.0
+    ):
         return "a_roll_candidate"
     return "b_roll_candidate"
 
@@ -290,10 +376,7 @@ def _infer_taboo_tags(
 
 
 def _has_foreground_teleprompter(faces: List[Dict[str, Any]], text_boxes: List[Dict[str, Any]]) -> bool:
-    """
-    区分“手持大面积提词稿/A4纸”与“门店背景远景招牌/菜单”：
-    仅当画面中心/中下部 (y in [0.25, 0.88], x in [0.15, 0.85]) 存在密集多段文本（>=4 行或总字符 >=28 且覆盖宽度较宽）时才判为提词稿。
-    """
+    """区分前景手持提词稿与背景招牌：除字数/行数外，校验文字面积占屏比及与人脸相对尺度。"""
     if not faces or not text_boxes:
         return False
     fg_boxes = [
@@ -303,7 +386,8 @@ def _has_foreground_teleprompter(faces: List[Dict[str, Any]], text_boxes: List[D
         and len(str(b.get("text", "")).strip()) >= 3
     ]
     fg_chars = sum(len(str(b.get("text", "")).strip()) for b in fg_boxes)
-    return (len(fg_boxes) >= 4 and fg_chars >= 24) or fg_chars >= 36
+    fg_area = sum(float(b.get("w", 0.0)) * float(b.get("h", 0.0)) for b in fg_boxes)
+    return ((len(fg_boxes) >= 4 and fg_chars >= 28) or fg_chars >= 40) and fg_area >= 0.025
 
 
 def _assess_av_grades(
@@ -315,15 +399,17 @@ def _assess_av_grades(
     role: str,
     v_idx_entry: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, str, List[str]]:
-    """A2 声画分离双评级 (audio_grade × video_grade: usable | audio_only | ng)。"""
+    """A2 声画分离双评级 (audio_grade × video_grade: usable | audio_only | ng)，修正 TV-range 黑帧判断。"""
     reasons: List[str] = []
     sil = float(quality.get("silence_ratio", 0.0))
+    dyn = float(quality.get("dyn_range_db", 12.0))
     sharp = float(quality.get("sharpness_score", 0.0))
     luma = float(quality.get("avg_luma") or 128.0)
+    luma_span = float(quality.get("luma_p99") or 200.0) - float(quality.get("luma_p1") or 20.0)
 
     if not has_audio or sil >= 0.85:
         audio_grade = "silent"
-    elif sil >= 0.72:
+    elif sil >= 0.72 or (dyn > 0.0 and dyn < 6.5):
         audio_grade = "noisy"
     else:
         audio_grade = "usable"
@@ -341,9 +427,10 @@ def _assess_av_grades(
         for f in faces
     )
 
-    if sharp < 8.0 and audio_grade != "usable" and luma < 12.0:
+    is_dead_frame = (luma <= 22.0 and sharp < 10.0) or (luma_span <= 10.0 and sharp < 6.0)
+    if is_dead_frame and audio_grade != "usable":
         video_grade = "ng"
-        reasons.append("画面黑废且无可用人声 (ng)")
+        reasons.append(f"画面死黑/纯色废片(YAVG={luma:.1f}, sharp={sharp:.1f})且无可用人声 (ng)")
     elif "audio_only" in fname_low:
         video_grade = "audio_only"
         reasons.append("文件名标记仅取人声遮脸 (audio_only)")
@@ -362,6 +449,9 @@ def _assess_av_grades(
             reasons.append("声好画废降级保声遮脸: " + "、".join(bad))
         else:
             video_grade = "usable"
+    elif is_dead_frame:
+        video_grade = "ng"
+        reasons.append("画面死黑/纯色废片 (ng)")
     else:
         video_grade = "usable"
 
@@ -374,9 +464,9 @@ def recommend_angle(
     raw_intel: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """结合素材盘点与一手客户原材 00_raw_intel.json，反推最稳妥的选题结构建议。"""
-    has_aroll = any(c["suggested_role"] == "a_roll_candidate" for c in clips)
+    has_aroll = any(c["suggested_role"] == "a_roll_candidate" and c.get("video_grade") != "ng" for c in clips)
     total_dur = round(sum(c["duration_sec"] for c in clips), 2)
-    broll_count = sum(1 for c in clips if c["suggested_role"] == "b_roll_candidate")
+    broll_count = sum(1 for c in clips if c["suggested_role"] == "b_roll_candidate" and c.get("video_grade") != "ng")
 
     pain_kws = (raw_intel or {}).get("pain_keywords", [])
     questions = (raw_intel or {}).get("customer_questions", [])
@@ -438,11 +528,8 @@ def _build_contact_sheet(
     pad = 12
     canvas = Image.new("RGB", (cols * (tw + pad) + pad, rows * (cell_h + pad) + pad), (18, 20, 26))
     draw = ImageDraw.Draw(canvas)
-    f_path = find_commercial_font()
-    try:
-        fnt = ImageFont.truetype(f_path, 14) if f_path else ImageFont.load_default()
-    except Exception:
-        fnt = ImageFont.load_default()
+    f_path = find_commercial_font(verified_only=True)
+    fnt = get_cached_font(f_path, 14)
 
     for idx, c in enumerate(clips):
         r, col = divmod(idx, cols)
@@ -548,7 +635,7 @@ def inventory_directory(
         td_path = Path(td)
         rep_frames: List[Path] = []
         frame_to_idx: Dict[str, int] = {}
-        idx_to_frame: Dict[int, Path] = {}
+        idx_to_frames: Dict[int, List[Path]] = {}
         idx_to_boxes: Dict[int, List[Dict[str, Any]]] = {}
 
         for f in files:
@@ -562,19 +649,17 @@ def inventory_directory(
             dur = float(meta.get("format", {}).get("duration") or v_stream.get("duration") or 0.0)
             geom = parse_video_stream_geometry(v_stream)
             dw, dh = geom["display_width"], geom["display_height"]
-            r_fps = parse_fps(v_stream.get("r_frame_rate", "0/1"))
-            avg_fps = parse_fps(v_stream.get("avg_frame_rate", "0/1"))
-            is_vfr = abs(r_fps - avg_fps) > 0.5 or avg_fps == 0.0
-
-            color_transfer = str(v_stream.get("color_transfer") or "unknown")
-            color_primaries = str(v_stream.get("color_primaries") or "unknown")
-            color_space = str(v_stream.get("color_space") or "unknown")
-            pix_fmt = str(v_stream.get("pix_fmt") or "unknown")
-            is_hdr = color_transfer in ("arib-std-b67", "smpte2084") or "bt2020" in color_primaries or "bt2020" in color_space
+            vh = detect_vfr_hdr(meta)
+            r_fps, avg_fps, is_vfr = vh["r_fps"], vh["avg_fps"], vh["is_vfr"]
+            color_transfer = vh["color_transfer"] or "unknown"
+            color_primaries = vh["color_primaries"] or "unknown"
+            color_space = vh["color_space"] or "unknown"
+            pix_fmt = vh["pix_fmt"] or "unknown"
+            is_hdr = vh["was_hdr"]
             is_10bit = any(k in pix_fmt for k in ("10le", "10be", "p010"))
 
             v_idx_entry = v_index.get(f.name) or v_index.get(f.stem)
-            quality = analyze_video_quality(f, dur, dw, dh)
+            quality = analyze_video_quality(f, dur, dw, dh, has_audio=(a_stream is not None))
             if v_idx_entry and isinstance(v_idx_entry.get("best_in_sec"), (int, float)):
                 quality["best_in_sec"] = round(max(0.0, min(max(0.0, dur - 0.5), float(v_idx_entry["best_in_sec"]))), 2)
 
@@ -586,14 +671,15 @@ def inventory_directory(
             if is_vfr:
                 issues.append(f"检测到可变帧率 VFR (r_fps={r_fps:.2f}, avg_fps={avg_fps:.2f})，Step 1 将强制转 30fps CFR")
             if dw > dh:
-                issues.append(f"横屏素材 ({dw}x{dh})，Step 1 将裁切适配 1080x1920 并同步映射人脸坐标")
+                issues.append(f"横屏素材 ({dw}x{dh})，Step 1 将按人脸/显著性焦点裁切适配 1080x1920")
             if dw < 720 or dh < 1080:
                 issues.append(f"分辨率偏低 ({dw}x{dh})，建议仅作局部插画或谨慎使用")
 
             role = classify_clip(f.name, a_stream, quality, dur, v_idx_entry=v_idx_entry)
             tags_meta = meta.get("format", {}).get("tags", {}) or v_stream.get("tags", {}) or {}
             ctime = str(tags_meta.get("creation_time", ""))[:10]
-            scene_group = f"shoot_{ctime}" if ctime else "shoot_default"
+            luma_band = "dark" if (quality.get("avg_luma") or 128) < 85 else ("bright" if (quality.get("avg_luma") or 128) > 165 else "mid")
+            scene_group = f"shoot_{ctime or 'default'}_{geom['orientation']}_{luma_band}"
 
             clip_idx = len(clips)
             clips.append({
@@ -627,7 +713,7 @@ def inventory_directory(
                 "issues": issues,
                 "suggested_role": role,
                 "usable": dur >= 0.8,
-                "audio_grade": "usable" if (a_stream is not None and quality["silence_ratio"] < 0.85) else "silent",
+                "audio_grade": "usable",
                 "video_grade": "usable",
                 "taboo_tags": [],
                 "scene_group": scene_group,
@@ -642,21 +728,34 @@ def inventory_directory(
             })
 
             if ffmpeg and dur > 0.1:
-                rep_jpg = td_path / f"rep_{clip_idx:03d}.jpg"
-                run_cmd([
-                    ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
-                    "-ss", f"{quality['best_in_sec']:.2f}", "-i", str(f),
-                    "-frames:v", "1", "-q:v", "3", str(rep_jpg),
-                ], check=False)
-                if rep_jpg.exists():
-                    rep_frames.append(rep_jpg)
-                    frame_to_idx[str(rep_jpg)] = clip_idx
-                    idx_to_frame[clip_idx] = rep_jpg
+                sample_ts = [quality["best_in_sec"]]
+                if dur >= 4.0:
+                    mid_ts = round(min(dur - 0.3, max(quality["best_in_sec"] + 1.2, dur * 0.55)), 2)
+                    if abs(mid_ts - sample_ts[0]) >= 0.8:
+                        sample_ts.append(mid_ts)
+                for s_i, ts in enumerate(sample_ts):
+                    rep_jpg = td_path / f"rep_{clip_idx:03d}_{s_i}.jpg"
+                    run_cmd([
+                        ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+                        "-ss", f"{ts:.2f}", "-i", str(f),
+                        "-frames:v", "1", "-q:v", "3", str(rep_jpg),
+                    ], check=False)
+                    if rep_jpg.exists():
+                        rep_frames.append(rep_jpg)
+                        frame_to_idx[str(rep_jpg)] = clip_idx
+                        idx_to_frames.setdefault(clip_idx, []).append(rep_jpg)
 
         vis_map = inspect_images(rep_frames)
-        for fp_str, c_idx in frame_to_idx.items():
-            vr = vis_map.get(fp_str, {})
-            faces = vr.get("faces", [])
+        for c_idx in range(len(clips)):
+            f_list = idx_to_frames.get(c_idx, [])
+            best_vr: Dict[str, Any] = {}
+            all_boxes: List[Dict[str, Any]] = []
+            for fp in f_list:
+                vr = vis_map.get(str(fp), {})
+                all_boxes.extend(vr.get("texts", []) or [])
+                if not best_vr or (vr.get("faces") and not best_vr.get("faces")):
+                    best_vr = vr
+            faces = best_vr.get("faces", [])
             clips[c_idx]["faces"] = faces
             if faces:
                 f0 = faces[0]
@@ -665,17 +764,17 @@ def inventory_directory(
                     "cy": round(float(f0.get("eye_cy", 0.36)), 4),
                     "eye_open_ratio": round(float(f0.get("eye_open_ratio", 0.25)), 4),
                 }
-            clips[c_idx]["saliency_bbox"] = vr.get("saliency")
-            boxes = vr.get("texts", []) or []
-            idx_to_boxes[c_idx] = boxes
-            ocrs = [str(t.get("text", "")) for t in boxes if t.get("text")]
+            clips[c_idx]["saliency_bbox"] = best_vr.get("saliency")
+            idx_to_boxes[c_idx] = all_boxes
+            ocrs = [str(t.get("text", "")) for t in all_boxes if t.get("text")]
             clips[c_idx]["ocr_texts"] = ocrs
             ve = clips[c_idx].get("_v_idx_entry")
             clips[c_idx]["semantic_tags"] = _infer_semantic_tags(
-                clips[c_idx]["filename"], vr, clips[c_idx]["quality"].get("avg_luma"), v_idx_entry=ve
+                clips[c_idx]["filename"], best_vr, clips[c_idx]["quality"].get("avg_luma"), v_idx_entry=ve
             )
             clips[c_idx]["taboo_tags"] = _infer_taboo_tags(clips[c_idx]["filename"], ocrs, v_idx_entry=ve)
 
+        primary_frames = {ci: fl[0] for ci, fl in idx_to_frames.items() if fl}
         for c_idx, c in enumerate(clips):
             ve = c.pop("_v_idx_entry", None)
             ag, vg, grade_reasons = _assess_av_grades(
@@ -694,7 +793,7 @@ def inventory_directory(
                 c["usable"] = False
 
         if contact_sheet_path is not None:
-            _build_contact_sheet(clips, idx_to_frame, contact_sheet_path)
+            _build_contact_sheet(clips, primary_frames, contact_sheet_path)
 
     recommendation = recommend_angle(clips, track, raw_intel=raw_intel)
     return {

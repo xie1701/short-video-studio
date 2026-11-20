@@ -14,17 +14,25 @@ from __future__ import annotations
 import argparse
 import math
 import re
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
 
 from common import (
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
     SUBTITLE_SAFE_ZONE,
+    bbox_iou,
     check_bbox_in_safe_zone,
     find_commercial_font,
+    get_cached_font,
     load_subtitle_templates,
     maybe_reexec_in_venv,
+    parse_manifest_faces,
     read_json,
     write_json,
 )
@@ -32,11 +40,52 @@ from common import (
 # 仅保留夹在数字间的小数点/冒号(如 3.5 / 18:30)以及数字后的%，彻底清掉紧贴数字的中文逗号句号！
 _NON_CORE_PUNCT_RE = re.compile(r"(?<!\d)[.:：](?!\d)|(?<!\d)[.:：](?=\d)|(?<=\d)[.:：](?!\d)|[，。、；！？,!?;“”‘’\"'（）()]+")
 
-_PIL_FONT_CACHE: Dict[Tuple[str, int], Any] = {}
-
 
 def strip_display_punctuation(text: str) -> str:
-    return _NON_CORE_PUNCT_RE.sub("", str(text or ""))
+    raw = str(text or "")
+    # 先将夹在数字间的全角冒号归一化为半角冒号
+    raw = re.sub(r"(?<=\d)：(?=\d)", ":", raw)
+    return _NON_CORE_PUNCT_RE.sub("", raw)
+
+
+def _clean_word_tokens(raw_words: List[Dict[str, Any]], strip_punct: bool) -> List[Dict[str, Any]]:
+    """逐词清洗标点，并保护跨 token 拆分的数字小数点/时间冒号(如 '18:' + '30')不被误杀。"""
+    if not strip_punct:
+        out: List[Dict[str, Any]] = []
+        for w in raw_words:
+            t = str(w.get("word", "")).strip()
+            if t:
+                cw = dict(w)
+                cw["word"] = t
+                out.append(cw)
+        return out
+
+    out = []
+    n = len(raw_words)
+    for idx, w in enumerate(raw_words):
+        orig = str(w.get("word", ""))
+        prev_txt = str(raw_words[idx - 1].get("word", "")) if idx > 0 else ""
+        next_txt = str(raw_words[idx + 1].get("word", "")) if idx + 1 < n else ""
+        # 如果当前词以 .:： 结尾且下一词以数字开头，或以 .:： 开头且上一词以数字结尾，暂时用占位符保护
+        lead_protected = bool(orig and orig[0] in ".:：" and prev_txt and prev_txt[-1].isdigit())
+        trail_protected = bool(orig and orig[-1] in ".:：" and next_txt and next_txt[0].isdigit())
+        tmp = orig
+        if lead_protected:
+            tmp = "9" + tmp
+        if trail_protected:
+            tmp = tmp + "9"
+        cleaned = strip_display_punctuation(tmp)
+        if lead_protected and cleaned.startswith("9"):
+            cleaned = cleaned[1:]
+        if trail_protected and cleaned.endswith("9"):
+            cleaned = cleaned[:-1]
+        cleaned = cleaned.strip()
+        if not cleaned:
+            continue
+        cw = dict(w)
+        cw["word"] = cleaned
+        out.append(cw)
+    return out
 
 
 def fmt_ass_time(sec: float) -> str:
@@ -50,21 +99,8 @@ def _escape_ass_text(txt: str) -> str:
     return txt.replace("{", r"\{").replace("}", r"\}")
 
 
-def _get_cached_font(font_path: Optional[str], font_size: int):
-    if not font_path:
-        return None
-    key = (font_path, int(font_size))
-    if key not in _PIL_FONT_CACHE:
-        try:
-            from PIL import ImageFont
-            _PIL_FONT_CACHE[key] = ImageFont.truetype(font_path, int(font_size))
-        except Exception:
-            _PIL_FONT_CACHE[key] = None
-    return _PIL_FONT_CACHE[key]
-
-
 def _measure_text_px(text: str, font_path: Optional[str], font_size: int) -> Tuple[int, int]:
-    fnt = _get_cached_font(font_path, font_size)
+    fnt = get_cached_font(font_path, font_size)
     if fnt is not None:
         try:
             from PIL import Image, ImageDraw
@@ -76,26 +112,13 @@ def _measure_text_px(text: str, font_path: Optional[str], font_size: int) -> Tup
     return int(len(text) * font_size * 1.04), int(font_size * 1.35 + 24)
 
 
-def _rect_iou_px(b1: Dict[str, int], b2: Dict[str, float]) -> float:
-    x1 = max(float(b1["x"]), float(b2["x"]))
-    y1 = max(float(b1["y"]), float(b2["y"]))
-    x2 = min(float(b1["x"] + b1["w"]), float(b2["x"] + b2["w"]))
-    y2 = min(float(b1["y"] + b1["h"]), float(b2["y"] + b2["h"]))
-    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
-    if inter <= 0.0:
-        return 0.0
-    a1 = max(1.0, float(b1["w"] * b1["h"]))
-    a2 = max(1.0, float(b2["w"] * b2["h"]))
-    return inter / max(1e-6, a1 + a2 - inter)
-
-
 def _compute_authoritative_subtitle_bbox(
     text: str,
     tpl: Dict[str, Any],
     font_path: Optional[str],
-    face_boxes_px: List[Dict[str, float]],
+    face_boxes_px: List[Dict[str, Any]],
 ) -> Dict[str, int]:
-    """按唯一 SUBTITLE_SAFE_ZONE 精确计算尺寸并一次性避开人脸五官，产出三端统一 final_bbox。"""
+    """按唯一 SUBTITLE_SAFE_ZONE 精确计算尺寸并一次性避开人脸五官，产出四端统一 final_bbox。"""
     base_fs = int(tpl.get("font_size", 54))
     kw_scale = float(tpl.get("keyword_scale", 1.16))
     eff_fs = int(round(base_fs * min(1.22, max(1.0, (1.0 + kw_scale) * 0.5))))
@@ -107,22 +130,38 @@ def _compute_authoritative_subtitle_bbox(
     box_h = min(220, max(84, est_h + 16))
     box_x = max(SUBTITLE_SAFE_ZONE["x_min"], min(SUBTITLE_SAFE_ZONE["x_max"] - box_w, center_x - box_w // 2))
 
-    # 钳位 safe_y_center，杜绝如 style_18 等 y=1420+半高>1480 的越界问题
+    # 钳位 safe_y_center，杜绝越出 SUBTITLE_SAFE_ZONE
     safe_yc = int(tpl.get("safe_y_center", 1340))
     box_y = max(SUBTITLE_SAFE_ZONE["y_min"], min(SUBTITLE_SAFE_ZONE["y_max"] - box_h, safe_yc - box_h // 2))
     cand = {"x": int(box_x), "y": int(box_y), "w": int(box_w), "h": int(box_h)}
 
     if face_boxes_px:
-        if max(_rect_iou_px(cand, fb) for fb in face_boxes_px) > 0.01:
-            for try_y in (
-                SUBTITLE_SAFE_ZONE["y_max"] - box_h,
-                max(SUBTITLE_SAFE_ZONE["y_min"], box_y - 120),
-                SUBTITLE_SAFE_ZONE["y_min"],
-            ):
-                alt = dict(cand, y=int(try_y))
-                if max(_rect_iou_px(alt, fb) for fb in face_boxes_px) <= 0.01:
-                    cand = alt
+        cur_iou = max(bbox_iou(cand, fb) for fb in face_boxes_px)
+        if cur_iou > 0.01:
+            y_lo = SUBTITLE_SAFE_ZONE["y_min"]
+            y_hi = SUBTITLE_SAFE_ZONE["y_max"] - box_h
+            try_ys = [
+                y_hi,
+                y_lo,
+                max(y_lo, box_y - 110),
+                min(y_hi, box_y + 110),
+                max(y_lo, y_lo + 60),
+                min(y_hi, y_hi - 60),
+                (y_lo + y_hi) // 2,
+            ]
+            best_cand = cand
+            best_iou = cur_iou
+            for ty in try_ys:
+                ty_c = max(y_lo, min(y_hi, int(ty)))
+                alt = dict(cand, y=ty_c)
+                iou_v = max(bbox_iou(alt, fb) for fb in face_boxes_px)
+                if iou_v <= 0.01:
+                    best_cand = alt
                     break
+                if iou_v < best_iou:
+                    best_iou = iou_v
+                    best_cand = alt
+            cand = best_cand
     return cand
 
 
@@ -136,8 +175,7 @@ def split_sentence_into_chunks(
 ) -> List[Dict[str, Any]]:
     """把长句按真静音 (>=0.30s) 呼吸组与 92% 安全宽拆分为无残句字幕块（放行 4 字，严禁 <=3 字残组）。"""
     clean_fn = strip_display_punctuation if strip_punct else (lambda s: str(s or "").strip())
-    raw_words = sent.get("words") or []
-    words = [w for w in raw_words if clean_fn(str(w.get("word", ""))).strip()]
+    words = _clean_word_tokens(list(sent.get("words") or []), strip_punct=strip_punct)
     if not words:
         clean_txt = clean_fn(str(sent.get("text", ""))).strip()
         return [{
@@ -145,7 +183,7 @@ def split_sentence_into_chunks(
             "start_sec": sent["start_sec"],
             "end_sec": sent["end_sec"],
             "words": [],
-            "keywords": sent.get("keywords", []),
+            "keywords": list(sent.get("keywords") or []),
         }]
 
     breath_groups: List[List[Dict[str, Any]]] = []
@@ -163,9 +201,23 @@ def split_sentence_into_chunks(
         else:
             breath_groups.append(cur_grp)
 
+    def _split_oversized_slice(sl: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+        t = "".join(str(x["word"]) for x in sl)
+        pw, _ = _measure_text_px(t, font_path, font_size)
+        if pw <= max_safe_px or len(sl) < 8:
+            return [sl]
+        mid = len(sl) // 2
+        if 4 <= mid < len(sl) - 4 and sl[mid - 1].get("is_keyword") and sl[mid].get("is_keyword"):
+            mid += 1
+        left, right = sl[:mid], sl[mid:]
+        if len(left) <= 3 or len(right) <= 3:
+            return [sl]
+        return _split_oversized_slice(left) + _split_oversized_slice(right)
+
     chunks: List[Dict[str, Any]] = []
+    sent_kws = list(sent.get("keywords") or [])
     for grp in breath_groups:
-        txt = "".join(clean_fn(str(x["word"])) for x in grp)
+        txt = "".join(str(x["word"]) for x in grp)
         px_w, _ = _measure_text_px(txt, font_path, font_size)
         if len(grp) <= max_chars + 1 and px_w <= max_safe_px:
             chunks.append({
@@ -173,7 +225,7 @@ def split_sentence_into_chunks(
                 "start_sec": grp[0]["start_sec"],
                 "end_sec": grp[-1]["end_sec"],
                 "words": list(grp),
-                "keywords": sent.get("keywords", []),
+                "keywords": sent_kws,
             })
             continue
 
@@ -197,17 +249,47 @@ def split_sentence_into_chunks(
             tail = sub_slices.pop()
             sub_slices[-1].extend(tail)
 
+        checked_slices: List[List[Dict[str, Any]]] = []
         for sl in sub_slices:
+            if sl:
+                checked_slices.extend(_split_oversized_slice(sl))
+
+        for sl in checked_slices:
             if not sl:
                 continue
             chunks.append({
-                "text": "".join(clean_fn(str(x["word"])) for x in sl),
+                "text": "".join(str(x["word"]) for x in sl),
                 "start_sec": sl[0]["start_sec"],
                 "end_sec": sl[-1]["end_sec"],
                 "words": list(sl),
-                "keywords": sent.get("keywords", []),
+                "keywords": sent_kws,
             })
     return chunks
+
+
+def _build_safe_ass_style(raw_ass_style: str, font_path: Optional[str]) -> str:
+    """动态对齐 ASS Style 中的字体名为当前解析的商用字体，且确保 MarginV >= 1920 - SUBTITLE_SAFE_ZONE['y_max']。"""
+    parts = [p.strip() for p in str(raw_ass_style or "").split(",")]
+    if len(parts) < 23:
+        return str(raw_ass_style or "")
+    if font_path:
+        stem = Path(font_path).stem
+        if "Alimama" in stem:
+            parts[1] = "Alimama ShuHeiTi"
+        elif "NotoSerifSC" in stem:
+            parts[1] = "Noto Serif CJK SC"
+        elif "NotoSans" in stem:
+            parts[1] = "Noto Sans CJK SC"
+        elif "PingFang" not in stem and "STHeiti" not in stem:
+            parts[1] = stem
+    min_margin_v = CANVAS_HEIGHT - SUBTITLE_SAFE_ZONE["y_max"]  # 452
+    try:
+        cur_mv = int(float(parts[21]))
+    except Exception:
+        cur_mv = min_margin_v
+    if cur_mv < min_margin_v:
+        parts[21] = str(min_margin_v)
+    return ",".join(parts)
 
 
 def run_step5(
@@ -221,20 +303,11 @@ def run_step5(
     man_p = pipeline_dir / "01_manifest.json"
     manifest = read_json(man_p) if man_p.exists() else {"items": []}
 
-    # 获取每段规范素材在 1080x1920 裁切后画布的精确人脸框
-    faces_by_mp4: Dict[str, List[Dict[str, float]]] = {}
+    # 获取每段规范素材在 1080x1920 裁切后画布的精确像素人脸框（兼容归一化与像素坐标系）
+    faces_by_mp4: Dict[str, List[Dict[str, int]]] = {}
     for it in manifest.get("items", []):
         mp = str(it.get("normalized_mp4", ""))
-        f_list = []
-        for f_obj in it.get("faces") or []:
-            fb = f_obj.get("bbox")
-            if isinstance(fb, dict):
-                f_list.append({
-                    "x": float(fb["x"]) * CANVAS_WIDTH,
-                    "y": float(fb["y"]) * CANVAS_HEIGHT,
-                    "w": float(fb["w"]) * CANVAS_WIDTH,
-                    "h": float(fb["h"]) * CANVAS_HEIGHT,
-                })
+        f_list = parse_manifest_faces(it)
         if mp and f_list:
             faces_by_mp4[mp] = f_list
 
@@ -269,7 +342,7 @@ def run_step5(
             sub_dur = max(0.05, en_sec - st_sec)
 
             # 收集该字幕在时间线上重叠镜头的精确人脸框以执行源头避脸
-            active_faces: List[Dict[str, float]] = []
+            active_faces: List[Dict[str, Any]] = []
             for c in edl.get("clips", []):
                 if float(c["timeline_in_sec"]) < en_sec and float(c["timeline_out_sec"]) > st_sec:
                     active_faces.extend(faces_by_mp4.get(str(c.get("media_path", "")), []))
@@ -293,6 +366,7 @@ def run_step5(
                 "text": ch["text"],
                 "start_sec": st_sec,
                 "end_sec": en_sec,
+                "keywords": ch.get("keywords", sent.get("keywords", [])),
                 "words": ch["words"],
                 "bbox": final_bbox,
                 "final_bbox": final_bbox,
@@ -307,10 +381,9 @@ def run_step5(
             entries.append(entry_obj)
 
             if not suppressed:
-                clean_fn = strip_display_punctuation if strip_punct else (lambda s: str(s or ""))
                 ass_text = ""
                 for w in ch["words"]:
-                    w_txt = _escape_ass_text(clean_fn(str(w["word"])))
+                    w_txt = _escape_ass_text(str(w["word"]))
                     if not w_txt:
                         continue
                     if w.get("is_keyword"):
@@ -324,6 +397,7 @@ def run_step5(
                 )
             idx += 1
 
+    safe_ass_style = _build_safe_ass_style(tpl["ass_style"], font_path)
     ass_content = "\n".join([
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -335,7 +409,7 @@ def run_step5(
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
         "Alignment, MarginL, MarginR, MarginV, Encoding",
-        tpl["ass_style"],
+        safe_ass_style,
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",

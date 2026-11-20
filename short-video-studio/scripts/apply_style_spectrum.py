@@ -32,7 +32,6 @@ maybe_reexec_in_venv()
 
 STYLE_DIR = ASSETS_DIR / "style_spectrum"
 LIB_PATH = STYLE_DIR / "style_spectrum_library.json"
-HF_CSS_PATH = STYLE_DIR / "hyperframes" / "style-spectrum-presets.css"
 
 
 def load_library() -> Dict[str, Any]:
@@ -106,7 +105,6 @@ def export_hyperframes_html(
     dur = max(1.0, float(duration_sec))
     out_html.parent.mkdir(parents=True, exist_ok=True)
     safe_title = html.escape(str(title or "核心视觉样板"))
-    css_file = HF_CSS_PATH.read_text(encoding="utf-8") if HF_CSS_PATH.is_file() else ""
 
     y_px = min(1400, max(980, int(sub.get("safe_y_px_1080x1920") or 1320)))
     font_sz = max(36, int(sub.get("font_size_1080p_px") or 58))
@@ -123,9 +121,8 @@ def export_hyperframes_html(
         '  <meta charset="utf-8" />',
         f"  <title>{safe_title}</title>",
         "  <style>",
-        css_file,
         f"    html, body {{ margin:0; padding:0; width:{CANVAS_WIDTH}px; height:{CANVAS_HEIGHT}px; overflow:hidden; background:{bg_hex}; }}",
-        f"    #main {{ position:relative; width:{CANVAS_WIDTH}px; height:{CANVAS_HEIGHT}px; }}",
+        f"    #main {{ position:relative; width:{CANVAS_WIDTH}px; height:{CANVAS_HEIGHT}px; font-family:'Alimama ShuHeiTi','Noto Sans CJK SC',sans-serif; }}",
         f"    .headline {{ position:absolute; left:96px; right:160px; top:220px; font-size:68px; font-weight:800; color:{pri_col}; line-height:1.2; }}",
         f"    .accent-bar {{ width:88px; height:10px; border-radius:5px; background:{accent_hex}; margin-bottom:24px; }}",
         f"    .sub-line {{ position:absolute; left:100px; right:160px; top:{y_px}px; text-align:center; font-size:{font_sz}px; font-weight:800; color:{pri_col}; -webkit-text-stroke:{stroke_css}; paint-order:stroke fill; }}",
@@ -134,15 +131,27 @@ def export_hyperframes_html(
         "</head>",
         "<body>",
         f'  <div id="main" data-composition-id="main" data-start="0" data-duration="{dur:.4f}" data-fps="{DEFAULT_FPS}" data-width="{CANVAS_WIDTH}" data-height="{CANVAS_HEIGHT}">',
-        '    <div class="headline" data-start="0" data-duration="{0:.4f}" data-track-index="1">'.format(min(dur, 3.0)),
+        '    <div class="clip headline" data-start="0" data-duration="{0:.4f}" data-track-index="1">'.format(min(dur, 3.0)),
         '      <div class="accent-bar"></div>',
         f"      <div>{safe_title}</div>",
         "    </div>",
-        f'    <div class="sub-line" data-start="0" data-duration="{dur:.4f}" data-track-index="2">核心<span class="kw">关键信息</span>直观呈现</div>',
+        f'    <div class="clip sub-line" data-start="0" data-duration="{dur:.4f}" data-track-index="2">核心<span class="kw">关键信息</span>直观呈现</div>',
         "  </div>",
         "  <script>",
-        "    window.__timelines = window.__timelines || {};",
-        "    window.__timelines.main = { pause: function () { return this; }, seek: function () { return this; }, play: function () { return this; } };",
+        "    (function () {",
+        "      window.__timelines = window.__timelines || {};",
+        "      var st = { paused: true, time: 0 };",
+        "      function sync(t) {",
+        "        st.time = Number(t) || 0;",
+        "        document.querySelectorAll('.clip[data-start]').forEach(function (el) {",
+        "          var s = parseFloat(el.getAttribute('data-start') || '0');",
+        "          var d = parseFloat(el.getAttribute('data-duration') || '0');",
+        "          el.style.visibility = (st.time >= s && st.time < s + d) ? 'visible' : 'hidden';",
+        "        });",
+        "      }",
+        "      window.__timelines.main = { pause: function (t) { st.paused = true; if (typeof t === 'number') sync(t); return this; }, seek: function (t) { sync(t); return this; }, play: function () { st.paused = false; return this; }, time: function (t) { if (typeof t === 'number') sync(t); return st.time; } };",
+        "      sync(0);",
+        "    })();",
         "  </script>",
         "</body>",
         "</html>",

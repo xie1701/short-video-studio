@@ -15,25 +15,30 @@ from __future__ import annotations
 import argparse
 import re
 import shutil
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
 
 from common import ASSETS_DIR, is_verified_commercial_font, read_json, sha256_file, write_json
 
 EXEMPT_PHRASES = (
     "最近", "最后", "最怕", "最常", "最早", "最晚", "最初", "起初", "一开始",
-    "最起码", "至少", "最终", "最多也就是",
+    "最起码", "至少", "最终", "最终版", "最多也就是", "最开始", "最关键在于",
     "第一次", "第一天", "第一口", "第一步", "第一眼", "第一段", "第一个", "第一批",
-    "第一声", "第一版", "第一轮", "第1次", "第1天", "第1口", "第1步",
-    "最高气温", "最低消费", "最大限度", "绝大部分", "绝对值",
+    "第一声", "第一版", "第一轮", "第一时间", "第1次", "第1天", "第1口", "第1步",
+    "最高气温", "最低消费", "最大限度", "绝大部分", "绝对值", "最底层原理",
 )
 
 MUST_RULES: List[Tuple[str, str, str, str]] = [
     (
         "极限用语",
-        r"全网第[一1]|行业第[一1]|全国第[一1]|全城第[一1]|销量第[一1]|口碑第[一1]|第[一1]品牌|唯一指定|全网独家",
+        r"全网第[一1]|行业第[一1]|全国第[一1]|全城第[一1]|销量第[一1]|口碑第[一1]|第[一1]品牌|唯一指定|全网独家|销量遥遥领先|全行业最强",
         "业内口碑靠前",
-        "涉嫌《广告法》第九条“第一/唯一”绝对化排行宣称",
+        "涉嫌《广告法》第九条“第一/唯一/遥遥领先”绝对化排行宣称",
     ),
     (
         "极限用语",
@@ -43,21 +48,21 @@ MUST_RULES: List[Tuple[str, str, str, str]] = [
     ),
     (
         "极限用语",
-        r"顶级|极品|绝品|天花板级|殿堂级|史无前例|前无古人|国家级|世界级",
+        r"顶级|极品|绝品|天花板级|殿堂级|史无前例|前无古人|国家级|世界级|绝无仅有",
         "高标准制作",
         "涉嫌绝对化/国家级最高级用语风险",
     ),
     (
         "百分百绝对承诺",
-        r"100%|百分之百|百分百|零风险|0风险|绝对(?:有效|安全|正品|不踩坑|好吃)|稳赚不赔|包赚|必赚|躺赚|永久有效|绝不反弹",
+        r"100%|100%好评|百分之百|百分百|零风险|0风险|零副作用|无任何副作用|绝对(?:有效|安全|正品|不踩坑|好吃)|稳赚不赔|包赚|必赚|躺赚|永久有效|绝不反弹",
         "尽量把控品质、减少踩坑",
         "涉嫌绝对承诺与效果/收益担保风险",
     ),
     (
         "医疗功效违规",
-        r"包治百病|包治|根治|药到病除|立竿见影|防癌|抗癌|降三高|消炎杀菌",
+        r"包治百病|包治|根治|药到病除|立竿见影|防癌|抗癌|降三高|消炎杀菌|纯中药秘方|包瘦|包白|一个月瘦\d+斤",
         "日常搭配更安心",
-        "普通食品/服务严禁涉医疗治疗功效宣称",
+        "普通食品/服务严禁涉医疗治疗或承诺减肥美白功效宣称",
     ),
     (
         "机关背书违规",
@@ -75,10 +80,10 @@ WARN_RULES: List[Tuple[str, str, str, str]] = [
         "需备齐检测报告/品牌授权/老字号证书等凭证方可口播（whitelist ack 后放行）",
     ),
     (
-        "站外导流敏感词",
-        r"加[Vv微]|私信发微信|微信号|vx[:：\s]|扫码进群|加群领|二维码找我|主页领优惠券",
+        "站外导流暗语与谐音",
+        r"加[Vv微]|威信|[Vv]信|微[♥❤➕+]|私信发微信|私聊[领发加]|微信号|vx[:：\s]?|扫码进群|扫[一 ]?码[领加]|加群领|二维码找我|主页领优惠券|扣我\d*",
         "评论区扣 1 或主页看门店详情",
-        "平台高风险站外导流触发限流预警",
+        "平台高风险站外导流及谐音暗语触发限流预警",
     ),
 ]
 
@@ -380,6 +385,28 @@ def build_asset_license_manifest(
         if col.get("lut_path"):
             raw_assets.append(("lut", Path(col["lut_path"])))
 
+    edl_p = pipeline_dir / "04_edl.json"
+    if edl_p.is_file():
+        for clip in (read_json(edl_p).get("clips") or []):
+            if clip.get("track_role") == "code_broll" and clip.get("media_path"):
+                raw_assets.append(("code_broll", Path(clip["media_path"])))
+
+    # 扫描 02_transcript.json 是否使用了 edge-tts 配音并记录商用授权风险提醒
+    tts_commercial_notice: Optional[str] = None
+    tr_p = pipeline_dir / "02_transcript.json"
+    if tr_p.is_file():
+        try:
+            tr = read_json(tr_p)
+            src_t = str(tr.get("source_type") or "")
+            tts_prov = str(tr.get("tts_provider") or "")
+            if src_t == "tts" or "edge" in tts_prov.lower():
+                tts_commercial_notice = (
+                    "检测到当前成片音频由 Edge TTS 在线语音合成：Microsoft Edge TTS 仅面向演示/测试与非直接商业转售，"
+                    "正式商业投放或广告购买前建议替换为真人实拍配音或采购商业 TTS 授权。"
+                )
+        except Exception:
+            pass
+
     dedup: Dict[str, Tuple[str, Path]] = {}
     for kind, p in raw_assets:
         rp = str(p.resolve()) if p.exists() else str(p)
@@ -412,6 +439,7 @@ def build_asset_license_manifest(
         })
 
     all_ok = (len(unregistered) == 0 and len(unverified_fonts) == 0 and len(entries) > 0)
+    warnings: List[str] = [tts_commercial_notice] if tts_commercial_notice else []
     manifest = {
         "step": "asset_license_manifest",
         "passed": all_ok,
@@ -421,6 +449,8 @@ def build_asset_license_manifest(
         "unregistered_count": len(unregistered),
         "unregistered_items": unregistered,
         "unverified_fonts": unverified_fonts,
+        "tts_commercial_notice": tts_commercial_notice,
+        "warnings": warnings,
         "assets": entries,
     }
     p_manifest = pipeline_dir / "asset_license_manifest.json"

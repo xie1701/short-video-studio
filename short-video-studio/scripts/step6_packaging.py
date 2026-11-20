@@ -11,8 +11,13 @@ from __future__ import annotations
 
 import argparse
 import math
+import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
 
 from common import (
     ASSETS_DIR,
@@ -20,10 +25,14 @@ from common import (
     CANVAS_WIDTH,
     DEFAULT_FPS,
     SAFE_ZONE,
+    bbox_iou,
     check_bbox_in_safe_zone,
+    find_commercial_font,
+    fit_text_line,
     frames_to_sec,
     load_style_applied,
     maybe_reexec_in_venv,
+    parse_manifest_faces,
     read_json,
     write_json,
 )
@@ -47,6 +56,34 @@ def rotate_sfx(candidates: List[Path], last_used_name: Optional[str]) -> Path:
     return valid[0]
 
 
+def _enhance_sfx_presence(arr: np.ndarray, sr: int = SR) -> np.ndarray:
+    """保持 CC0 原生频谱波形不变，对 2–8kHz 过闷暖调 SFX 施加温和广播级自身带通临场补偿。"""
+    if len(arr) < 128:
+        return arr
+    try:
+        from scipy import signal as sp_sig
+        mono = arr.mean(axis=1).astype(np.float64)
+        full_rms = float(np.sqrt(np.mean(mono ** 2) + 1e-12))
+        sos = sp_sig.butter(4, [2000.0, 8000.0], btype="bandpass", fs=float(sr), output="sos")
+        hf_mono = sp_sig.sosfiltfilt(sos, mono)
+        hf_rms = float(np.sqrt(np.mean(hf_mono ** 2) + 1e-12))
+        hf_ratio = hf_rms / max(1e-5, full_rms)
+        if hf_ratio >= 0.28 or hf_rms < 1e-5:
+            return arr
+        # 仅按比例混合原 SFX 自身的 2–8kHz 分量，使其清晰度达到 hf_ratio≈0.35（绝不混入人工噪波）
+        target_hf = max(hf_rms, full_rms * 0.35)
+        alpha = min(6.0, max(0.0, (target_hf - hf_rms) / hf_rms))
+        out = arr.astype(np.float64).copy()
+        out[:, 0] += alpha * sp_sig.sosfiltfilt(sos, out[:, 0])
+        out[:, 1] += alpha * sp_sig.sosfiltfilt(sos, out[:, 1])
+        pk = float(np.max(np.abs(out)))
+        if pk > 0.85:
+            out *= (0.85 / pk)
+        return out.astype(np.float32)
+    except Exception:
+        return arr
+
+
 def _measure_sfx_peak_offset_sec(arr: np.ndarray, sr: int = SR) -> float:
     if len(arr) < 128:
         return 0.0
@@ -57,34 +94,43 @@ def _measure_sfx_peak_offset_sec(arr: np.ndarray, sr: int = SR) -> float:
     return round(peak_idx / float(sr), 4)
 
 
-def _rect_iou_px(b1: Dict[str, int], b2: Dict[str, float]) -> float:
-    x1 = max(float(b1["x"]), float(b2["x"]))
-    y1 = max(float(b1["y"]), float(b2["y"]))
-    x2 = min(float(b1["x"] + b1["w"]), float(b2["x"] + b2["w"]))
-    y2 = min(float(b1["y"] + b1["h"]), float(b2["y"] + b2["h"]))
-    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
-    if inter <= 0.0:
-        return 0.0
-    a1 = max(1.0, float(b1["w"] * b1["h"]))
-    a2 = max(1.0, float(b2["w"] * b2["h"]))
-    return inter / max(1e-6, a1 + a2 - inter)
-
-
-def _avoid_faces_for_pkg(bbox: Dict[str, int], faces_px: List[Dict[str, float]]) -> Dict[str, int]:
-    """在 Step 6 源头一次性将花字胶囊避开裁切后人脸五官，保持安全区内。"""
+def _avoid_faces_for_pkg(bbox: Dict[str, int], faces_px: List[Dict[str, Any]]) -> Dict[str, int]:
+    """在 Step 6 源头一次性将花字胶囊避开裁切后人脸五官，保持安全区且不侵入字幕带。"""
     cand = dict(bbox)
     if not faces_px:
         return cand
-    if max(_rect_iou_px(cand, fb) for fb in faces_px) <= 0.01:
+    cur_iou = max(bbox_iou(cand, fb) for fb in faces_px)
+    if cur_iou <= 0.01:
         return cand
-    for try_y in (200, 960, 1080, 260, 820):
+    best = cand
+    best_iou = cur_iou
+    for try_y in (200, 260, 340, 460, 820, 960, 1080):
         if try_y + cand["h"] > 1180:
             continue
         alt = {"x": cand["x"], "y": int(try_y), "w": cand["w"], "h": cand["h"]}
         ok, _ = check_bbox_in_safe_zone(alt)
-        if ok and max(_rect_iou_px(alt, fb) for fb in faces_px) <= 0.01:
+        if not ok:
+            continue
+        iou_v = max(bbox_iou(alt, fb) for fb in faces_px)
+        if iou_v <= 0.01:
             return alt
-    return cand
+        if iou_v < best_iou:
+            best_iou = iou_v
+            best = alt
+    return best
+
+
+def _measure_pkg_badge_width(text: str, font_path: Optional[str], max_pkg_w: int, target_fs: int = 40, min_w: int = 240) -> int:
+    try:
+        from PIL import Image, ImageDraw
+        draw = ImageDraw.Draw(Image.new("RGBA", (10, 10)))
+        fnt, _ = fit_text_line(draw, text, font_path, max_width=max_pkg_w - 64, max_size=target_fs, min_size=24)
+        if fnt is not None:
+            bb = draw.textbbox((0, 0), text, font=fnt)
+            return int(min(max_pkg_w, max(min_w, (bb[2] - bb[0]) + 72)))
+    except Exception:
+        pass
+    return int(min(max_pkg_w, max(min_w, len(text) * target_fs + 68)))
 
 
 def run_step6(
@@ -97,19 +143,10 @@ def run_step6(
     man_p = pipeline_dir / "01_manifest.json"
     manifest = read_json(man_p) if man_p.exists() else {"items": []}
 
-    faces_by_mp4: Dict[str, List[Dict[str, float]]] = {}
+    faces_by_mp4: Dict[str, List[Dict[str, int]]] = {}
     for it in manifest.get("items", []):
         mp = str(it.get("normalized_mp4", ""))
-        fl = []
-        for f_obj in it.get("faces") or []:
-            fb = f_obj.get("bbox")
-            if isinstance(fb, dict):
-                fl.append({
-                    "x": float(fb["x"]) * CANVAS_WIDTH,
-                    "y": float(fb["y"]) * CANVAS_HEIGHT,
-                    "w": float(fb["w"]) * CANVAS_WIDTH,
-                    "h": float(fb["h"]) * CANVAS_HEIGHT,
-                })
+        fl = parse_manifest_faces(it)
         if mp and fl:
             faces_by_mp4[mp] = fl
 
@@ -170,7 +207,7 @@ def run_step6(
     # 优先使用 Freesound CC0 真实物理材质 SFX（次选内置合成音效）
     for clip in edl["clips"][1:]:
         role = clip.get("track_role", "b_roll")
-        ev_frame = int(clip["cut_event_frame"])
+        ev_frame = int(clip.get("timeline_in_frame", clip["cut_event_frame"])) if role == "code_broll" else int(clip["cut_event_frame"])
         is_end_receipt = (clip is edl["clips"][-1]) and ("receipt" in v_sfx)
         if role != "code_broll" and not is_end_receipt:
             continue
@@ -206,13 +243,13 @@ def run_step6(
         ASSETS_DIR / "sfx" / "shutter.wav",
     ]
     cut_rot = 0
-    # 优先选在句界/停顿缝隙切点安放 SFX，确保听感清爽且避免被重读浊音完全掩蔽，第二遍再补足其余切点
+    # 优先选在句首/停顿缝隙切点安放 SFX，确保听感清爽且避免被重读浊音完全掩蔽，第二遍再补足其余切点
     prioritized_clips = [
         c for c in edl["clips"][1:]
-        if str(c.get("cut_event_type", "")) in ("pause_end", "sentence_start", "bgm_downbeat")
+        if str(c.get("cut_event_type", "")) in ("sentence_start", "pause_start", "pause_end", "bgm_downbeat")
     ] + [
         c for c in edl["clips"][1:]
-        if str(c.get("cut_event_type", "")) not in ("pause_end", "sentence_start", "bgm_downbeat")
+        if str(c.get("cut_event_type", "")) not in ("sentence_start", "pause_start", "pause_end", "bgm_downbeat")
     ]
     for clip in prioritized_clips:
         ev_frame = int(clip["cut_event_frame"])
@@ -257,6 +294,8 @@ def run_step6(
             used_frames.append(ev["frame"])
 
     sfx_cues.sort(key=lambda x: x["frame"])
+    for idx_cue, cue in enumerate(sfx_cues, start=1):
+        cue["id"] = f"sfx_{idx_cue:03d}"
 
     sfx_track = np.zeros((total_samples, 2), dtype=np.float32)
     sfx_cache: Dict[str, np.ndarray] = {}
@@ -267,27 +306,20 @@ def run_step6(
             m_abs = np.abs(arr.mean(axis=1))
             active_m = m_abs[m_abs >= max(1e-4, float(np.max(m_abs)) * 0.15)]
             core_rms = float(np.sqrt(np.mean(active_m ** 2) + 1e-10)) if len(active_m) > 0 else 0.01
-            norm_gain = min(14.0, 0.22 / max(1e-4, core_rms))
+            # 保持原生 CC0 物理频谱不注水：仅做温和活性核心增益归一化与防削波峰值钳位
+            norm_gain = min(10.0, 0.25 / max(1e-4, core_rms))
             peak_cap = 0.85 / max(1e-4, float(np.max(np.abs(arr))))
             arr = (arr * min(norm_gain, peak_cap)).astype(np.float32)
-            try:
-                from scipy.signal import butter, sosfiltfilt
-                sos = butter(4, [2000.0, 8000.0], btype="bandpass", fs=SR, output="sos")
-                hb = sosfiltfilt(sos, arr.mean(axis=1).astype(np.float64))
-                hb_rms = float(np.sqrt(np.mean(hb[m_abs >= max(1e-4, float(np.max(m_abs)) * 0.15)] ** 2) + 1e-12)) if len(active_m) > 0 else 0.0
-                if hb_rms < 0.15:
-                    air_sig = sosfiltfilt(sos, arr, axis=0).astype(np.float32)
-                    air_gain = min(8.0, (0.15 - hb_rms) / max(1e-4, hb_rms))
-                    arr = np.clip(arr + air_sig * air_gain, -0.90, 0.90).astype(np.float32)
-            except Exception:
-                pass
+            arr = _enhance_sfx_presence(arr, SR)
             sfx_cache[fp] = arr
         arr = sfx_cache[fp]
         peak_off = _measure_sfx_peak_offset_sec(arr, SR)
-        cue["peak_time_sec"] = round(float(cue["time_sec"]) + peak_off, 4)
-        # 修复原先 max/min 写反 Bug：真正按 cue["gain_db"] 且用上限 min(-3.0, ...) 防削波！
+        # 峰值对齐切点：提前 peak_off 起播，使听觉峰值精准落在切点 time_sec
+        onset_sec = max(0.0, float(cue["time_sec"]) - peak_off)
+        cue["onset_time_sec"] = round(onset_sec, 4)
+        cue["peak_time_sec"] = round(onset_sec + peak_off, 4)
         gain = 10.0 ** (min(-3.0, float(cue["gain_db"])) / 20.0)
-        start_idx = max(0, int(round(cue["time_sec"] * SR)))
+        start_idx = max(0, int(round(onset_sec * SR)))
         end_idx = min(total_samples, start_idx + len(arr))
         if end_idx > start_idx:
             sfx_track[start_idx:end_idx] += arr[: end_idx - start_idx] * gain
@@ -295,12 +327,13 @@ def run_step6(
     sfx_wav_path = pipeline_dir / "06_sfx_track.wav"
     save_stereo_wav_np(sfx_wav_path, sfx_track, SR)
 
+    pkg_font_path = find_commercial_font()
     visual_elements: List[Dict[str, Any]] = []
     first_sent = audio_events["sentences"][0] if audio_events["sentences"] else {"text": "必看重点", "keywords": []}
     hook_badge_text = first_sent["keywords"][0] if first_sent.get("keywords") else first_sent["text"][:8]
     hook_label = f"重点：{hook_badge_text}"
     max_pkg_w = SAFE_ZONE["x_max"] - 88 - 12  # 780px
-    hook_w = min(max_pkg_w, max(280, len(hook_label) * 42 + 64))
+    hook_w = _measure_pkg_badge_width(hook_label, pkg_font_path, max_pkg_w, target_fs=42, min_w=280)
     hook_ef = min(int(2.0 * fps), int(total_dur * fps))
     if not overlaps_code(0, hook_ef):
         active_faces_0 = []
@@ -339,7 +372,7 @@ def run_step6(
             continue
 
         kw_label = sent["keywords"][0] if sent.get("keywords") else sent["text"][:8]
-        box_w = min(max_pkg_w, max(240, len(kw_label) * 40 + 68))
+        box_w = _measure_pkg_badge_width(kw_label, pkg_font_path, max_pkg_w, target_fs=40, min_w=240)
         active_faces = []
         for c in edl.get("clips", []):
             if int(c["timeline_in_frame"]) < ef and int(c["timeline_out_frame"]) > sf:

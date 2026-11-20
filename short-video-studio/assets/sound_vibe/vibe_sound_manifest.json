@@ -1,7 +1,7 @@
 {
   "styles": {
     "style_14": {
-      "bgm_wav": "sound_vibe/bgm/style_14_bgm.wav",
+      "bgm_wav": "sound_vibe/bgm/style_14_bgm.m4a",
       "bpm": 120.0,
       "sfx": {
         "transition": "sound_vibe/sfx/style_14_transition.wav",
@@ -14,10 +14,10 @@
       "duck_depth_db": -10.0
     },
     "style_02": {
-      "bgm_wav": "sound_vibe/bgm/style_02_bgm.wav",
+      "bgm_wav": "sound_vibe/bgm/style_02_bgm.m4a",
       "bpm": 90.0,
       "sfx": {
-        "transition": "sound_vibe/sfx/style_02_transition.wav",
+        "transition": "sound_vibe/sfx/style_14_transition.wav",
         "accent": "sound_vibe/sfx/style_02_accent.wav",
         "ui": "sound_vibe/sfx/style_02_ui.wav"
       },
@@ -27,12 +27,12 @@
       "duck_depth_db": -10.5
     },
     "style_03": {
-      "bgm_wav": "sound_vibe/bgm/style_03_bgm.wav",
+      "bgm_wav": "sound_vibe/bgm/style_03_bgm.m4a",
       "bpm": 110.0,
       "sfx": {
         "transition": "sound_vibe/sfx/style_03_transition.wav",
         "accent": "sound_vibe/sfx/style_03_accent.wav",
-        "ui": "sound_vibe/sfx/style_03_ui.wav"
+        "ui": "sound_vibe/sfx/style_14_accent.wav"
       },
       "sfx_min_gap_sec": 6.5,
       "sfx_gain_db": -10.0,
@@ -40,11 +40,11 @@
       "duck_depth_db": -10.0
     },
     "style_12": {
-      "bgm_wav": "sound_vibe/bgm/style_12_bgm.wav",
+      "bgm_wav": "sound_vibe/bgm/style_12_bgm.m4a",
       "bpm": 75.0,
       "sfx": {
-        "transition": "sound_vibe/sfx/style_12_transition.wav",
-        "accent": "sound_vibe/sfx/style_12_accent.wav",
+        "transition": "sound_vibe/sfx/style_02_ui.wav",
+        "accent": "sound_vibe/sfx/style_14_ui.wav",
         "ui": "sound_vibe/sfx/style_12_ui.wav"
       },
       "sfx_min_gap_sec": 7.5,
@@ -53,10 +53,10 @@
       "duck_depth_db": -9.5
     },
     "style_06": {
-      "bgm_wav": "sound_vibe/bgm/style_06_bgm.wav",
+      "bgm_wav": "sound_vibe/bgm/style_06_bgm.m4a",
       "bpm": 92.0,
       "sfx": {
-        "transition": "sound_vibe/sfx/style_06_transition.wav",
+        "transition": "sound_vibe/sfx/style_03_transition.wav",
         "accent": "sound_vibe/sfx/style_06_accent.wav",
         "ui": "sound_vibe/sfx/style_06_ui.wav"
       },
@@ -66,12 +66,12 @@
       "duck_depth_db": -11.0
     },
     "style_05": {
-      "bgm_wav": "sound_vibe/bgm/style_05_bgm.wav",
+      "bgm_wav": "sound_vibe/bgm/style_05_bgm.m4a",
       "bpm": 104.0,
       "sfx": {
         "transition": "sound_vibe/sfx/style_05_transition.wav",
-        "accent": "sound_vibe/sfx/style_05_accent.wav",
-        "ui": "sound_vibe/sfx/style_05_ui.wav"
+        "accent": "sound_vibe/sfx/style_05_transition.wav",
+        "ui": "sound_vibe/sfx/style_03_accent.wav"
       },
       "sfx_min_gap_sec": 6.5,
       "sfx_gain_db": -9.5,
@@ -79,12 +79,12 @@
       "duck_depth_db": -10.0
     },
     "style_15": {
-      "bgm_wav": "sound_vibe/bgm/style_15_bgm.wav",
+      "bgm_wav": "sound_vibe/bgm/style_15_bgm.m4a",
       "bpm": 120.0,
       "sfx": {
-        "transition": "sound_vibe/sfx/style_15_transition.wav",
+        "transition": "sound_vibe/sfx/style_02_ui.wav",
         "accent": "sound_vibe/sfx/style_15_accent.wav",
-        "ui": "sound_vibe/sfx/style_15_ui.wav",
+        "ui": "sound_vibe/sfx/style_12_ui.wav",
         "receipt": "sound_vibe/sfx/style_15_receipt.wav"
       },
       "sfx_min_gap_sec": 6.5,

@@ -16,6 +16,11 @@ import platform
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
+
+SCRIPTS_ROOT = Path(__file__).resolve().parent
+if str(SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_ROOT))
 
 from common import (
     ASSETS_DIR,
@@ -25,7 +30,6 @@ from common import (
     find_commercial_font,
     is_verified_commercial_font,
 )
-
 
 CORE_PIP_PKGS = ["pillow", "numpy", "scipy", "edge-tts"]
 HEAVY_ML_PKGS = ["faster-whisper", "librosa"]
@@ -94,8 +98,8 @@ def ensure_venv_and_deps(install_deps: bool, install_heavy_ml: bool) -> tuple[st
 
 def check_and_sync_commercial_fonts(stage_into_assets: bool = False) -> tuple[Optional[str], bool]:
     """
-    校验已核验的开源商用中文字体；
-    当 stage_into_assets=True 时仅将最轻量的阿里妈妈数黑体 (1.0MB) 同步进 assets/fonts/ 作为跨平台随身商用兜底，避免仓储臃肿。
+    严格校验已核验的开源商用中文字体；
+    当 stage_into_assets=True 时仅将最轻量的阿里妈妈数黑体 (1.0MB) 同步进 assets/fonts/ 作为跨平台随身商用兜底。
     """
     verified = find_commercial_font(verified_only=True)
     if verified and stage_into_assets:
@@ -110,8 +114,7 @@ def check_and_sync_commercial_fonts(stage_into_assets: bool = False) -> tuple[Op
                     shutil.copy2(light_cand, dst)
                 except Exception:
                     pass
-    any_font = verified or find_commercial_font(verified_only=False)
-    return any_font, bool(verified and is_verified_commercial_font(verified))
+    return verified, bool(verified and is_verified_commercial_font(verified))
 
 
 def main() -> None:
@@ -148,10 +151,8 @@ def main() -> None:
     print(f"hyperframes : {hyperframes_path} (未安装时可导出静态 HTML Studio 工程)")
     if font_path and font_verified:
         print(f"可商用字体  : {font_path} [已验证免费/OFL商用]")
-    elif font_path:
-        print(f"可商用字体  : {font_path} [WARNING: 非开源商用兜底字体，正式商用发布前请安装思源黑体/阿里妈妈数黑体]")
     else:
-        print("可商用字体  : MISSING (请安装思源黑体 / Noto Sans SC / 阿里妈妈数黑体)")
+        print("可商用字体  : MISSING (请运行 --init-fonts 或安装思源黑体 / 阿里妈妈数黑体)")
 
     active_py, install_ok = ensure_venv_and_deps(
         install_deps=(not args.check_only and args.install_deps),
@@ -183,9 +184,8 @@ def main() -> None:
         print("[setup] 检查并安装全局 hyperframes ...")
         subprocess.run([npm_path, "install", "-g", "hyperframes"], check=False)
 
-    if args.init_assets or (not args.check_only and not args.check_only):
-        if args.init_assets:
-            subprocess.run([active_py, str(SCRIPTS_DIR / "generate_builtin_assets.py")], check=True)
+    if args.init_assets and not args.check_only:
+        subprocess.run([active_py, str(SCRIPTS_DIR / "generate_builtin_assets.py")], check=True)
 
     if ffmpeg_path == "MISSING" or ffprobe_path == "MISSING":
         print("\n[ERROR] 缺少 ffmpeg/ffprobe，请手动安装后重试。")

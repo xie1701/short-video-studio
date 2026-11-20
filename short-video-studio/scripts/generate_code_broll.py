@@ -16,11 +16,15 @@ import argparse
 import json
 import math
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
 from common import (
-    ASSETS_DIR,
     BT709_FFMPEG_ARGS,
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
@@ -28,9 +32,10 @@ from common import (
     SAFE_ZONE,
     find_bin,
     find_commercial_font,
+    fit_text_line,
+    get_cached_font,
     load_style_spectrum_entry,
     maybe_reexec_in_venv,
-    maybe_reexec_in_venv as _noop_alias,  # noqa: F401
 )
 
 
@@ -186,24 +191,8 @@ def resolve_style_palette(
 
 
 def _fit_single_line(draw: Any, text: str, font_path: Optional[str], start_size: int, max_width: int, min_size: int = 22) -> Tuple[Any, str]:
-    """根据 Pillow 实测像素宽度动态缩字与截断，杜绝任何文本溢出 SAFE_ZONE 与卡片框。"""
-    from PIL import ImageFont
-
-    txt = str(text or "").strip()
-    if not txt:
-        return (ImageFont.truetype(font_path, start_size) if font_path else ImageFont.load_default()), ""
-    for fs in range(start_size, min_size - 1, -2):
-        fnt = ImageFont.truetype(font_path, fs) if font_path else ImageFont.load_default()
-        bb = draw.textbbox((0, 0), txt, font=fnt)
-        if (bb[2] - bb[0]) <= max_width:
-            return fnt, txt
-    fnt = ImageFont.truetype(font_path, min_size) if font_path else ImageFont.load_default()
-    while len(txt) > 2:
-        bb = draw.textbbox((0, 0), txt + "…", font=fnt)
-        if (bb[2] - bb[0]) <= max_width:
-            return fnt, txt + "…"
-        txt = txt[:-1]
-    return fnt, txt
+    """委托给 common.fit_text_line 与缓存字体加载，防止文本溢出 SAFE_ZONE 与每帧重复读字体。"""
+    return fit_text_line(draw, str(text or ""), font_path, max_width=max_width, max_size=start_size, min_size=min_size)
 
 
 def _format_chart_value(val: float, ratio_p: float, unit: str) -> str:
@@ -229,7 +218,7 @@ def render_broll_clip_pillow(
     register: Optional[str] = None,
     anchor_delay_sec: float = 0.15,
 ) -> Path:
-    """用 Pillow 绘制矢量缓动卡片，通过 rawvideo pipe:0 直推 FFmpeg 并复用尾帧 bytes，提速 10×。"""
+    """用 Pillow 绘制矢量缓动卡片，通过 rawvideo pipe:0 直推 FFmpeg 并复用背景图与尾帧 bytes，提速 10×。"""
     from PIL import Image, ImageDraw, ImageFont
 
     ffmpeg = find_bin("ffmpeg")
@@ -248,12 +237,11 @@ def render_broll_clip_pillow(
     badge_txt_col = pal["badge_text_hex"]
 
     font_path = find_commercial_font(pal.get("font_candidates"))
-    f_badge = ImageFont.truetype(font_path, 26) if font_path else ImageFont.load_default()
-    f_num_big = ImageFont.truetype(font_path, 52) if font_path else ImageFont.load_default()
+    f_badge = get_cached_font(font_path, 26) or ImageFont.load_default()
+    f_num_big = get_cached_font(font_path, 52) or ImageFont.load_default()
 
     total_frames = max(int(round(2.6 * fps)), int(round(duration_sec * fps)))
     anchor_frames = max(4, int(round(anchor_delay_sec * fps)))
-    # 计算最晚到达静止帧索引，此后所有帧像素完全一致，可直接缓存 bytes 复用
     max_anim_end_frame = min(total_frames - 1, anchor_frames + 35)
     output_mp4.parent.mkdir(parents=True, exist_ok=True)
 
@@ -269,6 +257,19 @@ def render_broll_clip_pillow(
 
     safe_right = SAFE_ZONE["x_max"] - 24  # 856px 严格留边
     max_title_w = safe_right - 88         # 768px
+
+    # 预渲染静态背景+网格图层，避免每帧重绘
+    base_bg = Image.new("RGB", (CANVAS_WIDTH, CANVAS_HEIGHT), use_bg)
+    bg_draw = ImageDraw.Draw(base_bg)
+    for gx in range(88, 860, 130):
+        bg_draw.line([(gx, 190), (gx, 1440)], fill=grid_col, width=1)
+    for gy in range(210, 1440, 130):
+        bg_draw.line([(72, gy), (safe_right, gy)], fill=grid_col, width=1)
+    mode_tag = mode_tags.get(mode, "重点提示")
+    bg_draw.rounded_rectangle([88, 224, 290, 276], radius=12, fill=use_accent)
+    bg_draw.text((189, 250), mode_tag, fill=badge_txt_col, font=f_badge, anchor="mm")
+
+    f_title, fit_title = _fit_single_line(bg_draw, title, font_path, 60, max_title_w, min_size=34)
 
     cmd = [
         ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
@@ -290,21 +291,11 @@ def render_broll_clip_pillow(
                 proc.stdin.write(cached_tail_bytes)
                 continue
 
-            img = Image.new("RGB", (CANVAS_WIDTH, CANVAS_HEIGHT), use_bg)
+            img = base_bg.copy()
             draw = ImageDraw.Draw(img)
-
-            for gx in range(88, 860, 130):
-                draw.line([(gx, 190), (gx, 1440)], fill=grid_col, width=1)
-            for gy in range(210, 1440, 130):
-                draw.line([(72, gy), (safe_right, gy)], fill=grid_col, width=1)
-
-            mode_tag = mode_tags.get(mode, "重点提示")
-            draw.rounded_rectangle([88, 224, 290, 276], radius=12, fill=use_accent)
-            draw.text((189, 250), mode_tag, fill=badge_txt_col, font=f_badge, anchor="mm")
 
             tp = 0.35 + 0.65 * ease_out_cubic(fi / 8.0)
             ty = int(340 + (1.0 - tp) * 26)
-            f_title, fit_title = _fit_single_line(draw, title, font_path, 60, max_title_w, min_size=34)
             draw.text((88, ty), fit_title, fill=title_col, font=f_title)
             draw.rectangle([88, ty + 84, 88 + int(min(max_title_w, 620) * tp), ty + 90], fill=use_accent)
 
@@ -317,13 +308,20 @@ def render_broll_clip_pillow(
                 draw.rounded_rectangle([bar_x0, bar_y0, bar_x1, bar_y1], radius=18, fill=card_bg, outline=border_col, width=2)
                 seg_colors = [use_accent, "#2563EB", "#10B981", "#8B5CF6"]
                 cur_x = bar_x0 + 8
-                inner_w = (bar_x1 - bar_x0 - 16) * max(0.08, p_bar)
-                for si, pct in enumerate(pcts):
-                    seg_w = max(24, int(inner_w * pct / 100.0))
-                    ex = min(bar_x1 - 8, cur_x + seg_w - 4)
-                    if ex > cur_x + 4:
+                avail_w = max(24, int((bar_x1 - bar_x0 - 16) * max(0.08, p_bar)))
+                n_seg = len(pcts)
+                gap_w = 4
+                usable_w = max(16, avail_w - gap_w * max(0, n_seg - 1))
+                seg_ws = [max(12, int(usable_w * pct / 100.0)) for pct in pcts]
+                overflow = sum(seg_ws) - usable_w
+                if overflow > 0 and n_seg > 0:
+                    total_sw = max(1, sum(seg_ws))
+                    seg_ws = [max(8, int(sw - overflow * (sw / total_sw))) for sw in seg_ws]
+                for si, seg_w in enumerate(seg_ws):
+                    ex = min(bar_x1 - 8, cur_x + seg_w)
+                    if ex > cur_x + 2:
                         draw.rounded_rectangle([cur_x, bar_y0 + 10, ex, bar_y1 - 10], radius=12, fill=seg_colors[si % len(seg_colors)])
-                    cur_x += seg_w
+                    cur_x = ex + gap_w
 
                 for idx, (it, pct) in enumerate(zip(items[:4], pcts)):
                     p_c = ease_out_cubic((fi - (anchor_frames + idx * 5)) / 10.0)
@@ -361,6 +359,7 @@ def render_broll_clip_pillow(
                         draw.polygon([(454, cy + 308), (490, cy + 308), (472, cy + 332)], fill=use_accent)
 
             elif mode == "chips":
+                static_chip_text_w = safe_right - 236
                 for idx, it in enumerate(items[:4]):
                     delay = anchor_frames + idx * 6
                     p_c = ease_out_cubic((fi - delay) / 8.0)
@@ -372,7 +371,7 @@ def render_broll_clip_pillow(
                     draw.ellipse([120 + ox, cy + 38, 180 + ox, cy + 98], fill=use_accent)
                     f_chk, _ = _fit_single_line(draw, "✓", font_path, 38, 60)
                     draw.text((150 + ox, cy + 68), "✓", fill=badge_txt_col, font=f_chk, anchor="mm")
-                    fl, tl = _fit_single_line(draw, str(it.get("label", "")), font_path, 38, safe_right - (228 + ox))
+                    fl, tl = _fit_single_line(draw, str(it.get("label", "")), font_path, 38, static_chip_text_w)
                     draw.text((208 + ox, cy + 68), tl, fill=title_col, font=fl, anchor="lm")
 
             elif mode == "versus":
@@ -399,6 +398,9 @@ def render_broll_clip_pillow(
                 base_y = 490
                 card_h = 206 if mode != "flow_diagram" else 192
                 max_val = max([float(it["value"]) for it in items[:4] if isinstance(it.get("value"), (int, float))] + [100.0])
+                static_flow_w = (safe_right - 24) - (88 + 128)
+                static_card_w = (safe_right - 28) - (88 + 44)
+                static_bar_max = max(120, (safe_right - 88) - 230)
                 for idx, item in enumerate(items[:4]):
                     delay = anchor_frames + idx * 6
                     p = ease_out_cubic((fi - delay) / 10.0)
@@ -418,23 +420,22 @@ def render_broll_clip_pillow(
                         draw.ellipse([x1 + 42, cy + 32, x1 + 104, cy + 94], fill=use_accent)
                         f_idx, _ = _fit_single_line(draw, str(idx + 1), font_path, 36, 54)
                         draw.text((x1 + 73, cy + 63), str(idx + 1), fill=badge_txt_col, font=f_idx, anchor="mm")
-                        fl, tl = _fit_single_line(draw, raw_lbl, font_path, 36, (x2 - 24) - (x1 + 128))
+                        fl, tl = _fit_single_line(draw, raw_lbl, font_path, 36, static_flow_w)
                         draw.text((x1 + 128, cy + 38), tl, fill=title_col, font=fl)
                         if raw_sub:
-                            fs, ts_txt = _fit_single_line(draw, raw_sub, font_path, 28, (x2 - 24) - (x1 + 128))
+                            fs, ts_txt = _fit_single_line(draw, raw_sub, font_path, 28, static_flow_w)
                             draw.text((x1 + 128, cy + 104), ts_txt, fill=sub_col, font=fs)
                         if idx < len(items[:4]) - 1:
                             draw.line([(x1 + 73, cy + card_h), (x1 + 73, cy + card_h + 28)], fill=use_accent, width=4)
                     else:
-                        fl, tl = _fit_single_line(draw, raw_lbl, font_path, 38, (x2 - 28) - (x1 + 44))
+                        fl, tl = _fit_single_line(draw, raw_lbl, font_path, 38, static_card_w)
                         draw.text((x1 + 44, cy + 28), tl, fill=title_col, font=fl)
                         if mode == "data_chart" and isinstance(val, (int, float)):
-                            unit = str(item.get("unit") or ("%" if (float(val) <= 100.0 and "%" in (raw_lbl + str(item.get("unit", "")))) or (not item.get("unit") and float(val) <= 100.0) else ""))
+                            unit = str(item.get("unit") if item.get("unit") is not None else ("%" if "%" in raw_lbl else ""))
                             ratio = max(0.05, min(1.0, float(val) / max(1e-5, max_val))) * p
-                            bar_max = max(120, (x2 - x1) - 230)
-                            draw.rounded_rectangle([x1 + 44, cy + 108, x1 + 44 + bar_max, cy + 142], radius=14, fill=grid_col)
+                            draw.rounded_rectangle([x1 + 44, cy + 108, x1 + 44 + static_bar_max, cy + 142], radius=14, fill=grid_col)
                             draw.rounded_rectangle(
-                                [x1 + 44, cy + 108, x1 + 44 + max(24, int(bar_max * ratio)), cy + 142],
+                                [x1 + 44, cy + 108, x1 + 44 + max(24, int(static_bar_max * ratio)), cy + 142],
                                 radius=14,
                                 fill=use_accent,
                             )
@@ -442,7 +443,7 @@ def render_broll_clip_pillow(
                             fv, tv = _fit_single_line(draw, val_txt, font_path, 36, 150)
                             draw.text((x2 - 30, cy + 125), tv, fill=use_accent, font=fv, anchor="rm")
                         elif raw_sub:
-                            fs, ts_txt = _fit_single_line(draw, raw_sub, font_path, 28, (x2 - 28) - (x1 + 44))
+                            fs, ts_txt = _fit_single_line(draw, raw_sub, font_path, 28, static_card_w)
                             draw.text((x1 + 44, cy + 108), ts_txt, fill=sub_col, font=fs)
 
             raw_bytes = img.tobytes()

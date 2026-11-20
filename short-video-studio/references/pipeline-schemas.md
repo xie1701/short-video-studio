@@ -13,16 +13,16 @@
 | Step 1 | `01_manifest.json` + `01_normalized/*.mp4/*.wav` | HDR→Rec.709 Hable 色调映射、统一转 CFR 30fps (`1080x1920`) 并提取 48kHz 16-bit WAV |
 | Step 2 | `02_transcript.json` | ASR/VAD 能量包络强制对齐、F0/RMS 真实韵律重音、物理剥离画外声与多条 NG Take 择优 |
 | Step 3 | `03_locked_voice.wav` + `03_locked_bgm.wav` + `03_audio_events.json` | 真实 Room Tone 抽样填缝 + 过零点等功率精剪 + 语义动态呼吸停顿 + 锁定音轨事件时间线 |
-| Step 4 | `04_edl.json` + `04_edl_table.md` | 语义选镜与去重、真 J-cut、连续 A-roll 锁眼微推拉 (`1.00x↔1.09x`)、6.2s 模式中断守护 |
-| Step 5 | `05_subtitles.json` + `05_subtitles.ass` | 逐字高亮字幕、权威避脸 `final_bbox` 与已验证可商用字体样式 |
-| Step 6 | `06_packaging.json` + `06_sfx_track.wav` | 流派 CC0 真实物理音效先行 + ±1 帧对齐花字包装 + 权威 `final_bbox` + 预算控制 |
-| Step 7 | `07_color_plan.json` (+ `07_blended_lut.cube`) | Hero 基准锚定 + YCbCr 皮肤矢量保护 + 中间调矫正 + 闭环回测混合强度 LUT |
-| Step 8 | `08_mixed_master.wav` + `08_voice_master.wav` + `08_bgm_ducked.wav` + `08_sfx_audit_window.json` + `08_mix_metrics.json` | 广播人声链 + dB 域双频段闪避 + `-14.0 LUFS` 混音 + 同源分轨 + tidy 后 SFX 基线 |
-| Step 9 | `09_title_cover.md` + `09_title_cover.json` + `09_cover.jpg` + `09_cover_3x4.jpg` | 黄金封面帧优选（锐度/睁眼）、风格调色同步、避脸双构图封面 (9:16 + 3:4) 与去套话标题 |
-| 出片 | `output_preview.mp4` / `output_final.mp4` / `jianying_draft/` / `hyperframes_draft/` | 本地 MP4 渲染 + 全相对路径剪映 `timeline.fcpxml` + 全离线零 CDN HyperFrames |
+| Step 4 | `04_edl.json` + `04_edl_table.md` | 语义选镜与单向不回退 B-roll 游标、真 J-cut + 真 L-cut、连续 A-roll `1.15x` 锁眼微推拉、6.2s 模式中断守护 |
+| Step 5 | `05_subtitles.json` + `05_subtitles.ass` | 逐字高亮字幕（含 `keywords` 与清洗后 `words`）、7点避脸 `final_bbox` 与已验证可商用字体样式 |
+| Step 6 | `06_packaging.json` + `06_sfx_track.wav` | 流派 CC0 真实物理音效先行（峰值对齐切点 `onset_time_sec`/`peak_time_sec`）+ 字体实测宽胶囊 + 预算控制 |
+| Step 7 | `07_color_plan.json` (+ `07_blended_lut.cube`) | Hero 基准锚定 + 全人脸镜头 BT.709 皮肤矢量保护 + 中点测光矫正 + 单向不升强度 LUT 闭环 |
+| Step 8 | `08_mixed_master.wav` + `08_stem_nosfx.wav` + `08_voice_master.wav` + `08_bgm_ducked.wav` + `08_sfx_master.wav` + `08_sfx_audit_window.json` + `08_mix_metrics.json` | 广播人声链(自适应压缩) + dB 域双频段闪避 + 锁定一致 `-14.0 LUFS` 混音 + 三端四轨同源分轨 +全量 SFX 基线 |
+| Step 9 | `09_title_cover.md` + `09_title_cover.json` + `09_cover.jpg` + `09_cover_3x4.jpg` + `09_ui_safe_preview.jpg` | 黄金封面帧优选（锐度/睁眼）、风格调色同步、避脸双构图封面 + UI遮罩预览 + 180px缩略图可读校验与真实3s `--hook-variants` |
+| 出片 | `output_preview.mp4` / `output_final.mp4` / `jianying_draft/` / `hyperframes_draft/` | 本地 MP4 渲染 (`focus_blur` 柔焦与锁眼 Ken Burns 修复) + 相对 URL FCPXML + `<template>` 可播放离线 HyperFrames |
 | 质检 | `10_qa_report.json` + `10_qa_report.md` (+ `10_benchmark_comparison.md`) | **22 项 Fail-Closed 门禁**（三态 `PASS \| FAIL \| SKIPPED_UNAVAILABLE`，双态终审 `MACHINE_PASS_PENDING_HUMAN` → `APPROVED`） |
-| 交付与清理 | `out/*` + `11_delivery_summary.md` + `review_player.html` + `tidy_report.json` | 交付物同步入 `out/` + 离线打点审片 + 自动清理 `01_normalized/`/`08_*.wav` 等大文件并保留 `08_sfx_audit_window.json` |
-| 进化闭环 | `content-log/weekly_review.md` + `content-log/account_profile.json` | 按 `--account` 隔离的微观留存断崖反查 EDL，沉淀胜出组参数基因自动反哺下条流水线 |
+| 交付与清理 | `out/*` + `11_delivery_summary.md` + `review_player.html` + `tidy_report.json` | 交付物同步入 `out/` + 离线打点审片 + 默认清理高体积中间帧/过程流并保留锁轨 ASSETS 以支撑 `reedit-visuals` (`--deep-clean` 才全清) |
+| 进化闭环 | `content-log/weekly_review.md` + `content-log/account_profile.json` | 按 `--account` 与 `--track` 双重隔离复盘，纳入复播率/同城占比/询单率并反查 EDL 断崖 |
 
 ---
 
@@ -59,7 +59,7 @@
   "locked_duration_sec": 21.6,
   "locked_duration_frames": 648,
   "bgm": {
-    "file": "assets/bgm/upbeat_store_120bpm.wav",
+    "file": "assets/bgm/upbeat_store_120bpm.m4a",
     "bpm": 120.0,
     "beat_times_sec": [0.0, 0.5, 1.0, 1.5],
     "downbeat_times_sec": [0.0, 2.0, 4.0],
@@ -103,7 +103,7 @@
   "clips": [
     {
       "clip_id": "clip_001",
-      "track_role": "a_roll | b_roll | code_broll | freeze",
+      "track_role": "a_roll | b_roll | code_broll",
       "media_path": "01_normalized/a_roll_01.mp4",
       "source_in_sec": 0.0,
       "source_out_sec": 0.90,
@@ -165,25 +165,25 @@
 
 ## 2. 剪映可编辑工程独立封装说明 (`export_jianying.py`)
 - 鉴于剪映专业版 6.0+ 对 `draft_info.json` 启用加密，直接写明文 JSON 无法导入；`export_jianying.py` 默认导出**全相对路径可编辑多轨 FCPXML 工程包**：
-  - `jianying_draft/timeline.fcpxml`（Apple FCPXML 1.10：`frameDuration="100/3000s"` 严格帧对齐，主 `<spine>` 含全部分镜；上层不重叠 `lane 1..N` 按 `final_bbox` 挂载 1080×1920 静态透明 PNG 图层，零重编码损失、速度提升 >20x；`lane -1/-2/-3` 为同源 `voice_master.wav`、`bgm_ducked.wav`、`sfx_track.wav` 独立 WAV，0dB 定电平；全部 `<media-rep src="..."/>` 严格采用相对 `jianying_draft/` 路径，严禁 `file://` 或 `/Users/...` 绝对路径）
+  - `jianying_draft/timeline.fcpxml`（Apple FCPXML 1.10：`frameDuration="100/3000s"` 严格帧对齐，主 `<spine>` 含经按需调色/Ken Burns 的独立分镜 `seg_XXX.mp4`；上层不重叠 `lane 1..N` 按所属宿主 `<asset-clip>` 局部 offset 精准挂载静态透明 PNG 及可编辑备用 `<title>` 字幕和 `<marker>`；`lane -1/-2/-3` 通过 `common.resolve_audio_stems` 挂载同源 `voice_master.wav`、`bgm_ducked.wav`、`sfx_master.wav`；全部 `<media-rep src="..."/>` 严格采用 `urllib.parse.quote` URL 编码的相对 `jianying_draft/` 路径）
   - `jianying_draft/overlays/`（1080×1920 静态透明全画幅 PNG 图层）、`jianying_draft/media/{segments,audio}/`、`subtitles.srt` / `subtitles.ass`、`*.cube` 3D LUT、`manifest.json` 及 `README_剪映导入使用指南.txt`
 - **容错降级原则**：任何异常时捕获并将 `status` 设为 `"degraded_to_mp4_only"`，明确提示用户。
 
 ---
 
 ## 3. HyperFrames Studio 全离线工程封装说明 (`export_hyperframes.py`)
-- `run_pipeline.py` 每次完成剪辑包装后，同步生成**零外链 CDN、全相对路径离线 `pipeline/hyperframes_draft/`**（并通过 `common.link_or_copy` 硬链接/复制视频分镜、三轨 WAV、透明 PNG 与经 `is_verified_commercial_font` 校验的商用字体到 `media/`）：
-  - `index.html` + `hyperframes.json`：根编排文件（内置轻量 `window.__timelines` 离线脚本，零 `http(s)://` 外链 CDN）
-  - `compositions/video_track.html`（`video`）、`compositions/flower_track.html`（`graphics`，如有包装元素时生成）及 `compositions/captions_track.html`（`captions`：严格按权威 `final_bbox` 落入 `y <= 1468` 安全区、`stroke_width=0` 零强加描边、`@font-face` 双色字幕）
+- `run_pipeline.py` 每次完成剪辑包装后，同步生成**零外链 CDN、符合 `hyperframes-core` `<template>` 契约、可直接在浏览器播放拖拽 Seek 的 `pipeline/hyperframes_draft/`**：
+  - `index.html` + `hyperframes.json`：根编排文件（内嵌支持 `<template>` 注水与逐帧同步显隐的离线时间线驱动引擎，零 `http(s)://` 外链 CDN）
+  - `compositions/video_track.html`（`video`）、`compositions/flower_track.html`（`graphics`，如有包装元素时生成）及 `compositions/captions_track.html`（`captions`：样式与 `@font-face` 全置于 `<template>` 内、唯一 ID 根、遵循 `bg_box_color`/`bg_radius`、严控 `y <= 1468`）
   - `启动HyperFrames工程.command`（`0o755` macOS 双击启动器）与 `启动HyperFrames工程.bat`（Windows 双击启动器）。
 
 ---
 
-## 4. v4 原材、合规授权、闸门锁与 22 项 Fail-Closed 契约 Schema
+## 4. 原材、合规授权、闸门锁与 22 项 Fail-Closed 契约 Schema
 - **专属隔离目录结构**：`<workspace_root>/accounts/<account_slug>/{account_profile.json, compliance_whitelist.json, content-log/, projects/<project_id>/{pipeline/, out/}}`（原素材 `--raw-dir` 全程只读零写入）。
 - **`00_raw_intel.json`**：`verified_by_real_users`、`pain_keywords`、`raw_pain_phrases`、`customer_questions`、`proof_assets`、`script_lint` (`passed`, `error_count`, `warn_count`, `issues`)。
 - **`00_shot_log.json` & `00_contact_sheet.jpg`**：每条素材的 `best_in_sec`、`sharpness_score`、`stability_score`（二阶加速度）、`motion_speed_px`、`accel_jitter_px`、`audio_grade` (`usable|noisy|silent`)、`video_grade` (`usable|audio_only|ng`)、`taboo_tags`、`color_meta`、`faces`、`eye_anchor`、`saliency_bbox`、`semantic_tags`、`scene_group`。
-- **`00_compliance_report.json` & `00_asset_licenses.json` / `asset_license_manifest.json`**：广告法 `must`/`warn` 双级命中（实拍人声弃用 `>40%` 或清空即阻断 `passed=False`）；实际用到 BGM/SFX/字体/LUT 逐项 `sha256`、`commercial_verified`（全部字体强制校验 `common.is_verified_commercial_font`）、`unregistered_count`、`all_commercial_verified`。
-- **`approval_lock.json` & `tidy_report.json` & `08_sfx_audit_window.json`**：`interruptions` (3 必停点审计)、`plan_sha256`、`human_approved`、`approved_at`（签字自动同步 `out/10_qa_report.*`）；完工清理保留 `08_sfx_audit_window.json` 供 `tidy` 后二次复验 `#20`。
-- **`content-log/account_profile.json`**：`sample_sufficient`、`defaults_frozen`（样本 `< 3` 时冻结活跃默认参数、新估算写入 `proposed_defaults`）、`pause_sec`、`target_median_shot_sec`、`target_aroll_ratio`、`preferred_style_id`、`winning_hooks`。
+- **`00_compliance_report.json` & `00_asset_licenses.json` / `asset_license_manifest.json`**：广告法 `must`/`warn` 双级命中（实拍人声弃用 `>40%` 或清空即阻断 `passed=False`，`#22` 黑盒复核严格只读不覆写）；实际用到 BGM/SFX/字体/LUT/code_broll 逐项 `sha256`、`commercial_verified`、`tts_commercial_notice`。
+- **`approval_lock.json` & `tidy_report.json` & `08_sfx_audit_window.json`**：`interruptions` (3 必停点审计)、`plan_sha256`（锁 03~08 核心工件）、`output_final_sha256`、`human_approved`、`approved_at`（签字自动同步 `out/10_qa_report.*`）；`blind_test_answer_key.json` 独立真随机盲测。
+- **`content-log/account_profile.json`**：按 `--account` 与 `--track` 双重隔离，`sample_sufficient`、`defaults_frozen`、`pause_sec`、`persona_pause_sec`、`target_median_shot_sec`、`target_aroll_ratio`、`preferred_style_id`、`winning_hooks`。
 - **`10_qa_report.json`（22 项 Fail-Closed）**：每项含 `status: PASS|FAIL|SKIPPED_UNAVAILABLE` 与 `passed: (status=="PASS")`；汇总 `pass_count`, `fail_count`, `skipped_count`, `approval_status` (`MACHINE_PASS_PENDING_HUMAN` | `APPROVED` | `REJECTED`)。

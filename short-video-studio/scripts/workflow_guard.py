@@ -14,11 +14,12 @@ import argparse
 import hashlib
 import html
 import math
-import random
 import re
+import secrets
 import shutil
 import statistics
 import subprocess
+import sys
 import tempfile
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -26,7 +27,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from common import find_bin, maybe_reexec_in_venv, read_json, run_cmd, write_json
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
+from common import find_bin, maybe_reexec_in_venv, read_json, run_cmd, sha256_file, write_json
 
 maybe_reexec_in_venv()
 
@@ -46,35 +51,43 @@ TEMP_SUBDIRS = (
     "01_normalized",
     "02_tts_chunks",
     "02_tts_segments",
-    "04_generated_broll",
     "_stage_assets",
     "__pycache__",
 )
 
 TEMP_PROCESS_FILES = (
     "02_tts_voice.wav",
-    "03_locked_voice.wav",
-    "03_locked_bgm.wav",
-    "06_sfx_track.wav",
     "08_voice_denoised.wav",
     "08_premix_raw.wav",
     "08_premix_nosfx_raw.wav",
+    "08_mixed_master.adj.wav",
+    "08_mixed_master_adj.wav",
+    "output_preview.mp4",
+)
+
+DEEP_CLEAN_SUBDIRS = ("04_generated_broll",)
+DEEP_CLEAN_FILES = (
+    "03_locked_voice.wav",
+    "03_locked_bgm.wav",
+    "06_sfx_track.wav",
     "08_stem_nosfx.wav",
     "08_voice_master.wav",
     "08_bgm_ducked.wav",
-    "08_mixed_master.adj.wav",
-    "08_mixed_master_adj.wav",
+    "08_sfx_master.wav",
     "08_mixed_master.wav",
-    "output_preview.mp4",
 )
 
 DELIVERABLE_SYNC_FILES = (
     "output_final.mp4",
     "09_cover.jpg",
     "09_cover_3x4.jpg",
+    "09_ui_safe_preview.jpg",
     "09_cover_v1.jpg",
     "09_cover_v2.jpg",
     "09_cover_v3.jpg",
+    "09_hook_v1.mp4",
+    "09_hook_v2.mp4",
+    "09_hook_v3.mp4",
     "09_title_cover.md",
     "09_title_cover.json",
     "09_hook_variants.json",
@@ -116,9 +129,16 @@ def _load_lock_state(pipeline_dir: Path) -> Dict[str, Any]:
 
 
 def compute_plan_digest(pipeline_dir: Path) -> str:
-    """对已定版的 04_edl / 05_subtitles / 06_packaging 计算组合 SHA-256 指纹。"""
+    """对已定版的 03~08 全核心流水线决策工件计算组合 SHA-256 指纹。"""
     h = hashlib.sha256()
-    for name in ("04_edl.json", "05_subtitles.json", "06_packaging.json"):
+    for name in (
+        "03_audio_events.json",
+        "04_edl.json",
+        "05_subtitles.json",
+        "06_packaging.json",
+        "07_color_plan.json",
+        "08_mix_metrics.json",
+    ):
         p = pipeline_dir / name
         h.update(name.encode("utf-8"))
         if p.is_file():
@@ -163,7 +183,9 @@ def lock_plan(pipeline_dir: Path, note: str = "用户拍板锁定方案") -> Dic
     st = _load_lock_state(pipeline_dir)
     digest = compute_plan_digest(pipeline_dir)
     edl = read_json(pipeline_dir / "04_edl.json") if (pipeline_dir / "04_edl.json").is_file() else {}
+    final_mp4 = pipeline_dir / "output_final.mp4"
     st["plan_sha256"] = digest
+    st["output_final_sha256"] = sha256_file(final_mp4) if final_mp4.is_file() else None
     st["locked_at"] = _now_iso()
     st["clip_count"] = int(edl.get("clip_count", 0))
     st["duration_sec"] = float(edl.get("total_duration_sec", 0.0))
@@ -182,6 +204,12 @@ def verify_lock(pipeline_dir: Path) -> Tuple[int, str, Dict[str, Any]]:
     cur = compute_plan_digest(pipeline_dir)
     if cur != saved:
         return 1, f"方案在拍板锁定后已被改动：锁={saved[:12]} != 当前={cur[:12]}，请重新预览并拍板", st
+    saved_mp4_sha = st.get("output_final_sha256")
+    final_mp4 = pipeline_dir / "output_final.mp4"
+    if saved_mp4_sha and final_mp4.is_file():
+        cur_mp4_sha = sha256_file(final_mp4)
+        if cur_mp4_sha != saved_mp4_sha:
+            return 1, f"成片 output_final.mp4 在锁版后被替换/篡改（{cur_mp4_sha[:12]} != {saved_mp4_sha[:12]}）", st
     return 0, f"方案锁有效 (sha={cur[:12]}, 锁定于 {st.get('locked_at')})", st
 
 
@@ -196,10 +224,16 @@ def approve_final(pipeline_dir: Path, note: str = "人工终审确认三项通�
     st = _load_lock_state(pipeline_dir)
     cur_digest = compute_plan_digest(pipeline_dir)
     if st.get("plan_sha256") and st["plan_sha256"] != cur_digest:
-        raise RuntimeError(f"当前 EDL/字幕/包装已被修改 (sha={cur_digest[:12]} != 锁={st['plan_sha256'][:12]})，请先重新渲染并质检。")
+        raise RuntimeError(f"当前 EDL/字幕/包装/音色方案已被修改 (sha={cur_digest[:12]} != 锁={st['plan_sha256'][:12]})，请先重新渲染并质检。")
+    final_mp4 = pipeline_dir / "output_final.mp4"
+    cur_mp4_sha = sha256_file(final_mp4) if final_mp4.is_file() else None
+    if st.get("output_final_sha256") and cur_mp4_sha and st["output_final_sha256"] != cur_mp4_sha:
+        raise RuntimeError("output_final.mp4 与锁定指纹不一致，禁止人工签字。")
     if not st.get("plan_sha256"):
         st["plan_sha256"] = cur_digest
         st["locked_at"] = _now_iso()
+    if cur_mp4_sha:
+        st["output_final_sha256"] = cur_mp4_sha
 
     st["human_approved"] = True
     st["approved_at"] = _now_iso()
@@ -463,23 +497,27 @@ def run_replication_diff(
         md_lines.append(f"| {d['dim']} | {d['ref']} | {d['out']} | {d['tol']} | {'✅' if d['ok'] else '⚠️'} |")
     (out_dir / "replication_diff.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
 
-    # 3. 乱序 A/B/C 风格盲测 HTML 页
+    # 3. 乱序 A/B/C 风格盲测 HTML 页（使用真随机洗牌并将答案分离存至独立 answer_key JSON，绝不内嵌剧透）
     samples = [("参考风格原片 (Reference)", ref_mp4), ("我方复刻成片 (Ours)", out_mp4)]
     if contrast_mp4 and contrast_mp4.is_file():
         samples.append(("异风格对照组 (Contrast)", contrast_mp4))
-    rng = random.Random(int(hashlib.sha256(out_mp4.name.encode()).hexdigest()[:8], 16))
-    rng.shuffle(samples)
+    secrets.SystemRandom().shuffle(samples)
 
     cards_html = []
-    key_rows = []
-    for idx_s, (label_char, (role_name, vp)) in enumerate(zip(("A", "B", "C"), samples)):
+    answer_mapping: Dict[str, Dict[str, str]] = {}
+    for label_char, (role_name, vp) in zip(("A", "B", "C"), samples):
         cards_html.append(
             f'<div class="card"><h3>样片 {label_char}</h3>'
             f'<video controls playsinline src="{html.escape(vp.resolve().as_uri())}"></video>'
             f'<label>风格相似度 (1-5)：<input type="range" class="blind-score" data-label="{label_char}" min="1" max="5" value="4" '
             f'oninput="this.nextElementSibling.textContent=this.value"><span>4</span></label></div>'
         )
-        key_rows.append(f"<li>样片 {label_char} → <b>{html.escape(role_name)}</b> (<code>{html.escape(vp.name)}</code>)</li>")
+        answer_mapping[label_char] = {"role": role_name, "filename": vp.name}
+
+    write_json(out_dir / "blind_test_answer_key.json", {
+        "created_at": _now_iso(),
+        "mapping": answer_mapping,
+    })
 
     blind_html = f"""<!doctype html>
 <html lang="zh-CN">
@@ -492,14 +530,14 @@ def run_replication_diff(
   .card {{ background: #1e293b; padding: 16px; border-radius: 14px; width: 300px; border: 1px solid #334155; }}
   video {{ width: 100%; border-radius: 10px; background: #000; }}
   button {{ margin-top: 16px; background: #38bdf8; color: #0f172a; border: none; padding: 10px 16px; border-radius: 8px; font-weight: 700; cursor: pointer; }}
-  details {{ margin-top: 20px; background: #1e293b; padding: 14px; border-radius: 10px; }}
+  .hint {{ margin-top: 16px; color: #94a3b8; font-size: 13px; }}
 </style>
 </head>
 <body>
   <h2>风格复刻乱序盲测 (请凭直觉判断哪两条气质同源)</h2>
   <div class="grid">{''.join(cards_html)}</div>
   <button type="button" onclick="exportBlindJson()">导出盲测结果 JSON</button>
-  <details><summary>点击展开主持人答案键（盲评完成后查看）</summary><ul>{''.join(key_rows)}</ul></details>
+  <p class="hint">注：为保证双盲客观性，本页不含任何标签剧透。完成打分并导出 JSON 后，可打开同目录 <code>blind_test_answer_key.json</code> 核对真相。</p>
   <script>
     function exportBlindJson() {{
       const scores = Array.from(document.querySelectorAll('.blind-score')).map(el => ({{
@@ -567,10 +605,11 @@ def tidy_workspace(
     pipeline_dir: Path,
     out_dir: Optional[Path] = None,
     keep_temp: bool = False,
+    deep_clean: bool = False,
 ) -> Dict[str, Any]:
     """
     1. 将全部最终交付物同步归档至 <project_dir>/out/
-    2. 除非 --keep-temp，否则清理全部无用大体积过程临时文件与中间帧目录
+    2. 除非 --keep-temp，清理大体积过程临时帧/冗余中间音轨（默认保留锁轨音频与代码补镜以支撑 tidy 后二次精修；deep_clean 才彻底清库）
     """
     target_out = out_dir or (pipeline_dir.parent / "out")
     target_out.mkdir(parents=True, exist_ok=True)
@@ -595,10 +634,26 @@ def tidy_workspace(
         return rep
 
     protected = _collect_protected_paths(pipeline_dir)
+    # 若 04_edl.json 仍存在，默认保护其引用的 code_broll 与锁轨文件，支持 post-tidy 的 reedit-visuals / render-locked
+    if not deep_clean:
+        edl_p = pipeline_dir / "04_edl.json"
+        if edl_p.is_file():
+            try:
+                edl = read_json(edl_p)
+                for c in (edl.get("clips") or []):
+                    mp = str(c.get("media_path") or "")
+                    if mp and "04_generated_broll" in mp and Path(mp).exists():
+                        protected.add(Path(mp).resolve())
+            except Exception:
+                pass
+
+    target_subdirs = TEMP_SUBDIRS + (DEEP_CLEAN_SUBDIRS if deep_clean else ())
+    target_files = TEMP_PROCESS_FILES + (DEEP_CLEAN_FILES if deep_clean else ())
+
     removed_paths: List[str] = []
     freed_bytes = 0
 
-    for dname in TEMP_SUBDIRS:
+    for dname in target_subdirs:
         dp = pipeline_dir / dname
         if not dp.is_dir():
             continue
@@ -610,7 +665,7 @@ def tidy_workspace(
         shutil.rmtree(dp, ignore_errors=True)
         removed_paths.append(dname + "/")
 
-    for fname in TEMP_PROCESS_FILES:
+    for fname in target_files:
         fp = pipeline_dir / fname
         if not fp.is_file():
             continue
@@ -678,6 +733,7 @@ def main() -> None:
     p_td.add_argument("--pipeline-dir", required=True)
     p_td.add_argument("--out-dir")
     p_td.add_argument("--keep-temp", action="store_true")
+    p_td.add_argument("--deep-clean", action="store_true")
 
     args = parser.parse_args()
     if args.cmd == "record-stop":
@@ -717,6 +773,7 @@ def main() -> None:
             Path(args.pipeline_dir),
             out_dir=Path(args.out_dir) if args.out_dir else None,
             keep_temp=args.keep_temp,
+            deep_clean=args.deep_clean,
         )
 
 

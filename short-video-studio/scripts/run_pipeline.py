@@ -20,10 +20,17 @@ from typing import Any, Dict, List, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import (
     ASSETS_DIR,
+    CANVAS_HEIGHT,
+    CANVAS_WIDTH,
     DEFAULT_FPS,
+    SAFE_ZONE,
+    find_bin,
+    fit_text_line,
+    get_cached_font,
     maybe_reexec_in_venv,
     read_json,
     resolve_workspace_paths,
+    run_cmd,
     write_json,
 )
 
@@ -42,7 +49,7 @@ from inventory_media import (
 )
 from qa_inspector import inspect_video
 from raw_intel_ingest import lint_script, render_lint_markdown
-from render_mp4 import _fit_line, _get_cached_font, render_mp4
+from render_mp4 import render_mp4
 from step1_normalize import run_step1
 from step2_transcribe import run_step2
 from step3_lock_audio import run_step3
@@ -52,7 +59,7 @@ from step6_packaging import run_step6
 from step7_color_grade import run_step7
 from step8_mix_audio import run_step8
 from step9_title_cover import run_step9
-from workflow_guard import tidy_workspace, verify_lock
+from workflow_guard import audit_stops, record_stop, tidy_workspace, verify_lock
 
 
 def _run_script_prelint(
@@ -75,35 +82,80 @@ def _run_script_prelint(
 
 
 def _generate_hook_variants(pipeline_dir: Path, count: int) -> Optional[Path]:
-    """根据已生成的标题/封面备选方案，产出多版本开篇钩子对照方案与变体封面图。"""
+    """根据已生成的标题与成片，产出多版本真 3 秒开篇视频钩子变体（零模板词污染、全对齐安全区）。"""
     n_var = max(2, min(3, int(count)))
     cov_p = pipeline_dir / "09_title_cover.json"
     if not cov_p.is_file():
         return None
     cov = read_json(cov_p)
-    titles = list(cov.get("titles") or [])
+    titles = [str(t).strip() for t in (cov.get("titles") or []) if str(t).strip()]
     base_jpg = Path(cov.get("cover_jpg") or (pipeline_dir / "09_cover.jpg"))
     subs = read_json(pipeline_dir / "05_subtitles.json") if (pipeline_dir / "05_subtitles.json").exists() else {}
     font_path = subs.get("font_path")
+    final_mp4 = pipeline_dir / "output_final.mp4"
+    ffmpeg = find_bin("ffmpeg")
 
-    angles = ["颠覆对比钩子", "数字痛点钩子", "悬念反问钩子"]
+    # 自然人话创作视角标签，绝对杜绝任何方法论模板黑词
+    angles = ["利益对照", "一线数据", "实拍拆解"]
     variants: List[Dict[str, Any]] = []
     for idx in range(n_var):
-        title_txt = titles[idx] if idx < len(titles) else (titles[0] if titles else str(cov.get("cover_main", "核心真相")))
+        raw_t = titles[idx] if idx < len(titles) else (titles[0] if titles else str(cov.get("cover_main", "实拍重点")))
+        clean_headline = raw_t.replace("\n", " ").strip()[:18]
         out_img = pipeline_dir / f"09_cover_v{idx + 1}.jpg"
+        out_vid = pipeline_dir / f"09_hook_v{idx + 1}.mp4"
+
         if base_jpg.is_file():
             with Image.open(base_jpg) as im:
                 canvas = im.convert("RGBA")
                 draw = ImageDraw.Draw(canvas)
-                draw.rounded_rectangle([(84, 152), (620, 224)], radius=14, fill=(15, 23, 42, 228), outline=(250, 204, 21, 220), width=2)
-                fnt, fitted = _fit_line(draw, f"{angles[idx]}：{title_txt[:14]}", font_path, 500, 28, 20)
-                draw.text((104, 172), fitted, font=fnt, fill=(250, 204, 21, 255))
+                card_y = int(cov.get("card_y", 260))
+                badge_y0 = max(SAFE_ZONE["y_min"] + 12, card_y - 72 if card_y > 300 else card_y + 348)
+                badge_y1 = min(1140, badge_y0 + 62)
+                max_w = SAFE_ZONE["x_max"] - SAFE_ZONE["x_min"] - 40
+                fnt, fitted = fit_text_line(draw, clean_headline, font_path, max_width=max_w - 40, max_size=30, min_size=20)
+                bb = draw.textbbox((0, 0), fitted, font=fnt)
+                bw = min(max_w, max(240, int(bb[2] - bb[0]) + 44))
+                bx0 = SAFE_ZONE["x_min"] + 20
+                draw.rounded_rectangle([(bx0, badge_y0), (bx0 + bw, badge_y1)], radius=14, fill=(18, 24, 38, 224), outline=(250, 204, 21, 220), width=2)
+                draw.text((bx0 + 22, (badge_y0 + badge_y1) // 2), fitted, font=fnt, fill=(255, 255, 255, 255), anchor="lm")
                 canvas.convert("RGB").save(out_img, quality=92)
+
+        # 生成真实可播放的 3 秒钩子开篇对比 MP4
+        vid_ok = False
+        if ffmpeg and final_mp4.is_file():
+            ov_png = pipeline_dir / f"_tmp_hook_v{idx + 1}.png"
+            ov_im = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
+            ov_d = ImageDraw.Draw(ov_im)
+            max_w = SAFE_ZONE["x_max"] - SAFE_ZONE["x_min"] - 40
+            fnt, fitted = fit_text_line(ov_d, clean_headline, font_path, max_width=max_w - 40, max_size=34, min_size=22)
+            bb = ov_d.textbbox((0, 0), fitted, font=fnt)
+            bw = min(max_w, max(260, int(bb[2] - bb[0]) + 48))
+            bx0, by0, by1 = SAFE_ZONE["x_min"] + 20, SAFE_ZONE["y_min"] + 16, SAFE_ZONE["y_min"] + 88
+            ov_d.rounded_rectangle([(bx0, by0), (bx0 + bw, by1)], radius=16, fill=(15, 23, 42, 226), outline=(250, 204, 21, 230), width=2)
+            ov_d.text((bx0 + 24, (by0 + by1) // 2), fitted, font=fnt, fill=(250, 204, 21, 255), anchor="lm")
+            ov_im.save(ov_png)
+            try:
+                run_cmd([
+                    ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+                    "-t", "3.0", "-i", str(final_mp4),
+                    "-i", str(ov_png),
+                    "-filter_complex", "[0:v][1:v]overlay=0:0:enable='between(t,0,3.0)'[v]",
+                    "-map", "[v]", "-map", "0:a?",
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "19", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac", "-b:a", "128k", "-t", "3.0",
+                    str(out_vid),
+                ], check=False)
+                vid_ok = out_vid.is_file() and out_vid.stat().st_size > 4096
+            finally:
+                ov_png.unlink(missing_ok=True)
+
         variants.append({
             "variant_id": f"hook_v{idx + 1}",
-            "angle": angles[idx],
-            "headline": title_txt,
+            "angle": angles[idx % len(angles)],
+            "headline": raw_t,
             "cover_jpg": str(out_img.resolve()) if out_img.is_file() else None,
+            "video_mp4": str(out_vid.resolve()) if vid_ok else None,
+            "duration_sec": 3.0 if vid_ok else 0.0,
         })
 
     out_json = pipeline_dir / "09_hook_variants.json"
@@ -285,27 +337,58 @@ def write_delivery_summary(
     return out_md
 
 
-def _rebuild_normalized_if_missing(pipeline_dir: Path) -> None:
-    """tidy 清理过 01_normalized 后，若以 reedit-visuals 模式返工，自动从 01_manifest.json 源路径重建。"""
+def _ensure_reedit_dependencies(
+    pipeline_dir: Path,
+    track: str = "store",
+    bgm_p: Optional[Path] = None,
+    pause_sec: float = 0.20,
+    account_profile: Optional[Dict[str, Any]] = None,
+) -> None:
+    """在 tidy 清理过临时文件后若需二次改画或重渲染，自动检查并无损重建缺失依赖。"""
     man_p = pipeline_dir / "01_manifest.json"
-    if not man_p.is_file():
-        return
-    man = read_json(man_p)
-    items = man.get("items") or []
-    missing = [it for it in items if it.get("normalized_mp4") and not Path(it["normalized_mp4"]).is_file()]
-    if not missing:
-        return
-    src_paths: List[Path] = []
-    seen: set[str] = set()
-    for it in items:
-        sp = str(it.get("source_path") or "")
-        if sp and sp not in seen and Path(sp).is_file():
-            seen.add(sp)
-            src_paths.append(Path(sp))
-    if not src_paths:
-        raise FileNotFoundError("01_normalized 已被清理且找不到原始 source_path 源文件，无法重建。")
-    print(f"[pipeline] 检测到 {len(missing)} 条已清理的 01_normalized，正从只读源素材按需重建...")
-    run_step1(src_paths, pipeline_dir)
+    if man_p.is_file():
+        man = read_json(man_p)
+        items = man.get("items") or []
+        missing = [it for it in items if it.get("normalized_mp4") and not Path(it["normalized_mp4"]).is_file()]
+        if missing:
+            src_paths: List[Path] = []
+            seen: set[str] = set()
+            for it in items:
+                sp = str(it.get("source_path") or "")
+                if sp and sp not in seen and Path(sp).is_file():
+                    seen.add(sp)
+                    src_paths.append(Path(sp))
+            if not src_paths:
+                raise FileNotFoundError("01_normalized 已被清理且找不到原始 source_path 源文件，无法重建。")
+            print(f"[pipeline] 检测到 {len(missing)} 条已清理的 01_normalized，正从只读源素材按需重建...")
+            run_step1(src_paths, pipeline_dir)
+
+    ae_p = pipeline_dir / "03_audio_events.json"
+    if ae_p.is_file():
+        ae = read_json(ae_p)
+        lv = Path(str(ae.get("locked_voice_wav") or (pipeline_dir / "03_locked_voice.wav")))
+        lb = Path(str(ae.get("locked_bgm_wav") or (pipeline_dir / "03_locked_bgm.wav")))
+        if not lv.is_file() or not lb.is_file():
+            print("[pipeline] 检测到锁定音轨 WAV 缺失，正按 02_transcript 自动重建 Step 3 锁轨...")
+            bgm_cand = bgm_p
+            if bgm_cand is None and ae.get("bgm", {}).get("file") and Path(ae["bgm"]["file"]).is_file():
+                bgm_cand = Path(ae["bgm"]["file"])
+            run_step3(
+                pipeline_dir,
+                track=track,
+                bgm_path=bgm_cand,
+                pause_sec=float(ae.get("pause_duration_sec", pause_sec)),
+                account_profile=account_profile,
+            )
+
+
+def _ensure_stop_recorded(pipeline_dir: Path, stop_type: str, summary: str) -> None:
+    try:
+        st_info = audit_stops(pipeline_dir)
+        if stop_type not in (st_info.get("types") or []):
+            record_stop(pipeline_dir, stop_type, summary=summary)
+    except Exception:
+        pass
 
 
 def _render_and_verify_only(
@@ -327,10 +410,10 @@ def _render_and_verify_only(
             raise RuntimeError(f"哈希锁校验失败，阻断正式渲染：{msg}")
 
     final_mp4 = render_mp4(pipeline_dir, preview=False)
-    jy_status = export_jianying_draft(pipeline_dir, simulate_failure=simulate_jy_fail)
-    hf_status = export_hyperframes_draft(pipeline_dir, simulate_failure=simulate_hf_fail)
     if hook_variants > 1:
         _generate_hook_variants(pipeline_dir, hook_variants)
+    jy_status = export_jianying_draft(pipeline_dir, simulate_failure=simulate_jy_fail)
+    hf_status = export_hyperframes_draft(pipeline_dir, simulate_failure=simulate_hf_fail)
 
     qa_report = inspect_video(
         pipeline_dir,
@@ -548,7 +631,7 @@ def main() -> None:
         (pipeline_dir / "00_inventory.md").write_text(render_markdown_summary(inv), encoding="utf-8")
 
     if args.mode == "render-locked":
-        _rebuild_normalized_if_missing(pipeline_dir)
+        _ensure_reedit_dependencies(pipeline_dir, track=args.track, bgm_p=bgm_p, pause_sec=args.pause_sec, account_profile=account_profile)
         res = _render_and_verify_only(
             pipeline_dir=pipeline_dir,
             track=args.track,
@@ -574,6 +657,7 @@ def main() -> None:
                 force_tts=args.force_tts,
                 whitelist_path=whitelist_path,
             )
+            _ensure_stop_recorded(pipeline_dir, "stop1_script", "Step 2 脚本转写与合规门禁完成")
             run_step3(
                 pipeline_dir,
                 track=args.track,
@@ -581,13 +665,14 @@ def main() -> None:
                 pause_sec=args.pause_sec,
                 account_profile=account_profile,
             )
+            _ensure_stop_recorded(pipeline_dir, "stop2_blind_audio", "Step 3 盲听锁定音轨完成")
         elif args.mode == "relock-voice":
             if not (pipeline_dir / "01_manifest.json").exists():
                 eff_raw = _ensure_effective_raw_dir()
                 _run_inventory_if_needed(eff_raw)
                 run_step1([eff_raw], pipeline_dir)
             else:
-                _rebuild_normalized_if_missing(pipeline_dir)
+                _ensure_reedit_dependencies(pipeline_dir, track=args.track, bgm_p=bgm_p, pause_sec=args.pause_sec, account_profile=account_profile)
             run_step2(
                 pipeline_dir,
                 track=args.track,
@@ -595,6 +680,7 @@ def main() -> None:
                 force_tts=True if script_p else args.force_tts,
                 whitelist_path=whitelist_path,
             )
+            _ensure_stop_recorded(pipeline_dir, "stop1_script", "relock-voice 脚本重建完成")
             run_step3(
                 pipeline_dir,
                 track=args.track,
@@ -602,10 +688,11 @@ def main() -> None:
                 pause_sec=args.pause_sec,
                 account_profile=account_profile,
             )
+            _ensure_stop_recorded(pipeline_dir, "stop2_blind_audio", "relock-voice 音轨重新锁定完成")
         elif args.mode == "reedit-visuals":
             if not (pipeline_dir / "03_audio_events.json").exists():
                 raise FileNotFoundError("reedit-visuals 模式要求 03_audio_events.json 已锁定存在。")
-            _rebuild_normalized_if_missing(pipeline_dir)
+            _ensure_reedit_dependencies(pipeline_dir, track=args.track, bgm_p=bgm_p, pause_sec=args.pause_sec, account_profile=account_profile)
             print("[pipeline] 只改画面模式：Step 1–3 已锁定音轨保持原封不动，仅按音轨事件重排画面。")
 
         res = run_visual_to_delivery(
@@ -635,6 +722,7 @@ def main() -> None:
         sys.exit(2)
 
     if args.mode != "lock-preview":
+        _ensure_stop_recorded(pipeline_dir, "stop3_final", "22 项质检通过，等待三项终审或已完结交付")
         tidy_workspace(pipeline_dir, out_dir=ws["out_dir"], keep_temp=args.keep_temp)
 
     print("\n[OK] 流水线执行完毕。")

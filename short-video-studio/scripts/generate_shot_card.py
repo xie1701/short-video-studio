@@ -2,17 +2,22 @@
 """
 [素材获取：拍摄任务卡]
 为需要实拍的短视频生成傻瓜式手机拍摄任务卡：
-逐个镜头写明：拍什么、机位与景别、目标时长、备份条数、手机拍摄要点，并生成 SVG 简笔构图示意卡片。
+逐个镜头写明：拍什么、机位与景别、目标时长（头尾各留 1.0s，共 +2.0s 余量）、备份条数、手机拍摄要点，
+并生成对齐 common.SUBTITLE_SAFE_ZONE 的 SVG 简笔构图示意卡片。
 """
 
 from __future__ import annotations
 
 import argparse
-import json
+import sys
 from pathlib import Path
 from typing import Any, Dict, List
 
-from common import write_json
+SCRIPTS_ROOT = Path(__file__).resolve().parent
+if str(SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_ROOT))
+
+from common import CANVAS_HEIGHT, CANVAS_WIDTH, SUBTITLE_SAFE_ZONE, read_json, write_json
 
 DEFAULT_SHOTS = [
     {
@@ -34,7 +39,7 @@ DEFAULT_SHOTS = [
         "duration_sec": 5.0,
         "backup_takes": 2,
         "diagram_type": "closeup_detail",
-        "phone_tips": "手肘贴桌稳住不要晃，慢推 2 秒即可；多拍 3 秒余量别刚放下就按停止",
+        "phone_tips": "手肘贴桌稳住不要晃，慢推 2 秒即可；头尾各停稳 1.0 秒再收机（共留 +2.0s 余量）",
         "spoken_line": "覆盖在第一段关键词重音处，仅换画面不改原声",
     },
     {
@@ -56,7 +61,7 @@ DEFAULT_SHOTS = [
         "duration_sec": 5.0,
         "backup_takes": 2,
         "diagram_type": "portrait_hook",
-        "phone_tips": "说完最后一字微笑停满 2 秒再抬手关录制，防止句尾被手挡脸",
+        "phone_tips": "说完最后一字微笑停满 1.0–2.0 秒再抬手关录制，防止句尾被手挡脸",
         "spoken_line": "结尾金句 + 互动/转化指令",
     },
 ]
@@ -77,13 +82,19 @@ INDUSTRY_CHECKLISTS = {
 
 
 def build_sketch_svg(diagram_type: str, shot_no: int) -> str:
-    """生成清晰直观的 9:16 竖屏简笔构图示意 SVG（标出平台安全框与主体位置）。"""
+    """生成清晰直观的 9:16 竖屏简笔构图示意 SVG（精准映射 common.SUBTITLE_SAFE_ZONE 与平台安全框）。"""
+    sx = round(SUBTITLE_SAFE_ZONE["x_min"] / CANVAS_WIDTH * 180)
+    sw = round((SUBTITLE_SAFE_ZONE["x_max"] - SUBTITLE_SAFE_ZONE["x_min"]) / CANVAS_WIDTH * 180)
+    sy = round(SUBTITLE_SAFE_ZONE["y_min"] / CANVAS_HEIGHT * 320)
+    sh = max(24, round((SUBTITLE_SAFE_ZONE["y_max"] - SUBTITLE_SAFE_ZONE["y_min"]) / CANVAS_HEIGHT * 320))
+    scy = sy + sh // 2 + 4
+
     base_header = (
         '<svg xmlns="http://www.w3.org/2000/svg" width="180" height="320" viewBox="0 0 180 320">'
         '<defs><marker id="a" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">'
         '<path d="M 0 1 L 10 5 L 0 9 z" fill="#0284C7"/></marker></defs>'
         '<rect x="2" y="2" width="176" height="316" rx="14" fill="#F8FAFC" stroke="#334155" stroke-width="3"/>'
-        '<rect x="10" y="26" width="136" height="218" fill="none" stroke="#10B981" stroke-width="1.5" stroke-dasharray="4,3"/>'
+        '<rect x="10" y="27" width="136" height="220" fill="none" stroke="#10B981" stroke-width="1.5" stroke-dasharray="4,3"/>'
         '<text x="14" y="20" font-size="9" fill="#64748B" font-family="sans-serif">TOP UI SAFE</text>'
         '<text x="14" y="262" font-size="9" fill="#EF4444" font-family="sans-serif">BOTTOM UI 遮挡区</text>'
         '<rect x="148" y="115" width="24" height="125" rx="4" fill="#E2E8F0"/>'
@@ -91,20 +102,20 @@ def build_sketch_svg(diagram_type: str, shot_no: int) -> str:
     )
     if diagram_type == "portrait_hook":
         body = (
-            '<circle cx="78" cy="92" r="24" fill="#FDE68A" stroke="#0F172A" stroke-width="2.5"/>'
-            '<path d="M40 185 C40 135, 116 135, 116 185 Z" fill="#93C5FD" stroke="#0F172A" stroke-width="2.5"/>'
-            '<circle cx="70" cy="88" r="2.5" fill="#0F172A"/><circle cx="86" cy="88" r="2.5" fill="#0F172A"/>'
-            '<path d="M71 100 Q78 106 85 100" fill="none" stroke="#0F172A" stroke-width="2"/>'
-            '<rect x="30" y="195" width="96" height="28" rx="6" fill="#FEF08A" stroke="#CA8A04" stroke-width="1.5"/>'
-            '<text x="78" y="213" font-size="10" font-weight="bold" text-anchor="middle" fill="#0F172A">字幕安全区</text>'
+            '<circle cx="78" cy="88" r="24" fill="#FDE68A" stroke="#0F172A" stroke-width="2.5"/>'
+            '<path d="M40 180 C40 132, 116 132, 116 180 Z" fill="#93C5FD" stroke="#0F172A" stroke-width="2.5"/>'
+            '<circle cx="70" cy="84" r="2.5" fill="#0F172A"/><circle cx="86" cy="84" r="2.5" fill="#0F172A"/>'
+            '<path d="M71 96 Q78 102 85 96" fill="none" stroke="#0F172A" stroke-width="2"/>'
+            f'<rect x="{sx}" y="{sy}" width="{sw}" height="{sh}" rx="6" fill="#FEF08A" stroke="#CA8A04" stroke-width="1.5"/>'
+            f'<text x="{sx + sw // 2}" y="{scy}" font-size="10" font-weight="bold" text-anchor="middle" fill="#0F172A">字幕安全区</text>'
         )
     elif diagram_type == "closeup_detail":
         body = (
-            '<ellipse cx="78" cy="145" rx="48" ry="34" fill="#FED7AA" stroke="#9A3412" stroke-width="2.5"/>'
-            '<rect x="44" y="128" width="68" height="34" rx="8" fill="#FB923C" stroke="#7C2D12" stroke-width="2"/>'
+            '<ellipse cx="78" cy="142" rx="48" ry="34" fill="#FED7AA" stroke="#9A3412" stroke-width="2.5"/>'
+            '<rect x="44" y="125" width="68" height="34" rx="8" fill="#FB923C" stroke="#7C2D12" stroke-width="2"/>'
             '<line x1="25" y1="80" x2="55" y2="115" stroke="#0284C7" stroke-width="2.5" marker-end="url(#a)"/>'
             '<text x="78" y="70" font-size="11" font-weight="bold" text-anchor="middle" fill="#0369A1">45° 俯拍特写</text>'
-            '<text x="78" y="150" font-size="11" font-weight="bold" text-anchor="middle" fill="#FFFFFF">产品主体</text>'
+            '<text x="78" y="147" font-size="11" font-weight="bold" text-anchor="middle" fill="#FFFFFF">产品主体</text>'
         )
     else:
         body = (
@@ -160,20 +171,36 @@ def build_ascii_sketch(diagram_type: str) -> str:
 
 
 def shots_from_audio_events(audio_events: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """画外音型片子：先锁配音，再按每句配音时长 +2.5s 反写每条实拍镜头目标时长。"""
+    """按锁音节奏反推实拍时长（统一头尾各留 1.0s，共 +2.0s 余量），并按情绪角色区分口播与特写。"""
     out: List[Dict[str, Any]] = []
-    for idx, sent in enumerate(audio_events.get("sentences", []), start=1):
+    sents = audio_events.get("sentences", [])
+    n_s = len(sents)
+    broll_idx = 0
+    for idx, sent in enumerate(sents, start=1):
         s_dur = max(1.0, float(sent["end_sec"]) - float(sent["start_sec"]))
-        rec_dur = round(s_dur + 2.5, 1)
+        rec_dur = round(s_dur + 2.0, 1)
+        emo = str(sent.get("emotion_or_info", "info"))
+        is_human_anchor = idx == 1 or idx == n_s or emo in ("hook", "persona", "cta")
+        if is_human_anchor:
+            diag = "portrait_hook"
+            role = f"A-roll 口播出镜 #{idx} (情绪={emo}, +2.0s余量)"
+            what = f"主理人直视镜头口播：「{sent['text'][:18]}」，配合手持实物或诚恳眼神"
+            framing = "手机与眼齐平，离人一臂远，头顶留空避开顶部 UI"
+        else:
+            broll_idx += 1
+            diag = "closeup_detail" if broll_idx % 2 == 1 else "wide_scene"
+            role = f"B-roll 互文画面 #{idx} (+2.0s余量)"
+            what = f"拍摄对应证据画面：与「{sent['text'][:16]}」核心动作或场景强一致"
+            framing = "主体居画面中上；特写距两掌宽，全景退后三步"
         out.append({
             "shot_no": idx,
-            "role": f"B-roll 画面镜头 #{idx} (按配音时长+2.5s定长)",
-            "what": f"拍摄对应画面：与本句「{sent['text'][:16]}」提到的核心物品或操作动作强一致",
-            "angle_framing": "主体居画面中间偏上；特写距离两掌宽，全景退后三步",
+            "role": role,
+            "what": what,
+            "angle_framing": framing,
             "duration_sec": rec_dur,
             "backup_takes": 2,
-            "diagram_type": "closeup_detail" if idx % 2 == 1 else "wide_scene",
-            "phone_tips": f"本句配音长 {s_dur:.1f}s，请实拍不少于 {rec_dur:.1f}s（前 0.5s 和结尾 1s 拿稳别动）",
+            "diagram_type": diag,
+            "phone_tips": f"本句配音长 {s_dur:.1f}s，请实拍不少于 {rec_dur:.1f}s（头尾各停稳 1.0s 再动/按停，共 +2.0s 余量）",
             "spoken_line": sent["text"],
         })
     return out
@@ -197,7 +224,7 @@ def generate_shot_card(
         "",
         f"- **适用轨道**：{'门店轨（实拍人设+门店信任细节）' if track=='store' else '博主轨（高信息密度+节奏卡点）'} | **行业模板**：`{industry}`",
         "- **手机统一设置**：`1080×1920 竖屏` · `30fps` · 关自带美颜与 HDR 防发灰 · **拍前先拿袖口擦干净主摄镜头**",
-        "- **核心原则**：**用「一个手臂 / 一拃 / 退三步」做机位尺子；只管拍稳拍够时长，全片剪辑节奏交给流水线以音定画！**",
+        "- **核心原则**：**用「一个手臂 / 一拃 / 退三步」做机位尺子；头尾各多留 1.0 秒（共 +2.0s 余量）方便剪辑以音定画！**",
         "",
         "## 开拍 & 收工 5 条现场铁律（决定能不能直接用）",
         "1. **必录 2 个现场动作同期声**：热锅下菜滋啦、刀切声、工具清脆声等至少录进去，别全拍哑巴空镜。",
@@ -210,7 +237,7 @@ def generate_shot_card(
     if voice_locked:
         lines.extend([
             "## 画外音配音已锁定（按音反定实拍时长）",
-            "- 下表每个镜头的建议录制时长已按**对应配音句长度 + 2.5 秒剪辑余量**自动算出，照着拍即可严丝合缝！",
+            "- 下表每个镜头的建议录制时长已按**对应配音句长度 + 2.0 秒剪辑余量（头尾各 1.0s）**自动算出，照着拍即可严丝合缝！",
             "",
         ])
 
@@ -220,18 +247,18 @@ def generate_shot_card(
     lines.append("")
 
     for s in shots:
-        svg_file = svg_dir / f"shot_{s['shot_no']:02d}.svg"
-        svg_file.write_text(build_sketch_svg(s.get("diagram_type", "portrait_hook"), s["shot_no"]), encoding="utf-8")
+        svg_file = svg_dir / f"shot_{int(s['shot_no']):02d}.svg"
+        svg_file.write_text(build_sketch_svg(s.get("diagram_type", "portrait_hook"), int(s["shot_no"])), encoding="utf-8")
         lines += [
             f"## 镜头 #{s['shot_no']}：{s['role']}",
             "",
             f"- **拍什么**：{s['what']}",
             f"- **对应台词/用途**：{s.get('spoken_line', '')}",
             f"- **身体尺子机位**：{s['angle_framing']}",
-            f"- **建议录制时长**：{s['duration_sec']} 秒（包含头尾各 1 秒以上起落幅余量）",
+            f"- **建议录制时长**：{s['duration_sec']} 秒（含头尾各 1.0 秒起落幅，共 +2.0s 余量）",
             f"- **备份条数**：建议拍 **{s['backup_takes']} 条**（说错不断连拍，挑最顺的一条）",
             f"- **手机拍摄要点**：{s['phone_tips']}",
-            f"- **简笔构图示意**：见 SVG 文件 `{svg_file.name}`",
+            f"- **简笔构图示意**：见 SVG 文件 `shot_sketches/{svg_file.name}`",
             "",
             "```text",
             build_ascii_sketch(s.get("diagram_type", "portrait_hook")),
@@ -249,15 +276,18 @@ def main() -> None:
     parser.add_argument("--title", default="八年老店老板说句大实话", help="视频选题标题")
     parser.add_argument("--track", choices=["store", "creator"], default="store")
     parser.add_argument("--industry", choices=["general", "catering", "auto_repair"], default="general")
-    parser.add_argument("--audio-events", help="可选：已锁定的 03_audio_events.json，按每句配音+2.5s反写实拍时长")
-    parser.add_argument("--shots-json", help="可选：自定义镜头列表 JSON 文件")
+    parser.add_argument("--audio-events", help="可选：已锁定的 03_audio_events.json，按每句配音+2.0s反写实拍时长")
+    parser.add_argument("--shots-json", help="可选：自定义镜头列表 JSON 文件（兼容 list 与 {'shots': [...]}）")
     args = parser.parse_args()
 
     voice_locked = False
     if args.shots_json:
-        shots = json.loads(Path(args.shots_json).read_text(encoding="utf-8"))
+        raw_shots = read_json(Path(args.shots_json))
+        shots = raw_shots.get("shots", []) if isinstance(raw_shots, dict) else raw_shots
+        if not isinstance(shots, list) or not shots:
+            raise ValueError(f"shots-json 格式为空或非法: {args.shots_json}")
     elif args.audio_events and Path(args.audio_events).is_file():
-        ae = json.loads(Path(args.audio_events).read_text(encoding="utf-8"))
+        ae = read_json(Path(args.audio_events))
         shots = shots_from_audio_events(ae) or DEFAULT_SHOTS
         voice_locked = True
     else:

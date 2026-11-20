@@ -2,12 +2,14 @@
 """
 short-video-studio 公共工具模块
 集中管理唯一权威常量、多账号隔离工作区、FFmpeg/FFprobe 调用、商用字体合规校验、
-抗混叠多速率音频读写、3D LUT/Style 解析与几何仿射映射。
+抗混叠多速率音频读写、双声道单边故障拯救、SFX 同窗审计、3D LUT/Style 解析与几何仿射映射。
 """
 
 from __future__ import annotations
 
+import functools
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -50,7 +52,12 @@ SUBTITLE_SAFE_ZONE = {
     "y_max": 1468,
 }
 
+# #20 SFX 2-8kHz 同窗净抬升审计唯一权威窗边界
+SFX_AUDIT_PRE_SEC = 0.04
+SFX_AUDIT_POST_SEC = 0.16
+
 MEDIA_EXTS = {".mp4", ".mov", ".m4v", ".mkv", ".avi", ".webm"}
+AUDIO_EXTS = {".wav", ".m4a", ".mp3", ".aac", ".flac", ".ogg"}
 
 BT709_FFMPEG_ARGS = [
     "-pix_fmt", "yuv420p",
@@ -96,15 +103,19 @@ LEAK_REGEX_PATTERNS = [
     r"纸张拼贴",
     r"流派模板",
     r"风格谱",
+    r"颠覆对比钩子",
+    r"数字痛点钩子",
+    r"悬念反问钩子",
 ]
 
-# 经核验的免费/OFL 可商用中文字体文件名白名单前缀
+# 经核验的免费/OFL 可商用中文字体文件名白名单前缀（绝不包含 STHeiti/PingFang/微软雅黑）
 VERIFIED_COMMERCIAL_FONT_STEMS = (
     "alimamashuheiti",
     "sourcehansans",
     "sourcehanserif",
     "notosanssc",
     "notosanscjk",
+    "notoserifsc",
     "notoserifcjk",
     "smileysans",
     "qingsongshouxieti",
@@ -128,18 +139,15 @@ def get_preferred_python() -> str:
     return sys.executable
 
 
-def maybe_reexec_in_venv() -> None:
-    """若核心渲染/声学包(PIL/numpy/scipy)任一缺失且专用 venv 可用，自动切换至专用 venv 执行当前脚本。"""
-    try:
-        import PIL  # noqa: F401
-        import numpy  # noqa: F401
-        import scipy  # noqa: F401
+def maybe_reexec_in_venv(extra_modules: Tuple[str, ...] = ()) -> None:
+    """若核心渲染/声学包或指定扩展包缺失且专用 venv 可用，自动切换至专用 venv 执行。"""
+    required = ("PIL", "numpy", "scipy", "edge_tts", *extra_modules)
+    missing = any(importlib.util.find_spec(m) is None for m in required)
+    if not missing:
         return
-    except ImportError:
-        pass
 
     preferred = get_preferred_python()
-    if Path(preferred).resolve() != Path(sys.executable).resolve() and os.environ.get("SVS_IN_VENV") != "1":
+    if os.path.abspath(preferred) != os.path.abspath(sys.executable) and os.environ.get("SVS_IN_VENV") != "1":
         env = os.environ.copy()
         env["SVS_IN_VENV"] = "1"
         os.execvpe(preferred, [preferred, *sys.argv], env)
@@ -166,11 +174,11 @@ def run_cmd(cmd: List[str], check: bool = True, capture: bool = True) -> subproc
     return res
 
 
-def ffmpeg_has_filter(filter_name: str) -> bool:
-    """检测当前 ffmpeg 是否编译了指定滤镜（如 subtitles / drawtext / lut3d / zscale）。"""
+@functools.lru_cache(maxsize=1)
+def _ffmpeg_filter_set() -> frozenset[str]:
     ffmpeg = find_bin("ffmpeg")
     if not ffmpeg:
-        return False
+        return frozenset()
     res = subprocess.run(
         [ffmpeg, "-hide_banner", "-filters"],
         stdout=subprocess.PIPE,
@@ -179,11 +187,17 @@ def ffmpeg_has_filter(filter_name: str) -> bool:
         encoding="utf-8",
         errors="replace",
     )
+    filters = set()
     for line in (res.stdout or "").splitlines():
         parts = line.split()
-        if len(parts) >= 2 and parts[1] == filter_name:
-            return True
-    return False
+        if len(parts) >= 2:
+            filters.add(parts[1])
+    return frozenset(filters)
+
+
+def ffmpeg_has_filter(filter_name: str) -> bool:
+    """带缓存检测当前 ffmpeg 是否编译了指定滤镜（如 subtitles / drawtext / lut3d / zscale）。"""
+    return filter_name in _ffmpeg_filter_set()
 
 
 def ffprobe_media(media_path: Path) -> Dict[str, Any]:
@@ -210,6 +224,30 @@ def parse_fps(rate_str: str) -> float:
         den_f = float(den)
         return float(num) / den_f if den_f else 0.0
     return float(rate_str)
+
+
+def detect_vfr_hdr(probe_data: Dict[str, Any]) -> Dict[str, Any]:
+    """统一从 ffprobe 数据解算 VFR 与 HDR 元数据（消除 inventory 与 step1 重复逻辑）。"""
+    v_stream = next((s for s in probe_data.get("streams", []) if s.get("codec_type") == "video"), {})
+    avg_fps = parse_fps(str(v_stream.get("avg_frame_rate") or "0/1"))
+    r_fps = parse_fps(str(v_stream.get("r_frame_rate") or "0/1"))
+    is_vfr = abs(avg_fps - r_fps) > 1.0 or (r_fps > 120.0 and avg_fps > 0.0)
+    trc = str(v_stream.get("color_transfer") or "").lower()
+    primaries = str(v_stream.get("color_primaries") or "").lower()
+    pix_fmt = str(v_stream.get("pix_fmt") or "").lower()
+    c_space = str(v_stream.get("color_space") or "").lower()
+    was_hdr = any(k in trc for k in ("arib-std-b67", "smpte2084", "hlg")) or ("bt2020" in primaries)
+    return {
+        "v_stream": v_stream,
+        "avg_fps": avg_fps,
+        "r_fps": r_fps,
+        "is_vfr": is_vfr,
+        "was_hdr": was_hdr,
+        "pix_fmt": pix_fmt,
+        "color_transfer": trc,
+        "color_primaries": primaries,
+        "color_space": c_space,
+    }
 
 
 def parse_video_stream_geometry(v_stream: Dict[str, Any]) -> Dict[str, Any]:
@@ -262,7 +300,6 @@ def compute_crop_transform(
     dw = max(1, int(display_w or dst_w))
     dh = max(1, int(display_h or dst_h))
     scale = max(float(dst_w) / float(dw), float(dst_h) / float(dh))
-    # ffmpeg scale 偶对齐
     scaled_w = max(dst_w, int(round(dw * scale)))
     scaled_h = max(dst_h, int(round(dh * scale)))
     if scaled_w % 2 == 1:
@@ -327,18 +364,172 @@ def map_eye_anchor_to_crop(
     cy = float(crop_tx["crop_y"])
     dw = float(crop_tx["dst_w"])
     dh = float(crop_tx["dst_h"])
-    nx = (float(eye_anchor.get("eye_cx", 0.5)) * sw - cx) / dw
-    ny = (float(eye_anchor.get("eye_cy", 0.35)) * sh - cy) / dh
+    nx = (float(eye_anchor.get("eye_cx", eye_anchor.get("cx", 0.5))) * sw - cx) / dw
+    ny = (float(eye_anchor.get("eye_cy", eye_anchor.get("cy", 0.35))) * sh - cy) / dh
     if not (0.02 <= nx <= 0.98 and 0.02 <= ny <= 0.98):
         return None
     out = dict(eye_anchor)
     out["eye_cx"] = round(nx, 4)
     out["eye_cy"] = round(ny, 4)
+    out["cx"] = out["eye_cx"]
+    out["cy"] = out["eye_cy"]
     return out
 
 
+def parse_manifest_faces(
+    item: Dict[str, Any],
+    canvas_w: int = CANVAS_WIDTH,
+    canvas_h: int = CANVAS_HEIGHT,
+) -> List[Dict[str, int]]:
+    """统一将 01_manifest.json 中的人脸框（支持归一化 dict/list 与像素坐标）转换为像素 {x, y, w, h}。"""
+    out: List[Dict[str, int]] = []
+    for f in item.get("faces", []) or []:
+        bb = f.get("bbox") if isinstance(f, dict) and "bbox" in f else f
+        if isinstance(bb, dict):
+            vals = [float(bb.get("x", 0.0)), float(bb.get("y", 0.0)), float(bb.get("w", 0.0)), float(bb.get("h", 0.0))]
+            if max(vals) <= 1.5:
+                rx = int(round(vals[0] * canvas_w))
+                ry = int(round(vals[1] * canvas_h))
+                rw = int(round(vals[2] * canvas_w))
+                rh = int(round(vals[3] * canvas_h))
+            else:
+                rx, ry, rw, rh = (int(round(v)) for v in vals)
+        elif isinstance(bb, (list, tuple)) and len(bb) == 4:
+            v = [float(x) for x in bb]
+            if max(v) <= 1.5:
+                x1, y1, x2, y2 = v[0] * canvas_w, v[1] * canvas_h, v[2] * canvas_w, v[3] * canvas_h
+            else:
+                x1, y1, x2, y2 = v
+            rx = int(round(min(x1, x2)))
+            ry = int(round(min(y1, y2)))
+            rw = int(round(abs(x2 - x1)))
+            rh = int(round(abs(y2 - y1)))
+        else:
+            continue
+        if rw > 4 and rh > 4:
+            out.append({"x": max(0, rx), "y": max(0, ry), "w": rw, "h": rh})
+    return out
+
+
+def bbox_iou(b1: Dict[str, Any], b2: Dict[str, Any]) -> float:
+    """全仓唯一共享的轴对齐包围盒交并比计算。"""
+    if not b1 or not b2:
+        return 0.0
+    x1 = max(float(b1["x"]), float(b2["x"]))
+    y1 = max(float(b1["y"]), float(b2["y"]))
+    x2 = min(float(b1["x"]) + float(b1["w"]), float(b2["x"]) + float(b2["w"]))
+    y2 = min(float(b1["y"]) + float(b1["h"]), float(b2["y"]) + float(b2["h"]))
+    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    if inter <= 0.0:
+        return 0.0
+    area1 = max(1.0, float(b1["w"]) * float(b1["h"]))
+    area2 = max(1.0, float(b2["w"]) * float(b2["h"]))
+    return inter / (area1 + area2 - inter)
+
+
+def clamp_bbox_center(
+    bbox: Dict[str, Any],
+    bounds: Optional[Dict[str, int]] = None,
+) -> Dict[str, int]:
+    """将给定元素尺寸/坐标严格钳位进目标安全区边界内（默认 SAFE_ZONE）。"""
+    b = bounds or SAFE_ZONE
+    bw = max(1, int(bbox.get("w", 100)))
+    bh = max(1, int(bbox.get("h", 40)))
+    x = int(round(float(bbox.get("x", b["x_min"]))))
+    y = int(round(float(bbox.get("y", b["y_min"]))))
+    x = max(b["x_min"], min(b["x_max"] - bw, x))
+    y = max(b["y_min"], min(b["y_max"] - bh, y))
+    return {"x": x, "y": y, "w": bw, "h": bh}
+
+
+def hex_to_rgba(
+    hex_str: Optional[str],
+    default: Any = (255, 255, 255, 255),
+    default_alpha: Optional[int] = None,
+) -> Tuple[int, int, int, int]:
+    """统一解析 #RGB / #RRGGBB / #RRGGBBAA 为 RGBA 元组（兼容传入 alpha int 或 default RGBA tuple）。"""
+    if isinstance(default, int):
+        eff_alpha = max(0, min(255, default))
+        fallback = (255, 255, 255, eff_alpha)
+    else:
+        fallback = tuple(default)  # type: ignore[assignment]
+        eff_alpha = max(0, min(255, int(default_alpha))) if default_alpha is not None else 255
+    if not hex_str:
+        return fallback
+    h = str(hex_str).strip().lstrip("#")
+    if len(h) == 3:
+        h = "".join(ch * 2 for ch in h)
+    try:
+        if len(h) == 6:
+            return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), eff_alpha)
+        if len(h) == 8:
+            return (int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16), int(h[6:8], 16))
+    except ValueError:
+        pass
+    return fallback
+
+
+def contrast_ratio(c1: Tuple[int, int, int], c2: Tuple[int, int, int]) -> float:
+    """计算两 RGB 颜色的 WCAG 2.1 相对亮度对比度 (1.0 ~ 21.0)。"""
+    def _rel_lum(rgb: Tuple[int, int, int]) -> float:
+        vals = []
+        for ch in rgb[:3]:
+            s = max(0.0, min(1.0, float(ch) / 255.0))
+            vals.append(s / 12.92 if s <= 0.03928 else ((s + 0.055) / 1.055) ** 2.4)
+        return 0.2126 * vals[0] + 0.7152 * vals[1] + 0.0722 * vals[2]
+    l1 = _rel_lum(c1)
+    l2 = _rel_lum(c2)
+    hi, lo = max(l1, l2), min(l1, l2)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+@functools.lru_cache(maxsize=256)
+def get_cached_font(font_path: Optional[str], size: int) -> Any:
+    """进程级缓存的 Pillow FreeType 字体加载器，消除逐帧重复读取 OTF/TTF 磁盘 I/O。"""
+    from PIL import ImageFont
+
+    sz = max(12, int(size))
+    if font_path and Path(font_path).is_file():
+        try:
+            return ImageFont.truetype(str(font_path), sz)
+        except Exception:
+            pass
+    fallback = find_commercial_font(verified_only=True)
+    if fallback:
+        try:
+            return ImageFont.truetype(fallback, sz)
+        except Exception:
+            pass
+    return ImageFont.load_default()
+
+
+def fit_text_line(
+    draw: Any,
+    text: str,
+    font_path: Optional[str],
+    max_width: int,
+    max_size: int,
+    min_size: int = 18,
+) -> Tuple[Any, str]:
+    """统一下采样自适应单行文字宽度；极窄时智能加省略号，绝不溢出安全框。"""
+    txt = str(text or "")
+    for sz in range(int(max_size), int(min_size) - 1, -2):
+        fnt = get_cached_font(font_path, sz)
+        w = draw.textlength(txt, font=fnt) if hasattr(draw, "textlength") else (draw.textbbox((0, 0), txt, font=fnt)[2] - draw.textbbox((0, 0), txt, font=fnt)[0])
+        if w <= max_width:
+            return fnt, txt
+    fnt = get_cached_font(font_path, min_size)
+    while len(txt) > 2:
+        cand = txt[:-1] + "…"
+        w = draw.textlength(cand, font=fnt) if hasattr(draw, "textlength") else (draw.textbbox((0, 0), cand, font=fnt)[2] - draw.textbbox((0, 0), cand, font=fnt)[0])
+        if w <= max_width:
+            return fnt, cand
+        txt = txt[:-1]
+    return fnt, txt
+
+
 def is_verified_commercial_font(font_path: Optional[Path | str]) -> bool:
-    """严格判断字体文件是否属于已验证的开源/免费商用白名单（绝不把 PingFang/微软雅黑标为可商用）。"""
+    """严格判断字体文件是否属于已验证的开源/免费商用白名单（绝不把 PingFang/STHeiti/微软雅黑标为可商用）。"""
     if not font_path:
         return False
     p = Path(font_path)
@@ -371,10 +562,10 @@ def _font_search_dirs() -> List[Path]:
     return dirs
 
 
-def find_commercial_font(candidates: Optional[List[str]] = None, verified_only: bool = False) -> Optional[str]:
+def find_commercial_font(candidates: Optional[List[str]] = None, verified_only: bool = True) -> Optional[str]:
     """
     跨平台查找中文字体（带结果缓存）：
-    优先查找开源免费商用字体，verified_only=True 时拒绝非商用兜底字体。
+    默认 verified_only=True，严格优先随仓与本地开源/免费商用字体，杜绝误用系统私有版权字体。
     """
     default_verified = [
         "AlimamaShuHeiTi-Bold.otf",
@@ -402,6 +593,8 @@ def find_commercial_font(candidates: Optional[List[str]] = None, verified_only: 
     names = list(candidates or []) + [c for c in pool if not candidates or c not in candidates]
     if verified_only:
         names = [n for n in names if is_verified_commercial_font(n)]
+        if "AlimamaShuHeiTi-Bold.otf" not in names:
+            names.append("AlimamaShuHeiTi-Bold.otf")
 
     cache_key = (str(verified_only), *names)
     if cache_key in _FONT_CACHE:
@@ -511,69 +704,162 @@ def link_or_copy(src: Path, dst: Path) -> Path:
     return dst
 
 
-def get_wav_duration_sec(wav_path: Path) -> float:
-    """准确获取 WAV 时长（异常头时自动交由 ffprobe 测量）。"""
-    if not wav_path.exists():
-        return 0.0
-    try:
-        with wave.open(str(wav_path), "rb") as wf:
-            n_frames = wf.getnframes()
-            sr = wf.getframerate()
-            return n_frames / float(sr) if sr > 0 else 0.0
-    except Exception:
-        try:
-            info = ffprobe_media(wav_path)
-            return float(info.get("format", {}).get("duration") or 0.0)
-        except Exception:
-            return 0.0
-
-
-def read_wav_as_48k_stereo(wav_path: Path, target_sr: int = 48000) -> Tuple[Any, int]:
+def resolve_audio_stems(
+    pipeline_dir: Path,
+    audio_events: Optional[Dict[str, Any]] = None,
+    mix_metrics: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Optional[Path]]:
     """
-    通吃任意采样率(44.1k/48k/96k)、任意位深(8/16/24/32-bit PCM 或 float)与单/双声道 WAV，
+    三端同源解析分轨路径：优先使用均乘同一 master_gain_db 的 08 分轨（含 08_sfx_master.wav），
+    缺失时才兼容回退上游原始分轨。
+    """
+    mix = mix_metrics if mix_metrics is not None else (
+        read_json(pipeline_dir / "08_mix_metrics.json") if (pipeline_dir / "08_mix_metrics.json").exists() else {}
+    )
+    ae = audio_events if audio_events is not None else (
+        read_json(pipeline_dir / "03_audio_events.json") if (pipeline_dir / "03_audio_events.json").exists() else {}
+    )
+
+    def _pick(*cands: Optional[str | Path]) -> Optional[Path]:
+        for c in cands:
+            if not c:
+                continue
+            p = Path(c)
+            if p.is_file() and p.stat().st_size > 44:
+                return p
+        return None
+
+    voice = _pick(mix.get("voice_master_wav"), pipeline_dir / "08_voice_master.wav", ae.get("locked_voice_wav"), pipeline_dir / "03_locked_voice.wav")
+    bgm = _pick(mix.get("bgm_ducked_wav"), pipeline_dir / "08_bgm_ducked.wav", ae.get("locked_bgm_wav"), pipeline_dir / "03_locked_bgm.wav")
+    sfx = _pick(mix.get("sfx_master_wav"), pipeline_dir / "08_sfx_master.wav", pipeline_dir / "06_sfx_track.wav")
+    return {"voice": voice, "bgm": bgm, "sfx": sfx}
+
+
+def compute_sfx_band_windows(
+    cues: List[Dict[str, Any]],
+    nosfx_mono: Any,
+    sr: int,
+) -> List[Dict[str, Any]]:
+    """
+    全仓唯一的 #20 SFX 2-8kHz 同窗基准计算器（Step 8 落盘与黑盒裁判 #20 共用，消除口径撕裂）：
+    全量 cues + 统一窗口 [t_ref - 0.04, t_ref + 0.16] + 同一 4 阶零相位 2-8kHz 带通。
+    """
+    import numpy as np
+
+    if not cues or len(nosfx_mono) < 128 or importlib.util.find_spec("scipy") is None:
+        return []
+    try:
+        from scipy.signal import butter, sosfiltfilt
+        sos = butter(4, [2000.0, 8000.0], btype="bandpass", fs=sr, output="sos")
+        hb_base = sosfiltfilt(sos, np.asarray(nosfx_mono, dtype=np.float64))
+    except Exception:
+        return []
+
+    rows: List[Dict[str, Any]] = []
+    n_len = len(hb_base)
+    for idx, cue in enumerate(cues):
+        t_ref = float(cue.get("peak_time_sec") or cue.get("time_sec") or 0.0)
+        i0 = max(0, int(round((t_ref - SFX_AUDIT_PRE_SEC) * sr)))
+        i1 = min(n_len, int(round((t_ref + SFX_AUDIT_POST_SEC) * sr)))
+        if i1 - i0 < 64:
+            continue
+        r_no = float(np.sqrt(np.mean(hb_base[i0:i1] ** 2) + 1e-12))
+        rows.append({
+            "sfx_id": cue.get("id") or f"sfx_{idx + 1:03d}",
+            "sfx_name": cue.get("sfx_name"),
+            "win_start_sec": round(i0 / float(sr), 4),
+            "win_end_sec": round(i1 / float(sr), 4),
+            "nosfx_2_8k_rms": round(r_no, 10),
+        })
+    return rows
+
+
+def rescue_stereo_channels(arr: Any, imbalance_db: float = 8.0) -> Tuple[Any, str]:
+    """
+    检测口播双声道 L/R 是否存在无线麦单边失效/极度衰减/纯杂音故障：
+    若单侧高于另一侧 >= imbalance_db 且较强侧具有真实语音能量（>-42dBFS），
+    自动复制完好单声道至双声道，防止 `.mean(axis=1)` 被坏道拉低或污染。
+    """
+    import numpy as np
+
+    a = np.asarray(arr, dtype=np.float32)
+    if a.ndim != 2 or a.shape[1] < 2 or len(a) < 256:
+        return a, "ok"
+    rms_l = float(np.sqrt(np.mean(a[:, 0] ** 2) + 1e-12))
+    rms_r = float(np.sqrt(np.mean(a[:, 1] ** 2) + 1e-12))
+    db_l = 20.0 * math.log10(max(1e-7, rms_l))
+    db_r = 20.0 * math.log10(max(1e-7, rms_r))
+    if db_l - db_r >= imbalance_db and db_l > -42.0:
+        return np.column_stack([a[:, 0], a[:, 0]]).astype(np.float32), "left_rescued"
+    if db_r - db_l >= imbalance_db and db_r > -42.0:
+        return np.column_stack([a[:, 1], a[:, 1]]).astype(np.float32), "right_rescued"
+    return a, "ok"
+
+
+def get_wav_duration_sec(audio_path: Path) -> float:
+    """准确获取音频时长（支持 .wav/.m4a/.mp3，异常或压缩容器自动交由 ffprobe）。"""
+    if not audio_path.exists():
+        return 0.0
+    if audio_path.suffix.lower() == ".wav":
+        try:
+            with wave.open(str(audio_path), "rb") as wf:
+                n_frames = wf.getnframes()
+                sr = wf.getframerate()
+                return n_frames / float(sr) if sr > 0 else 0.0
+        except Exception:
+            pass
+    try:
+        info = ffprobe_media(audio_path)
+        return float(info.get("format", {}).get("duration") or 0.0)
+    except Exception:
+        return 0.0
+
+
+def read_wav_as_48k_stereo(audio_path: Path, target_sr: int = 48000) -> Tuple[Any, int]:
+    """
+    通吃 .wav / .m4a / .mp3 / .aac 等任意采样率/位深/声道数的音频，
     统一抗混叠重采样为 float32 [-1, 1] 的双声道 target_sr 数组 (N, 2)。
     """
     import numpy as np
 
     arr: Optional[np.ndarray] = None
     src_sr = 0
-    try:
-        with wave.open(str(wav_path), "rb") as wf:
-            ch = wf.getnchannels()
-            sw = wf.getsampwidth()
-            src_sr = wf.getframerate()
-            comptype = wf.getcomptype()
-            raw = wf.readframes(wf.getnframes())
-        if comptype == "NONE" and sw in (1, 2, 3, 4) and src_sr > 0:
-            if sw == 1:
-                a = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
-            elif sw == 2:
-                a = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-            elif sw == 3:
-                b = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 3)
-                # little-endian signed 24-bit
-                i32 = (b[:, 0].astype(np.int32) | (b[:, 1].astype(np.int32) << 8) | (b[:, 2].astype(np.int32) << 16))
-                i32 = np.where(i32 & 0x800000, i32 - 0x1000000, i32)
-                a = i32.astype(np.float32) / 8388608.0
-            else:
-                a = np.frombuffer(raw, dtype=np.int32).astype(np.float32) / 2147483648.0
-            a = a.reshape(-1, ch)
-            if ch == 1:
-                arr = np.column_stack([a[:, 0], a[:, 0]])
-            elif ch >= 2:
-                arr = a[:, :2]
-    except Exception:
-        arr = None
+    if audio_path.suffix.lower() == ".wav":
+        try:
+            with wave.open(str(audio_path), "rb") as wf:
+                ch = wf.getnchannels()
+                sw = wf.getsampwidth()
+                src_sr = wf.getframerate()
+                comptype = wf.getcomptype()
+                raw = wf.readframes(wf.getnframes())
+            if comptype == "NONE" and sw in (1, 2, 3, 4) and src_sr > 0:
+                if sw == 1:
+                    a = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
+                elif sw == 2:
+                    a = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+                elif sw == 3:
+                    b = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 3)
+                    i32 = (b[:, 0].astype(np.int32) | (b[:, 1].astype(np.int32) << 8) | (b[:, 2].astype(np.int32) << 16))
+                    i32 = np.where(i32 & 0x800000, i32 - 0x1000000, i32)
+                    a = i32.astype(np.float32) / 8388608.0
+                else:
+                    a = np.frombuffer(raw, dtype=np.int32).astype(np.float32) / 2147483648.0
+                a = a.reshape(-1, ch)
+                if ch == 1:
+                    arr = np.column_stack([a[:, 0], a[:, 0]])
+                elif ch >= 2:
+                    arr = a[:, :2]
+        except Exception:
+            arr = None
 
     if arr is None:
-        # 回退给 ffmpeg 统一解码为 48kHz stereo pcm_s16le
         ffmpeg = find_bin("ffmpeg")
         if not ffmpeg:
-            raise RuntimeError(f"无法读取音频且缺少 ffmpeg: {wav_path}")
+            raise RuntimeError(f"无法读取音频且缺少 ffmpeg: {audio_path}")
         res = subprocess.run(
             [
                 ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
-                "-i", str(wav_path),
+                "-i", str(audio_path),
                 "-f", "s16le", "-acodec", "pcm_s16le", "-ar", str(target_sr), "-ac", "2",
                 "pipe:1",
             ],

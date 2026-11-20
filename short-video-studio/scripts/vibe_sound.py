@@ -12,12 +12,17 @@ import html
 import json
 import re
 import subprocess
+import sys
 import time
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+SCRIPTS_ROOT = Path(__file__).resolve().parent
+if str(SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_ROOT))
 
 from common import (
     ASSETS_DIR,
@@ -224,8 +229,21 @@ def search_freesound(query: str, license_mode: str = "cc0", limit: int = 8, page
     return rows[:limit]
 
 
+SFX_DEDUP_ALIAS: Dict[str, str] = {
+    "sound_vibe/sfx/style_02_transition.wav": "sound_vibe/sfx/style_14_transition.wav",
+    "sound_vibe/sfx/style_12_transition.wav": "sound_vibe/sfx/style_02_ui.wav",
+    "sound_vibe/sfx/style_15_transition.wav": "sound_vibe/sfx/style_02_ui.wav",
+    "sound_vibe/sfx/style_12_accent.wav": "sound_vibe/sfx/style_14_ui.wav",
+    "sound_vibe/sfx/style_15_ui.wav": "sound_vibe/sfx/style_12_ui.wav",
+    "sound_vibe/sfx/style_03_ui.wav": "sound_vibe/sfx/style_14_accent.wav",
+    "sound_vibe/sfx/style_05_ui.wav": "sound_vibe/sfx/style_03_accent.wav",
+    "sound_vibe/sfx/style_06_transition.wav": "sound_vibe/sfx/style_03_transition.wav",
+    "sound_vibe/sfx/style_05_accent.wav": "sound_vibe/sfx/style_05_transition.wav",
+}
+
+
 def rebuild_relative_manifest_and_beats(out_dir: Path | None = None) -> Dict[str, Any]:
-    """基于已清洗 WAV 文件重建相对路径 manifest 并为全部 BGM JSON 补全节拍时间轴。"""
+    """基于已清洗 BGM (.m4a/.wav) 与去重 SFX 重建相对路径 manifest 并补全节拍时间轴。"""
     out_dir = out_dir or SOUND_VIBE_DIR
     bgm_dir = out_dir / "bgm"
     sfx_dir = out_dir / "sfx"
@@ -233,7 +251,9 @@ def rebuild_relative_manifest_and_beats(out_dir: Path | None = None) -> Dict[str
 
     for sid, cfg in STYLE_SOUND_MAP.items():
         b = cfg["bgm"]
-        dst_b = bgm_dir / f"{sid}_bgm.wav"
+        dst_m4a = bgm_dir / f"{sid}_bgm.m4a"
+        dst_wav = bgm_dir / f"{sid}_bgm.wav"
+        dst_b = dst_m4a if dst_m4a.exists() else dst_wav
         if not dst_b.exists():
             continue
         dur_b = round(get_wav_duration_sec(dst_b), 4)
@@ -249,9 +269,12 @@ def rebuild_relative_manifest_and_beats(out_dir: Path | None = None) -> Dict[str
         })
         sfx_entry: Dict[str, str] = {}
         for role in cfg["sfx"]:
-            dst_s = sfx_dir / f"{sid}_{role}.wav"
-            if dst_s.exists():
-                sfx_entry[role] = _to_asset_rel(dst_s)
+            raw_rel = f"sound_vibe/sfx/{sid}_{role}.wav"
+            canonical_rel = SFX_DEDUP_ALIAS.get(raw_rel, raw_rel)
+            if (ASSETS_DIR / canonical_rel).exists():
+                sfx_entry[role] = canonical_rel
+            elif (ASSETS_DIR / raw_rel).exists():
+                sfx_entry[role] = raw_rel
 
         manifest["styles"][sid] = {
             "bgm_wav": _to_asset_rel(dst_b),
@@ -288,7 +311,7 @@ def clean_all_vibe_assets(raw_dir: Path | None = None, out_dir: Path | None = No
     for sid, cfg in STYLE_SOUND_MAP.items():
         b = cfg["bgm"]
         src_b = raw_dir / b["src"]
-        dst_b = bgm_dir / f"{sid}_bgm.wav"
+        dst_b = bgm_dir / f"{sid}_bgm.m4a"
         dur_b = max(2.0, float(b["end"]) - float(b["start"]))
         fade_out_t = max(0.0, dur_b - 0.18)
         if src_b.exists():
@@ -297,10 +320,13 @@ def clean_all_vibe_assets(raw_dir: Path | None = None, out_dir: Path | None = No
                 "-ss", f"{float(b['start']):.3f}", "-t", f"{dur_b:.3f}",
                 "-i", str(src_b),
                 "-af", f"afade=t=in:st=0:d=0.12,afade=t=out:st={fade_out_t:.3f}:d=0.18,loudnorm=I=-20:TP=-2.0:LRA=8",
-                "-ar", "48000", "-ac", "2", "-acodec", "pcm_s16le",
+                "-ar", "48000", "-ac", "2", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart",
                 str(dst_b),
             ], check=True)
         for role, (fn, s0, s1, trim_gain_db) in cfg["sfx"].items():
+            raw_rel = f"sound_vibe/sfx/{sid}_{role}.wav"
+            if raw_rel in SFX_DEDUP_ALIAS:
+                continue
             src_s = raw_dir / fn
             dst_s = sfx_dir / f"{sid}_{role}.wav"
             d_s = max(0.08, s1 - s0)

@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
 """
-[Step 1: 素材规整 + HDR 色彩空间还原 + 物理几何坐标仿射映射]
-将原始素材统一规整为：
-- 解析 rotation 真实展示宽高，按显式 scale + crop 将裁切前 faces / eye_anchor / saliency 精确仿射映射至 1080x1920
-- HDR/BT.2020 自动 Hable 色调映射至标准 Rec.709 (tv)
-- 恒定帧率 CFR 30fps (-r 30 -fps_mode cfr)，规范视频去冗长 AAC (-an)
-- 对含音频流素材提取 48kHz 16-bit PCM WAV，并严格尊重 00_shot_log.json 的 role 与 audio_grade
+[Step 1: 素材规整 + HDR 色彩空间还原 + 智能重构图 + 物理几何仿射映射]
+v5 升级：
+1. 基于 inventory 的 faces / saliency_bbox 智能计算横转竖重构图重心 (crop_x_frac / crop_y_frac)，彻底避免三分法人物裁出画面。
+2. 音频流强制 `-af aresample=async=1:first_pts=0` 对齐 PTS 并自动拯救单边故障无线麦，杜绝 VFR/非零偏移引起的声画漂移。
+3. 修复无 zscale 时 HDR 回退滤镜链路，准确统计 hdr_tonemapped_count，尊重 00_shot_log/00_visual_index 角色。
+4. 并发调用 ffmpeg 规整，复用 common.detect_vfr_hdr。
 """
 
 from __future__ import annotations
 
 import argparse
+import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+SCRIPTS_ROOT = Path(__file__).resolve().parent
+if str(SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_ROOT))
 
 from common import (
     BT709_FFMPEG_ARGS,
@@ -22,15 +28,17 @@ from common import (
     DEFAULT_FPS,
     MEDIA_EXTS,
     compute_crop_transform,
+    detect_vfr_hdr,
     ffmpeg_has_filter,
     ffprobe_media,
     find_bin,
     map_eye_anchor_to_crop,
     map_norm_bbox_to_crop,
     maybe_reexec_in_venv,
-    parse_fps,
     parse_video_stream_geometry,
     read_json,
+    read_wav_as_48k_stereo,
+    rescue_stereo_channels,
     run_cmd,
     write_json,
 )
@@ -39,7 +47,31 @@ from common import (
 def _build_hdr_prefix() -> str:
     if ffmpeg_has_filter("zscale"):
         return "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,"
-    return "format=gbrpf32le,tonemap=hable:desat=0,colorspace=all=bt709:iall=bt2020:fast=1,"
+    return "colorspace=all=bt709:iall=bt2020:fast=1,"
+
+
+def _smart_crop_fractions(shot_meta: Optional[Dict[str, Any]], disp_w: int, disp_h: int) -> Tuple[float, float]:
+    """根据旋转前人脸/显著性中心计算智能重构图裁切比例 (crop_x_frac, crop_y_frac)。"""
+    if not shot_meta or disp_w <= 0 or disp_h <= 0:
+        return 0.5, 0.5
+    faces = shot_meta.get("faces") or []
+    cx, cy = 0.5, 0.5
+    found = False
+    if faces and isinstance(faces[0], dict):
+        bb = faces[0].get("bbox")
+        if isinstance(bb, dict) and bb.get("w", 0) > 0:
+            cx = float(bb.get("x", 0.5)) + float(bb.get("w", 0.0)) * 0.5
+            cy = float(bb.get("y", 0.5)) + float(bb.get("h", 0.0)) * 0.5
+            found = True
+    if not found:
+        sal = shot_meta.get("saliency_bbox")
+        if isinstance(sal, dict) and sal.get("w", 0) > 0:
+            cx = float(sal.get("x", 0.5)) + float(sal.get("w", 0.0)) * 0.5
+            cy = float(sal.get("y", 0.5)) + float(sal.get("h", 0.0)) * 0.5
+            found = True
+    if not found:
+        return 0.5, 0.5
+    return max(0.0, min(1.0, cx)), max(0.0, min(1.0, cy))
 
 
 def normalize_single_media(
@@ -63,16 +95,16 @@ def normalize_single_media(
     geom = parse_video_stream_geometry(v_stream)
     disp_w = geom["display_width"] or CANVAS_WIDTH
     disp_h = geom["display_height"] or CANVAS_HEIGHT
-    crop_tx = compute_crop_transform(disp_w, disp_h, CANVAS_WIDTH, CANVAS_HEIGHT)
+    cx_frac, cy_frac = _smart_crop_fractions(shot_meta, disp_w, disp_h)
+    crop_tx = compute_crop_transform(
+        disp_w, disp_h, CANVAS_WIDTH, CANVAS_HEIGHT,
+        crop_x_frac=cx_frac, crop_y_frac=cy_frac,
+    )
 
-    r_fps = parse_fps(v_stream.get("r_frame_rate", "30/1"))
-    avg_fps = parse_fps(v_stream.get("avg_frame_rate", "30/1"))
-    is_vfr = abs(r_fps - avg_fps) > 0.5 or avg_fps == 0.0
-
-    color_transfer = str(v_stream.get("color_transfer") or "unknown")
-    color_primaries = str(v_stream.get("color_primaries") or "unknown")
-    color_space = str(v_stream.get("color_space") or "unknown")
-    was_hdr = color_transfer in ("arib-std-b67", "smpte2084") or "bt2020" in color_primaries or "bt2020" in color_space
+    vh = detect_vfr_hdr(meta)
+    r_fps, is_vfr, was_hdr = vh["r_fps"], vh["is_vfr"], vh["was_hdr"]
+    color_transfer = vh["color_transfer"] or "unknown"
+    color_primaries = vh["color_primaries"] or "unknown"
 
     stem = f"norm_{idx:02d}_{src.stem}"
     out_mp4 = out_dir / f"{stem}.mp4"
@@ -123,31 +155,53 @@ def normalize_single_media(
         raise RuntimeError(f"素材规整失败 ({src.name}): {(res.stderr or '')[-800:]}")
 
     has_audio = a_stream is not None
+    stereo_diag = "ok"
     if has_audio:
         run_cmd([
             ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
             "-i", str(src),
-            "-vn", "-acodec", "pcm_s16le", "-ar", "48000", "-ac", "2",
+            "-vn", "-af", "aresample=async=1:first_pts=0",
+            "-acodec", "pcm_s16le", "-ar", "48000", "-ac", "2",
             str(out_wav),
         ])
+        # 若无线麦单边明显失效，直接用完好单声道修复归整 WAV
+        try:
+            import wave
+            import numpy as np
+            arr_w, _ = read_wav_as_48k_stereo(out_wav, target_sr=48000)
+            arr_fixed, stereo_diag = rescue_stereo_channels(arr_w, imbalance_db=8.0)
+            if stereo_diag != "ok":
+                pcm = (np.clip(arr_fixed, -0.99, 0.99) * 32767.0).astype(np.int16)
+                with wave.open(str(out_wav), "wb") as wf:
+                    wf.setnchannels(2)
+                    wf.setsampwidth(2)
+                    wf.setframerate(48000)
+                    wf.writeframes(pcm.tobytes())
+        except Exception:
+            pass
 
     norm_meta = ffprobe_media(out_mp4)
     nv = next(s for s in norm_meta["streams"] if s["codec_type"] == "video")
     norm_dur = float(norm_meta.get("format", {}).get("duration") or nv.get("duration") or 0.0)
 
-    # 判定素材角色（优先显式标识，其次尊重 inventory_media 的 role 与 audio_grade）
+    # 判定素材角色：显式传入 > inventory 人工/视觉索引 > 音频缺陷(silent/noisy) > 文件名提示
     name_low = src.name.lower()
     shot_role = (shot_meta or {}).get("role")
     shot_ag = (shot_meta or {}).get("audio_grade")
+    vis_indexed = bool((shot_meta or {}).get("visual_indexed"))
     if role_hint != "auto":
         role = role_hint
     elif "code_broll" in name_low:
         role = "code_broll"
-    elif "broll" in name_low or "b_roll" in name_low or not has_audio:
+    elif not has_audio or shot_ag in ("silent", "noisy"):
+        role = "b_roll"
+    elif vis_indexed and shot_role in ("a_roll_candidate", "b_roll_candidate"):
+        role = "a_roll" if shot_role == "a_roll_candidate" else "b_roll"
+    elif "broll" in name_low or "b_roll" in name_low:
         role = "b_roll"
     elif "aroll" in name_low or "a_roll" in name_low or "talk" in name_low or "main" in name_low:
         role = "a_roll"
-    elif shot_role == "b_roll_candidate" or shot_ag == "silent":
+    elif shot_role == "b_roll_candidate":
         role = "b_roll"
     elif shot_role == "a_roll_candidate":
         role = "a_roll"
@@ -167,6 +221,7 @@ def normalize_single_media(
         "was_vfr": is_vfr,
         "was_hdr": was_hdr,
         "hdr_tonemapped": hdr_tonemapped,
+        "stereo_diag": stereo_diag,
         "source_color_transfer": color_transfer,
         "source_color_primaries": color_primaries,
         "original_r_fps": round(r_fps, 2),
@@ -184,7 +239,6 @@ def normalize_single_media(
             if k in shot_meta:
                 item[k] = shot_meta[k]
 
-        # 精确仿射映射 faces, eye_anchor, saliency_bbox 至 1080x1920 裁切后画布坐标系
         mapped_faces: List[Dict[str, Any]] = []
         for f_obj in shot_meta.get("faces") or []:
             nb = map_norm_bbox_to_crop(f_obj.get("bbox"), crop_tx)
@@ -243,12 +297,17 @@ def run_step1(input_paths: List[Path], pipeline_dir: Path) -> Dict[str, Any]:
     if not media_files:
         raise FileNotFoundError("未找到任何可用的原始视频素材文件。")
 
-    items: List[Dict[str, Any]] = []
-    for idx, f in enumerate(media_files, start=1):
-        sm = shot_by_path.get(str(f.resolve())) or shot_by_name.get(f.name)
-        items.append(normalize_single_media(f, norm_dir, idx, shot_meta=sm))
+    tasks = [
+        (f, idx, shot_by_path.get(str(f.resolve())) or shot_by_name.get(f.name))
+        for idx, f in enumerate(media_files, start=1)
+    ]
+    if len(tasks) > 1:
+        with ThreadPoolExecutor(max_workers=min(4, len(tasks))) as pool:
+            items = list(pool.map(lambda args: normalize_single_media(args[0], norm_dir, args[1], shot_meta=args[2]), tasks))
+    else:
+        items = [normalize_single_media(tasks[0][0], norm_dir, tasks[0][1], shot_meta=tasks[0][2])]
 
-    hdr_cnt = sum(1 for it in items if it.get("was_hdr"))
+    hdr_cnt = sum(1 for it in items if it.get("hdr_tonemapped"))
     manifest = {
         "step": "01_normalize",
         "fps": DEFAULT_FPS,
@@ -265,7 +324,7 @@ def run_step1(input_paths: List[Path], pipeline_dir: Path) -> Dict[str, Any]:
 
 def main() -> None:
     maybe_reexec_in_venv()
-    parser = argparse.ArgumentParser(description="Step 1: 素材规整 (旋转解算 + 仿射坐标映射 + HDR映射 + CFR)")
+    parser = argparse.ArgumentParser(description="Step 1: 素材规整 (旋转解算 + 智能重构图 + 仿射映射 + HDR + CFR)")
     parser.add_argument("--input", required=True, nargs="+", help="原始素材目录或视频文件路径列表")
     parser.add_argument("--pipeline-dir", required=True, help="pipeline 输出目录")
     args = parser.parse_args()

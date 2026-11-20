@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
 """
-[Step 3: 锁定音轨 (抗混叠多速率加载 + Hann窗 Overlap-Add Room Tone + 交叉淡化循环 BGM + 过零点精剪)]
-1. 全链路统一调用 common.read_wav_as_48k_stereo，杜绝 44.1kHz BGM 变调加速或 24-bit 噪声炸裂。
-2. 抽取原片非语音静默段真实 Room Tone，用 30ms Hann Overlap-Add 无缝拼长，消灭 8Hz 周期抽吸。
-3. BGM 循环采用 200ms 交叉淡化；实拍响度拉平使用 tanh 软限幅替代硬削波。
-4. 仅当 account_profile.sample_sufficient == True 时采纳账号节奏基因。
-输出：03_locked_voice.wav, 03_locked_bgm.wav, 03_blind_audio.m4a, 03_audio_events.json
+[Step 3: 锁定音轨 (抗混叠加载 + 无线麦救援 + 零拍漂整数小节循环 + Equal-Power Room Tone 拼接)]
+v5 升级：
+1. 自动调用 common.rescue_stereo_channels 拯救单边失效无线麦；兼容 .m4a/.wav BGM。
+2. BGM 循环采用整数小节步长对齐 (zero beat drift)，彻底解决 200ms 交叉淡化导致第 2 轮起每轮累计漂移 6 帧 Bug。
+3. extract_real_room_tone 改用全量原始语音段（含 NG 与画外音）建立屏蔽掩膜，防止废句人声渗入房底循环；
+   句间拼接采用 Equal-Power 平滑淡入淡出消除底噪开关抽吸与阶跃点击。
+4. 修复 detect_bgm_beats 缺 bpm 兜底与真实波形校验，补齐 persona_pause_sec 消费。
 """
 
 from __future__ import annotations
 
 import argparse
 import math
+import sys
 import wave
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+SCRIPTS_ROOT = Path(__file__).resolve().parent
+if str(SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_ROOT))
 
 from common import (
     ASSETS_DIR,
@@ -23,6 +29,7 @@ from common import (
     maybe_reexec_in_venv,
     read_json,
     read_wav_as_48k_stereo,
+    rescue_stereo_channels,
     run_cmd,
     sec_to_frames,
     write_json,
@@ -37,7 +44,7 @@ TWIST_CUES = ("但是", "其实", "真相", "结果", "反而", "没想到", "�
 
 
 def load_stereo_wav_np(path: Path) -> Tuple[np.ndarray, int]:
-    """统一读取任意采样率/位深 WAV 并抗混叠转换为 48kHz stereo float32。"""
+    """统一读取任意格式音频 (.wav/.m4a/.mp3) 并抗混叠转换为 48kHz stereo float32。"""
     return read_wav_as_48k_stereo(path, target_sr=SR)
 
 
@@ -53,7 +60,7 @@ def save_stereo_wav_np(path: Path, audio: np.ndarray, sr: int = SR) -> None:
 
 
 def _loop_with_crossfade(unit: np.ndarray, target_len: int, fade_samples: int) -> np.ndarray:
-    """用 Hann Overlap-Add 交叉淡化无缝拼长音频块，彻底消除切片硬接咔哒与周期抽吸。"""
+    """用 Hann Overlap-Add 无缝拼长音频块（用于房底噪音等非严格节拍素材，末块不强制淡出）。"""
     if len(unit) == 0:
         return np.zeros((target_len, 2), dtype=np.float32)
     if len(unit) >= target_len:
@@ -74,7 +81,9 @@ def _loop_with_crossfade(unit: np.ndarray, target_len: int, fade_samples: int) -
         blk = unit.copy()
         if not first:
             blk[:xf] *= fade_in
-        blk[-xf:] *= fade_out
+        is_last = (cursor + len(unit) >= target_len)
+        if not is_last:
+            blk[-xf:] *= fade_out
         if first:
             out[cursor : cursor + len(blk)] = blk
             first = False
@@ -85,25 +94,85 @@ def _loop_with_crossfade(unit: np.ndarray, target_len: int, fade_samples: int) -
     return out[:target_len].astype(np.float32)
 
 
-def detect_bgm_beats(bgm_wav: Path) -> Dict[str, Any]:
-    """检测 BGM 节拍与强拍位置：优先校验同目录真实节拍 JSON，次选 librosa，最后按真实 BPM 估计。"""
-    meta_json = bgm_wav.with_suffix(".json")
+def _loop_bgm_exact_bars(aligned_bgm: np.ndarray, bar_samples: int, target_len: int) -> Tuple[np.ndarray, int]:
+    """
+    零拍漂 BGM 整数小节循环器：
+    严格保证第 k 轮循环的起始点位于 k * usable_bars，利用尾部预留余音（或短 20ms 过渡）平滑接缝，
+    使全曲多轮循环后拍点累积误差严格为 0 采样！返回 (looped_audio, cycle_samples)。
+    """
+    n_src = len(aligned_bgm)
+    if n_src >= target_len:
+        return aligned_bgm[:target_len].copy(), n_src
+    if n_src < 100 or bar_samples <= 0:
+        return np.zeros((target_len, 2), dtype=np.float32), max(1, bar_samples)
+
+    usable_bars = (n_src // bar_samples) * bar_samples
+    if usable_bars < bar_samples:
+        usable_bars = n_src
+    xf_tail = min(int(0.080 * SR), max(0, n_src - usable_bars))
+    out = np.zeros((target_len + usable_bars + xf_tail + 64, 2), dtype=np.float32)
+
+    cursor = 0
+    first = True
+    while cursor < target_len:
+        out[cursor : cursor + usable_bars] = aligned_bgm[:usable_bars]
+        if first:
+            first = False
+        elif xf_tail >= 16:
+            # 将上一轮超出 usable_bars 的自然余音交叉淡化混入新循环开头（不提前步长！）
+            fi = (0.5 - 0.5 * np.cos(np.linspace(0.0, np.pi, xf_tail, dtype=np.float32)))[:, None]
+            tail_tail = aligned_bgm[usable_bars : usable_bars + xf_tail]
+            head_seg = aligned_bgm[:xf_tail]
+            out[cursor : cursor + xf_tail] = tail_tail * (1.0 - fi) + head_seg * fi
+        else:
+            # 无多余余音时仅在接缝处做极短 15ms 回绕防爆音过渡，不改变步长
+            micro = min(int(0.015 * SR), usable_bars // 8)
+            if micro >= 8:
+                fi = np.linspace(0.0, 1.0, micro, dtype=np.float32)[:, None]
+                tail_s = aligned_bgm[usable_bars - micro : usable_bars]
+                head_s = aligned_bgm[:micro]
+                out[cursor : cursor + micro] = tail_s * (1.0 - fi) + head_s * fi
+        cursor += usable_bars
+
+    return out[:target_len].astype(np.float32), usable_bars
+
+
+def detect_bgm_beats(bgm_path: Path) -> Dict[str, Any]:
+    """检测 BGM 节拍与强拍位置：优先校验同目录节拍 JSON（并核对实际音频能量峰值），次选 librosa。"""
+    meta_json = bgm_path.with_suffix(".json")
     meta_bpm: Optional[float] = None
     if meta_json.exists():
         meta = read_json(meta_json)
+        beats = [float(x) for x in meta.get("beat_times_sec", [])]
+        downs = [float(x) for x in meta.get("downbeat_times_sec", [])]
         if meta.get("bpm"):
             meta_bpm = float(meta["bpm"])
-        if "beat_times_sec" in meta and "downbeat_times_sec" in meta:
+        elif len(beats) >= 2:
+            diffs = [beats[i + 1] - beats[i] for i in range(len(beats) - 1) if beats[i + 1] > beats[i]]
+            if diffs:
+                meta_bpm = round(60.0 / float(np.median(diffs)), 1)
+        if beats and downs:
+            # 快速实测首拍附近能量确认是否存在明显前导静音偏差
+            method = "meta_only"
+            try:
+                audio, sr = load_stereo_wav_np(bgm_path)
+                if len(audio) > int(sr * 0.5):
+                    env = np.sqrt(np.mean(audio[: int(sr * 1.5)] ** 2, axis=1) + 1e-12)
+                    act = np.where(env >= float(np.max(env)) * 0.15)[0]
+                    if len(act) > 0 and act[0] / float(sr) <= 0.12:
+                        method = "meta+waveform_verified"
+            except Exception:
+                pass
             return {
-                "bpm": float(meta["bpm"]),
-                "beat_times_sec": [float(x) for x in meta["beat_times_sec"]],
-                "downbeat_times_sec": [float(x) for x in meta["downbeat_times_sec"]],
-                "method": "meta+waveform_verified",
+                "bpm": float(meta_bpm or 120.0),
+                "beat_times_sec": beats,
+                "downbeat_times_sec": downs,
+                "method": method,
             }
 
     try:
         import librosa
-        y, sr_l = librosa.load(str(bgm_wav), sr=22050)
+        y, sr_l = librosa.load(str(bgm_path), sr=22050)
         tempo, beat_frames = librosa.beat.beat_track(y=y, sr=sr_l)
         beats = librosa.frames_to_time(beat_frames, sr=sr_l).tolist()
         downbeats = beats[::4]
@@ -114,7 +183,7 @@ def detect_bgm_beats(bgm_wav: Path) -> Dict[str, Any]:
             "method": "librosa",
         }
     except Exception:
-        audio, sr = load_stereo_wav_np(bgm_wav)
+        audio, sr = load_stereo_wav_np(bgm_path)
         bpm_val = float(meta_bpm or 120.0)
         dur = len(audio) / float(sr) if sr > 0 else 10.0
         beat_step = 60.0 / max(40.0, bpm_val)
@@ -147,11 +216,11 @@ def snap_to_zero_crossing(arr: np.ndarray, idx: int, window_samples: int = 480) 
 
 def extract_real_room_tone(
     raw_audio_cache: Dict[str, np.ndarray],
-    active_segments: List[Dict[str, Any]],
+    all_segments: List[Dict[str, Any]],
     sr: int = SR,
     target_sec: float = 2.5,
 ) -> Tuple[np.ndarray, str]:
-    """抽取原声非说话静默段真实 Room Tone，并用 30ms Overlap-Add 消除周期性嗡嗡抽吸感。"""
+    """抽取真实房间底噪：屏蔽全部原始语音（含被淘汰 NG 与画外导演声），自适应门店真实底噪上限。"""
     target_len = int(round(target_sec * sr))
     hop = int(0.020 * sr)
 
@@ -160,12 +229,12 @@ def extract_real_room_tone(
         if len(arr) < int(0.4 * sr):
             continue
         speech_mask_hops = np.zeros(max(1, len(arr) // hop), dtype=bool)
-        for seg in active_segments:
+        for seg in all_segments:
             sa = seg.get("source_audio")
-            if sa and str(Path(sa).resolve()) != str(Path(path_str).resolve()):
+            if not sa or str(Path(sa).resolve()) != str(Path(path_str).resolve()):
                 continue
-            h0 = max(0, int((float(seg["start_sec"]) - 0.04) / 0.020))
-            h1 = min(len(speech_mask_hops), int((float(seg["end_sec"]) + 0.04) / 0.020))
+            h0 = max(0, int((float(seg["start_sec"]) - 0.06) / 0.020))
+            h1 = min(len(speech_mask_hops), int((float(seg["end_sec"]) + 0.06) / 0.020))
             speech_mask_hops[h0:h1] = True
 
         mono = arr.mean(axis=1)
@@ -174,7 +243,9 @@ def extract_real_room_tone(
         nonzero = rms[rms > 2e-5]
         if len(nonzero) < 10:
             continue
-        ceil_rms = min(0.015, float(np.percentile(nonzero, 30)) * 1.45)
+        p20 = float(np.percentile(nonzero, 20))
+        # 按实际底噪自适应（允许最高 ~-28dBFS 环境声），不再强设极低 0.015 导致嘈杂门店退化成极暗白噪黑洞
+        ceil_rms = min(0.040, max(0.004, p20 * 1.6))
         quiet_mask = (~speech_mask_hops) & (rms > 2e-5) & (rms <= ceil_rms)
 
         for min_hops in (18, 8):
@@ -209,7 +280,7 @@ def extract_real_room_tone(
 
 
 def level_speech_segments(slices: List[np.ndarray]) -> Tuple[List[np.ndarray], Dict[str, Any]]:
-    """实拍多段原声逐句独立响度拉平，并使用 tanh 软限幅防削波失真。"""
+    """实拍多段原声逐句独立响度拉平（仅基于有效发声帧统计 RMS），并使用 tanh 软限幅防削波。"""
     if len(slices) < 2:
         return slices, {"applied": False, "spread_db": 0.0, "adjusted_count": 0}
     rms_dbs: List[float] = []
@@ -217,7 +288,10 @@ def level_speech_segments(slices: List[np.ndarray]) -> Tuple[List[np.ndarray], D
         if len(sl) < 160:
             rms_dbs.append(-24.0)
             continue
-        r = float(np.sqrt(np.mean(sl ** 2) + 1e-10))
+        mono = sl.mean(axis=1)
+        abs_m = np.abs(mono)
+        act = mono[abs_m >= max(0.004, float(np.max(abs_m)) * 0.12)]
+        r = float(np.sqrt(np.mean((act if len(act) >= 80 else mono) ** 2) + 1e-10))
         rms_dbs.append(20.0 * math.log10(max(1e-6, r)))
 
     spread_db = round(max(rms_dbs) - min(rms_dbs), 2)
@@ -252,7 +326,7 @@ def resolve_dynamic_pause(
     base_pause: float,
     account_profile: Optional[Dict[str, Any]] = None,
 ) -> Tuple[float, str]:
-    """语义动态呼吸停顿（仅当账号样本数充分时才读取 account_profile 基因参数）。"""
+    """语义动态呼吸停顿（persona_pause_sec 独立优先回退，避免被 narrative_pause_sec 缩短）。"""
     if next_seg is None:
         return 0.0, "tail_end"
     prof = account_profile if (account_profile and account_profile.get("sample_sufficient") is True) else {}
@@ -262,10 +336,19 @@ def resolve_dynamic_pause(
         val = float(prof.get("twist_pause_sec", max(0.28, min(0.38, base_pause * 1.55))))
         return round(max(0.24, min(0.40, val)), 3), "dramatic_beat_before_twist"
     if next_emo in ("cta", "persona"):
-        val = float(prof.get("persona_pause_sec", prof.get("narrative_pause_sec", max(0.22, min(0.30, base_pause * 1.25)))))
+        val = float(prof.get("persona_pause_sec", max(0.22, min(0.30, base_pause * 1.25))))
         return round(max(0.18, min(0.32, val)), 3), "breathing_before_persona_cta"
     val = float(prof.get("narrative_pause_sec", max(0.11, min(0.17, base_pause * 0.72))))
     return round(max(0.09, min(0.22, val)), 3), "tight_narrative_pace"
+
+
+def _resolve_default_bgm(track: str) -> Path:
+    stem = "upbeat_store_120bpm" if track == "store" else "chill_story_100bpm"
+    for ext in (".m4a", ".wav"):
+        cand = ASSETS_DIR / "bgm" / f"{stem}{ext}"
+        if cand.exists():
+            return cand
+    return ASSETS_DIR / "bgm" / f"{stem}.m4a"
 
 
 def run_step3(
@@ -287,25 +370,31 @@ def run_step3(
     def get_audio(path_str: str) -> np.ndarray:
         if path_str not in raw_audio_cache:
             arr, _ = load_stereo_wav_np(Path(path_str))
-            raw_audio_cache[path_str] = arr
+            arr_fixed, _ = rescue_stereo_channels(arr, imbalance_db=8.0)
+            raw_audio_cache[path_str] = arr_fixed
         return raw_audio_cache[path_str]
 
     if bgm_path is None:
-        bgm_name = "upbeat_store_120bpm.wav" if track == "store" else "chill_story_100bpm.wav"
-        bgm_path = ASSETS_DIR / "bgm" / bgm_name
+        bgm_path = _resolve_default_bgm(track)
+    elif not bgm_path.exists() and bgm_path.with_suffix(".m4a").exists():
+        bgm_path = bgm_path.with_suffix(".m4a")
     if not bgm_path.exists():
         raise FileNotFoundError(f"内置 BGM 不存在，请先运行 check_and_setup.py --init-assets: {bgm_path}")
 
     bgm_info = detect_bgm_beats(bgm_path)
     bgm_arr, _ = load_stereo_wav_np(bgm_path)
 
-    valid_segments = [s for s in transcript["segments"] if not s.get("is_filler", False) and s["text"].strip()]
+    all_segments = list(transcript.get("segments") or [])
+    valid_segments = [s for s in all_segments if not s.get("is_filler", False) and str(s.get("text", "")).strip()]
     if not valid_segments:
         raise ValueError("转写稿过滤废话与淘汰 NG 后无有效口播句子。")
 
-    for seg in valid_segments:
-        get_audio(seg.get("source_audio") or transcript["primary_audio"])
-    room_tone_bed, room_tone_source = extract_real_room_tone(raw_audio_cache, valid_segments, SR)
+    for seg in all_segments:
+        sa = seg.get("source_audio") or transcript.get("primary_audio")
+        if sa and Path(sa).exists():
+            get_audio(sa)
+    # 屏蔽所有原始段落（含淘汰 NG / 导演插话），保证 Room Tone 绝对纯净！
+    room_tone_bed, room_tone_source = extract_real_room_tone(raw_audio_cache, all_segments, SR)
 
     first_downbeat = bgm_info["downbeat_times_sec"][0] if bgm_info["downbeat_times_sec"] else 0.0
     bgm_shift_samples = int(round(first_downbeat * SR))
@@ -356,6 +445,8 @@ def run_step3(
 
     leveled_slices, leveling_info = level_speech_segments(raw_only_slices)
 
+    # Equal-Power 句间过渡与房间底噪拼接：在停顿中保持柔和底噪而不制造开关黑洞
+    xf_joint = int(0.012 * SR)
     rt_offset = 0
     for s_idx, (seg, leveled_slice, (_, s0, s1)) in enumerate(
         zip(valid_segments, leveled_slices, prepared_slices), start=1
@@ -365,7 +456,7 @@ def run_step3(
         orig_end = float(seg["end_sec"])
 
         raw_slice = leveled_slice.copy()
-        n_fade = min(len(raw_slice) // 4, int(SR * 0.010))
+        n_fade = min(len(raw_slice) // 6, xf_joint)
         if n_fade > 2:
             theta = np.linspace(0.0, np.pi * 0.5, n_fade, dtype=np.float32)[:, None]
             raw_slice[:n_fade] *= np.sin(theta)
@@ -438,7 +529,6 @@ def run_step3(
             if all(abs(a_t - kt) >= 0.45 for kt in keyword_anchors):
                 add_event("stress", a_t, "声学重音峰 (F0/RMS实测)", sid)
 
-        # 开篇若无关键词事件，仅选取真实实测能量最高字作为 stress 锚点，绝不按 0.38/0.72 比例编造假重音
         if s_idx == 1 and word_energy_peaks:
             existing_3s = [t for t in (keyword_anchors + accent_anchors) if 0.50 <= t <= 2.75]
             if not existing_3s:
@@ -458,6 +548,11 @@ def run_step3(
                 rt_offset = 0
             p_buf = room_tone_bed[rt_offset : rt_offset + p_samples].copy()
             rt_offset += p_samples
+            p_fade = min(len(p_buf) // 4, int(0.012 * SR))
+            if p_fade > 2:
+                theta_p = np.linspace(0.0, np.pi * 0.5, p_fade, dtype=np.float32)[:, None]
+                p_buf[:p_fade] *= np.sin(theta_p)
+                p_buf[-p_fade:] *= np.cos(theta_p)
             add_event("pause_start", new_end_sec, f"动态呼吸停顿({cur_pause_sec}s: {pause_reason})", sid)
             voice_chunks.append(p_buf)
             cursor_samples += p_samples
@@ -465,7 +560,11 @@ def run_step3(
             add_event("pause_end", pause_end_sec, "句间停顿结束", sid)
 
     tail_samples = int(0.24 * SR)
-    voice_chunks.append(room_tone_bed[:tail_samples].copy())
+    tail_rt = room_tone_bed[:tail_samples].copy()
+    if len(tail_rt) > 200:
+        tf = min(len(tail_rt) // 4, int(0.015 * SR))
+        tail_rt[:tf] *= np.linspace(0.0, 1.0, tf, dtype=np.float32)[:, None]
+    voice_chunks.append(tail_rt)
     locked_voice = np.concatenate(voice_chunks, axis=0)
     total_samples = len(locked_voice)
     total_dur = round(total_samples / float(SR), 4)
@@ -473,21 +572,21 @@ def run_step3(
     if len(aligned_bgm) < total_samples:
         beat_sec = 60.0 / max(40.0, float(bgm_info["bpm"]))
         bar_samples = int(round(beat_sec * 4.0 * SR))
-        usable_bars = (len(aligned_bgm) // max(1, bar_samples)) * bar_samples
-        loop_unit = aligned_bgm[:usable_bars] if usable_bars >= bar_samples else aligned_bgm
-        if len(loop_unit) == 0:
-            loop_unit = aligned_bgm
-        aligned_bgm = _loop_with_crossfade(loop_unit, total_samples, fade_samples=int(0.200 * SR))
+        aligned_bgm, cycle_samples = _loop_bgm_exact_bars(aligned_bgm, bar_samples, total_samples)
+        cycle_dur = cycle_samples / float(SR)
+        base_beats = [t for t in shifted_beats if t < cycle_dur - 1e-4] or [round(i * beat_sec, 4) for i in range(int(cycle_dur / beat_sec))]
+        base_downs = [t for t in shifted_downbeats if t < cycle_dur - 1e-4] or base_beats[::4]
         shifted_beats = []
         shifted_downbeats = []
-        t = 0.0
-        bi = 0
-        while t < total_dur:
-            shifted_beats.append(round(t, 4))
-            if bi % 4 == 0:
-                shifted_downbeats.append(round(t, 4))
-            t += beat_sec
-            bi += 1
+        n_cycles = int(math.ceil(total_dur / max(0.1, cycle_dur)))
+        for k_c in range(n_cycles):
+            off = k_c * cycle_dur
+            for b in base_beats:
+                if off + b <= total_dur:
+                    shifted_beats.append(round(off + b, 4))
+            for d in base_downs:
+                if off + d <= total_dur:
+                    shifted_downbeats.append(round(off + d, 4))
 
     locked_bgm = aligned_bgm[:total_samples].copy()
     fade_out_n = min(len(locked_bgm), int(0.25 * SR))
@@ -558,7 +657,7 @@ def run_step3(
 
 def main() -> None:
     maybe_reexec_in_venv()
-    parser = argparse.ArgumentParser(description="Step 3: 锁定音轨 (抗混叠加载 + Overlap-Add RoomTone + 过零点精剪)")
+    parser = argparse.ArgumentParser(description="Step 3: 锁定音轨 (零拍漂Bgm循环 + 纯净RoomTone + 过零点精剪)")
     parser.add_argument("--pipeline-dir", required=True)
     parser.add_argument("--track", choices=["store", "creator"], default="store")
     parser.add_argument("--bgm", help="可选：自定义 BGM 音频路径")

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
 [跨平台视觉原材感知引擎]
-- macOS 优先编译并缓存原生 Apple Vision Swift CLI (~/.short-video-studio/cache/svs_vision_inspector)：
-  单次执行并行跑通人脸/五官关键点 (VNDetectFaceLandmarksRequest)、主体显著性热区
-  (VNGenerateAttentionBasedSaliencyImageRequest) 与精确 OCR (VNRecognizeTextRequest)。
-- 非 macOS 或无 swiftc 环境优雅降级为 PIL + numpy/scipy 亮度梯度显著性估算。
-- 提供纯 numpy/scipy 拉普拉斯锐度方差与包围盒 IoU 工具函数。
+- macOS 优先编译（原子锁替换防并发损坏）并缓存原生 Apple Vision Swift CLI：
+  使用 DispatchQueue.concurrentPerform 并行跑通人脸/五官关键点（修正像素纵横比畸变）、
+  主体显著性热区与精确 OCR，任何异常显式打印 stderr 并返回非零。
+- 非 macOS 或无 swiftc 环境优雅降级为 PIL (exif_transpose) + numpy 梯度显著性估算。
+- 复用 common.bbox_iou，提供纯 numpy 拉普拉斯锐度方差计算。
 """
 
 from __future__ import annotations
@@ -21,12 +21,16 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from common import maybe_reexec_in_venv
+SCRIPTS_ROOT = Path(__file__).resolve().parent
+if str(SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_ROOT))
+
+from common import bbox_iou, maybe_reexec_in_venv
 
 maybe_reexec_in_venv()
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 VISION_INSPECTOR_SWIFT_SRC = r"""
 import Foundation
@@ -42,7 +46,7 @@ func topLeftRect(_ b: CGRect) -> [String: Double] {
     ]
 }
 
-func eyeMetrics(_ region: VNFaceLandmarkRegion2D?, faceBox b: CGRect) -> (cx: Double, cy: Double, openRatio: Double)? {
+func eyeMetrics(_ region: VNFaceLandmarkRegion2D?, faceBox b: CGRect, dispW: Double, dispH: Double) -> (cx: Double, cy: Double, openRatio: Double)? {
     guard let pts = region?.normalizedPoints, pts.count >= 2 else { return nil }
     var sumX = 0.0
     var sumY = 0.0
@@ -58,13 +62,13 @@ func eyeMetrics(_ region: VNFaceLandmarkRegion2D?, faceBox b: CGRect) -> (cx: Do
         minY = min(minY, Double(pt.y))
         maxY = max(maxY, Double(pt.y))
     }
-    let w = max(1e-5, maxX - minX)
-    let h = max(0.0, maxY - minY)
+    let wPx = max(1e-3, (maxX - minX) * Double(b.size.width) * max(1.0, dispW))
+    let hPx = max(0.0, (maxY - minY) * Double(b.size.height) * max(1.0, dispH))
     let cnt = Double(pts.count)
-    return (sumX / cnt, sumY / cnt, h / w)
+    return (sumX / cnt, sumY / cnt, hPx / wPx)
 }
 
-func mouthOpenRatio(_ region: VNFaceLandmarkRegion2D?) -> Double {
+func mouthOpenRatio(_ region: VNFaceLandmarkRegion2D?, faceBox b: CGRect, dispW: Double, dispH: Double) -> Double {
     guard let pts = region?.normalizedPoints, pts.count >= 4 else { return 0.0 }
     var minX = 1.0, maxX = 0.0
     var minY = 1.0, maxY = 0.0
@@ -74,22 +78,29 @@ func mouthOpenRatio(_ region: VNFaceLandmarkRegion2D?) -> Double {
         minY = min(minY, Double(pt.y))
         maxY = max(maxY, Double(pt.y))
     }
-    let w = max(1e-5, maxX - minX)
-    let h = max(0.0, maxY - minY)
-    return h / w
+    let wPx = max(1e-3, (maxX - minX) * Double(b.size.width) * max(1.0, dispW))
+    let hPx = max(0.0, (maxY - minY) * Double(b.size.height) * max(1.0, dispH))
+    return hPx / wPx
 }
 
-let args = CommandLine.arguments
-if args.count < 2 { exit(1) }
+let args = Array(CommandLine.arguments.dropFirst())
+if args.isEmpty { exit(1) }
 
-for path in args.dropFirst() {
+var outputs = [String?](repeating: nil, count: args.count)
+var errCount = 0
+let lock = NSLock()
+
+DispatchQueue.concurrentPerform(iterations: args.count) { idx in
+    let path = args[idx]
     let url = URL(fileURLWithPath: path)
     guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
           let cgImg = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
         let empty: [String: Any] = ["file": path, "width": 0, "height": 0, "faces": [], "saliency": NSNull(), "texts": []]
         if let d = try? JSONSerialization.data(withJSONObject: empty),
-           let s = String(data: d, encoding: .utf8) { print(s) }
-        continue
+           let s = String(data: d, encoding: .utf8) {
+            lock.lock(); outputs[idx] = s; lock.unlock()
+        }
+        return
     }
 
     var cgOrientation = CGImagePropertyOrientation.up
@@ -117,14 +128,26 @@ for path in args.dropFirst() {
     }
 
     let handler = VNImageRequestHandler(cgImage: cgImg, orientation: cgOrientation, options: [:])
-    try? handler.perform(requests)
+    do {
+        try handler.perform(requests)
+    } catch {
+        lock.lock()
+        errCount += 1
+        if let msgData = "Vision perform error on \(path): \(error)\n".data(using: .utf8) {
+            FileHandle.standardError.write(msgData)
+        }
+        lock.unlock()
+        return
+    }
 
     var facesOut: [[String: Any]] = []
+    let dw = Double(dispWidth)
+    let dh = Double(dispHeight)
     for obs in faceReq.results ?? [] {
         let b = obs.boundingBox
         var faceDict: [String: Any] = ["bbox": topLeftRect(b)]
-        let lEye = eyeMetrics(obs.landmarks?.leftEye, faceBox: b)
-        let rEye = eyeMetrics(obs.landmarks?.rightEye, faceBox: b)
+        let lEye = eyeMetrics(obs.landmarks?.leftEye, faceBox: b, dispW: dw, dispH: dh)
+        let rEye = eyeMetrics(obs.landmarks?.rightEye, faceBox: b, dispW: dw, dispH: dh)
         if let le = lEye, let re = rEye {
             faceDict["eye_cx"] = (le.cx + re.cx) * 0.5
             faceDict["eye_cy"] = (le.cy + re.cy) * 0.5
@@ -138,8 +161,7 @@ for path in args.dropFirst() {
             faceDict["eye_cy"] = 1.0 - Double(b.origin.y + b.size.height * 0.62)
             faceDict["eye_open_ratio"] = 0.25
         }
-        let mOpen = mouthOpenRatio(obs.landmarks?.innerLips ?? obs.landmarks?.outerLips)
-        faceDict["mouth_open_ratio"] = mOpen
+        faceDict["mouth_open_ratio"] = mouthOpenRatio(obs.landmarks?.innerLips ?? obs.landmarks?.outerLips, faceBox: b, dispW: dw, dispH: dh)
         facesOut.append(faceDict)
     }
 
@@ -174,9 +196,14 @@ for path in args.dropFirst() {
     ]
     if let data = try? JSONSerialization.data(withJSONObject: out),
        let s = String(data: data, encoding: .utf8) {
-        print(s)
+        lock.lock(); outputs[idx] = s; lock.unlock()
     }
 }
+
+for s in outputs {
+    if let s = s { print(s) }
+}
+if errCount > 0 { exit(2) }
 """
 
 
@@ -185,7 +212,7 @@ def _src_hash() -> str:
 
 
 def ensure_vision_inspector_bin() -> Optional[Path]:
-    """在 macOS 上编译并缓存原生 Apple Vision CLI；源文件变化时自动重编。"""
+    """在 macOS 上带文件锁与原子重命名编译缓存原生 Apple Vision CLI。"""
     if platform.system() != "Darwin":
         return None
     swiftc = shutil.which("swiftc")
@@ -197,31 +224,56 @@ def ensure_vision_inspector_bin() -> Optional[Path]:
     cache_dir.mkdir(parents=True, exist_ok=True)
     tag = _src_hash()
     bin_path = cache_dir / f"svs_vision_inspector_{tag}"
-    src_path = cache_dir / f"svs_vision_inspector_{tag}.swift"
-    if bin_path.exists():
+    if bin_path.exists() and bin_path.stat().st_size > 10000:
         return bin_path
 
-    src_path.write_text(VISION_INSPECTOR_SWIFT_SRC.strip() + "\n", encoding="utf-8")
-    res = subprocess.run(
-        [swiftc, "-O", str(src_path), "-o", str(bin_path)],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    if res.returncode == 0 and bin_path.exists():
-        return bin_path
-    print(f"[vision_inspector] swiftc 编译失败: {(res.stderr or '')[-400:]}", file=sys.stderr)
-    return None
+    lock_path = cache_dir / f"svs_vision_inspector_{tag}.lock"
+    lock_fd = None
+    try:
+        import fcntl
+        lock_fd = lock_path.open("w", encoding="utf-8")
+        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+    except Exception:
+        lock_fd = None
+
+    try:
+        if bin_path.exists() and bin_path.stat().st_size > 10000:
+            return bin_path
+        pid = os.getpid()
+        src_tmp = cache_dir / f"svs_vision_inspector_{tag}_{pid}.swift"
+        bin_tmp = cache_dir / f"svs_vision_inspector_{tag}_{pid}.tmp"
+        src_tmp.write_text(VISION_INSPECTOR_SWIFT_SRC.strip() + "\n", encoding="utf-8")
+        res = subprocess.run(
+            [swiftc, "-O", str(src_tmp), "-o", str(bin_tmp)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        src_tmp.unlink(missing_ok=True)
+        if res.returncode == 0 and bin_tmp.exists():
+            os.replace(bin_tmp, bin_path)
+            return bin_path
+        bin_tmp.unlink(missing_ok=True)
+        print(f"[vision_inspector] swiftc 编译失败: {(res.stderr or '')[-400:]}", file=sys.stderr)
+        return None
+    finally:
+        if lock_fd is not None:
+            try:
+                import fcntl
+                fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+                lock_fd.close()
+            except Exception:
+                pass
 
 
 def compute_laplacian_sharpness(img_arr: np.ndarray) -> float:
     """计算图像灰度拉普拉斯算子方差，数值越高代表画面越锐利不虚焦。"""
     if img_arr.ndim == 3:
         gray = (
-            0.299 * img_arr[:, :, 0].astype(np.float32)
-            + 0.587 * img_arr[:, :, 1].astype(np.float32)
-            + 0.114 * img_arr[:, :, 2].astype(np.float32)
+            0.2126 * img_arr[:, :, 0].astype(np.float32)
+            + 0.7152 * img_arr[:, :, 1].astype(np.float32)
+            + 0.0722 * img_arr[:, :, 2].astype(np.float32)
         )
     else:
         gray = img_arr.astype(np.float32)
@@ -238,26 +290,17 @@ def compute_laplacian_sharpness(img_arr: np.ndarray) -> float:
 
 
 def check_bbox_iou(b1: Dict[str, float], b2: Dict[str, float]) -> float:
-    """计算两个 {x, y, w, h} 矩形包围盒的交并比 (IoU)。"""
-    x1 = max(float(b1["x"]), float(b2["x"]))
-    y1 = max(float(b1["y"]), float(b2["y"]))
-    x2 = min(float(b1["x"]) + float(b1["w"]), float(b2["x"]) + float(b2["w"]))
-    y2 = min(float(b1["y"]) + float(b1["h"]), float(b2["y"]) + float(b2["h"]))
-    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
-    if inter <= 0.0:
-        return 0.0
-    area1 = max(0.0, float(b1["w"])) * max(0.0, float(b1["h"]))
-    area2 = max(0.0, float(b2["w"])) * max(0.0, float(b2["h"]))
-    union = area1 + area2 - inter
-    return round(inter / union, 4) if union > 1e-8 else 0.0
+    """兼容别名：复用 common.bbox_iou。"""
+    return round(bbox_iou(b1, b2), 4)
 
 
 def _fallback_inspect_single(img_path: Path) -> Dict[str, Any]:
-    """非 macOS 或 Vision CLI 不可用时的纯 Python 梯度显著性降级检测。"""
+    """非 macOS 或 Vision CLI 不可用时的纯 Python 梯度显著性降级检测（应用 EXIF 旋转）。"""
     try:
         with Image.open(img_path) as im:
-            w, h = im.size
-            small = im.convert("L").resize((120, max(12, int(round(120 * h / max(1, w))))))
+            im_t = ImageOps.exif_transpose(im)
+            w, h = im_t.size
+            small = im_t.convert("L").resize((120, max(12, int(round(120 * h / max(1, w))))))
             arr = np.asarray(small, dtype=np.float32)
     except Exception:
         return {"file": str(img_path), "width": 0, "height": 0, "faces": [], "saliency": None, "texts": [], "backend": "fallback"}
@@ -301,8 +344,8 @@ def inspect_images(image_paths: List[Path], batch_size: int = 32) -> Dict[str, D
             chunk = image_paths[i : i + batch_size]
             cmd = [str(vision_bin)] + [str(p) for p in chunk]
             res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
-            if res.returncode == 0:
-                for line in (res.stdout or "").splitlines():
+            if res.stdout:
+                for line in res.stdout.splitlines():
                     line = line.strip()
                     if not line:
                         continue
@@ -312,8 +355,8 @@ def inspect_images(image_paths: List[Path], batch_size: int = 32) -> Dict[str, D
                         results[obj["file"]] = obj
                     except Exception:
                         continue
-            else:
-                print(f"[vision_inspector] Apple Vision 执行失败 ({res.returncode}): {(res.stderr or '')[-300:]}", file=sys.stderr)
+            if res.returncode != 0:
+                print(f"[vision_inspector] Apple Vision 部分或全部帧报错 ({res.returncode}): {(res.stderr or '')[-300:]}", file=sys.stderr)
 
     for p in image_paths:
         key = str(p)

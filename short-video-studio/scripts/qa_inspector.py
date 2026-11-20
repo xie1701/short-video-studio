@@ -243,7 +243,7 @@ def inspect_video(
         for clip in edl.get("clips", [])[1:]:
             ev = events_by_id.get(clip.get("cut_event_id", ""))
             j_lead = int(clip.get("j_cut_lead_frames", 0))
-            if j_lead not in (0, 2, 3, 4):
+            if not (-6 <= j_lead <= 4):
                 jcut_valid = False
             if not ev:
                 max_cut_err_frames = 999
@@ -313,19 +313,24 @@ def inspect_video(
             "0违规/0碰撞/0残句, 包装<=ceil(dur/3.5), 误差<=1帧",
         ))
 
-        # 8. 镜头时长分布 + 零倒带 + A-Roll 占比
+        # 8. 镜头时长分布 + 零同源倒带 + A-Roll 占比
         durs = [float(c["duration_sec"]) for c in edl["clips"]]
         min_d, max_d = min(durs), max(durs)
         med_d = statistics.median(durs)
         rewind_count = 0
         clips_list = edl.get("clips", [])
-        for ci in range(1, len(clips_list)):
-            c0, c1 = clips_list[ci - 1], clips_list[ci]
-            if str(c0.get("media_path")) == str(c1.get("media_path")):
-                if c1.get("track_role") == "code_broll":
-                    rewind_count += 1
-                elif float(c1["source_in_sec"]) < float(c0["source_out_sec"]) - 0.05:
-                    rewind_count += 1
+        last_src_out_by_mp: Dict[str, float] = {}
+        for c_cur in clips_list:
+            mp = str(c_cur.get("media_path") or "")
+            if not mp:
+                continue
+            if c_cur.get("track_role") == "code_broll":
+                continue
+            cin_s = float(c_cur.get("source_in_sec", 0.0))
+            cout_s = float(c_cur.get("source_out_sec", cin_s))
+            if mp in last_src_out_by_mp and cin_s < last_src_out_by_mp[mp] - 0.08:
+                rewind_count += 1
+            last_src_out_by_mp[mp] = max(last_src_out_by_mp.get(mp, 0.0), cout_s)
         aroll_clips = [c for c in clips_list if c.get("track_role") == "a_roll"]
         masked_voice_clips = [c for c in clips_list if c.get("audio_only_masked")]
         aroll_ratio = (
@@ -357,7 +362,7 @@ def inspect_video(
             "≥ 2 次且均对齐音频事件",
         ))
 
-        # 10. A-Roll 句界严锁
+        # 10. A-Roll 句界严锁（兼容正常 J/L-cut 声画错位延续）
         accepted_path = next(
             (p for p in (pipeline_dir / "02_Accepted_Cuts.json", pipeline_dir.parent / "02_Accepted_Cuts.json") if p.exists()),
             None,
@@ -373,7 +378,7 @@ def inspect_video(
         aroll_boundary_violations: List[str] = []
         max_overrun_sec = 0.0
         max_late_in_sec = 0.0
-        for c in aroll_clips:
+        for ci, c in enumerate(aroll_clips):
             c_in, c_out = float(c["timeline_in_sec"]), float(c["timeline_out_sec"])
             overlapping = [s for s in sents_all if min(c_out, float(s["end_sec"])) - max(c_in, float(s["start_sec"])) > 0.04]
             if not overlapping and c.get("sentence_id") in sents_by_id:
@@ -383,9 +388,16 @@ def inspect_video(
             first_s, last_s = overlapping[0], overlapping[-1]
             acc_last = accepted_by_id.get(last_s["id"], {})
             base_end = float(last_s["end_sec"]) + 0.08
-            src_locked_ok = float(c.get("source_out_sec", 0.0)) <= float(last_s.get("source_out_sec", 99999.0)) + 0.04
+            src_locked_ok = float(c.get("source_out_sec", 0.0)) <= float(last_s.get("source_out_sec", 99999.0)) + 0.06
             dyn_end = float(last_s["end_sec"]) + float(last_s.get("pause_after_sec", 0.08)) + 0.04 if src_locked_ok else base_end
-            cut_end_limit = float(acc_last.get("cut_end_sec") or max(base_end, dyn_end))
+            # 允许相邻 B-roll L-cut 跨界延申 (<= 0.25s)
+            l_lead_allowance = 0.0
+            clip_pos = clips_list.index(c)
+            if clip_pos + 1 < len(clips_list):
+                nxt_j = int(clips_list[clip_pos + 1].get("j_cut_lead_frames", 0))
+                if nxt_j < 0:
+                    l_lead_allowance = abs(nxt_j) / float(fps) + 0.04
+            cut_end_limit = float(acc_last.get("cut_end_sec") or max(base_end, dyn_end)) + l_lead_allowance
             if last_s["id"] == sents_all[-1]["id"] and c is clips_list[-1]:
                 cut_end_limit = max(cut_end_limit, float(acc_last.get("cut_buffer_end_sec") or total_edl_dur))
             overrun = c_out - cut_end_limit

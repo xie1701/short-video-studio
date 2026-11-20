@@ -15,34 +15,45 @@ from __future__ import annotations
 import argparse
 import json
 import statistics
+import sys
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
+from common import resolve_workspace_paths
+
 DEMO_RECORDS = [
     {
         "video_id": "v_001", "date": "2026-11-08", "track": "store", "title": "价格越高的菜利润越低",
         "a_level": "A1", "hook_type": "颠覆切入", "opening_skill": "对立面开篇", "avg_shot_sec": 1.4,
-        "style_id": "style_14", "pause_sec": 0.16, "bounce_2s": 0.28, "retention_5s": 0.52,
+        "style_id": "style_14", "pause_sec": 0.16, "persona_pause_sec": 0.28, "bounce_2s": 0.28, "retention_5s": 0.52,
+        "rewatch_rate": 0.14, "local_traffic_pct": 0.68, "inquiry_rate": 0.0013,
         "views": 18500, "retention_3s": 0.64, "completion_rate": 0.34, "likes": 420, "comments": 68, "dm_inquiries": 24,
     },
     {
         "video_id": "v_002", "date": "2026-11-09", "track": "store", "title": "八年老店老板的底线",
         "a_level": "A2", "hook_type": "痛点切入", "opening_skill": "不字开头", "avg_shot_sec": 1.6,
-        "style_id": "style_14", "pause_sec": 0.18, "bounce_2s": 0.31, "retention_5s": 0.49,
+        "style_id": "style_14", "pause_sec": 0.18, "persona_pause_sec": 0.32, "bounce_2s": 0.31, "retention_5s": 0.49,
+        "rewatch_rate": 0.12, "local_traffic_pct": 0.74, "inquiry_rate": 0.0034,
         "views": 9200, "retention_3s": 0.58, "completion_rate": 0.31, "likes": 210, "comments": 45, "dm_inquiries": 31,
     },
     {
         "video_id": "v_003", "date": "2026-11-11", "track": "store", "title": "门店日常工作vlog",
         "a_level": "A3", "hook_type": "疑问切入", "opening_skill": "信息密度开篇", "avg_shot_sec": 3.4,
-        "style_id": "style_06", "pause_sec": 0.26, "bounce_2s": 0.54, "retention_5s": 0.26, "drop_off_sec": 4.2,
+        "style_id": "style_06", "pause_sec": 0.26, "persona_pause_sec": 0.35, "bounce_2s": 0.54, "retention_5s": 0.26, "drop_off_sec": 4.2,
+        "rewatch_rate": 0.05, "local_traffic_pct": 0.41, "inquiry_rate": 0.0010,
         "views": 3100, "retention_3s": 0.39, "completion_rate": 0.16, "likes": 52, "comments": 8, "dm_inquiries": 3,
     },
     {
         "video_id": "v_004", "date": "2026-11-13", "track": "store", "title": "高于20块才敢用的鲜羊排真相",
         "a_level": "A1", "hook_type": "好奇切入", "opening_skill": "数字开篇", "avg_shot_sec": 1.3,
-        "style_id": "style_02", "pause_sec": 0.15, "bounce_2s": 0.24, "retention_5s": 0.56,
+        "style_id": "style_02", "pause_sec": 0.15, "persona_pause_sec": 0.26, "bounce_2s": 0.24, "retention_5s": 0.56,
+        "rewatch_rate": 0.17, "local_traffic_pct": 0.65, "inquiry_rate": 0.0012,
         "views": 24600, "retention_3s": 0.69, "completion_rate": 0.38, "likes": 610, "comments": 95, "dm_inquiries": 29,
     },
 ]
@@ -106,17 +117,18 @@ def build_account_profile(
     winners: List[Dict[str, Any]],
     track: str,
 ) -> Path:
-    """将验证跑赢基线的节奏/停顿/风格谱/钩子参数沉淀为账号基因库 account_profile.json。"""
+    """将验证跑赢基线的节奏/停顿/风格谱/钩子参数沉淀为分轨隔离的账号基因库 account_profile.json。"""
     pool = winners or records
     shot_secs = [float(r["avg_shot_sec"]) for r in pool if r.get("avg_shot_sec")]
     pause_secs = [float(r["pause_sec"]) for r in pool if r.get("pause_sec")]
+    persona_pauses = [float(r["persona_pause_sec"]) for r in pool if r.get("persona_pause_sec")]
     styles = [str(r["style_id"]) for r in pool if r.get("style_id")]
 
     target_shot = round(max(1.0, min(3.2, statistics.median(shot_secs))), 2) if shot_secs else 1.55
     base_pause = round(max(0.14, min(0.30, statistics.median(pause_secs))), 3) if pause_secs else 0.18
+    persona_pause = round(max(0.18, min(0.42, statistics.median(persona_pauses))), 3) if persona_pauses else round(min(0.40, base_pause * 1.5), 3)
     pref_style = Counter(styles).most_common(1)[0][0] if styles else ("style_14" if track == "store" else "style_02")
 
-    # 结合 2 秒跳出率判断前 3 秒是否需要更紧凑
     bounces = [float(r["bounce_2s"]) for r in records if r.get("bounce_2s") is not None]
     high_bounce = bool(bounces and statistics.mean(bounces) > 0.40)
 
@@ -128,6 +140,7 @@ def build_account_profile(
         "pause_sec": base_pause,
         "narrative_pause_sec": round(max(0.10, base_pause * 0.72), 3),
         "twist_pause_sec": round(min(0.38, max(0.26, base_pause * 1.55)), 3),
+        "persona_pause_sec": persona_pause,
         "target_median_shot_sec": round(min(target_shot, 1.40) if high_bounce else target_shot, 2),
         "target_aroll_ratio": 0.35 if track == "store" else 0.30,
         "micro_hook_max_sec": 5.5 if high_bounce else 6.2,
@@ -135,7 +148,6 @@ def build_account_profile(
         "winning_hooks": winning_hooks,
     }
 
-    # 样本不足 3 条时冻结活跃默认参数：不覆盖已有 account_profile.json 的默认生效字段
     if not sample_sufficient:
         prev_prof: Dict[str, Any] = {}
         if out_p.is_file():
@@ -147,6 +159,7 @@ def build_account_profile(
             "pause_sec": prev_prof.get("pause_sec", 0.18),
             "narrative_pause_sec": prev_prof.get("narrative_pause_sec", 0.13),
             "twist_pause_sec": prev_prof.get("twist_pause_sec", 0.28),
+            "persona_pause_sec": prev_prof.get("persona_pause_sec", 0.28),
             "target_median_shot_sec": prev_prof.get("target_median_shot_sec", 1.55),
             "target_aroll_ratio": prev_prof.get("target_aroll_ratio", 0.35 if track == "store" else 0.30),
             "micro_hook_max_sec": prev_prof.get("micro_hook_max_sec", 6.2),
@@ -168,25 +181,51 @@ def build_account_profile(
     }
     out_p.parent.mkdir(parents=True, exist_ok=True)
     out_p.write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 同步保存轨道隔离档案，防止 store / creator 双轨混用
+    track_p = log_dir / f"account_profile_{track}.json"
+    track_p.write_text(json.dumps(profile, ensure_ascii=False, indent=2), encoding="utf-8")
     return out_p
 
 
-def generate_weekly_review(log_dir: Path, out_md: Path) -> Dict[str, Any]:
-    records = load_records(log_dir / "records.jsonl")
-    if not records:
+def _extract_inquiry_rate(r: Dict[str, Any]) -> Optional[float]:
+    if r.get("inquiry_rate") is not None:
+        return float(r["inquiry_rate"])
+    views = float(r.get("views") or 0.0)
+    if views > 0 and r.get("dm_inquiries") is not None:
+        return float(r["dm_inquiries"]) / views
+    return None
+
+
+def generate_weekly_review(log_dir: Path, out_md: Path, track: Optional[str] = None) -> Dict[str, Any]:
+    all_records = load_records(log_dir / "records.jsonl")
+    if not all_records:
         raise ValueError("content-log 中暂无记录，无法生成周复盘。")
 
-    track_counts = Counter(str(r.get("track", "store")) for r in records if r.get("track"))
-    track = track_counts.most_common(1)[0][0] if track_counts else "store"
+    if track is None:
+        track_counts = Counter(str(r.get("track", "store")) for r in all_records if r.get("track"))
+        track = track_counts.most_common(1)[0][0] if track_counts else "store"
+
+    # 分轨隔离：优先只聚合当前轨道样本，防止门店轨与博主轨数据相互污染
+    records = [r for r in all_records if str(r.get("track", track)) == track] or all_records
+
     base_views = statistics.mean(r.get("views", 0) for r in records)
     base_3s = statistics.mean(r.get("retention_3s", 0.0) for r in records)
     base_comp = statistics.mean(r.get("completion_rate", 0.0) for r in records)
     base_conv = statistics.mean((r.get("comments", 0) + r.get("dm_inquiries", 0)) for r in records)
 
     if track == "store":
-        winners = [r for r in records if (r.get("comments", 0) + r.get("dm_inquiries", 0)) >= base_conv or r.get("retention_3s", 0.0) >= base_3s + 0.05]
+        winners = [
+            r for r in records
+            if (r.get("comments", 0) + r.get("dm_inquiries", 0)) >= base_conv
+            or (r.get("local_traffic_pct") is not None and float(r["local_traffic_pct"]) >= 0.60 and r.get("retention_3s", 0.0) >= base_3s)
+            or r.get("retention_3s", 0.0) >= base_3s + 0.05
+        ]
     else:
-        winners = [r for r in records if r.get("retention_3s", 0.0) >= base_3s and r.get("completion_rate", 0.0) >= base_comp]
+        winners = [
+            r for r in records
+            if r.get("retention_3s", 0.0) >= base_3s
+            and (r.get("completion_rate", 0.0) >= base_comp or (r.get("rewatch_rate") is not None and float(r["rewatch_rate"]) >= 0.12))
+        ]
     laggards = [r for r in records if r not in winners]
 
     fast_views = [r.get("views", 0) for r in records if float(r.get("avg_shot_sec", 2.0)) <= 2.0]
@@ -209,19 +248,28 @@ def generate_weekly_review(log_dir: Path, out_md: Path) -> Dict[str, Any]:
     winning_hooks = sorted({f"{r.get('hook_type', '')}（{r.get('opening_skill', '')}）" for r in winners if r.get("hook_type")})
     losing_hooks = sorted({f"{r.get('hook_type', '')}（{r.get('opening_skill', '')}）" for r in laggards if r.get("hook_type")})
 
-    # 微观留存断崖 EDL 反查
     drop_diagnoses = [d for d in (diagnose_edl_drop_off(r) for r in records) if d is not None]
     profile_path = build_account_profile(log_dir, records, winners, track)
     profile = json.loads(profile_path.read_text(encoding="utf-8"))
 
-    # 微观漏斗汇总
+    # 微观深度漏斗汇总（覆盖 2s 跳出 / 5s 留存 / 复播率 / 同城占比 / 询单率）
     bounces = [float(r["bounce_2s"]) for r in records if r.get("bounce_2s") is not None]
     ret5s = [float(r["retention_5s"]) for r in records if r.get("retention_5s") is not None]
-    micro_line = ""
-    if bounces or ret5s:
-        b_str = f"2秒跳出率 **{statistics.mean(bounces)*100:.1f}%**" if bounces else ""
-        r5_str = f"5秒留存 **{statistics.mean(ret5s)*100:.1f}%**" if ret5s else ""
-        micro_line = f"- **微观漏斗均值**：{' | '.join(x for x in (b_str, r5_str) if x)}"
+    rewatches = [float(r["rewatch_rate"]) for r in records if r.get("rewatch_rate") is not None]
+    local_pcts = [float(r["local_traffic_pct"]) for r in records if r.get("local_traffic_pct") is not None]
+    inq_rates = [v for v in (_extract_inquiry_rate(r) for r in records) if v is not None]
+    funnel_parts: List[str] = []
+    if bounces:
+        funnel_parts.append(f"2秒跳出率 **{statistics.mean(bounces)*100:.1f}%**")
+    if ret5s:
+        funnel_parts.append(f"5秒留存 **{statistics.mean(ret5s)*100:.1f}%**")
+    if rewatches:
+        funnel_parts.append(f"复播率 **{statistics.mean(rewatches)*100:.1f}%**")
+    if local_pcts:
+        funnel_parts.append(f"同城占比 **{statistics.mean(local_pcts)*100:.1f}%**")
+    if inq_rates:
+        funnel_parts.append(f"有效询单率 **{statistics.mean(inq_rates)*1000:.2f}‰**")
+    micro_line = f"- **微观深度漏斗均值**：{' | '.join(funnel_parts)}" if funnel_parts else ""
 
     honest_note = (
         f"- **统计周期样本数**：{len(records)} 条（当前轨道：`{'门店轨' if track=='store' else '博主轨'}`）"
@@ -281,7 +329,7 @@ def generate_weekly_review(log_dir: Path, out_md: Path) -> Dict[str, Any]:
         "| 进化参数 | 推荐设定值 | 数据依据 |",
         "| :--- | :--- | :--- |",
         f"| **目标中位镜长** | `{profile['target_median_shot_sec']}s`（模式中断上限 `{profile['micro_hook_max_sec']}s`） | 基于胜出组单镜时长与 2 秒跳出率实测计算 |",
-        f"| **动态呼吸停顿** | 基准 `{profile['pause_sec']}s`（陈述 `{profile['narrative_pause_sec']}s` / 反转 `{profile['twist_pause_sec']}s`） | 继承胜出组语流呼吸感并保护反转悬念 |",
+        f"| **动态呼吸停顿** | 基准 `{profile['pause_sec']}s`（陈述 `{profile['narrative_pause_sec']}s` / 反转 `{profile['twist_pause_sec']}s` / 人设 `{profile.get('persona_pause_sec', 0.28)}s`） | 继承胜出组语流呼吸感并保护反转悬念 |",
         f"| **首选包装风格谱** | `{profile['preferred_style_id']}` | 胜出样本最高频风格谱映射 |",
         f"| **高效钩子加权** | `{' / '.join(winning_hooks) or '继续探索'}` | 3秒留存与有效询单领先基线 |",
         "",
@@ -290,8 +338,17 @@ def generate_weekly_review(log_dir: Path, out_md: Path) -> Dict[str, Any]:
     out_md.parent.mkdir(parents=True, exist_ok=True)
     out_md.write_text("\n".join(md), encoding="utf-8")
     summary = {
+        "track": track,
         "record_count": len(records),
-        "baseline": {"views": base_views, "retention_3s": base_3s, "completion_rate": base_comp, "conv": base_conv},
+        "baseline": {
+            "views": base_views,
+            "retention_3s": base_3s,
+            "completion_rate": base_comp,
+            "conv": base_conv,
+            "rewatch_rate": round(statistics.mean(rewatches), 4) if rewatches else None,
+            "local_traffic_pct": round(statistics.mean(local_pcts), 4) if local_pcts else None,
+            "inquiry_rate": round(statistics.mean(inq_rates), 5) if inq_rates else None,
+        },
         "winning_hooks": winning_hooks,
         "drop_diagnoses": drop_diagnoses,
         "account_profile_json": str(profile_path.resolve()),
@@ -302,11 +359,10 @@ def generate_weekly_review(log_dir: Path, out_md: Path) -> Dict[str, Any]:
 
 
 def main() -> None:
-    from common import resolve_workspace_paths
-
     parser = argparse.ArgumentParser(description="content-log 微观留存诊断与账号参数基因库复盘")
     parser.add_argument("--log-dir", help="content-log 存储目录（未传时可配 --account 自动隔离）")
     parser.add_argument("--account", help="账号标识，自动定位该账号专属 content-log/")
+    parser.add_argument("--track", choices=["store", "creator"], help="按赛道轨道隔离计算基线与账号参数档案")
     parser.add_argument("--workspace-root", help="可选：自定义专属工作区根目录")
     parser.add_argument("--add-json", help="追加一条发布后台数据 JSON 字符串或文件")
     parser.add_argument("--demo", action="store_true", help="写入示例数据并生成周复盘报告")
@@ -331,7 +387,7 @@ def main() -> None:
         rec = json.loads(p.read_text(encoding="utf-8")) if p.exists() else json.loads(args.add_json)
         append_record(log_dir, rec)
 
-    generate_weekly_review(log_dir, log_dir / "weekly_review.md")
+    generate_weekly_review(log_dir, log_dir / "weekly_review.md", track=args.track)
 
 
 if __name__ == "__main__":

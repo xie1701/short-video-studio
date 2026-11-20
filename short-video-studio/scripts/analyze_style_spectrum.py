@@ -22,16 +22,23 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
+
 from common import (
     ASSETS_DIR,
     ffprobe_media,
     find_bin,
+    find_commercial_font,
+    get_cached_font,
     maybe_reexec_in_venv,
     measure_lufs_ebur128,
     parse_fps,
@@ -191,13 +198,17 @@ def analyze_frames_stream(video_path: Path, meta: Dict[str, Any]) -> Dict[str, A
     d_l1_np = np.array(diff_l1, dtype=np.float32)
     d_h_np = np.array(diff_hist, dtype=np.float32)
 
-    # 计算局部滑窗中位数背景差分（排除单帧运动干扰）
-    local_med = np.zeros_like(d_l1_np)
-    for idx in range(len(d_l1_np)):
-        s0 = max(0, idx - 6)
-        s1 = min(len(d_l1_np), idx + 7)
-        win = np.concatenate([d_l1_np[s0:idx], d_l1_np[idx + 1 : s1]])
-        local_med[idx] = float(np.median(win)) if len(win) > 0 else 0.0
+    # 向量化局部滑窗中位数背景差分（排除单帧运动干扰）
+    try:
+        from scipy.ndimage import median_filter
+        local_med = median_filter(d_l1_np, size=13, mode="nearest")
+    except Exception:
+        local_med = np.zeros_like(d_l1_np)
+        for idx in range(len(d_l1_np)):
+            s0 = max(0, idx - 6)
+            s1 = min(len(d_l1_np), idx + 7)
+            win = np.concatenate([d_l1_np[s0:idx], d_l1_np[idx + 1 : s1]])
+            local_med[idx] = float(np.median(win)) if len(win) > 0 else 0.0
 
     min_gap_frames = max(4, int(round(0.25 * fps)))
     hard_cuts: List[int] = []
@@ -356,7 +367,7 @@ def analyze_frames_stream(video_path: Path, meta: Dict[str, Any]) -> Dict[str, A
 def generate_reverse_cube_lut(color_stats: Dict[str, Any], out_lut_path: Path, title: str) -> Dict[str, Any]:
     """
     根据视频实测的暗/中/高三段偏色、动态范围对比度与饱和度，
-    逆向拟合生成标准的 33x33x33 3D .cube LUT 文件（可直接被 FFmpeg lut3d / 剪映加载）。
+    逆向拟合生成轻量精简的 17x17x17 3D .cube LUT 文件（可直接被 FFmpeg lut3d / 剪映加载）。
     """
     # 以中性 Rec.709 基准为参照计算相对调色偏移
     y_p05 = color_stats["y_p05_255"] / 255.0
@@ -380,11 +391,11 @@ def generate_reverse_cube_lut(color_stats: Dict[str, Any], out_lut_path: Path, t
     md_tint = zone_tint(color_stats["midtone_rgb"], 0.55)
     hi_tint = zone_tint(color_stats["highlight_rgb"], 0.55)
 
-    size = 33
+    size = 17
     grid = np.linspace(0.0, 1.0, size, dtype=np.float32)
     # 注意 .cube 规范顺序：B 最外层，G 中间层，R 最内层
     bb, gg, rr = np.meshgrid(grid, grid, grid, indexing="ij")
-    rgb = np.stack([rr, gg, bb], axis=-1)  # (33, 33, 33, 3)
+    rgb = np.stack([rr, gg, bb], axis=-1)  # (17, 17, 17, 3)
 
     # 1. 亮度对比与 Lift/Mid/Gain 曲线
     luma = 0.2126 * rgb[..., 0] + 0.7152 * rgb[..., 1] + 0.0722 * rgb[..., 2]
@@ -718,12 +729,9 @@ def extract_frames_and_analyze_subtitles(
             header_h = 64
             canvas = Image.new("RGB", (tile_w * cols, tile_h * rows + header_h), (18, 22, 30))
             draw = ImageDraw.Draw(canvas)
-            try:
-                fnt = ImageFont.truetype("/System/Library/Fonts/STHeiti Medium.ttc", 22)
-                fnt_sm = ImageFont.truetype("/System/Library/Fonts/STHeiti Medium.ttc", 18)
-            except Exception:
-                fnt = ImageFont.load_default()
-                fnt_sm = ImageFont.load_default()
+            fp_comm = find_commercial_font(verified_only=True)
+            fnt = get_cached_font(fp_comm, 22) or ImageFont.load_default()
+            fnt_sm = get_cached_font(fp_comm, 18) or ImageFont.load_default()
 
             title_text = f"{video_id} | {video_path.stem[:36]} | {meta['width']}x{meta['height']} @ {meta['fps']}fps | {dur:.1f}s"
             draw.text((16, 18), title_text, fill=(248, 250, 252), font=fnt)

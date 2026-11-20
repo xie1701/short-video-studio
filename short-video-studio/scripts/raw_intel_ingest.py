@@ -4,10 +4,10 @@
 拒绝二手模板填空，直接从一手原始材料抽取客户真实语言与物证：
 1. 原始评论区 / 微信客服导出 / 收银台高频提问文本 -> 提取客户原话顾虑动词、高频追问与真实痛点词组。
 2. 原始不可伪造物证目录 (发票/原料/对比照/检测单) -> 建立物证资产索引。
-3. 剧本「口语化 + 留存节拍」静态检查器：
+3. 剧本「口语化 + 留存节拍 + 实证锚点」静态检查器：
    - 单句有效字数 > 16 字预警（一口气断句红线）
    - 拦截书面语/AI陈词滥调（赋能/综上所述/不仅如此/痛点/打造/90%的人/别再无效努力 等）
-   - 检验首句物理锚点与每 6–8 秒是否埋设模式中断 (Micro-Hook)
+   - 检验首句物理锚点、每 6–8 秒模式中断 (Micro-Hook) 与连续平铺缺乏数字/实物证据警告
 输出：pipeline/00_raw_intel.json 与 pipeline/00_script_lint.md
 """
 
@@ -16,16 +16,23 @@ from __future__ import annotations
 import argparse
 import csv
 import re
+import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+SCRIPTS_ROOT = Path(__file__).resolve().parent
+if str(SCRIPTS_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_ROOT))
 
 from common import read_json, write_json
 
 PAIN_TRIGGERS = [
     "怕", "坑", "贵", "假", "拼接", "预制", "冻肉", "冷冻", "添加剂", "多久",
-    "地址", "在哪", "价格", "多少钱", "真假", "靠谱", "退", "售后", "翻车",
-    "后悔", "智商税", "踩雷", "新鲜", "坏了", "偷工", "减料", "套路", "隐形消费",
+    "地址", "在哪", "价格", "多少钱", "真假", "靠谱", "退", "包退", "售后", "翻车",
+    "后悔", "智商税", "踩雷", "踩坑", "新鲜", "坏了", "偷工", "减料", "套路", "隐形",
+    "质保", "保修", "教程", "零基础", "平替", "避坑", "虚标", "溢价", "对比", "实测",
+    "原厂", "收费",
 ]
 
 AI_CLICHE_BLACKLIST = [
@@ -51,19 +58,30 @@ PROOF_KEYWORDS = {
     "订单": "真实成交单据",
 }
 
+_TS_PREFIX_RE = re.compile(
+    r"^\[?\d{4}[-/]\d{1,2}[-/]\d{1,2}(?:[ T]\d{1,2}:\d{2}(?::\d{2})?)?\]?\s*"
+)
+
 
 def _clean_utterance(raw_line: str) -> str:
     line = raw_line.strip()
     if not line:
         return ""
-    # 剥离聊天记录常见导出前缀（须含时间戳前缀或明确昵称后缀，不误删“价格：38元”）
-    has_ts = bool(re.match(r"^\[?\d{4}[-/]\d{1,2}[-/]\d{1,2}", line))
-    line = re.sub(r"^\[?\d{4}[-/]\d{1,2}[-/]\d{1,2}[^\]]*\]?\s*", "", line)
+    # 剥离聊天记录常见导出前缀（精确匹配 YYYY-MM-DD HH:MM(:SS)，不贪婪吞掉无方括号整行文本）
+    m_ts = _TS_PREFIX_RE.match(line)
+    has_ts = bool(m_ts)
+    if m_ts:
+        line = line[m_ts.end():]
     if has_ts:
         line = re.sub(r"^[^：:\n]{1,18}[：:]\s*", "", line)
     else:
         line = re.sub(r"^(?:用户\w*|客户\w*|网友\w*|买家\w*|顾客\w*|客服\w*|@[^\s：:]{1,16})[：:]\s*", "", line)
     return line.strip()
+
+
+def _is_url_or_num_token(val: str) -> bool:
+    s = val.strip()
+    return not s or s.isdigit() or s.startswith(("http://", "https://", "www."))
 
 
 def parse_comments_sources(files: List[Path]) -> List[str]:
@@ -88,13 +106,16 @@ def parse_comments_sources(files: List[Path]) -> List[str]:
                     col_scores = []
                     max_cols = max(len(r) for r in data_rows)
                     for ci in range(max_cols):
-                        lens = [len(r[ci].strip()) for r in data_rows if ci < len(r) and not r[ci].strip().isdigit()]
-                        col_scores.append((sum(lens) / max(1, len(lens)), ci))
+                        vals = [r[ci].strip() for r in data_rows if ci < len(r)]
+                        valid = [v for v in vals if not _is_url_or_num_token(v)]
+                        avg_l = (sum(len(v) for v in valid) / len(valid)) if valid else 0.0
+                        zh_bonus = 1.5 if any(re.search(r"[\u4e00-\u9fff]", v) for v in valid) else 0.3
+                        col_scores.append((avg_l * zh_bonus, ci))
                     text_col = max(col_scores)[1] if col_scores else 0
                 for row in data_rows:
                     if text_col is not None and text_col < len(row):
                         c = _clean_utterance(row[text_col])
-                        if len(c) >= 3:
+                        if len(c) >= 3 and not _is_url_or_num_token(c):
                             utterances.append(c)
         elif suf == ".json":
             raw = read_json(fp)
@@ -136,10 +157,11 @@ def extract_raw_intel(
     pain_phrases: List[Dict[str, Any]] = []
     customer_questions: List[str] = []
 
+    store_boost = {"地址", "在哪", "价格", "多少钱", "冻肉", "预制", "新鲜", "售后", "退", "隐形"}
     for u in utterances:
         hits = [kw for kw in PAIN_TRIGGERS if kw in u]
         for kw in hits:
-            trigger_counts[kw] += 1
+            trigger_counts[kw] += (2 if (track == "store" and kw in store_boost) else 1)
         is_q = any(q in u for q in ("?", "？", "吗", "怎么", "多少", "哪", "是不是", "能不能", "会不会", "有没"))
         if is_q and u not in customer_questions:
             customer_questions.append(u)
@@ -186,11 +208,10 @@ def extract_raw_intel(
 
 
 def lint_script(script_items: List[Dict[str, Any]], raw_intel: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """对口播台词做口语化断句、去 AI 陈词滥调与 6–8 秒留存节拍体检。"""
+    """对口播台词做口语化断句、去 AI 陈词滥调、实证锚点与 6–8 秒留存节拍体检。"""
     issues: List[Dict[str, Any]] = []
     valid_items = [it for it in script_items if not it.get("is_filler", False) and str(it.get("text", "")).strip()]
 
-    # 1. 首句物理/冲突锚点检查
     if valid_items:
         first_txt = str(valid_items[0]["text"]).strip()
         if re.match(r"^(大家好|哈喽|hello|今天我们来|今天给大家|我是)", first_txt, re.IGNORECASE):
@@ -202,8 +223,8 @@ def lint_script(script_items: List[Dict[str, Any]], raw_intel: Optional[Dict[str
                 "message": "前3秒禁止寒暄/自我介绍开头，应直接抛出具体冲突、数字或客户原话痛点。",
             })
 
-    # 2. 单句长度、AI套话与每 6–8 秒 Micro-Hook 检查
     chars_since_hook = 0
+    dry_abstract_run = 0
     for idx, it in enumerate(valid_items, start=1):
         txt = str(it.get("text", "")).strip()
         eff_chars = re.sub(r"[\s，。！？、；：“”‘’（）.,!?]+", "", txt)
@@ -228,6 +249,21 @@ def lint_script(script_items: List[Dict[str, Any]], raw_intel: Optional[Dict[str
                 "message": f"命中书面/AI陈词滥调 {cliches}，请替换为行业具体名词或客户原话口语。",
             })
 
+        has_concrete = bool(re.search(r"\d+|半|两|三|块|元|年|天|小时|分钟|秒|斤|克|米|厘米|后厨|门店|合同|报告|票|图|表|实测|拆", txt))
+        if has_concrete:
+            dry_abstract_run = 0
+        else:
+            dry_abstract_run += 1
+            if dry_abstract_run >= 4:
+                issues.append({
+                    "line": idx,
+                    "severity": "warn",
+                    "code": "abstract_fluff",
+                    "text": txt,
+                    "message": "连续 4 句缺乏具体数字、时间刻度或实物证据锚点，建议插入实拍数字或对比细节消除说教感。",
+                })
+                dry_abstract_run = 0
+
         emo = str(it.get("emotion", "info"))
         has_hook_cue = emo in ("hook", "twist", "persona", "cta") or any(c in txt for c in MICRO_HOOK_CUES)
         if idx > 1:
@@ -245,7 +281,6 @@ def lint_script(script_items: List[Dict[str, Any]], raw_intel: Optional[Dict[str
                     })
                     chars_since_hook = 0
 
-    # 检查是否融入一手痛点词
     pain_kws = (raw_intel or {}).get("pain_keywords", [])
     full_txt = "".join(str(it.get("text", "")) for it in valid_items)
     matched_pains = [k for k in pain_kws if k in full_txt]
