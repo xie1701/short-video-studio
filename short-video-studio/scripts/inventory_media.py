@@ -474,36 +474,46 @@ def recommend_angle(
 
     if track == "store":
         if has_aroll:
-            formula = "水桶流视频公式：客户原话痛点钩子 + 产品/物证细节展示 + 老板人格化表达(原则/经历) + 价值说明 + 转化指令"
-            hook = f"直接回应真实客户顾虑「{questions[0][:22]}」" if questions else "颠覆切入 / 痛点切入（例如：做这行这么多年，只坚持一条底线…）"
-            a_level = "A2 人设信任型 / A3 垂直说服型"
+            formula = "晒真实产品和凭据细节 → 亮出老板脾气和做事底线 → 让人信你愿意进店"
+            hook = f"开头直接回应客人最担心的事「{questions[0][:22]}」" if questions else "开头先说一句反常识真话，或直接点破客人最怕踩的坑（例如：干这行这么多年，只守一条底线…）"
+            a_level = "建信任（让人记住你靠谱）/ 打消顾虑（促人咨询进店）"
+            script_type = "给进店理由 / 晒干活过程"
+            viral_element = "算钱对比 / 揭秘内幕"
         else:
-            formula = "漏斗流视频公式：同城/行业高关注话题 + 细节B-roll视觉展示 + 原声/TTS配音专业植入 + 人设结尾"
-            hook = "信息密度开篇 + 好奇切入（用高质感特写画面配首句反常识事实）"
-            a_level = "A1 泛流量型"
+            formula = "借同城或行业大家关心的话题拉人 → 配高质感细节画面和实景 → 配音讲透门道 → 结尾亮出老板底线"
+            hook = "第一眼给最带劲的真实特写画面，配一句让人意外的行业真话"
+            a_level = "拉新（让更多同城路人刷到认识你）"
+            script_type = "晒干活过程 / 聊本地同城"
+            viral_element = "前后反差 / 稀奇内幕"
     else:
         if has_aroll:
-            formula = "漏斗流视频公式：话题钩子(社会/认知/内幕) + 观点+原因+案例 + 人设露出 + 互动结尾"
-            hook = f"从评论区高频追问「{questions[0][:22]}」切入颠覆认知" if questions else "对立面开篇 / 不字开头 / 认知颠覆切入"
-            a_level = "A1 泛流量型 / A2 人设信任型"
+            formula = "用大家最关心的话题把人拉住 → 讲具体事件和细节筛出对口观众 → 顺带立住个人观点 → 抛问题让评论区聊起来"
+            hook = f"直接拿评论区大家追问最多的问题「{questions[0][:22]}」反着讲" if questions else "开头用「别再……」反常识句式，直接打掉外行常想错的误区"
+            a_level = "拉新（让更多人认识你）/ 建信任（记住你的观点）"
+            script_type = "聊行业看法 / 教实用知识"
+            viral_element = "前后反差 / 揭秘内幕"
         else:
-            formula = "纯视觉+代码补镜流：信息缺口开篇 + 配音节奏 + B-roll与数据图表混剪 + 金句结尾"
-            hook = "数字开篇 / 信息缺口开篇"
-            a_level = "A1 泛流量型"
+            formula = "开头先留悬念或抛狠数字 → 跟着配音节奏切画面和数据图 → 结尾给一句能带走的大白话总结"
+            hook = "把最狠的数字或付出代价才明白的事直接放第一句"
+            a_level = "拉新（让更多人刷到认识你）"
+            script_type = "教实用知识 / 晒干活过程"
+            viral_element = "算钱对比 / 吐槽踩坑"
 
     missing_alert = []
     if broll_count < 2:
-        missing_alert.append("可用 B-roll 画面较少，建议 Step 4 自动使用风格化代码叙事补镜补齐前 3 秒多切点")
+        missing_alert.append("可用的细节特写和环境补拍画面偏少，后续剪辑会自动补上文字和数据图表画面，确保开头 3 秒有节奏变化")
     if not has_aroll:
-        missing_alert.append("缺少清晰同期声口播素材，Step 2/3 将自动引导使用文案配音或补录原声")
+        missing_alert.append("缺少清晰真人说话素材，后续会自动用文案配音或引导补录人声")
     if proof_cnt == 0 and track == "store":
-        missing_alert.append("未关联门店物证目录 (--proof-dir)，建议补充原料/账单/实测对比照提升信任度")
+        missing_alert.append("还没有关联门店物证素材（--proof-dir），建议补拍进货单、称重或前后对比照，观众更容易信")
 
     return {
         "track": track,
         "total_raw_duration_sec": total_dur,
         "has_usable_aroll": has_aroll,
         "recommended_5a_level": a_level,
+        "recommended_script_type": script_type,
+        "recommended_viral_element": viral_element,
         "recommended_formula": formula,
         "recommended_hook": hook,
         "raw_pain_keywords_used": pain_kws[:6],
@@ -809,34 +819,36 @@ def inventory_directory(
 def render_markdown_summary(data: Dict[str, Any]) -> str:
     rec = data["recommendation"]
     lines = [
-        "# 素材盘点与分镜日志反推报告",
+        "# 素材盘点与选题思路建议（大白话版）",
         "",
         f"- **盘点素材总数**：{data['clip_count']} 条（累计原始时长 {rec['total_raw_duration_sec']} 秒）",
-        f"- **适用轨道**：{'门店轨' if rec['track']=='store' else '博主轨'}",
-        f"- **推荐 5A 层级**：{rec['recommended_5a_level']}",
-        f"- **反推视频公式**：{rec['recommended_formula']}",
-        f"- **建议开篇钩子**：{rec['recommended_hook']}",
+        f"- **适用方向**：{'帮实体店拉本地客人（同城获客）' if rec['track']=='store' else '帮个人账号涨粉引流'}",
+        f"- **这条片子适合干嘛用**：{rec['recommended_5a_level']}",
+        f"- **建议怎么拍的类型**：{rec.get('recommended_script_type', '晒干活过程 / 聊行业看法')}",
+        f"- **建议靠什么吸引人**：{rec.get('recommended_viral_element', '算钱对比 / 前后反差')}",
+        f"- **整条串起来怎么讲**：{rec['recommended_formula']}",
+        f"- **开头 3 秒抓人建议**：{rec['recommended_hook']}",
         "",
-        "## 素材明细与视觉感知表",
+        "## 素材明细与画面体检表",
         "",
-        "| 文件名 | 尺寸/旋转 | 时长 | HDR/VFR | 精华入点 | 锐度/稳度 | 人脸/标签 | 建议用途 | 诊断 |",
+        "| 文件名 | 尺寸/旋转 | 时长 | 色彩/帧率 | 最佳起剪点 | 清晰度/稳度 | 画面里有什么 | 建议当什么用 | 体检提示 |",
         "| :--- | :---: | :---: | :---: | :---: | :---: | :--- | :--- | :--- |",
     ]
     for c in data["clips"]:
         diag = "；".join(c["issues"]) if c["issues"] else "正常可用"
-        hdr_tag = "HDR" if c["color_meta"]["is_hdr"] else "SDR"
-        vfr_tag = "VFR" if c["is_vfr"] else "CFR"
+        hdr_tag = "HDR(需还原)" if c["color_meta"]["is_hdr"] else "标准"
+        vfr_tag = "变帧(需统一)" if c["is_vfr"] else "稳帧"
         tags_str = ",".join(c["semantic_tags"][:4]) or "-"
-        face_str = f"{len(c['faces'])}脸" if c["faces"] else "无脸"
+        face_str = f"{len(c['faces'])}人出镜" if c["faces"] else "无人物正脸"
         dim_str = f"{c['width']}x{c['height']}" + (f"({c.get('rotation_deg',0)}°)" if c.get("rotation_deg") else "")
         lines.append(
             f"| `{c['filename']}` | {dim_str} | {c['duration_sec']}s | {hdr_tag}/{vfr_tag} | "
             f"{c['best_in_sec']:.2f}s | {c['sharpness_score']:.0f}/{c['stability_score']:.2f} | "
             f"{face_str}({tags_str}) | "
-            f"{'同期声口播(A-roll)' if c['suggested_role']=='a_roll_candidate' else '空镜/特写(B-roll)'} | {diag} |"
+            f"{'真人出镜说话' if c['suggested_role']=='a_roll_candidate' else '细节特写/环境补拍'} | {diag} |"
         )
     if rec["gaps_and_remedy"]:
-        lines += ["", "## 缺口与自动补救策略"] + [f"- {g}" for g in rec["gaps_and_remedy"]]
+        lines += ["", "## 素材缺口与自动补救建议"] + [f"- {g}" for g in rec["gaps_and_remedy"]]
     return "\n".join(lines) + "\n"
 
 

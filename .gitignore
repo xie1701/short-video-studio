@@ -41,3 +41,7 @@ short-video-studio/assets/sound_vibe/raw/
 # Ensure macOS Finder metadata inside assets/ is never tracked
 **/.DS_Store
 
+# Local packaged skill archive
+short-video-studio.zip
+
+
