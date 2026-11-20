@@ -16,6 +16,7 @@ import shutil
 import sys
 import urllib.parse
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from xml.dom import minidom
@@ -40,6 +41,7 @@ from common import (
     load_subtitle_templates,
     maybe_reexec_in_venv,
     parse_video_stream_geometry,
+    place_bbox_in_zone,
     read_json,
     resolve_audio_stems,
     run_cmd,
@@ -51,10 +53,6 @@ maybe_reexec_in_venv()
 
 from PIL import Image
 from render_mp4 import compute_subtitle_place_xy, render_subtitle_png, resolve_packaging_source
-
-
-def sec_to_us(sec: float) -> int:
-    return int(round(max(0.0, float(sec)) * 1_000_000))
 
 
 def _frames_to_rational(frames: int, fps: int = DEFAULT_FPS) -> str:
@@ -123,25 +121,6 @@ def _assign_non_overlapping_lanes(layers: List[Dict[str, Any]]) -> List[Dict[str
     return ordered
 
 
-def _place_in_zone(
-    entry: Dict[str, Any],
-    pw: int,
-    ph: int,
-    zone: Dict[str, int],
-    default_xy: Tuple[int, int],
-) -> Tuple[int, int]:
-    fb = entry.get("final_bbox") or entry.get("bbox")
-    if isinstance(fb, dict) and {"x", "y", "w", "h"}.issubset(fb.keys()):
-        bx = int(fb["x"]) + (int(fb["w"]) - pw) // 2
-        by = int(fb["y"]) + (int(fb["h"]) - ph) // 2
-        px = max(zone["x_min"], min(bx, zone["x_max"] - pw))
-        py = max(zone["y_min"], min(by, zone["y_max"] - ph))
-        return int(px), int(py)
-    px = max(zone["x_min"], min(default_xy[0], zone["x_max"] - pw))
-    py = max(zone["y_min"], min(default_xy[1], zone["y_max"] - ph))
-    return int(px), int(py)
-
-
 def _prepare_static_overlay_layers(
     pipeline_dir: Path,
     overlays_dir: Path,
@@ -179,7 +158,7 @@ def _prepare_static_overlay_layers(
             pw, ph = im.size
         def_x = max(SAFE_ZONE["x_min"], (CANVAS_WIDTH - pw) // 2)
         def_y = SAFE_ZONE["y_min"] + 40
-        px, py = _place_in_zone(elem, pw, ph, SAFE_ZONE, (def_x, def_y))
+        px, py = place_bbox_in_zone(elem, pw, ph, SAFE_ZONE, (def_x, def_y))
         rel_name = f"pkg_{idx:03d}.png"
         full_png = overlays_dir / rel_name
         _compose_full_canvas_png(raw_png, full_png, px, py)
@@ -195,24 +174,35 @@ def _prepare_static_overlay_layers(
             "file_path": full_png,
         })
 
-    # 2. 双色字幕层（跳过被抑制条）
+    # 2. 双色字幕层（跳过被抑制条，优先复用 render_mp4 已渲染的 sub_XXX.png）
     work_tmp = pipeline_dir / "_render_final"
     work_tmp.mkdir(parents=True, exist_ok=True)
+    active_idx = 0
     for idx, sub in enumerate(subs.get("entries") or [], start=1):
         if sub.get("suppressed"):
             continue
+        active_idx += 1
         sf = max(0, sec_to_frames(float(sub.get("start_sec", 0.0)), fps))
         ef = min(total_frames, sec_to_frames(float(sub.get("end_sec", 0.0)), fps))
         if ef <= sf:
             continue
-        tmp_png = work_tmp / f"jy_sub_{idx:03d}.png"
-        sw_px, sh_px = render_subtitle_png(sub, tpl, font_path, tmp_png)
+        pre_sub_png = work_tmp / f"sub_{active_idx:03d}.png"
+        if pre_sub_png.is_file() and pre_sub_png.stat().st_size > 64:
+            with Image.open(pre_sub_png) as im_s:
+                sw_px, sh_px = im_s.size
+            use_png = pre_sub_png
+            cleanup_tmp = False
+        else:
+            use_png = work_tmp / f"jy_sub_{idx:03d}.png"
+            sw_px, sh_px = render_subtitle_png(sub, tpl, font_path, use_png)
+            cleanup_tmp = True
         def_x, def_y = compute_subtitle_place_xy(sw_px, sh_px, tpl)
-        px, py = _place_in_zone(sub, sw_px, sh_px, SUBTITLE_SAFE_ZONE, (def_x, def_y))
+        px, py = place_bbox_in_zone(sub, sw_px, sh_px, SUBTITLE_SAFE_ZONE, (def_x, def_y))
         rel_name = f"sub_{idx:03d}.png"
         full_png = overlays_dir / rel_name
-        _compose_full_canvas_png(tmp_png, full_png, px, py)
-        tmp_png.unlink(missing_ok=True)
+        _compose_full_canvas_png(use_png, full_png, px, py)
+        if cleanup_tmp:
+            use_png.unlink(missing_ok=True)
         layers.append({
             "id": f"ov_sub_{idx:03d}",
             "name": f"字幕_{idx:03d}_{str(sub.get('text') or '')[:10]}",
@@ -390,10 +380,10 @@ def _stage_media_assets(
         if needs_bake and ffmpeg_bin:
             seg_name = f"seg_{c_idx:03d}.mp4"
             dst_seg = seg_dir / seg_name
-            if prebaked_seg.is_file() and prebaked_seg.stat().st_size > 1024:
-                link_or_copy(prebaked_seg, dst_seg)
-            else:
-                _export_graded_segment(ffmpeg_bin, clip, color_vf, eye_by_mp4, dst_seg, fps)
+            if not (prebaked_seg.is_file() and prebaked_seg.stat().st_size > 1024):
+                render_work_dir.mkdir(parents=True, exist_ok=True)
+                _export_graded_segment(ffmpeg_bin, clip, color_vf, eye_by_mp4, prebaked_seg, fps)
+            link_or_copy(prebaked_seg, dst_seg)
             real_frames = _probe_video_duration_frames(dst_seg, fps) or clip_frames
             keep_seg_names.add(seg_name)
             clip_media_map[cid] = {
@@ -699,18 +689,6 @@ def build_fcpxml_tree(
     header = lines[0] + "\n" if lines and lines[0].startswith("<?xml") else '<?xml version="1.0" encoding="utf-8"?>\n'
     body = "\n".join(lines[1:] if lines and lines[0].startswith("<?xml") else lines) + "\n"
     return header + "<!DOCTYPE fcpxml>\n" + body
-
-
-def build_jianying_draft_payload(pipeline_dir: Path) -> Dict[str, Any]:
-    edl = read_json(pipeline_dir / "04_edl.json")
-    subs = read_json(pipeline_dir / "05_subtitles.json")
-    return {
-        "canvas": {"width": CANVAS_WIDTH, "height": CANVAS_HEIGHT},
-        "fps": int(edl.get("fps", DEFAULT_FPS)),
-        "duration_sec": float(edl.get("total_duration_sec", 0.0)),
-        "clip_count": len(edl.get("clips") or []),
-        "subtitle_count": sum(1 for e in (subs.get("entries") or []) if not e.get("suppressed")),
-    }
 
 
 def export_jianying_draft(pipeline_dir: Path, simulate_failure: bool = False) -> Dict[str, Any]:

@@ -34,6 +34,7 @@ from common import (
     load_style_applied,
     load_subtitle_templates,
     maybe_reexec_in_venv,
+    place_bbox_in_zone,
     read_json,
     resolve_audio_stems,
     sec_to_frames,
@@ -410,13 +411,18 @@ def _build_video_track_html(
         needs_bake = bool(color_vf or has_kb or has_vf_extra or (src_avail < dur_s - 0.01))
 
         prebaked_seg = render_work_dir / f"seg_{c_idx:03d}_f.mp4"
+        jy_seg = pipeline_dir / "jianying_draft" / "media" / "segments" / f"seg_{c_idx:03d}.mp4"
         if needs_bake and ffmpeg_bin:
             seg_name = f"seg_{c_idx:03d}.mp4"
             dst_seg = segments_dir / seg_name
             if prebaked_seg.is_file() and prebaked_seg.stat().st_size > 1024:
                 link_or_copy(prebaked_seg, dst_seg)
+            elif jy_seg.is_file() and jy_seg.stat().st_size > 1024:
+                link_or_copy(jy_seg, dst_seg)
             else:
-                _export_graded_segment(ffmpeg_bin, c, color_vf, eye_by_mp4, dst_seg, fps)
+                render_work_dir.mkdir(parents=True, exist_ok=True)
+                _export_graded_segment(ffmpeg_bin, c, color_vf, eye_by_mp4, prebaked_seg, fps)
+                link_or_copy(prebaked_seg, dst_seg)
             keep_segs.add(seg_name)
             rel_vid_src = f"../media/segments/{seg_name}"
             eff_media_start = 0.0
@@ -445,19 +451,6 @@ def _build_video_track_html(
 
     css = "      video.clip { object-fit: cover; }"
     return _wrap_subcomposition("主视频分镜轨", "track-video", css, "\n".join(body_lines)), len(clips)
-
-
-def _place_in_zone(entry: Dict[str, Any], pw: int, ph: int, zone: Dict[str, int], default_xy: Tuple[int, int]) -> Tuple[int, int]:
-    fb = entry.get("final_bbox") or entry.get("bbox")
-    if isinstance(fb, dict) and {"x", "y", "w", "h"}.issubset(fb.keys()):
-        bx = int(fb["x"]) + (int(fb["w"]) - pw) // 2
-        by = int(fb["y"]) + (int(fb["h"]) - ph) // 2
-        px = max(zone["x_min"], min(bx, zone["x_max"] - pw))
-        py = max(zone["y_min"], min(by, zone["y_max"] - ph))
-        return int(px), int(py)
-    px = max(zone["x_min"], min(default_xy[0], zone["x_max"] - pw))
-    py = max(zone["y_min"], min(default_xy[1], zone["y_max"] - ph))
-    return int(px), int(py)
 
 
 def _build_overlay_track_html(
@@ -494,7 +487,7 @@ def _build_overlay_track_html(
             pw, ph = im.size
         def_x = max(SAFE_ZONE["x_min"], (CANVAS_WIDTH - pw) // 2)
         def_y = SAFE_ZONE["y_min"] + 40
-        px, py = _place_in_zone(elem, pw, ph, SAFE_ZONE, (def_x, def_y))
+        px, py = place_bbox_in_zone(elem, pw, ph, SAFE_ZONE, (def_x, def_y))
 
         oid = _safe_id(str(elem.get("id") or f"ov_{idx:03d}"), "ov")
         lines.append(

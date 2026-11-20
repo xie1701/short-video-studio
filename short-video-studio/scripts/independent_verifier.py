@@ -40,6 +40,8 @@ from common import (
     compute_sfx_band_windows,
     detect_browser_renderer,
     find_bin,
+    find_cached_whisper_model,
+    get_huggingface_hub_dir,
     is_verified_commercial_font,
     maybe_reexec_in_venv,
     measure_lufs_ebur128,
@@ -871,37 +873,32 @@ def _char_cer(ref: str, hyp: str) -> float:
     return round(dp[n] / float(m), 3)
 
 
-def _resolve_hf_hub_dir() -> Path:
-    if os.environ.get("HF_HUB_CACHE"):
-        return Path(os.environ["HF_HUB_CACHE"])
-    if os.environ.get("HF_HOME"):
-        return Path(os.environ["HF_HOME"]) / "hub"
-    return Path.home() / ".cache" / "huggingface" / "hub"
-
-
-def _find_cached_whisper_model(hf_hub: Path) -> Optional[str]:
-    for cand in ("large-v3", "medium", "small", "base", "tiny"):
-        d = hf_hub / f"models--Systran--faster-whisper-{cand}"
-        if (d / "snapshots").is_dir() and any((d / "snapshots").iterdir()):
-            return cand
-    return None
-
-
 def verify_blind_asr_proxy_blackbox(
     audio_48k_path: Path,
     pipeline_dir: Optional[Path],
     dialect: str = "mandarin",
     store_anchor: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """#21 带 BGM 成片独立 ASR 盲听代理（large-v3 优先；支持普通话 zh 与粤语 yue；有序子串锚点校对）。"""
+    """#21 带 BGM 成片独立 ASR 盲听代理（large-v3 优先；支持普通话 zh 与粤语 yue；优先对齐口播真值 say_text）。"""
     if not pipeline_dir or not (pipeline_dir / "03_audio_events.json").is_file():
         return {"status": "SKIPPED_UNAVAILABLE", "passed": False, "cer": None, "anchor_ok": False, "reason": "缺少 03_audio_events.json"}
 
     ae = read_json(pipeline_dir / "03_audio_events.json")
-    ref_text = "".join(str(s.get("text", "")) for s in ae.get("sentences", []))
+    sents_ae = ae.get("sentences") or []
+    ref_show_text = "".join(str(s.get("text", "")) for s in sents_ae)
+    ref_say_text = "".join(str(s.get("say_text") or s.get("text") or "") for s in sents_ae)
+    if ref_say_text == ref_show_text and (pipeline_dir / "02_transcript.json").is_file():
+        try:
+            tr = read_json(pipeline_dir / "02_transcript.json")
+            tr_segs = [s for s in (tr.get("segments") or tr.get("sentences") or []) if not s.get("is_filler")]
+            cand_say = "".join(str(s.get("say_text") or s.get("say") or s.get("text") or "") for s in tr_segs)
+            if cand_say:
+                ref_say_text = cand_say
+        except Exception:
+            pass
 
-    hf_hub = _resolve_hf_hub_dir()
-    model_name = _find_cached_whisper_model(hf_hub)
+    hf_hub = get_huggingface_hub_dir()
+    model_name = find_cached_whisper_model(hf_hub)
     if not model_name:
         return {
             "status": "SKIPPED_UNAVAILABLE",
@@ -944,7 +941,9 @@ def verify_blind_asr_proxy_blackbox(
             "reason": f"本地 ASR 加载/推理不可用: {exc}",
         }
 
-    cer = _char_cer(ref_text, hyp_text)
+    cer_say = _char_cer(ref_say_text, hyp_text) if ref_say_text else 1.0
+    cer_show = _char_cer(ref_show_text, hyp_text) if ref_show_text else 1.0
+    cer = min(cer_say, cer_show)
     anchor_ok = True
     if store_anchor and str(store_anchor).strip():
         anc = _clean_zh_text(store_anchor)

@@ -30,6 +30,7 @@ from common import (
     find_bin,
     fit_text_line,
     get_cached_font,
+    load_style_applied,
     maybe_reexec_in_venv,
     read_json,
     resolve_workspace_paths,
@@ -44,7 +45,12 @@ from apply_style_spectrum import resolve_style_runtime_config
 from code_video_spec import generate_verify_template, init_code_spec, validate_code_spec
 from export_hyperframes import export_hyperframes_draft
 from export_jianying import export_jianying_draft
-from generate_code_broll import generate_demo_media_pack, render_spec_scene_html
+from generate_code_broll import (
+    generate_demo_media_pack,
+    render_spec_scene_html,
+    render_spec_scenes_batch,
+    resolve_style_palette,
+)
 from inventory_media import (
     MEDIA_EXTS,
     build_shot_log_dict,
@@ -369,8 +375,22 @@ def _ensure_reedit_dependencies(
                     seen.add(sp)
                     src_paths.append(Path(sp))
             if not src_paths:
-                raise FileNotFoundError("01_normalized 已被清理且找不到原始 source_path 源文件，无法重建。")
-            print(f"[pipeline] 检测到 {len(missing)} 条已清理的 01_normalized，正从只读源素材按需重建...")
+                is_code_proj = (pipeline_dir / "00_code_spec.json").is_file() or any(
+                    bool(it.get("source_is_code_scene")) for it in items
+                )
+                if is_code_proj:
+                    print("[pipeline] 检测到纯代码项目 01_code_scenes 已清理，正按 00_code_spec 与锁定音轨自愈重渲代码分幕...")
+                    re_scenes_dir = _render_code_scenes_from_spec(
+                        pipeline_dir=pipeline_dir,
+                        track=track,
+                        active_style_id=load_style_applied(pipeline_dir),
+                        code_html_p=None,
+                        code_backend="auto",
+                    )
+                    src_paths = [re_scenes_dir]
+                else:
+                    raise FileNotFoundError("01_normalized 已被清理且找不到原始 source_path 源文件，无法重建。")
+            print(f"[pipeline] 检测到 {len(missing)} 条已清理的 01_normalized，正从源素材按需重建...")
             run_step1(src_paths, pipeline_dir)
 
     ae_p = pipeline_dir / "03_audio_events.json"
@@ -401,6 +421,211 @@ def _ensure_stop_recorded(pipeline_dir: Path, stop_type: str, summary: str) -> N
         pass
 
 
+def _compact_code_title(raw_t: str, limit: int = 12) -> str:
+    import re
+    s = re.sub(r"[，。！？、；：“”‘’（）().,!?;:\s]+", "", str(raw_t or "")).strip()
+    return (s[:limit] or "核心真相").strip()
+
+
+def _render_code_scenes_from_spec(
+    pipeline_dir: Path,
+    track: str = "store",
+    active_style_id: Optional[str] = None,
+    code_html_p: Optional[Path] = None,
+    code_backend: str = "auto",
+) -> Path:
+    """根据已落盘的 00_code_spec.json 与锁定音轨批量渲染 01_code_scenes（支持自定义 sections 保留与 tidy 后自愈重渲）。"""
+    import re
+    import subprocess
+
+    spec_p = pipeline_dir / "00_code_spec.json"
+    spec = read_json(spec_p) if spec_p.is_file() else {}
+    ae_p = pipeline_dir / "03_audio_events.json"
+    tr_p = pipeline_dir / "02_transcript.json"
+    ae = read_json(ae_p) if ae_p.is_file() else {}
+    tr = read_json(tr_p) if tr_p.is_file() else {}
+
+    eff_style = active_style_id or str(spec.get("style_id") or ("style_14" if track == "store" else "style_11"))
+    locked_dur = max(3.0, float(ae.get("total_duration_sec", ae.get("locked_duration_sec", (spec.get("format") or {}).get("target_duration_sec", 12.0)))))
+    sentences = ae.get("sentences") or tr.get("segments") or tr.get("sentences") or []
+    sections = spec.get("sections") or []
+    has_custom_sections = bool(spec.get("_user_custom_sections"))
+
+    valid_assets = [str(a.get("path")) for a in (spec.get("assets") or []) if a.get("exists") and a.get("path")]
+
+    scenes_dir = pipeline_dir / "01_code_scenes"
+    if scenes_dir.exists():
+        shutil.rmtree(scenes_dir, ignore_errors=True)
+    scenes_dir.mkdir(parents=True, exist_ok=True)
+    scene_meta: Dict[str, Any] = {}
+    modes_cycle = ["kinetic_text", "data_chart", "flow_diagram", "versus", "proportion", "day_night", "chips"]
+
+    if code_html_p and code_html_p.exists():
+        html_dir = code_html_p.parent if code_html_p.is_file() else code_html_p
+        entry_page = code_html_p.name if code_html_p.is_file() else "index.html"
+        br = detect_browser_renderer()
+        if not br.get("available"):
+            raise RuntimeError("传入 --code-html 但当前未就绪无头浏览器桥接，请先运行 check_and_setup.py --init-browser")
+        ffmpeg = find_bin("ffmpeg")
+        if not ffmpeg:
+            raise RuntimeError("需要 ffmpeg 切分 --code-html 渲染结果")
+        master_mp4 = scenes_dir / "_master_code.mp4"
+        cap_fps = int((spec.get("format") or {}).get("fps", DEFAULT_FPS))
+        master_dur = round(locked_dur + 1.0, 2)
+        frames_tot = max(30, int(round(master_dur * cap_fps)))
+        res_cap = subprocess.run([
+            str(br["node_bin"]),
+            str(Path(__file__).resolve().parent / "capture_html_video.mjs"),
+            str(html_dir),
+            "--page", entry_page,
+            "--fps", str(cap_fps),
+            "--frames", str(frames_tot),
+            "--size", f"{CANVAS_WIDTH}x{CANVAS_HEIGHT}",
+            "--jpeg",
+            "--out", str(master_mp4),
+        ], capture_output=True, text=True)
+        if res_cap.returncode != 0 or not master_mp4.is_file():
+            raise RuntimeError(f"--code-html 确定性捕获失败: {(res_cap.stderr or res_cap.stdout)[:300]}")
+
+        n_slices = max(4, min(8, len(sentences) or 4))
+        slice_span = master_dur / float(n_slices)
+        for si in range(n_slices):
+            t0 = round(max(0.0, si * slice_span), 3)
+            seg_len = max(3.2, slice_span + 0.9)
+            t_clip = min(t0, max(0.0, master_dur - seg_len))
+            fn = f"code_scene_{si+1:02d}.mp4"
+            out_s = scenes_dir / fn
+            run_cmd([
+                ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+                "-ss", f"{t_clip:.3f}", "-i", str(master_mp4),
+                "-t", f"{seg_len:.3f}", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an",
+                str(out_s),
+            ])
+            s_ref = sentences[min(si, len(sentences) - 1)] if sentences else {}
+            scene_meta[fn] = {
+                "role": "b_roll",
+                "semantic_tags": list(s_ref.get("keywords") or []) + [str(spec.get("title") or "主题")],
+                "scene_group": f"code_html_sec_{si+1:02d}",
+                "sharpness_score": 85.0,
+                "stability_score": 1.0,
+            }
+        master_mp4.unlink(missing_ok=True)
+    else:
+        unit_srcs: List[Dict[str, Any]] = []
+        if has_custom_sections and sections:
+            # 严格保留用户 --code-spec 中自定义的每一幕 items / mode / register / accent_hex / bg_hex / clip_asset
+            for si, sec in enumerate(sections[:8]):
+                s_ref = sentences[min(si, len(sentences) - 1)] if sentences else {}
+                st_txt = _compact_code_title(sec.get("on_screen_text") or sec.get("title") or sec.get("name") or spec.get("title") or "", 12)
+                kws = list(sec.get("keywords") or s_ref.get("keywords") or []) + [st_txt]
+                unit_srcs.append({
+                    "mode": str(sec.get("mode") or modes_cycle[si % len(modes_cycle)]),
+                    "on_screen_text": st_txt,
+                    "items": sec.get("items") or [{"label": st_txt, "subtitle": str(sec.get("visual_state") or "程序确定性渲染")[:20]}],
+                    "duration_sec": max(3.6, float(sec.get("duration_sec", 3.2)) + 1.2),
+                    "keywords": kws,
+                    "register": sec.get("register"),
+                    "accent_hex": sec.get("accent_hex"),
+                    "bg_hex": sec.get("bg_hex"),
+                    "clip_asset": sec.get("clip_asset") or (valid_assets[si] if si < len(valid_assets) else None),
+                    "bg_shift": (si % 2 == 1) and not sec.get("bg_hex"),
+                })
+            # 若用户自定义少于 4 幕，在不破坏原自定义幕的前提下追加衍生子幕以保障前 3s 快切与切点跳变
+            while len(unit_srcs) < 4:
+                idx_extra = len(unit_srcs)
+                base_u = dict(unit_srcs[idx_extra % len(sections)])
+                s_ref = sentences[min(idx_extra, len(sentences) - 1)] if sentences else {}
+                base_u["mode"] = modes_cycle[idx_extra % len(modes_cycle)]
+                if s_ref.get("text"):
+                    base_u["on_screen_text"] = _compact_code_title(s_ref.get("text"), 10)
+                    base_u["keywords"] = list(s_ref.get("keywords") or []) + [base_u["on_screen_text"]]
+                base_u["bg_shift"] = (idx_extra % 2 == 1)
+                unit_srcs.append(base_u)
+        elif len(sentences) >= 4:
+            for si, sent in enumerate(sentences[:8]):
+                sec_ref = sections[min(si * len(sections) // max(1, len(sentences[:8])), len(sections) - 1)] if sections else {}
+                st_txt = _compact_code_title(sent.get("show") or sent.get("text") or sec_ref.get("on_screen_text") or spec.get("title") or "", 10)
+                nums = [int(n) for n in re.findall(r"\b\d{1,3}\b", str(sent.get("text") or ""))][:3]
+                kws = [str(k) for k in (sent.get("keywords") or [])]
+                mode_pick = str(sec_ref.get("mode") or modes_cycle[si % len(modes_cycle)]) if si < len(sections) else modes_cycle[si % len(modes_cycle)]
+                if mode_pick in ("data_chart", "proportion") and not nums:
+                    nums = [68 - (si % 3) * 12, 32 + (si % 3) * 12]
+                if mode_pick in ("data_chart", "proportion"):
+                    items_s = [{"label": kws[k] if k < len(kws) else f"核心指标{k+1}", "value": nums[k % len(nums)]} for k in range(max(2, min(3, len(nums))))]
+                elif mode_pick == "versus":
+                    items_s = [{"label": kws[0] if kws else st_txt[:6], "subtitle": "真实实测对比", "positive": True}, {"label": "常规误区", "subtitle": "信息不透明", "positive": False}]
+                elif mode_pick == "day_night":
+                    items_s = [{"label": kws[0] if kws else "白昼现切备料", "subtitle": str(sent.get("text") or "")[:18]}, {"label": kws[1] if len(kws) > 1 else "夜间炭火出炉", "subtitle": "全时段品质如一"}]
+                else:
+                    items_s = [{"label": st_txt, "subtitle": str(sent.get("text") or "")[:18]}, {"label": kws[0] if kws else "关键要点", "subtitle": str(sec_ref.get("visual_state") or "高清数据拆解")[:18]}]
+                sent_d = max(2.0, float(sent.get("end_sec", 0.0)) - float(sent.get("start_sec", 0.0)))
+                unit_srcs.append({
+                    "mode": mode_pick,
+                    "on_screen_text": st_txt,
+                    "items": items_s,
+                    "duration_sec": max(3.6, sent_d + 1.4),
+                    "keywords": kws + [st_txt],
+                    "clip_asset": valid_assets[si] if si < len(valid_assets) else None,
+                    "bg_shift": si % 2 == 1,
+                })
+        else:
+            src_secs = list(sections)
+            while len(src_secs) < 4:
+                base_s = dict(src_secs[len(src_secs) % max(1, len(sections))] if sections else {"mode": "kinetic_text", "on_screen_text": spec.get("title", "要点"), "duration_sec": 3.5})
+                base_s["mode"] = modes_cycle[len(src_secs) % len(modes_cycle)]
+                src_secs.append(base_s)
+            for si, sec in enumerate(src_secs[:8]):
+                st_txt = _compact_code_title(sec.get("on_screen_text") or sec.get("name") or spec.get("title") or "", 10)
+                unit_srcs.append({
+                    "mode": str(sec.get("mode") or modes_cycle[si % len(modes_cycle)]),
+                    "on_screen_text": st_txt,
+                    "items": sec.get("items") or [{"label": st_txt, "subtitle": str(sec.get("visual_state") or "")[:18]}],
+                    "duration_sec": max(3.6, float(sec.get("duration_sec", 3.2)) + 1.2),
+                    "keywords": [st_txt, str(spec.get("title") or "")],
+                    "clip_asset": sec.get("clip_asset") or (valid_assets[si] if si < len(valid_assets) else None),
+                    "bg_shift": si % 2 == 1,
+                })
+
+        per_net = lambda u: max(0.0, float(u["duration_sec"]) - 0.80)
+        tot_net = sum(per_net(u) for u in unit_srcs)
+        if tot_net < locked_dur * 1.28:
+            add_each = (locked_dur * 1.32 - tot_net) / max(1, len(unit_srcs))
+            for u in unit_srcs:
+                u["duration_sec"] = round(u["duration_sec"] + add_each, 2)
+
+        pal_base = resolve_style_palette(eff_style, track=track)
+        batch_tasks: List[Tuple[Dict[str, Any], Path]] = []
+        for si, u in enumerate(unit_srcs):
+            fn = f"code_scene_{si+1:02d}.mp4"
+            out_mp4 = scenes_dir / fn
+            scene_cfg = dict(u)
+            if u.get("bg_shift") and not scene_cfg.get("bg_hex"):
+                scene_cfg["bg_hex"] = "#162032" if str(pal_base.get("bg_hex", "")).lower().startswith("#0") else "#1E293B"
+            batch_tasks.append((scene_cfg, out_mp4))
+            scene_meta[fn] = {
+                "role": "b_roll",
+                "semantic_tags": u.get("keywords") or [str(spec.get("title") or "")],
+                "scene_group": f"code_sec_{si+1:02d}",
+                "sharpness_score": 85.0,
+                "stability_score": 1.0,
+            }
+
+        render_spec_scenes_batch(batch_tasks, style_id=eff_style, track=track, backend=code_backend)
+
+    write_json(scenes_dir / "scene_meta.json", scene_meta)
+    # 同步生成 00_contact_sheet.jpg，确保三入口交付物一致闭合
+    contact_jpg = pipeline_dir / "00_contact_sheet.jpg"
+    if not contact_jpg.is_file():
+        try:
+            inv = inventory_directory(scenes_dir, track, contact_sheet_path=contact_jpg)
+            write_json(pipeline_dir / "00_inventory.json", inv)
+            write_json(pipeline_dir / "00_shot_log.json", build_shot_log_dict(inv))
+        except Exception:
+            pass
+    print(f"[code-video] 已批量渲染 {len(scene_meta)} 幕程序场景 ({code_backend}) -> {scenes_dir}")
+    return scenes_dir
+
+
 def _run_code_video_branch(
     pipeline_dir: Path,
     track: str,
@@ -415,25 +640,21 @@ def _run_code_video_branch(
     whitelist_path: Optional[Path],
     store_anchor: Optional[str],
 ) -> Path:
-    """入口 3 纯代码制片工作流：00_code_spec 规约 -> 音轨先锁 -> 比例对齐与校验 -> 渲染分场素材目录。"""
-    import re
-    import subprocess
-
+    """入口 3 纯代码制片工作流：00_code_spec 规约 -> 音轨先锁 -> 比例对齐与校验 -> 单浏览器批量渲染分场。"""
     eff_style = active_style_id or ("style_14" if track == "store" else "style_11")
-
-    def _compact_title(raw_t: str, limit: int = 12) -> str:
-        s = re.sub(r"[，。！？、；：“”‘’（）().,!?;:\s]+", "", str(raw_t or "")).strip()
-        return (s[:limit] or "核心真相").strip()
 
     seed_items: List[Dict[str, Any]] = []
     if script_p and script_p.exists():
         raw_scr = read_json(script_p)
         seed_items = raw_scr.get("sentences") or raw_scr.get("segments") or [] if isinstance(raw_scr, dict) else list(raw_scr)
 
-    # 1. 准备初始 00_code_spec.json（如果未传入则由口播/锚点自动收敛）
+    # 1. 准备初始 00_code_spec.json（如果传入 --code-spec 则标记 _user_custom_sections=True 予以保护）
     spec_out = pipeline_dir / "00_code_spec.json"
+    user_custom_sections = False
     if code_spec_p and code_spec_p.exists():
         spec = read_json(code_spec_p)
+        user_custom_sections = bool(spec.get("sections"))
+        spec["_user_custom_sections"] = user_custom_sections
         write_json(spec_out, spec)
         if not (pipeline_dir / "SPEC.md").is_file() or not (pipeline_dir / "STRUCTURE.md").is_file():
             fmt = spec.get("format") or {}
@@ -454,7 +675,7 @@ def _run_code_video_branch(
                 must_haves=spec.get("must_haves"),
             )
     else:
-        t_seed = _compact_title(store_anchor or (seed_items[0].get("show") or seed_items[0].get("text") if seed_items else "重点拆解"), 14)
+        t_seed = _compact_code_title(store_anchor or (seed_items[0].get("show") or seed_items[0].get("text") if seed_items else "重点拆解"), 14)
         idea_parts = [str(it.get("show") or it.get("text") or "").strip() for it in seed_items[:2] if str(it.get("show") or it.get("text") or "").strip()]
         one_idea = " ".join(idea_parts)[:42] if idea_parts else f"{t_seed}核心原理与实测对比"
         copy_seed = [t_seed] + [str(it.get("show") or it.get("text") or "")[:24] for it in seed_items if str(it.get("show") or it.get("text") or "").strip()]
@@ -489,9 +710,7 @@ def _run_code_video_branch(
 
     # 3. 用真实锁定音长校正并强校验 00_code_spec.json
     ae = read_json(pipeline_dir / "03_audio_events.json")
-    tr = read_json(pipeline_dir / "02_transcript.json")
     locked_dur = max(3.0, float(ae.get("total_duration_sec", ae.get("locked_duration_sec", 12.0))))
-    sentences = ae.get("sentences") or tr.get("segments") or tr.get("sentences") or []
 
     sections = spec.get("sections") or []
     if sections:
@@ -529,142 +748,20 @@ def _run_code_video_branch(
         must_haves=spec.get("must_haves"),
     )
     spec = read_json(spec_out)
+    if user_custom_sections:
+        spec["_user_custom_sections"] = True
+        write_json(spec_out, spec)
     val = validate_code_spec(spec)
     if not val.get("passed"):
         raise RuntimeError(f"00_code_spec 校验失败，已阻断渲染: {'; '.join(val.get('errors', []))}")
 
-    # 4. 渲染分幕场景入 01_code_scenes/（总净长严格 >= locked_dur * 1.25，避免 step4 额外生成多余卡片或缺少切点跳变）
-    scenes_dir = pipeline_dir / "01_code_scenes"
-    if scenes_dir.exists():
-        shutil.rmtree(scenes_dir, ignore_errors=True)
-    scenes_dir.mkdir(parents=True, exist_ok=True)
-    scene_meta: Dict[str, Any] = {}
-
-    modes_cycle = ["kinetic_text", "data_chart", "flow_diagram", "versus", "proportion", "chips"]
-
-    if code_html_p and code_html_p.exists():
-        html_dir = code_html_p.parent if code_html_p.is_file() else code_html_p
-        entry_page = code_html_p.name if code_html_p.is_file() else "index.html"
-        br = detect_browser_renderer()
-        if not br.get("available"):
-            raise RuntimeError("传入 --code-html 但当前未就绪无头浏览器桥接，请先运行 check_and_setup.py --init-browser")
-        ffmpeg = find_bin("ffmpeg")
-        if not ffmpeg:
-            raise RuntimeError("需要 ffmpeg 切分 --code-html 渲染结果")
-        master_mp4 = scenes_dir / "_master_code.mp4"
-        cap_fps = int(spec["format"].get("fps", DEFAULT_FPS))
-        master_dur = round(locked_dur + 1.0, 2)
-        frames_tot = max(30, int(round(master_dur * cap_fps)))
-        res_cap = subprocess.run([
-            str(br["node_bin"]),
-            str(Path(__file__).resolve().parent / "capture_html_video.mjs"),
-            str(html_dir),
-            "--page", entry_page,
-            "--fps", str(cap_fps),
-            "--frames", str(frames_tot),
-            "--size", f"{CANVAS_WIDTH}x{CANVAS_HEIGHT}",
-            "--out", str(master_mp4),
-        ], capture_output=True, text=True)
-        if res_cap.returncode != 0 or not master_mp4.is_file():
-            raise RuntimeError(f"--code-html 确定性捕获失败: {(res_cap.stderr or res_cap.stdout)[:300]}")
-
-        n_slices = max(4, min(8, len(sentences) or 4))
-        slice_span = master_dur / float(n_slices)
-        for si in range(n_slices):
-            t0 = round(max(0.0, si * slice_span), 3)
-            # 从母片不同时间段切片保证切点视觉跃迁，若剩余不够则保证 ≥3.2s 前向余量
-            seg_len = max(3.2, slice_span + 0.9)
-            t_clip = min(t0, max(0.0, master_dur - seg_len))
-            fn = f"code_scene_{si+1:02d}.mp4"
-            out_s = scenes_dir / fn
-            run_cmd([
-                ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
-                "-ss", f"{t_clip:.3f}", "-i", str(master_mp4),
-                "-t", f"{seg_len:.3f}", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an",
-                str(out_s),
-            ])
-            s_ref = sentences[min(si, len(sentences) - 1)] if sentences else {}
-            scene_meta[fn] = {
-                "role": "b_roll",
-                "semantic_tags": list(s_ref.get("keywords") or []) + [str(spec.get("title") or "主题")],
-                "scene_group": f"code_html_sec_{si+1:02d}",
-                "sharpness_score": 85.0,
-                "stability_score": 1.0,
-            }
-        master_mp4.unlink(missing_ok=True)
-    else:
-        # 至少准备 4 个高差异化场景镜头覆盖全句与前 3s 快切，保证 #19 切点像素跳变与 #18 全动效过关
-        unit_srcs: List[Dict[str, Any]] = []
-        if len(sentences) >= 4:
-            for si, sent in enumerate(sentences[:8]):
-                sec_ref = sections[min(si * len(sections) // max(1, len(sentences[:8])), len(sections) - 1)] if sections else {}
-                st_txt = _compact_title(sent.get("show") or sent.get("text") or sec_ref.get("on_screen_text") or spec.get("title") or "", 10)
-                nums = [int(n) for n in re.findall(r"\b\d{1,3}\b", str(sent.get("text") or ""))][:3]
-                kws = [str(k) for k in (sent.get("keywords") or [])]
-                mode_pick = str(sec_ref.get("mode") or modes_cycle[si % len(modes_cycle)]) if si < len(sections) else modes_cycle[si % len(modes_cycle)]
-                if mode_pick == "data_chart" and not nums:
-                    nums = [68 - (si % 3) * 12, 32 + (si % 3) * 12]
-                if mode_pick == "data_chart":
-                    items_s = [{"label": kws[k] if k < len(kws) else f"核心指标{k+1}", "value": nums[k % len(nums)]} for k in range(max(2, min(3, len(nums))))]
-                elif mode_pick == "versus":
-                    items_s = [{"label": kws[0] if kws else st_txt[:6], "subtitle": "真实实测对比", "positive": True}, {"label": "常规误区", "subtitle": "信息不透明", "positive": False}]
-                else:
-                    items_s = [{"label": st_txt, "subtitle": str(sent.get("text") or "")[:18]}, {"label": kws[0] if kws else "关键要点", "subtitle": str(sec_ref.get("visual_state") or "高清数据拆解")[:18]}]
-                sent_d = max(2.0, float(sent.get("end_sec", 0.0)) - float(sent.get("start_sec", 0.0)))
-                unit_srcs.append({
-                    "mode": mode_pick,
-                    "on_screen_text": st_txt,
-                    "items": items_s,
-                    "duration_sec": max(3.6, sent_d + 1.4),
-                    "keywords": kws + [st_txt],
-                    "bg_shift": si % 2 == 1,
-                })
-        else:
-            src_secs = list(sections)
-            while len(src_secs) < 4:
-                base_s = dict(src_secs[len(src_secs) % max(1, len(sections))] if sections else {"mode": "kinetic_text", "on_screen_text": spec.get("title", "要点"), "duration_sec": 3.5})
-                base_s["mode"] = modes_cycle[len(src_secs) % len(modes_cycle)]
-                src_secs.append(base_s)
-            for si, sec in enumerate(src_secs[:8]):
-                st_txt = _compact_title(sec.get("on_screen_text") or sec.get("name") or spec.get("title") or "", 10)
-                unit_srcs.append({
-                    "mode": str(sec.get("mode") or modes_cycle[si % len(modes_cycle)]),
-                    "on_screen_text": st_txt,
-                    "items": sec.get("items") or [{"label": st_txt, "subtitle": str(sec.get("visual_state") or "")[:18]}],
-                    "duration_sec": max(3.6, float(sec.get("duration_sec", 3.2)) + 1.2),
-                    "keywords": [st_txt, str(spec.get("title") or "")],
-                    "bg_shift": si % 2 == 1,
-                })
-
-        # 计算总净可用余量，不足 locked_dur * 1.28 时匀升每段时长确保不触发 auto_code_*
-        per_net = lambda u: max(0.0, float(u["duration_sec"]) - 0.80)
-        tot_net = sum(per_net(u) for u in unit_srcs)
-        if tot_net < locked_dur * 1.28:
-            add_each = (locked_dur * 1.32 - tot_net) / max(1, len(unit_srcs))
-            for u in unit_srcs:
-                u["duration_sec"] = round(u["duration_sec"] + add_each, 2)
-
-        from generate_code_broll import resolve_style_palette
-        pal_base = resolve_style_palette(eff_style, track=track)
-        for si, u in enumerate(unit_srcs):
-            fn = f"code_scene_{si+1:02d}.mp4"
-            out_mp4 = scenes_dir / fn
-            scene_cfg = dict(u)
-            if u.get("bg_shift"):
-                # 奇偶场微调底色/主强调色对比，增强切点跃迁 (#19)
-                scene_cfg["bg_hex"] = "#162032" if str(pal_base.get("bg_hex", "")).lower().startswith("#0") else "#1E293B"
-            render_spec_scene_html(scene_cfg, style_id=eff_style, track=track, out_mp4=out_mp4, backend=code_backend)
-            scene_meta[fn] = {
-                "role": "b_roll",
-                "semantic_tags": u.get("keywords") or [str(spec.get("title") or "")],
-                "scene_group": f"code_sec_{si+1:02d}",
-                "sharpness_score": 85.0,
-                "stability_score": 1.0,
-            }
-
-    write_json(scenes_dir / "scene_meta.json", scene_meta)
-    print(f"[code-video] 已渲染 {len(scene_meta)} 幕程序场景 ({code_backend}) -> {scenes_dir}")
-    return scenes_dir
+    return _render_code_scenes_from_spec(
+        pipeline_dir=pipeline_dir,
+        track=track,
+        active_style_id=eff_style,
+        code_html_p=code_html_p,
+        code_backend=code_backend,
+    )
 
 
 def _render_and_verify_only(
@@ -700,6 +797,12 @@ def _render_and_verify_only(
         store_anchor=store_anchor,
         strict_asr=strict_asr,
     )
+    if (pipeline_dir / "00_code_spec.json").is_file():
+        generate_verify_template(
+            pipeline_dir,
+            spec_path=pipeline_dir / "00_code_spec.json",
+            video_path=final_mp4,
+        )
     decisions_md = write_decisions_made(pipeline_dir, track)
     write_review_player_html(pipeline_dir)
     delivery_md = write_delivery_summary(pipeline_dir, ws or {}, track, qa_report)
@@ -966,11 +1069,6 @@ def main() -> None:
             licenses_path=licenses_path,
             hook_variants=args.hook_variants,
             ws=ws,
-        )
-        generate_verify_template(
-            pipeline_dir,
-            spec_path=pipeline_dir / "00_code_spec.json",
-            video_path=pipeline_dir / "output_final.mp4",
         )
     else:
         if args.mode in ("full", "lock-preview"):

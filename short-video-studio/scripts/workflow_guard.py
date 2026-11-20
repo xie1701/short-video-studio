@@ -102,6 +102,7 @@ DELIVERABLE_SYNC_FILES = (
     "10_qa_report.md",
     "10_qa_report.json",
     "10_action_strips.jpg",
+    "10_code_verify_evidence.json",
     "00_code_spec.json",
     "SPEC.md",
     "STRUCTURE.md",
@@ -136,8 +137,11 @@ def _load_lock_state(pipeline_dir: Path) -> Dict[str, Any]:
 
 
 def compute_plan_digest(pipeline_dir: Path) -> str:
-    """对已定版的 03~08 全核心流水线决策工件计算组合 SHA-256 指纹。"""
+    """对已定版的 03~08（及纯代码模式下的 00_code_spec.json）全核心流水线决策工件计算组合 SHA-256 指纹。"""
     h = hashlib.sha256()
+    if (pipeline_dir / "00_code_spec.json").is_file():
+        h.update(b"00_code_spec.json")
+        h.update((pipeline_dir / "00_code_spec.json").read_bytes())
     for name in (
         "03_audio_events.json",
         "04_edl.json",

@@ -428,19 +428,24 @@ def bbox_iou(b1: Dict[str, Any], b2: Dict[str, Any]) -> float:
     return inter / (area1 + area2 - inter)
 
 
-def clamp_bbox_center(
-    bbox: Dict[str, Any],
-    bounds: Optional[Dict[str, int]] = None,
-) -> Dict[str, int]:
-    """将给定元素尺寸/坐标严格钳位进目标安全区边界内（默认 SAFE_ZONE）。"""
-    b = bounds or SAFE_ZONE
-    bw = max(1, int(bbox.get("w", 100)))
-    bh = max(1, int(bbox.get("h", 40)))
-    x = int(round(float(bbox.get("x", b["x_min"]))))
-    y = int(round(float(bbox.get("y", b["y_min"]))))
-    x = max(b["x_min"], min(b["x_max"] - bw, x))
-    y = max(b["y_min"], min(b["y_max"] - bh, y))
-    return {"x": x, "y": y, "w": bw, "h": bh}
+def place_bbox_in_zone(
+    entry: Dict[str, Any],
+    pw: int,
+    ph: int,
+    zone: Dict[str, int],
+    default_xy: Tuple[int, int],
+) -> Tuple[int, int]:
+    """按 entry 的权威 final_bbox/bbox 居中贴合并严格钳制在目标安全区 zone 内。"""
+    fb = entry.get("final_bbox") or entry.get("bbox")
+    if isinstance(fb, dict) and {"x", "y", "w", "h"}.issubset(fb.keys()):
+        bx = int(fb["x"]) + (int(fb["w"]) - pw) // 2
+        by = int(fb["y"]) + (int(fb["h"]) - ph) // 2
+        px = max(zone["x_min"], min(bx, zone["x_max"] - pw))
+        py = max(zone["y_min"], min(by, zone["y_max"] - ph))
+        return int(px), int(py)
+    px = max(zone["x_min"], min(default_xy[0], zone["x_max"] - pw))
+    py = max(zone["y_min"], min(default_xy[1], zone["y_max"] - ph))
+    return int(px), int(py)
 
 
 def hex_to_rgba(
@@ -941,13 +946,6 @@ def frames_to_sec(frames: int, fps: int = DEFAULT_FPS) -> float:
     return round(frames / float(fps), 4)
 
 
-def format_tc(sec: float) -> str:
-    """格式化为 MM:SS.ms 可读时间码。"""
-    m = int(sec // 60)
-    s = sec % 60
-    return f"{m:02d}:{s:05.2f}"
-
-
 def sanitize_slug(name: Optional[str], default: str = "default") -> str:
     """将账号名/项目名清洗为安全目录名，保留中文/字母/数字/下划线/短横线，禁止路径穿越。"""
     raw = str(name or "").strip()
@@ -1060,3 +1058,22 @@ def detect_browser_renderer() -> Dict[str, Any]:
         "chrome_bin": chrome_bin,
         "bridge_script": str(bridge) if bridge.is_file() else None,
     }
+
+
+def get_huggingface_hub_dir() -> Path:
+    """统一解析本地 HuggingFace Hub 缓存目录。"""
+    if os.environ.get("HF_HUB_CACHE"):
+        return Path(os.environ["HF_HUB_CACHE"]).expanduser()
+    if os.environ.get("HF_HOME"):
+        return Path(os.environ["HF_HOME"]).expanduser() / "hub"
+    return Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def find_cached_whisper_model(hf_hub: Optional[Path] = None) -> Optional[str]:
+    """按精度优先级探测本地已缓存的 faster-whisper 模型名。"""
+    hub = hf_hub or get_huggingface_hub_dir()
+    for cand in ("large-v3", "large-v3-turbo", "medium", "small", "base", "tiny"):
+        d = hub / f"models--Systran--faster-whisper-{cand}"
+        if (d / "snapshots").is_dir() and any((d / "snapshots").iterdir()):
+            return cand
+    return None

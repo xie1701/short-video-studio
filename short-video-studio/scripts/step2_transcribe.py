@@ -30,6 +30,8 @@ if str(SCRIPTS_ROOT) not in sys.path:
 
 from common import (
     find_bin,
+    find_cached_whisper_model,
+    get_huggingface_hub_dir,
     get_wav_duration_sec,
     maybe_reexec_in_venv,
     read_json,
@@ -357,23 +359,6 @@ def vad_speech_intervals(y16: np.ndarray, sr: int = 16000) -> List[Tuple[float, 
     return [(round(s, 4), round(e, 4)) for s, e in merged if e - s >= 0.16]
 
 
-def get_huggingface_hub_dir() -> Path:
-    if os.environ.get("HF_HUB_CACHE"):
-        return Path(os.environ["HF_HUB_CACHE"]).expanduser()
-    if os.environ.get("HF_HOME"):
-        return Path(os.environ["HF_HOME"]).expanduser() / "hub"
-    return Path.home() / ".cache" / "huggingface" / "hub"
-
-
-def _find_cached_whisper_model() -> Optional[str]:
-    hf_hub = get_huggingface_hub_dir()
-    for name in ("large-v3", "large-v3-turbo", "medium", "small", "base", "tiny"):
-        d = hf_hub / f"models--Systran--faster-whisper-{name}"
-        if (d / "snapshots").is_dir() and any((d / "snapshots").iterdir()):
-            return name
-    return None
-
-
 def _get_whisper_model(model_name: str):
     if model_name in _WHISPER_MODEL_CACHE:
         return _WHISPER_MODEL_CACHE[model_name]
@@ -394,7 +379,7 @@ def try_faster_whisper(
         global_rms = float(np.sqrt(np.mean(y16 ** 2) + 1e-12)) if len(y16) else 0.0
         if global_rms < 0.002 or not vad_speech_intervals(y16, 16000):
             return []
-        chosen = model_name or _find_cached_whisper_model()
+        chosen = model_name or find_cached_whisper_model()
         if not chosen:
             return None
         model = _get_whisper_model(chosen)
@@ -1033,10 +1018,48 @@ def synthesize_tts_segment_detailed(
     raise RuntimeError(f"TTS 配音合成失败（edge-tts 与系统 say 均不可用），拒绝输出电子合成假语音：{speak_text[:24]}")
 
 
-def synthesize_tts_segment(text: str, out_wav: Path, voice: str = "zh-CN-YunxiNeural") -> Tuple[bool, float]:
-    """向后兼容简化接口：返回 (ok, duration_sec)。"""
-    ok, dur, _, _, _ = synthesize_tts_segment_detailed(text, out_wav, voice=voice)
-    return ok, dur
+_ZH_DIGIT_MAP = {
+    "0": "零", "1": "一", "2": "二", "3": "三", "4": "四",
+    "5": "五", "6": "六", "7": "七", "8": "八", "9": "九",
+    ".": "点", ":": "比", "%": "百分之", "¥": "元", "$": "美元",
+}
+
+
+def _int_to_zh_spoken(num_str: str) -> str:
+    """将阿拉伯整数串转为标准中文读法（如 '280' -> '二百八十', '68' -> '六十八'）用于跨通道发音锚点对齐。"""
+    if not num_str.isdigit():
+        return "".join(_ZH_DIGIT_MAP.get(c, c) for c in num_str)
+    n = int(num_str)
+    if n == 0:
+        return "零"
+    if n >= 10000 or (len(num_str) == 4 and num_str.startswith(("19", "20"))):
+        return "".join(_ZH_DIGIT_MAP.get(c, c) for c in num_str)
+    units = ["", "十", "百", "千"]
+    digits = list(num_str)
+    L = len(digits)
+    res: List[str] = []
+    zero_pending = False
+    for i, d_ch in enumerate(digits):
+        d = int(d_ch)
+        pos = L - 1 - i
+        if d == 0:
+            zero_pending = True
+        else:
+            if zero_pending and res:
+                res.append("零")
+            zero_pending = False
+            if not (d == 1 and pos == 1 and not res):
+                res.append(_ZH_DIGIT_MAP[d_ch])
+            if units[pos]:
+                res.append(units[pos])
+    return "".join(res) or "零"
+
+
+def _char_to_phonetic_key(ch: str) -> str:
+    c = ch.lower()
+    if c == "两":
+        return "二"
+    return _ZH_DIGIT_MAP.get(c, c)
 
 
 def _expand_word_boundaries_for_subtitles(
@@ -1076,6 +1099,118 @@ def _expand_word_boundaries_for_subtitles(
             })
     _mark_word_keywords(expanded, keywords)
     return expanded
+
+
+def _project_say_words_to_show(
+    wb_words: List[Dict[str, Any]],
+    show_text: str,
+    s_offset_sec: float,
+    e_sec: float,
+    keywords: List[str],
+    rms_10ms: Optional[np.ndarray],
+    m_on: float = 0.0,
+    m_off: float = 0.0,
+) -> List[Dict[str, Any]]:
+    """
+    跨通道发音->视觉词边界单调投射：
+    即使口播 say（如 '二百八十元，占百分之六十八'）与上屏 show（如 '280元占68%'）不同，
+    依然通过数字读音展开 + 单调 LCS 锚点插值将 edge-tts 真实 WordBoundary 投射到 show 的每个字符上。
+    """
+    show_chars = _extract_clean_chars(show_text)
+    if not show_chars:
+        return []
+    if not wb_words:
+        eff_s = min(e_sec - 0.1, s_offset_sec + m_on)
+        eff_e = max(eff_s + 0.1, min(e_sec, s_offset_sec + (m_off if m_off > m_on else (e_sec - s_offset_sec))))
+        return split_chars_energy_aligned(show_text, eff_s, eff_e, keywords, rms_10ms=rms_10ms)
+
+    say_stream: List[Tuple[str, float, float]] = []
+    for w in wb_words:
+        tok = str(w.get("word") or "").strip()
+        if not tok:
+            continue
+        t0 = float(w["start_sec"]) + s_offset_sec
+        t1 = max(t0 + 0.015, float(w["end_sec"]) + s_offset_sec)
+        if tok.isdigit():
+            p_chars = list(_int_to_zh_spoken(tok))
+        else:
+            raw_c = _extract_clean_chars(tok) or list(tok)
+            p_chars = [_char_to_phonetic_key(c) for c in raw_c]
+        n_c = max(1, len(p_chars))
+        dt = (t1 - t0) / float(n_c)
+        for k, pc in enumerate(p_chars):
+            say_stream.append((pc, t0 + k * dt, t0 + (k + 1) * dt))
+
+    if not say_stream:
+        return _expand_word_boundaries_for_subtitles(wb_words, s_offset_sec, keywords, rms_10ms)
+
+    show_keys = [_char_to_phonetic_key(c) for c in show_chars]
+    say_keys = [sc[0] for sc in say_stream]
+
+    matcher = difflib.SequenceMatcher(None, show_keys, say_keys, autojunk=False)
+    anchors: Dict[int, Tuple[float, float]] = {}
+    for blk in matcher.get_matching_blocks():
+        for off in range(blk.size):
+            si = blk.a + off
+            ti = blk.b + off
+            anchors[si] = (say_stream[ti][1], say_stream[ti][2])
+
+    n_show = len(show_chars)
+    span_start = say_stream[0][1]
+    span_end = max(span_start + 0.05, say_stream[-1][2])
+    times: List[Tuple[float, float]] = [(0.0, 0.0)] * n_show
+
+    anchor_indices = sorted(anchors.keys())
+    if not anchor_indices:
+        dt_all = (span_end - span_start) / float(n_show)
+        for i in range(n_show):
+            times[i] = (span_start + i * dt_all, span_start + (i + 1) * dt_all)
+    else:
+        for ai in anchor_indices:
+            times[ai] = anchors[ai]
+        first_a = anchor_indices[0]
+        if first_a > 0:
+            h_end = max(span_start + 0.02 * first_a, anchors[first_a][0])
+            h_start = min(span_start, h_end - 0.02 * first_a)
+            dt_h = (h_end - h_start) / float(first_a)
+            for i in range(first_a):
+                times[i] = (h_start + i * dt_h, h_start + (i + 1) * dt_h)
+        for k_a in range(len(anchor_indices) - 1):
+            a_prev = anchor_indices[k_a]
+            a_next = anchor_indices[k_a + 1]
+            gap_n = a_next - a_prev - 1
+            if gap_n > 0:
+                g_start = anchors[a_prev][1]
+                g_end = max(g_start + 0.015 * gap_n, anchors[a_next][0])
+                dt_g = (g_end - g_start) / float(gap_n)
+                for step_i, idx_s in enumerate(range(a_prev + 1, a_next)):
+                    times[idx_s] = (g_start + step_i * dt_g, g_start + (step_i + 1) * dt_g)
+        last_a = anchor_indices[-1]
+        if last_a < n_show - 1:
+            tail_n = n_show - 1 - last_a
+            t_start = anchors[last_a][1]
+            t_end = max(t_start + 0.02 * tail_n, span_end)
+            dt_t = (t_end - t_start) / float(tail_n)
+            for step_i, idx_s in enumerate(range(last_a + 1, n_show)):
+                times[idx_s] = (t_start + step_i * dt_t, t_start + (step_i + 1) * dt_t)
+
+    projected: List[Dict[str, Any]] = []
+    for ch, (pt0, pt1) in zip(show_chars, times):
+        pt1_safe = max(pt0 + 0.015, pt1)
+        e_val = 0.72
+        if rms_10ms is not None and len(rms_10ms) >= 4:
+            i0 = max(0, int(round(pt0 * 100)))
+            i1 = min(len(rms_10ms), max(i0 + 1, int(round(pt1_safe * 100))))
+            e_val = float(np.mean(rms_10ms[i0:i1]))
+        projected.append({
+            "word": ch,
+            "start_sec": round(pt0, 4),
+            "end_sec": round(pt1_safe, 4),
+            "energy": round(min(1.0, e_val * 5.0), 3),
+            "is_keyword": False,
+        })
+    _mark_word_keywords(projected, keywords)
+    return projected
 
 
 def concat_wavs_with_gaps(seg_wavs: List[Path], gap_sec: float, out_wav: Path) -> List[Tuple[float, float]]:
@@ -1153,7 +1288,8 @@ def run_step2(
         for i, it in enumerate(script_items, start=1):
             show_txt = str(it.get("show") or it.get("text") or "")
             say_txt = str(it.get("say") or show_txt)
-            pre_items.append(dict(it, id=f"seg_{i:03d}", text=show_txt, show=show_txt, say=say_txt))
+            has_distinct_say = bool(it.get("say") and say_txt.strip() != show_txt.strip())
+            pre_items.append(dict(it, id=f"seg_{i:03d}", text=show_txt, show=show_txt, say=say_txt, has_distinct_say=has_distinct_say))
 
         pre_comp = audit_script_compliance(
             pre_items,
@@ -1174,18 +1310,23 @@ def run_step2(
                 it_copy["original_text_before_compliance"] = it_copy["text"]
                 it_copy["text"] = rewritten_by_idx[it_copy["id"]]
                 it_copy["show"] = it_copy["text"]
-                it_copy["say"] = it_copy["text"]
+                if not it_copy.get("has_distinct_say"):
+                    it_copy["say"] = it_copy["text"]
                 # 合规改写后同步刷新 keywords，严防违禁原词穿透到花字与封面
                 it_copy["keywords"] = extract_auto_keywords(it_copy["text"])
             effective_items.append(it_copy)
 
-        # 先做 TTS 前文本常识校对，确保音频与最终文字 100% 一致
+        # 先做 TTS 前文本常识校对，确保音频与最终文字 100% 一致（独立保护用户自定义 say）
         sanity_warnings = apply_semantic_sanity_check(effective_items, replacements=sanity_replacements)
         for item in effective_items:
             if item.get("text") != item.get("show"):
                 item["show"] = item["text"]
-                if not item.get("_custom_say_keep"):
+                if not item.get("has_distinct_say"):
                     item["say"] = item["text"]
+            if item.get("has_distinct_say") and item.get("say"):
+                say_dummy = [{"id": item["id"], "text": str(item["say"])}]
+                apply_semantic_sanity_check(say_dummy, replacements=sanity_replacements)
+                item["say"] = say_dummy[0]["text"]
             if not item.get("keywords") or item.get("original_text_before_compliance"):
                 item["keywords"] = extract_auto_keywords(item["text"])
 
@@ -1230,6 +1371,8 @@ def run_step2(
             wb_joined = "".join(w["word"] for w in wb_words)
             if wb_words and speak_txt == display_txt and _clean_zh_text(wb_joined) == _clean_zh_text(display_txt):
                 seg_words = _expand_word_boundaries_for_subtitles(wb_words, s_sec, kws, rms_10ms)
+            elif wb_words:
+                seg_words = _project_say_words_to_show(wb_words, display_txt, s_sec, e_sec, kws, rms_10ms, m_on=m_on, m_off=m_off)
             else:
                 eff_s = min(e_sec - 0.1, s_sec + m_on)
                 eff_e = max(eff_s + 0.1, min(e_sec, s_sec + m_off))

@@ -99,7 +99,7 @@ python3 scripts/run_pipeline.py --account <账号> --raw-dir <原素材目录> -
 
 各环节硬核机制（v5 全链路进化 + 影视反 NG 五原则 A1–A5 + 广电包装五原则 B6–B15）：
 - **`inventory_media.py` & `step1_normalize.py`**：EXIF 方向校准 Vision 多时点采样；单遍 BT.709 亮度与等面积锐度/急甩惩罚 + Stereo PCM 动态范围体检；**2D FFT 相位相关稳度**；物理几何裁切与人脸眼部居中构图、HDR→Rec.709 Hable 映射及声道不平衡智能挽救。
-- **`step2_transcribe.py` & `step3_lock_audio.py`**：合规与字数刷新前置于 TTS 合成前；TTS 采用 `edge-tts WordBoundary` 流式捕获 + `10ms RMS` 真实起音修正（消除 40–55ms 提前漂移）、句级哈希缓存与 `say`/`show` 听看分离；切头去噪与修音后重算韵律停顿；分源文件隔离防混叠 `retake` 优胜；零漂移整小节循环 BGM、全局静默底噪抽样真 Room Tone、Equal-Power 渐变。
+- **`step2_transcribe.py` & `step3_lock_audio.py`**：合规与字数刷新前置于 TTS 合成前；TTS 采用 `edge-tts WordBoundary` 流式捕获 + `10ms RMS` 真实起音修正（消除 40–55ms 提前漂移）、句级哈希缓存、`say`/`show` 听看分离及 `_project_say_words_to_show` 跨通道发音→视觉词边界单调投射（`say_text` 同步持久化至 `03_audio_events.json` 供 `#21` 盲听 ASR 对齐）；切头去噪与修音后重算韵律停顿；分源文件隔离防混叠 `retake` 优胜；零漂移整小节循环 BGM、全局静默底噪抽样真 Room Tone、Equal-Power 渐变。
 - **`step4_build_edl.py`**：**A1** `0.40s` Handles；**A2** `audio_only` 保声遮脸与首镜门控；**A3/A4** 指代词缺失告警；单向不回退 B-roll 游标、真 J-cut + 真 L-cut 声画错位、`1.15x` 锁眼微推拉。
 - **`step5_subtitles.py` & `render_mp4.py` & `step6/7/8/9`**：保护跨词数字冒号/小数点、透传 `keywords`、动态重写合规 ASS 样式、7点避脸 `final_bbox` (`y<=1468`)；Peak-aligned SFX（零 `+18dB` 噪点注水）；中点测光与全部人脸镜 BT.709 皮肤保护；锁定一致 `-14.0 LUFS` 四端三轨 (`voice_master` / `bgm_ducked` / `sfx_master`)；`focus_blur` 毛玻璃背板 + 不动点眼部 Ken Burns；封面去套话、`09_ui_safe_preview.jpg` 遮罩验收与真 3 秒 `--hook-variants` (`09_hook_v*.mp4`)。
 
@@ -107,7 +107,7 @@ python3 scripts/run_pipeline.py --account <账号> --raw-dir <原素材目录> -
 - 全部 22 项统一输出 **`PASS | FAIL | SKIPPED_UNAVAILABLE`**（缺依赖/缺草稿绝不伪装通过，`PASS` 方计入 `passed=True`）：
   - **1–11 项流水线契约**（响度/黑帧/静音/音画同步/字幕与 `03_audio_events` 交叉校准/切点含 L-cut 对齐/安全区与零 `<=3` 残句及预算/非相邻零倒带与保声遮脸/前3秒切镜/A-Roll句界严锁/`common.LEAK_REGEX_PATTERNS` 防露馅）；
   - **12–22 项单遍解码黑盒裁判**（300–3400Hz 语谱画外音与 A 轨覆盖、OCR 安全区+字幕内容回环 Recall、人脸零遮挡与实测单框 WCAG `>=3.8:1`、BT.709 矩阵 `common.SKIN_YCBCR_RANGE` 肤色与 `max_luma_jump`、URL 编码相对 FCPXML 与 `<template>` 可播放离线 HyperFrames 3 帧真实浏览器烟测、OCR 防露馅、屏蔽字幕静止检测、双带遮罩+相对 MAD 全量切点 Spot-Verify、统一 `compute_sfx_band_windows` 全量 cues 净抬升 + **5ms Spectral Flux 毫秒起音偏差校验**、`large-v3` 优先+粤语 `yue` 独立 ASR 盲听、严格只读广告法复核与 `is_verified_commercial_font` 清单）。
-- **双态终审 + Cold Read + 动作连拍取证**：出片自动生成前 3 秒（0.2s 步长）与关键切点（0.15s 步长）动作连拍条 `out/10_action_strips.jpg`；必检全过输出 `MACHINE_PASS_PENDING_HUMAN`；人工结合 `review_player.html`、`10_action_strips.jpg` 与 Cold Read 像素证据链（可由 `code_video_spec.py --init-verify` 生成 `VERIFY.md`）复核后，运行 `workflow_guard.py approve-final --pipeline-dir <dir>` 校验 `plan_sha256` + `output_final_sha256` 升级签字为 `APPROVED` 并同步更新 `out/10_qa_report.*`。
+- **双态终审 + Cold Read + 自动化像素取证 (`10_code_verify_evidence.json` & `VERIFY.md`)**：出片自动生成前 3 秒（0.2s 步长）与关键切点（0.15s 步长）动作连拍条 `out/10_action_strips.jpg`；入口 3 纯代码模式下采用 `--batch-json` 单 Chrome 实例批量渲染 SVG/Canvas/2.5D Camera 场景（`tidy` 后亦支持 `--mode reedit-visuals` 自动重渲代码分幕自愈重建），并由 `code_video_spec.py` 自动抽帧实测主视觉高度占比（`>=33%`）与 Apple Vision OCR 事实台账对账填入 `VERIFY.md`；必检全过输出 `MACHINE_PASS_PENDING_HUMAN`；人工复核后运行 `workflow_guard.py approve-final --pipeline-dir <dir>` 校验 `plan_sha256`（含 `00_code_spec.json`）+ `output_final_sha256` 升级签字为 `APPROVED` 并同步更新 `out/10_qa_report.*`。
 - **风格复刻洁净室 (`workflow_guard.py replication-diff`)**：pHash 距离 `≤6` 或 OCR 连续 12 字重合直接 `BLOCK`，明暗自适应采样 ΔE，`secrets.SystemRandom` 真随机洗牌并将答案键分离至 `blind_test_answer_key.json`。
 
 ---

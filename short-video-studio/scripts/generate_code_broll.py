@@ -41,6 +41,7 @@ from common import (
     get_cached_font,
     load_style_spectrum_entry,
     maybe_reexec_in_venv,
+    write_json,
 )
 
 
@@ -552,6 +553,8 @@ def _build_broll_html_page(
     pal: Dict[str, Any],
     font_rel_url: Optional[str],
     anchor_delay_sec: float = 0.15,
+    frame_seq_rels: Optional[List[str]] = None,
+    fps: int = DEFAULT_FPS,
 ) -> str:
     mode_tags = {
         "kinetic_text": "核心观点",
@@ -566,6 +569,7 @@ def _build_broll_html_page(
     safe_right = SAFE_ZONE["x_max"] - 24
     panel_w = safe_right - 88
     items_json = json.dumps(items[:4], ensure_ascii=False)
+    seq_json = json.dumps(list(frame_seq_rels or []), ensure_ascii=False)
     font_face_css = ""
     if font_rel_url:
         fmt = "opentype" if font_rel_url.lower().endswith(".otf") else "truetype"
@@ -596,6 +600,12 @@ def _build_broll_html_page(
       width: {CANVAS_WIDTH}px;
       height: {CANVAS_HEIGHT}px;
       overflow: hidden;
+    }}
+    .camera-rig {{
+      position: absolute;
+      inset: 0;
+      transform-origin: 490px 660px;
+      will-change: transform;
     }}
     .bg-grid {{
       position: absolute;
@@ -656,6 +666,32 @@ def _build_broll_html_page(
       height: 690px;
       overflow: hidden;
     }}
+    .pip-frame-box {{
+      position: relative;
+      width: 100%;
+      height: 220px;
+      border-radius: 18px;
+      border: 2px solid {pal['accent_hex']};
+      overflow: hidden;
+      margin-bottom: 16px;
+      background: #000;
+      box-shadow: {card_shadow};
+    }}
+    .pip-frame-box img {{
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }}
+    .flow-svg-rail {{
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 44px;
+      height: 640px;
+      pointer-events: none;
+      z-index: 2;
+    }}
     .card {{
       position: relative;
       background: {pal['card_bg_hex']};
@@ -665,6 +701,15 @@ def _build_broll_html_page(
       margin-bottom: 16px;
       box-shadow: {card_shadow};
       overflow: hidden;
+    }}
+    .card.flow-mode {{
+      margin-left: 48px;
+    }}
+    .card.day-slot {{
+      border-color: #F59E0B;
+    }}
+    .card.night-slot {{
+      border-color: #38BDF8;
     }}
     .card-accent-strip {{
       position: absolute;
@@ -680,6 +725,7 @@ def _build_broll_html_page(
       font-weight: 700;
       color: {pal['title_hex']};
       line-height: 1.25;
+      padding-right: 120px;
     }}
     .card-sub {{
       margin-top: 10px;
@@ -695,6 +741,16 @@ def _build_broll_html_page(
       overflow: hidden;
       position: relative;
     }}
+    .bar-benchmark {{
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 50%;
+      width: 2px;
+      background: {pal['sub_hex']};
+      opacity: 0.45;
+      z-index: 2;
+    }}
     .bar-fill {{
       height: 100%;
       border-radius: 14px;
@@ -703,24 +759,39 @@ def _build_broll_html_page(
     .val-readout {{
       position: absolute;
       right: 26px;
-      top: 24px;
-      font-size: 40px;
+      top: 20px;
+      font-size: 38px;
       font-weight: 800;
       color: {pal['accent_hex']};
     }}
+    .prop-hero-row {{
+      display: flex;
+      align-items: center;
+      gap: 22px;
+      margin-bottom: 18px;
+      padding: 12px 18px;
+      background: {pal['card_bg_hex']};
+      border: 2px solid {pal['border_hex']};
+      border-radius: 20px;
+    }}
+    .donut-svg {{
+      width: 132px;
+      height: 132px;
+      flex-shrink: 0;
+    }}
     .prop-track {{
+      flex: 1;
       display: flex;
       gap: 6px;
       padding: 8px;
-      height: 76px;
-      background: {pal['card_bg_hex']};
+      height: 68px;
+      background: {pal['bg_hex']};
       border: 2px solid {pal['border_hex']};
-      border-radius: 18px;
-      margin-bottom: 22px;
+      border-radius: 16px;
     }}
     .prop-seg {{
       height: 100%;
-      border-radius: 11px;
+      border-radius: 10px;
     }}
     .motion-rail {{
       position: absolute;
@@ -741,20 +812,24 @@ def _build_broll_html_page(
 </head>
 <body>
   <div class="canvas-stage" id="stage">
-    <div class="bg-grid" id="bg-grid"></div>
-    <div class="glow-orb" id="orb"></div>
-    <div class="mode-badge" id="badge">{html.escape(mode_tag)}</div>
-    <div class="title-wrap" id="title-wrap">
-      <div class="main-title" id="main-title">{html.escape(title)}</div>
-      <div class="title-bar" id="title-bar"></div>
+    <div class="camera-rig" id="camera-rig">
+      <div class="bg-grid" id="bg-grid"></div>
+      <div class="glow-orb" id="orb"></div>
+      <div class="mode-badge" id="badge">{html.escape(mode_tag)}</div>
+      <div class="title-wrap" id="title-wrap">
+        <div class="main-title" id="main-title">{html.escape(title)}</div>
+        <div class="title-bar" id="title-bar"></div>
+      </div>
+      <div class="cards-area" id="cards-area"></div>
+      <div class="motion-rail"><div class="motion-dot" id="motion-dot"></div></div>
     </div>
-    <div class="cards-area" id="cards-area"></div>
-    <div class="motion-rail"><div class="motion-dot" id="motion-dot"></div></div>
   </div>
   <script>
     (function () {{
       var MODE = {json.dumps(mode)};
       var ITEMS = {items_json};
+      var FRAME_SEQ = {seq_json};
+      var FPS = {int(fps)};
       var DUR = {duration_sec:.4f};
       var ANCHOR_T = {anchor_delay_sec:.4f};
       var ACCENT = {json.dumps(pal['accent_hex'])};
@@ -795,13 +870,46 @@ def _build_broll_html_page(
       }}
 
       var cardsEl = document.getElementById('cards-area');
+      var pipImgEl = null;
+      if (FRAME_SEQ && FRAME_SEQ.length > 0) {{
+        var pipBox = document.createElement('div');
+        pipBox.className = 'pip-frame-box';
+        pipImgEl = document.createElement('img');
+        pipImgEl.src = FRAME_SEQ[0];
+        pipBox.appendChild(pipImgEl);
+        cardsEl.appendChild(pipBox);
+      }}
+
       var propSegs = [];
+      var donutCircle = null;
+      var flowPath = null;
+      var flowPathLen = 480;
       var cardNodes = [];
       var vals = ITEMS.map(function (it) {{ return typeof it.value === 'number' ? it.value : 0; }});
       var maxVal = Math.max.apply(null, vals.concat([100]));
       var totalVal = Math.max(1e-5, vals.reduce(function (a, b) {{ return a + Math.max(1, b); }}, 0));
 
       if (MODE === 'proportion' && ITEMS.length) {{
+        var heroRow = document.createElement('div');
+        heroRow.className = 'prop-hero-row';
+        var svgNS = 'http://www.w3.org/2000/svg';
+        var dSvg = document.createElementNS(svgNS, 'svg');
+        dSvg.setAttribute('viewBox', '0 0 120 120');
+        dSvg.setAttribute('class', 'donut-svg');
+        var bgC = document.createElementNS(svgNS, 'circle');
+        bgC.setAttribute('cx', '60'); bgC.setAttribute('cy', '60'); bgC.setAttribute('r', '44');
+        bgC.setAttribute('fill', 'none'); bgC.setAttribute('stroke', '#334155'); bgC.setAttribute('stroke-width', '14');
+        dSvg.appendChild(bgC);
+        donutCircle = document.createElementNS(svgNS, 'circle');
+        donutCircle.setAttribute('cx', '60'); donutCircle.setAttribute('cy', '60'); donutCircle.setAttribute('r', '44');
+        donutCircle.setAttribute('fill', 'none'); donutCircle.setAttribute('stroke', SEG_COLORS[0]);
+        donutCircle.setAttribute('stroke-width', '14'); donutCircle.setAttribute('stroke-linecap', 'round');
+        donutCircle.setAttribute('transform', 'rotate(-90 60 60)');
+        donutCircle.setAttribute('stroke-dasharray', '276.46');
+        donutCircle.setAttribute('stroke-dashoffset', '276.46');
+        dSvg.appendChild(donutCircle);
+        heroRow.appendChild(dSvg);
+
         var pTrack = document.createElement('div');
         pTrack.className = 'prop-track';
         ITEMS.forEach(function (it, i) {{
@@ -811,25 +919,52 @@ def _build_broll_html_page(
           pTrack.appendChild(s);
           propSegs.push({{ el: s, pct: (Math.max(1, it.value || 1) * 100) / totalVal }});
         }});
-        cardsEl.appendChild(pTrack);
+        heroRow.appendChild(pTrack);
+        cardsEl.appendChild(heroRow);
       }}
 
-      ITEMS.forEach(function (it, idx) {{
+      if (MODE === 'flow_diagram' && ITEMS.length > 1) {{
+        var svgNS2 = 'http://www.w3.org/2000/svg';
+        var fSvg = document.createElementNS(svgNS2, 'svg');
+        fSvg.setAttribute('viewBox', '0 0 44 640');
+        fSvg.setAttribute('class', 'flow-svg-rail');
+        flowPath = document.createElementNS(svgNS2, 'path');
+        flowPath.setAttribute('d', 'M 22 42 C 36 160, 8 280, 22 440');
+        flowPath.setAttribute('fill', 'none');
+        flowPath.setAttribute('stroke', ACCENT);
+        flowPath.setAttribute('stroke-width', '5');
+        flowPath.setAttribute('stroke-linecap', 'round');
+        flowPath.setAttribute('stroke-dasharray', String(flowPathLen));
+        flowPath.setAttribute('stroke-dashoffset', String(flowPathLen));
+        fSvg.appendChild(flowPath);
+        cardsEl.appendChild(fSvg);
+      }}
+
+      var maxItems = (FRAME_SEQ && FRAME_SEQ.length > 0) ? 2 : 3;
+      ITEMS.slice(0, maxItems).forEach(function (it, idx) {{
         var c = document.createElement('div');
-        c.className = 'card';
+        c.className = 'card' + (MODE === 'flow_diagram' ? ' flow-mode' : '');
         var strip = document.createElement('div');
         strip.className = 'card-accent-strip';
         if (MODE === 'proportion') strip.style.background = SEG_COLORS[idx % SEG_COLORS.length];
         if (MODE === 'versus') {{
-          var good = (typeof it.positive === 'boolean') ? it.positive : (idx % 2 === 1);
+          var good = (typeof it.positive === 'boolean') ? it.positive : (idx % 2 === 0);
           strip.style.background = good ? '#16A34A' : '#DC2626';
           c.style.borderColor = strip.style.background;
+        }}
+        if (MODE === 'day_night') {{
+          var isDay = (idx % 2 === 0);
+          c.className += isDay ? ' day-slot' : ' night-slot';
+          strip.style.background = isDay ? '#F59E0B' : '#38BDF8';
         }}
         c.appendChild(strip);
 
         var lbl = document.createElement('div');
         lbl.className = 'card-lbl';
-        var prefix = (MODE === 'flow_diagram') ? ((idx + 1) + '. ') : (MODE === 'chips' ? '✓ ' : '');
+        var prefix = '';
+        if (MODE === 'flow_diagram') prefix = (idx + 1) + '. ';
+        else if (MODE === 'chips') prefix = '✓ ';
+        else if (MODE === 'day_night') prefix = (idx % 2 === 0) ? '☀ 白昼 · ' : '☾ 夜间 · ';
         lbl.textContent = prefix + String(it.label || '');
         c.appendChild(lbl);
 
@@ -841,6 +976,9 @@ def _build_broll_html_page(
           c.appendChild(readoutEl);
           var bt = document.createElement('div');
           bt.className = 'bar-track';
+          var bm = document.createElement('div');
+          bm.className = 'bar-benchmark';
+          bt.appendChild(bm);
           fillEl = document.createElement('div');
           fillEl.className = 'bar-fill';
           bt.appendChild(fillEl);
@@ -868,6 +1006,17 @@ def _build_broll_html_page(
 
       window.seek = function (t) {{
         var curT = clamp(Number(t) || 0, 0, DUR);
+        var camP = dampedSpring(curT, 0.0, 1.9, 0.68);
+        var camScale = 1.0 + (1.0 - clamp(camP, 0, 1)) * 0.022 + Math.sin(curT * 0.85) * 0.006;
+        var camY = (1.0 - clamp(camP, 0, 1)) * 14.0;
+        document.getElementById('camera-rig').style.transform =
+          'translateY(' + camY.toFixed(2) + 'px) scale(' + camScale.toFixed(4) + ')';
+
+        if (pipImgEl && FRAME_SEQ.length > 0) {{
+          var fIdx = clamp(Math.floor(curT * FPS), 0, FRAME_SEQ.length - 1);
+          pipImgEl.src = FRAME_SEQ[fIdx];
+        }}
+
         var orb = document.getElementById('orb');
         orb.style.left = (220 + Math.sin(curT * 1.4) * 160) + 'px';
         orb.style.top = (280 + Math.cos(curT * 1.1) * 110) + 'px';
@@ -884,6 +1033,14 @@ def _build_broll_html_page(
         propSegs.forEach(function (ps) {{
           ps.el.style.width = Math.max(4, ps.pct * barP).toFixed(2) + '%';
         }});
+        if (donutCircle && propSegs.length > 0) {{
+          var leadRatio = clamp((propSegs[0].pct / 100.0) * barP, 0.05, 0.96);
+          donutCircle.setAttribute('stroke-dashoffset', (276.46 * (1.0 - leadRatio)).toFixed(2));
+        }}
+        if (flowPath) {{
+          var fpP = clamp(dampedSpring(curT, ANCHOR_T, 1.6, 0.72), 0, 1);
+          flowPath.setAttribute('stroke-dashoffset', (flowPathLen * (1.0 - fpP)).toFixed(2));
+        }}
 
         cardNodes.forEach(function (cn, i) {{
           var p = dampedSpring(curT, ANCHOR_T + i * 0.11, 2.3, 0.58);
@@ -907,7 +1064,14 @@ def _build_broll_html_page(
       }};
 
       var fontProm = (document.fonts && document.fonts.ready) ? document.fonts.ready : Promise.resolve();
-      fontProm.then(function () {{
+      var imgProms = (FRAME_SEQ || []).map(function (u) {{
+        return new Promise(function (resolve) {{
+          var im = new Image();
+          im.onload = im.onerror = resolve;
+          im.src = u;
+        }});
+      }});
+      Promise.all([fontProm].concat(imgProms)).then(function () {{
         window.seek(0);
         window.READY = true;
       }});
@@ -916,6 +1080,50 @@ def _build_broll_html_page(
 </body>
 </html>
 """
+
+
+def _prepare_html_scene_dir(
+    tdp: Path,
+    mode: str,
+    title: str,
+    items: List[Dict[str, Any]],
+    duration_sec: float,
+    pal: Dict[str, Any],
+    font_path: Optional[str],
+    anchor_delay_sec: float = 0.15,
+    clip_asset: Optional[str] = None,
+    fps: int = DEFAULT_FPS,
+) -> None:
+    tdp.mkdir(parents=True, exist_ok=True)
+    font_rel: Optional[str] = None
+    if font_path and Path(font_path).is_file():
+        f_dir = tdp / "fonts"
+        f_dir.mkdir(parents=True, exist_ok=True)
+        dst_f = f_dir / Path(font_path).name
+        if not dst_f.exists():
+            shutil.copy2(font_path, dst_f)
+        font_rel = f"fonts/{dst_f.name}"
+
+    frame_seq_rels: List[str] = []
+    if clip_asset and Path(clip_asset).is_file():
+        ca_p = Path(clip_asset)
+        f_seq_dir = tdp / "frames"
+        f_seq_dir.mkdir(parents=True, exist_ok=True)
+        if ca_p.suffix.lower() in (".mp4", ".mov", ".mkv", ".m4v"):
+            extracted = extract_clip_sequence(
+                ca_p, f_seq_dir, start_sec=0.0, duration_sec=min(4.0, duration_sec), fps=min(15, fps), width=640, height=360
+            )
+            frame_seq_rels = [f"frames/{p.name}" for p in extracted]
+        elif ca_p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
+            dst_img = f_seq_dir / f"0001{ca_p.suffix.lower()}"
+            shutil.copy2(ca_p, dst_img)
+            frame_seq_rels = [f"frames/{dst_img.name}"]
+
+    html_src = _build_broll_html_page(
+        mode, title, items, duration_sec, pal, font_rel,
+        anchor_delay_sec=anchor_delay_sec, frame_seq_rels=frame_seq_rels, fps=fps,
+    )
+    (tdp / "index.html").write_text(html_src, encoding="utf-8")
 
 
 def render_broll_clip_html(
@@ -931,8 +1139,9 @@ def render_broll_clip_html(
     track: str = "store",
     register: Optional[str] = None,
     anchor_delay_sec: float = 0.15,
+    clip_asset: Optional[str] = None,
 ) -> Path:
-    """使用无头 Chrome + capture_html_video.mjs 渲染确定性 HTML/Canvas/CSS 弹簧动效补镜 MP4。"""
+    """使用无头 Chrome + capture_html_video.mjs 渲染确定性 HTML/Canvas/SVG 弹簧动效补镜 MP4。"""
     br = detect_browser_renderer()
     if not br.get("available"):
         raise RuntimeError("HTML 浏览器渲染桥不可用（需 node + playwright-core + Chrome）")
@@ -948,16 +1157,10 @@ def render_broll_clip_html(
     output_mp4.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="svs_html_broll_") as td:
         tdp = Path(td)
-        font_rel: Optional[str] = None
-        if font_path and Path(font_path).is_file():
-            f_dir = tdp / "fonts"
-            f_dir.mkdir(parents=True, exist_ok=True)
-            dst_f = f_dir / Path(font_path).name
-            shutil.copy2(font_path, dst_f)
-            font_rel = f"fonts/{dst_f.name}"
-
-        html_src = _build_broll_html_page(mode, title, items, duration_sec, pal, font_rel, anchor_delay_sec=anchor_delay_sec)
-        (tdp / "index.html").write_text(html_src, encoding="utf-8")
+        _prepare_html_scene_dir(
+            tdp, mode, title, items, duration_sec, pal, font_path,
+            anchor_delay_sec=anchor_delay_sec, clip_asset=clip_asset, fps=fps,
+        )
         smoke_p = tdp / "smoke.json"
         res = subprocess.run([
             str(br["node_bin"]),
@@ -967,6 +1170,7 @@ def render_broll_clip_html(
             "--fps", str(int(fps)),
             "--dur", f"{duration_sec:.4f}",
             "--size", f"{CANVAS_WIDTH}x{CANVAS_HEIGHT}",
+            "--jpeg",
             "--out", str(output_mp4.resolve()),
             "--smoke-json", str(smoke_p),
         ], capture_output=True, text=True)
@@ -989,6 +1193,7 @@ def render_code_clip(
     register: Optional[str] = None,
     anchor_delay_sec: float = 0.15,
     backend: str = "auto",
+    clip_asset: Optional[str] = None,
 ) -> Path:
     """统一代码视频渲染入口：html（确定性无头 Chrome） / pillow（纯 Python） / auto（优先 HTML，缺浏览器无缝回退）。"""
     b_norm = str(backend or "auto").lower()
@@ -1000,7 +1205,7 @@ def render_code_clip(
                     duration_sec=duration_sec, fps=fps,
                     accent_hex=accent_hex, bg_hex=bg_hex,
                     style_id=style_id, track=track, register=register,
-                    anchor_delay_sec=anchor_delay_sec,
+                    anchor_delay_sec=anchor_delay_sec, clip_asset=clip_asset,
                 )
             except Exception as exc:
                 if b_norm == "html":
@@ -1044,7 +1249,81 @@ def render_spec_scene_html(
         accent_hex=scene_cfg.get("accent_hex"),
         bg_hex=scene_cfg.get("bg_hex"),
         backend=backend,
+        clip_asset=scene_cfg.get("clip_asset"),
     )
+
+
+def render_spec_scenes_batch(
+    scene_tasks: List[Tuple[Dict[str, Any], Path]],
+    style_id: Optional[str],
+    track: str,
+    backend: str = "auto",
+    fps: int = DEFAULT_FPS,
+) -> List[Path]:
+    """单 Chrome 实例多幕批处理渲染：一次启动浏览器连续/并发渲染全部场景，大幅降低冷启动开销。"""
+    if not scene_tasks:
+        return []
+    b_norm = str(backend or "auto").lower()
+    br = detect_browser_renderer()
+    if b_norm in ("html", "auto") and br.get("available"):
+        try:
+            with tempfile.TemporaryDirectory(prefix="svs_html_batch_") as td:
+                tdp = Path(td)
+                batch_items: List[Dict[str, Any]] = []
+                for idx, (sc_cfg, out_mp4) in enumerate(scene_tasks, start=1):
+                    out_mp4.parent.mkdir(parents=True, exist_ok=True)
+                    mode = str(sc_cfg.get("mode") or "kinetic_text")
+                    title = str(sc_cfg.get("on_screen_text") or sc_cfg.get("title") or sc_cfg.get("name") or "核心重点")
+                    items = sc_cfg.get("items") or [
+                        {"label": title, "subtitle": str(sc_cfg.get("visual_state") or "程序确定性渲染")}
+                    ]
+                    dur = max(2.6, float(sc_cfg.get("duration_sec", 3.5)))
+                    pal = dict(resolve_style_palette(style_id, track=track, register=sc_cfg.get("register")))
+                    if sc_cfg.get("bg_hex"):
+                        pal["bg_hex"] = sc_cfg["bg_hex"]
+                    if sc_cfg.get("accent_hex"):
+                        pal["accent_hex"] = sc_cfg["accent_hex"]
+                    font_path = find_commercial_font(pal.get("font_candidates"))
+                    sub_dir = tdp / f"scene_{idx:02d}"
+                    _prepare_html_scene_dir(
+                        sub_dir, mode, title, items, dur, pal, font_path,
+                        anchor_delay_sec=float(sc_cfg.get("anchor_delay_sec", 0.15)),
+                        clip_asset=sc_cfg.get("clip_asset"),
+                        fps=fps,
+                    )
+                    batch_items.append({
+                        "projectDir": str(sub_dir),
+                        "page": "index.html",
+                        "fps": int(fps),
+                        "dur": round(dur, 4),
+                        "size": f"{CANVAS_WIDTH}x{CANVAS_HEIGHT}",
+                        "jpeg": True,
+                        "out": str(out_mp4.resolve()),
+                    })
+                batch_json_p = tdp / "batch_manifest.json"
+                write_json(batch_json_p, {"tasks": batch_items})
+                res = subprocess.run([
+                    str(br["node_bin"]),
+                    str(SCRIPTS_DIR / "capture_html_video.mjs"),
+                    "--batch-json",
+                    str(batch_json_p),
+                ], capture_output=True, text=True)
+                if res.returncode == 0 and all(p.is_file() and p.stat().st_size >= 4096 for _, p in scene_tasks):
+                    return [p for _, p in scene_tasks]
+                if b_norm == "html":
+                    raise RuntimeError(f"批量 HTML 渲染失败 ({res.returncode}): {(res.stderr or res.stdout)[-400:]}")
+                print(f"[code_broll] [WARN] 批量 HTML 渲染异常，回退逐条 Pillow: {(res.stderr or res.stdout)[-200:]}")
+        except Exception as exc:
+            if b_norm == "html":
+                raise
+            print(f"[code_broll] [WARN] 批量 HTML 异常回退 Pillow: {exc}")
+    elif b_norm == "html":
+        raise RuntimeError("指定 --backend html 但未检测到可用 Chrome/playwright-core")
+
+    return [
+        render_spec_scene_html(sc_cfg, style_id=style_id, track=track, out_mp4=out_mp4, backend="pillow")
+        for sc_cfg, out_mp4 in scene_tasks
+    ]
 
 
 def generate_demo_media_pack(output_dir: Path, style_id: Optional[str] = None) -> Dict[str, Any]:

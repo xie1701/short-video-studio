@@ -500,6 +500,7 @@ def run_step3(
         sent_obj = {
             "id": sid,
             "text": seg["text"],
+            "say_text": str(seg.get("say_text") or seg.get("text") or ""),
             "source_media": seg.get("source_media"),
             "source_video_grade": seg.get("source_video_grade", "usable"),
             "source_in_sec": round(s0 / float(SR), 4),
@@ -627,6 +628,7 @@ def run_step3(
         "fps": fps,
         "sample_rate": SR,
         "locked_duration_sec": total_dur,
+        "total_duration_sec": total_dur,
         "locked_duration_frames": sec_to_frames(total_dur, fps),
         "pause_duration_sec": round(sum(pauses_used) / len(pauses_used), 3) if pauses_used else pause_sec,
         "pause_range_sec": [min(pauses_used), max(pauses_used)] if pauses_used else [pause_sec, pause_sec],
