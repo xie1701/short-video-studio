@@ -10,6 +10,7 @@
 | :--- | :--- | :--- |
 | 一手原材（可选） | `00_raw_intel.json` + `00_script_lint.md` | 同行评论/客服原话痛点萃取、真实物证索引与剧本口语去AI味体检 |
 | 入口2（可选） | `00_inventory.json` + `00_shot_log.json` | HDR/VFR诊断、物理锐度/抖动锁精华入点 `best_in_sec`、人脸双眼/显著性/OCR日志与选题反推 |
+| 入口3（可选） | `00_code_spec.json` + `SPEC.md` + `STRUCTURE.md` | 纯代码制片规约（One Idea、Exact Copy 白名单、Fact Ledger、分幕时间表、安全区与可读停留校验） |
 | Step 1 | `01_manifest.json` + `01_normalized/*.mp4/*.wav` | HDR→Rec.709 Hable 色调映射、统一转 CFR 30fps (`1080x1920`) 并提取 48kHz 16-bit WAV |
 | Step 2 | `02_transcript.json` | ASR/VAD 能量包络强制对齐、F0/RMS 真实韵律重音、物理剥离画外声与多条 NG Take 择优 |
 | Step 3 | `03_locked_voice.wav` + `03_locked_bgm.wav` + `03_audio_events.json` | 真实 Room Tone 抽样填缝 + 过零点等功率精剪 + 语义动态呼吸停顿 + 锁定音轨事件时间线 |
@@ -21,7 +22,7 @@
 | Step 9 | `09_title_cover.md` + `09_title_cover.json` + `09_cover.jpg` + `09_cover_3x4.jpg` + `09_ui_safe_preview.jpg` | 黄金封面帧优选（锐度/睁眼）、风格调色同步、避脸双构图封面 + UI遮罩预览 + 180px缩略图可读校验与真实3s `--hook-variants` |
 | 出片 | `output_preview.mp4` / `output_final.mp4` / `jianying_draft/` / `hyperframes_draft/` | 本地 MP4 渲染 (`focus_blur` 柔焦与锁眼 Ken Burns 修复) + 相对 URL FCPXML + `<template>` 可播放离线 HyperFrames |
 | 质检 | `10_qa_report.json` + `10_qa_report.md` (+ `10_benchmark_comparison.md`) | **22 项 Fail-Closed 门禁**（三态 `PASS \| FAIL \| SKIPPED_UNAVAILABLE`，双态终审 `MACHINE_PASS_PENDING_HUMAN` → `APPROVED`） |
-| 交付与清理 | `out/*` + `11_delivery_summary.md` + `review_player.html` + `tidy_report.json` | 交付物同步入 `out/` + 离线打点审片 + 默认清理高体积中间帧/过程流并保留锁轨 ASSETS 以支撑 `reedit-visuals` (`--deep-clean` 才全清) |
+| 交付与清理 | `out/*` + `11_delivery_summary.md` + `review_player.html` + `10_action_strips.jpg` (+ `VERIFY.md`) + `tidy_report.json` | 交付物同步入 `out/` + 离线打点审片 + 前3秒及切点动作连拍条 + 默认清理高体积中间帧/过程流并保留锁轨 ASSETS 以支撑 `reedit-visuals` (`--deep-clean` 才全清) |
 | 进化闭环 | `content-log/weekly_review.md` + `content-log/account_profile.json` | 按 `--account` 与 `--track` 双重隔离复盘，纳入复播率/同城占比/询单率并反查 EDL 断崖 |
 
 ---
@@ -186,4 +187,5 @@
 - **`00_compliance_report.json` & `00_asset_licenses.json` / `asset_license_manifest.json`**：广告法 `must`/`warn` 双级命中（实拍人声弃用 `>40%` 或清空即阻断 `passed=False`，`#22` 黑盒复核严格只读不覆写）；实际用到 BGM/SFX/字体/LUT/code_broll 逐项 `sha256`、`commercial_verified`、`tts_commercial_notice`。
 - **`approval_lock.json` & `tidy_report.json` & `08_sfx_audit_window.json`**：`interruptions` (3 必停点审计)、`plan_sha256`（锁 03~08 核心工件）、`output_final_sha256`、`human_approved`、`approved_at`（签字自动同步 `out/10_qa_report.*`）；`blind_test_answer_key.json` 独立真随机盲测。
 - **`content-log/account_profile.json`**：按 `--account` 与 `--track` 双重隔离，`sample_sufficient`、`defaults_frozen`、`pause_sec`、`persona_pause_sec`、`target_median_shot_sec`、`target_aroll_ratio`、`preferred_style_id`、`winning_hooks`。
-- **`10_qa_report.json`（22 项 Fail-Closed）**：每项含 `status: PASS|FAIL|SKIPPED_UNAVAILABLE` 与 `passed: (status=="PASS")`；汇总 `pass_count`, `fail_count`, `skipped_count`, `approval_status` (`MACHINE_PASS_PENDING_HUMAN` | `APPROVED` | `REJECTED`)。
+- **`00_code_spec.json` & `SPEC.md` & `STRUCTURE.md` & `VERIFY.md`**：入口 3 `--mode code-video` 契约，含 `title`、`one_idea`、`format` (`width`/`height`/`fps`/`target_duration_sec`/`frame_count`)、`exact_copy`、`facts`、`assets` (真实 `ffprobe_media` 元数据)、`typography` (字号下限 ≥28/36/64px)、`subtitle_reserved_band`、`sections` (含 `hold_sec` 可读性验证) 及像素级 `VERIFY.md`；`--script-json` 同时兼容每条对象附带独立 `say`（TTS 读法）与 `show`（上屏显示）字段。
+- **`10_qa_report.json`（22 项 Fail-Closed）**：每项含 `status: PASS|FAIL|SKIPPED_UNAVAILABLE` 与 `passed: (status=="PASS")`；汇总 `pass_count`, `fail_count`, `skipped_count`, `approval_status` (`MACHINE_PASS_PENDING_HUMAN` | `APPROVED` | `REJECTED`)；其中 `#16` 支持 HyperFrames 3 帧真实无头浏览器烟测、`#20` 同时核验 2–8kHz 抬升与 5ms Spectral Flux 毫秒起音同步。

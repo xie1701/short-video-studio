@@ -349,6 +349,7 @@ def run_step6(
             "text_or_asset": hook_label,
             "start_frame": 0,
             "end_frame": hook_ef,
+            "read_hold_sec": round(hook_ef / float(fps), 2),
             "aligned_sfx_or_accent_frame": 0,
             "alignment_error_frames": 0,
             "bbox": hook_bbox,
@@ -364,14 +365,16 @@ def run_step6(
         sf = int(cue["frame"])
         if sf < last_vis_end or sf > int((total_dur - 1.5) * fps):
             continue
-        ef = min(int(total_dur * fps), sf + int(2.2 * fps))
-        if overlaps_code(sf, ef):
-            continue
         sent = next((s for s in audio_events["sentences"] if s["start_frame"] <= sf <= s["end_frame"] + 15), first_sent)
         if sent.get("emotion_or_info") not in ("hook", "info", "twist", "persona", "cta"):
             continue
 
         kw_label = sent["keywords"][0] if sent.get("keywords") else sent["text"][:8]
+        cjk_n = sum(1 for ch in kw_label if "\u4e00" <= ch <= "\u9fff")
+        est_hold = max(2.2, round(cjk_n / 4.5 + 1.5, 2))
+        ef = min(int(total_dur * fps), sf + int(math.ceil(min(3.0, est_hold) * fps)))
+        if overlaps_code(sf, ef):
+            continue
         box_w = _measure_pkg_badge_width(kw_label, pkg_font_path, max_pkg_w, target_fs=40, min_w=240)
         active_faces = []
         for c in edl.get("clips", []):
@@ -386,6 +389,7 @@ def run_step6(
             "text_or_asset": kw_label,
             "start_frame": sf,
             "end_frame": ef,
+            "read_hold_sec": round((ef - sf) / float(fps), 2),
             "aligned_sfx_or_accent_frame": sf,
             "alignment_error_frames": 0,
             "bbox": final_bbox,

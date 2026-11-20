@@ -27,6 +27,7 @@ ASSETS_DIR = SKILL_ROOT / "assets"
 REFERENCES_DIR = SKILL_ROOT / "references"
 SCRIPTS_DIR = SKILL_ROOT / "scripts"
 VENV_DIR = Path.home() / ".short-video-studio" / "venv"
+NODE_TOOLS_DIR = Path.home() / ".short-video-studio" / "node_tools"
 DEFAULT_WORKSPACE_ROOT = Path(
     os.environ.get("SVS_WORKSPACE_ROOT") or (Path.home() / ".short-video-studio" / "workspaces")
 )
@@ -1028,3 +1029,34 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def detect_browser_renderer() -> Dict[str, Any]:
+    """只读探测 Node + playwright-core + 本机 Chrome/Chromium 可用性（不执行任何安装写操作）。"""
+    node_bin = find_bin("node")
+    pw_cands = [
+        NODE_TOOLS_DIR / "node_modules" / "playwright-core",
+        NODE_TOOLS_DIR / "node_modules" / "playwright",
+    ]
+    pw_path = next((str(p) for p in pw_cands if p.is_dir()), None)
+
+    chrome_env = os.environ.get("SVS_CHROME_PATH")
+    chrome_cands = [
+        *( [chrome_env] if chrome_env else [] ),
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+        "/usr/bin/google-chrome",
+        "/usr/bin/chromium",
+        "/usr/bin/chromium-browser",
+    ]
+    chrome_bin = next((c for c in chrome_cands if c and Path(c).is_file()), None)
+    bridge = SCRIPTS_DIR / "capture_html_video.mjs"
+    available = bool(node_bin and pw_path and chrome_bin and bridge.is_file())
+    return {
+        "available": available,
+        "node_bin": node_bin,
+        "playwright_core": pw_path,
+        "chrome_bin": chrome_bin,
+        "bridge_script": str(bridge) if bridge.is_file() else None,
+    }

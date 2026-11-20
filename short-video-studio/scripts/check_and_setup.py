@@ -24,8 +24,10 @@ if str(SCRIPTS_ROOT) not in sys.path:
 
 from common import (
     ASSETS_DIR,
+    NODE_TOOLS_DIR,
     SCRIPTS_DIR,
     VENV_DIR,
+    detect_browser_renderer,
     find_bin,
     find_commercial_font,
     is_verified_commercial_font,
@@ -125,6 +127,7 @@ def main() -> None:
     parser.add_argument("--install-deps", action="store_true", help="创建 venv 并安装 Python 音视频依赖 (含 scipy)")
     parser.add_argument("--install-ml", action="store_true", help="额外安装 faster-whisper 与 librosa")
     parser.add_argument("--install-node-tools", action="store_true", help="检查并安装全局 HyperFrames CLI")
+    parser.add_argument("--init-browser", action="store_true", help="在隔离目录 ~/.short-video-studio/node_tools 安装轻量 playwright-core 驱动本机 Chrome")
     args = parser.parse_args()
 
     sys_name = platform.system()
@@ -183,6 +186,31 @@ def main() -> None:
     if not args.check_only and args.install_node_tools and npm_path != "MISSING":
         print("[setup] 检查并安装全局 hyperframes ...")
         subprocess.run([npm_path, "install", "-g", "hyperframes"], check=False)
+
+    if not args.check_only and args.init_browser:
+        if npm_path == "MISSING" or node_path == "MISSING":
+            print("[WARN] 缺少 node/npm，跳过 playwright-core 初始化（代码补镜将自动回退 Pillow）。")
+        else:
+            NODE_TOOLS_DIR.mkdir(parents=True, exist_ok=True)
+            pkg_p = NODE_TOOLS_DIR / "package.json"
+            if not pkg_p.exists():
+                pkg_p.write_text('{"name":"svs-node-tools","private":true,"version":"1.0.0"}\n', encoding="utf-8")
+            print(f"[setup] 正在隔离目录 {NODE_TOOLS_DIR} 安装 playwright-core ...")
+            res_pw = subprocess.run(
+                [npm_path, "install", "--no-audit", "--no-fund", "playwright-core"],
+                cwd=str(NODE_TOOLS_DIR),
+                check=False,
+            )
+            if res_pw.returncode != 0:
+                print("[WARN] playwright-core 安装失败，HTML 动效将自动降级为 Pillow。")
+
+    br_info = detect_browser_renderer()
+    print(
+        f"HTML 渲染桥 : {'OK (' + Path(str(br_info['chrome_bin'])).name + ')' if br_info['available'] else '未就绪'}"
+        + ("" if br_info["available"] else f" (node={bool(br_info['node_bin'])}, pw={bool(br_info['playwright_core'])}, chrome={bool(br_info['chrome_bin'])})")
+    )
+    if args.init_browser and not br_info["chrome_bin"] and br_info["playwright_core"]:
+        print("[WARN] 未在本机发现 Chrome/Edge/Chromium，可手动执行 `npx playwright-core install chromium` 补全浏览器。")
 
     if args.init_assets and not args.check_only:
         subprocess.run([active_py, str(SCRIPTS_DIR / "generate_builtin_assets.py")], check=True)

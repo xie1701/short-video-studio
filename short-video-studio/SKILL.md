@@ -1,6 +1,6 @@
 ---
 name: short-video-studio
-description: 面向零拍摄剪辑基础用户的全流程短视频生产智能体技能。支持多账号物理隔离 (--account) 与专属工作区零污染加工（严禁改动原素材目录，完工自动清理过程垃圾文件）、门店/博主双轨与《建立可循环的内容系统》唯一选题方法论、一手原材与诚实基线、广告法/平台合规双级前置拦截（含实拍原声整句弃用与 SHA-256 商用授权清单）、影视反 NG 五大硬守卫（2D FFT 相位相关二阶加速度稳度、声画分离 audio_only 保声遮脸、Handles 0.40s 掐头去尾、视觉指代词与禁忌反讽守卫、真静音重计时+提词半截词剔除）、广电级包装（B9 双通道字幕让位、B7 三态叠加、B6 暖食语域与 7 种信息修辞同构补镜）、风格复刻洁净室 (pHash/12字OCR) 与 22 项自动+独立黑盒质检及双态终审、MP4/自包含剪映/HyperFrames 三端出片与离线打点审片闭环。
+description: 面向零拍摄剪辑基础用户的全流程短视频生产智能体技能（含实拍双轨 + 纯代码制片 Code2Video 三入口）。支持多账号物理隔离 (--account) 与专属工作区零污染加工（严禁改动原素材目录，完工自动清理过程垃圾文件）、门店/博主双轨与《建立可循环的内容系统》唯一选题方法论、一手原材与诚实基线、广告法/平台合规双级前置拦截（含实拍原声整句弃用与 SHA-256 商用授权清单）、影视反 NG 五大硬守卫（2D FFT 相位相关二阶加速度稳度、声画分离 audio_only 保声遮脸、Handles 0.40s 掐头去尾、视觉指代词与禁忌反讽守卫、真静音重计时+提词半截词剔除）、纯代码制片方法论 (`frame(t)->image` 确定性渲染/阻尼弹簧/预抽帧/`say`/`show` 听看分离/SPEC与像素证据)、广电级包装、风格复刻洁净室与 22 项自动+独立黑盒质检及双态终审、MP4/自包含剪映/HyperFrames 三端出片与离线打点/动作连拍审片闭环。
 ---
 
 # short-video-studio 短视频制片工作室
@@ -31,7 +31,7 @@ description: 面向零拍摄剪辑基础用户的全流程短视频生产智能�
 
 ---
 
-## 三、 双入口工作流与「最多打断 3 次」交互契约
+## 三、 三入口工作流与「最多打断 3 次」交互契约
 
 每生产一条视频，最多只允许在以下 **3 个节点** 打断用户确认；其余一切参数（BGM、停顿、J-cut、字幕模板、包装点位、LUT、响度）全部按默认值自动推进：
 
@@ -40,11 +40,23 @@ description: 面向零拍摄剪辑基础用户的全流程短视频生产智能�
   ```bash
   python3 scripts/raw_intel_ingest.py --comments-file <评论/客服导出.txt> --proof-dir <物证目录> --script-json <脚本.json> --track <store|creator> --output <项目目录>/pipeline/00_raw_intel.json
   ```
-- **入口 1（从创作开始）**：完成账号搭建与用户定位（To B / To C / 曝光 + 6 维社会特征）→ 按 5A 阶段配比生成 4 周内容日历 → 逐条产出带公式标注的口语化文案与分镜。
-- **入口 2（带素材进来）**：运行深度素材盘点（HDR/10-bit 探测 + 拉普拉斯锐度/抖动锁 `best_in_sec` + Apple Vision 人脸/显著性感知），输出 `00_inventory.json` 与 `00_shot_log.json` 反推选题：
+- **入口 1（从实拍创作开始）**：完成账号搭建与用户定位（To B / To C / 曝光 + 6 维社会特征）→ 按 5A 阶段配比生成 4 周内容日历 → 逐条产出带公式标注的口语化文案与分镜。
+- **入口 2（带实拍素材进来）**：运行深度素材盘点（HDR/10-bit 探测 + 拉普拉斯锐度/抖动锁 `best_in_sec` + Apple Vision 人脸/显著性感知），输出 `00_inventory.json` 与 `00_shot_log.json` 反推选题：
   ```bash
   python3 scripts/inventory_media.py --input-dir <素材目录> --output <项目目录>/pipeline/00_inventory.json --track <store|creator>
   ```
+- **入口 3（纯代码制片 `Code2Video` `--mode code-video`，零实拍 / 科普图解 / 产品 UI 演示 / 风格化短片）**：
+  - 编码前**必读总纲** [references/code-video-methodology.md](references/code-video-methodology.md) 及对应工艺手册：
+    - 动态图形/品牌 Promo/UI 演示 → [references/craft-motion-promo.md](references/craft-motion-promo.md)
+    - 商业逻辑/数学物理科普/数据图表 → [references/craft-explainer-data.md](references/craft-explainer-data.md)
+    - 指定艺术流派/粒子仿真/无缝循环 → [references/craft-stylized-generative.md](references/craft-stylized-generative.md)
+    - 配音语速/拟音/节拍同步 → [references/craft-sound-beat-sync.md](references/craft-sound-beat-sync.md)
+  - 严格执行 **`Brief → 00_code_spec.json/SPEC.md/STRUCTURE.md → frame(t)确定性渲染 → Cold Read + 10_action_strips.jpg + VERIFY.md`** 闭环：
+    ```bash
+    python3 scripts/code_video_spec.py --init-spec --title "<标题>" --one-idea "<核心命题>" --out-dir <pipeline目录>
+    python3 scripts/code_video_spec.py --validate-spec <pipeline目录>/00_code_spec.json
+    python3 scripts/run_pipeline.py --account <账号> --workspace-root <工作区> --track <store|creator> --mode code-video --code-spec <pipeline目录>/00_code_spec.json --script-json <台词JSON(含say/show)> --style-id style_14
+    ```
 
 ### 专属工作区零污染与多账号物理隔离铁律（MUST）
 - **原素材严格只读**：所有剪辑加工、转码、临时帧和成片导出统一写入独立专属加工目录（默认 `~/.short-video-studio/workspaces/accounts/<account_slug>/projects/<project_id>/`，可用 `--workspace-root` 指定），**严禁向用户原素材 `--raw-dir` 写入任何文件**。若误将 `--project-dir` 配到 `--raw-dir` 内部，流水线自动重定向隔离并告警。
@@ -62,9 +74,9 @@ description: 面向零拍摄剪辑基础用户的全流程短视频生产智能�
      ```bash
      python3 scripts/generate_shot_card.py --output <项目目录>/shot_card.md --title "<选题>" --track <store|creator> --industry catering
      ```
-   - 缺镜头时调用 7 种信息修辞同构补镜（支持 `proportion / day_night / chips / versus` 与暖食语域 `warm_food`）：
+   - 缺镜头时调用 7 种信息修辞同构补镜（内置阻尼弹簧微过冲、`--backend html|pillow|auto` 双引擎、内嵌视频先走 `extract_clip_sequence` 预抽 JPG 帧序列）：
      ```bash
-     python3 scripts/generate_code_broll.py --output <补镜.mp4> --mode <kinetic_text|data_chart|flow_diagram|proportion|day_night|chips|versus> --register warm_food --title "<标题>" --items-json '<JSON>'
+     python3 scripts/generate_code_broll.py --output <补镜.mp4> --mode <kinetic_text|data_chart|flow_diagram|proportion|day_night|chips|versus> --register warm_food --backend auto --title "<标题>" --items-json '<JSON>'
      ```
 3. **🛑 打断 #3：确认锁定音轨、低清粗剪预览与方案哈希锁 (`workflow_guard.py`)**
    - 跑至 Step 3 锁定音轨并出 `03_blind_audio.m4a` 与粗剪预览 `output_preview.mp4`：
@@ -82,20 +94,20 @@ description: 面向零拍摄剪辑基础用户的全流程短视频生产智能�
 
 一键完整跑通流水线（盘点+接触表 → Step 1–9 → MP4/自包含剪映/可播放离线 HyperFrames → 22 项 Fail-Closed 验收 → 《我替你做的决定》+ 防 XSS 打点审片页 `review_player.html` → 归档 `out/` → 自动分级清理）：
 ```bash
-python3 scripts/run_pipeline.py --account <账号> --raw-dir <原素材目录> --track <store|creator> --mode full [--style-id style_14] [--visual-index <00_visual_index.json>] [--licenses-json <licenses.json>] [--hook-variants 2] [--dialect mandarin|cantonese|dialect] [--store-anchor <店名>]
+python3 scripts/run_pipeline.py --account <账号> --raw-dir <原素材目录> --track <store|creator> --mode <full|code-video|...> [--style-id style_14] [--code-spec <00_code_spec.json>] [--code-html <index.html>] [--code-backend auto] [--visual-index <00_visual_index.json>] [--licenses-json <licenses.json>] [--hook-variants 2] [--dialect mandarin|cantonese|dialect] [--store-anchor <店名>]
 ```
 
 各环节硬核机制（v5 全链路进化 + 影视反 NG 五原则 A1–A5 + 广电包装五原则 B6–B15）：
 - **`inventory_media.py` & `step1_normalize.py`**：EXIF 方向校准 Vision 多时点采样；单遍 BT.709 亮度与等面积锐度/急甩惩罚 + Stereo PCM 动态范围体检；**2D FFT 相位相关稳度**；物理几何裁切与人脸眼部居中构图、HDR→Rec.709 Hable 映射及声道不平衡智能挽救。
-- **`step2_transcribe.py` & `step3_lock_audio.py`**：合规与字数刷新前置于 TTS 合成前；切头去噪与修音后重算韵律停顿；分源文件隔离防混叠 `retake` 优胜；零漂移整小节循环 BGM、全局静默底噪抽样真 Room Tone、Equal-Power 渐变。
+- **`step2_transcribe.py` & `step3_lock_audio.py`**：合规与字数刷新前置于 TTS 合成前；TTS 采用 `edge-tts WordBoundary` 流式捕获 + `10ms RMS` 真实起音修正（消除 40–55ms 提前漂移）、句级哈希缓存与 `say`/`show` 听看分离；切头去噪与修音后重算韵律停顿；分源文件隔离防混叠 `retake` 优胜；零漂移整小节循环 BGM、全局静默底噪抽样真 Room Tone、Equal-Power 渐变。
 - **`step4_build_edl.py`**：**A1** `0.40s` Handles；**A2** `audio_only` 保声遮脸与首镜门控；**A3/A4** 指代词缺失告警；单向不回退 B-roll 游标、真 J-cut + 真 L-cut 声画错位、`1.15x` 锁眼微推拉。
 - **`step5_subtitles.py` & `render_mp4.py` & `step6/7/8/9`**：保护跨词数字冒号/小数点、透传 `keywords`、动态重写合规 ASS 样式、7点避脸 `final_bbox` (`y<=1468`)；Peak-aligned SFX（零 `+18dB` 噪点注水）；中点测光与全部人脸镜 BT.709 皮肤保护；锁定一致 `-14.0 LUFS` 四端三轨 (`voice_master` / `bgm_ducked` / `sfx_master`)；`focus_blur` 毛玻璃背板 + 不动点眼部 Ken Burns；封面去套话、`09_ui_safe_preview.jpg` 遮罩验收与真 3 秒 `--hook-variants` (`09_hook_v*.mp4`)。
 
 ### 22 项 Fail-Closed 门禁与双态终审 (`qa_inspector.py` + `independent_verifier.py`)
 - 全部 22 项统一输出 **`PASS | FAIL | SKIPPED_UNAVAILABLE`**（缺依赖/缺草稿绝不伪装通过，`PASS` 方计入 `passed=True`）：
   - **1–11 项流水线契约**（响度/黑帧/静音/音画同步/字幕与 `03_audio_events` 交叉校准/切点含 L-cut 对齐/安全区与零 `<=3` 残句及预算/非相邻零倒带与保声遮脸/前3秒切镜/A-Roll句界严锁/`common.LEAK_REGEX_PATTERNS` 防露馅）；
-  - **12–22 项单遍解码黑盒裁判**（300–3400Hz 语谱画外音与 A 轨覆盖、OCR 安全区+字幕内容回环 Recall、人脸零遮挡与实测单框 WCAG `>=3.8:1`、BT.709 矩阵 `common.SKIN_YCBCR_RANGE` 肤色与 `max_luma_jump`、URL 编码相对 FCPXML 与归属子元素检验及 `<template>` 可播放离线 HyperFrames、OCR 防露馅、屏蔽字幕静止检测、双带遮罩+相对 MAD 全量切点 Spot-Verify、统一 `compute_sfx_band_windows` 全量 cues 净抬升、`large-v3` 优先+粤语 `yue` 独立 ASR 盲听、严格只读广告法复核与 `is_verified_commercial_font` 清单）。
-- **双态终审**：必检全过输出 `MACHINE_PASS_PENDING_HUMAN`；人工结合 `review_player.html` 复核后，运行 `workflow_guard.py approve-final --pipeline-dir <dir>` 校验 `plan_sha256` + `output_final_sha256` 升级签字为 `APPROVED` 并同步更新 `out/10_qa_report.*`。
+  - **12–22 项单遍解码黑盒裁判**（300–3400Hz 语谱画外音与 A 轨覆盖、OCR 安全区+字幕内容回环 Recall、人脸零遮挡与实测单框 WCAG `>=3.8:1`、BT.709 矩阵 `common.SKIN_YCBCR_RANGE` 肤色与 `max_luma_jump`、URL 编码相对 FCPXML 与 `<template>` 可播放离线 HyperFrames 3 帧真实浏览器烟测、OCR 防露馅、屏蔽字幕静止检测、双带遮罩+相对 MAD 全量切点 Spot-Verify、统一 `compute_sfx_band_windows` 全量 cues 净抬升 + **5ms Spectral Flux 毫秒起音偏差校验**、`large-v3` 优先+粤语 `yue` 独立 ASR 盲听、严格只读广告法复核与 `is_verified_commercial_font` 清单）。
+- **双态终审 + Cold Read + 动作连拍取证**：出片自动生成前 3 秒（0.2s 步长）与关键切点（0.15s 步长）动作连拍条 `out/10_action_strips.jpg`；必检全过输出 `MACHINE_PASS_PENDING_HUMAN`；人工结合 `review_player.html`、`10_action_strips.jpg` 与 Cold Read 像素证据链（可由 `code_video_spec.py --init-verify` 生成 `VERIFY.md`）复核后，运行 `workflow_guard.py approve-final --pipeline-dir <dir>` 校验 `plan_sha256` + `output_final_sha256` 升级签字为 `APPROVED` 并同步更新 `out/10_qa_report.*`。
 - **风格复刻洁净室 (`workflow_guard.py replication-diff`)**：pHash 距离 `≤6` 或 OCR 连续 12 字重合直接 `BLOCK`，明暗自适应采样 ΔE，`secrets.SystemRandom` 真随机洗牌并将答案键分离至 `blind_test_answer_key.json`。
 
 ---
@@ -113,7 +125,7 @@ python3 scripts/content_log_review.py --account <账号> --track <store|creator>
 ## 六、 资产授权与环境检查
 
 - 所有随仓字体、CC0 BGM、物理 SFX 与 LUT 的商用授权清单见 [references/assets-attribution.md](references/assets-attribution.md)。
-- 首次使用或排查依赖/字体缺失时运行：`python3 scripts/check_and_setup.py --init-fonts --init-assets --install-deps`。
+- 首次使用或排查依赖/字体/无头 HTML 渲染桥（复用本机 Chrome）时运行：`python3 scripts/check_and_setup.py --init-fonts --init-assets --install-deps --init-browser`。
 
 ---
 

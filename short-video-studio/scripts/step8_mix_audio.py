@@ -289,7 +289,7 @@ def run_step8(
             run_cmd([
                 ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
                 "-i", str(wav_src),
-                "-af", f"volume={g_clamped:.2f}dB,alimiter=limit=0.881:attack=2:release=45:level=disabled:latency=true",
+                "-af", f"volume={g_clamped:.2f}dB,alimiter=limit=0.794:attack=2:release=45:level=disabled:latency=true",
                 "-ar", str(SR), "-ac", "2", "-acodec", "pcm_s16le",
                 str(wav_dst),
             ])
@@ -299,10 +299,10 @@ def run_step8(
     if init_metrics["integrated_lufs"] > -65.0:
         for _attempt in range(3):
             err = target_lufs - metrics["integrated_lufs"]
-            if abs(err) <= 0.35 and metrics["true_peak_dbtp"] <= -1.0:
+            if abs(err) <= 0.35 and metrics["true_peak_dbtp"] <= -1.5:
                 break
-            if metrics["true_peak_dbtp"] > -1.0:
-                cur_gain_db -= max(0.5, metrics["true_peak_dbtp"] + 1.0)
+            if metrics["true_peak_dbtp"] > -1.5:
+                cur_gain_db -= max(0.5, metrics["true_peak_dbtp"] + 1.5)
             else:
                 cur_gain_db += err
             cur_gain_db = max(-24.0, min(24.0, cur_gain_db))

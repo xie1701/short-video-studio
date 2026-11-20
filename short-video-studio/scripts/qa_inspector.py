@@ -294,12 +294,18 @@ def inspect_video(
         vis_elems = pkg.get("visual_elements", [])
         if len(vis_elems) > max_visual_budget:
             ui_violations.append(f"视觉包装超预算 {len(vis_elems)} > {max_visual_budget}")
+        short_holds = 0
         for elem in vis_elems:
             ebbox = elem.get("final_bbox") or elem.get("bbox")
             ok, msg = _check_bbox_in_bounds(ebbox, SAFE_ZONE, elem.get("id", "pkg"))
             if not ok:
                 ui_violations.append(f"{elem['id']}: {msg}")
             sf_e, ef_e = int(elem["start_frame"]), int(elem["end_frame"])
+            elem_txt = str(elem.get("text_or_asset") or "")
+            hold_sec = (ef_e - sf_e) / float(fps)
+            if elem_txt and hold_sec < 1.35:
+                short_holds += 1
+                ui_violations.append(f"{elem['id']}: 卡片停留过短 {hold_sec:.2f}s (<1.35s)")
             if any(sf_e < ce and ef_e > cs for cs, ce in code_ranges):
                 code_collisions += 1
                 ui_violations.append(f"{elem['id']}: 与代码补镜卡重叠")
@@ -307,10 +313,10 @@ def inspect_video(
         ui_ok = len(ui_violations) == 0 and pkg_sync_err <= 1
         checks.append(_mk_check(
             "ui_safe_zone",
-            "平台 UI 安全区 / 代码卡互斥 / 零 <=3 残句 / 预算",
+            "平台 UI 安全区 / 代码卡互斥 / 零 <=3 残句 / 阅读停留",
             "PASS" if ui_ok else "FAIL",
-            f"违规 {len(ui_violations)} 处 (碰撞={code_collisions}, <=3残句={short_subs}, 包装={len(vis_elems)}/{max_visual_budget}), 误差 {pkg_sync_err} 帧",
-            "0违规/0碰撞/0残句, 包装<=ceil(dur/3.5), 误差<=1帧",
+            f"违规 {len(ui_violations)} 处 (碰撞={code_collisions}, <=3残句={short_subs}, 短停留={short_holds}, 包装={len(vis_elems)}/{max_visual_budget}), 误差 {pkg_sync_err} 帧",
+            "0违规/0碰撞/0残句, 卡片停留≥1.35s, 包装<=ceil(dur/3.5), 误差<=1帧",
         ))
 
         # 8. 镜头时长分布 + 零同源倒带 + A-Roll 占比

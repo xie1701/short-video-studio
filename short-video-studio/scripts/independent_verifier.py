@@ -33,10 +33,12 @@ from common import (
     CANVAS_WIDTH,
     DEFAULT_FPS,
     LEAK_REGEX_PATTERNS,
+    SCRIPTS_DIR,
     SKIN_YCBCR_RANGE,
     SUBTITLE_SAFE_ZONE,
     TARGET_LUFS,
     compute_sfx_band_windows,
+    detect_browser_renderer,
     find_bin,
     is_verified_commercial_font,
     maybe_reexec_in_venv,
@@ -644,17 +646,102 @@ def verify_cut_spot_blackbox(video_path: Path, pipeline_dir: Optional[Path], tmp
     }
 
 
+def compute_audio_onset_strength(mono: np.ndarray, sr: int = 48000) -> Tuple[np.ndarray, np.ndarray]:
+    """基于 5ms hop 的对数频谱通量 + 对数能量上升沿联合 Onset 强度曲线（纯 NumPy 实现）。"""
+    hop = max(1, int(round(0.005 * sr)))
+    win_n = 1024
+    x = np.asarray(mono, dtype=np.float64)
+    if len(x) < hop * 2:
+        return np.zeros(0, dtype=np.float64), np.zeros(0, dtype=np.float64)
+    padded = np.pad(x, (win_n // 2, win_n))
+    n_frames = max(1, (len(x) + hop - 1) // hop)
+    hann = np.hanning(win_n)
+    try:
+        views = np.lib.stride_tricks.sliding_window_view(padded, win_n)[::hop][:n_frames]
+    except Exception:
+        views = np.stack([padded[i * hop : i * hop + win_n] for i in range(n_frames)], axis=0)
+    frames = views * hann
+    frame_rms = np.sqrt(np.mean(frames ** 2, axis=1))
+    noise_floor = max(1e-4, float(np.percentile(frame_rms, 30)) * 2.5)
+    gate = (frame_rms >= noise_floor).astype(np.float64)
+    mag = np.abs(np.fft.rfft(frames, axis=1))
+    log_mag = np.log1p(100.0 * mag)
+    flux = np.concatenate([[0.0], np.maximum(np.diff(log_mag, axis=0), 0.0).sum(axis=1)]) * gate
+    rms_log = np.log(frame_rms + max(1e-3, noise_floor))
+    rise = np.concatenate([[0.0], np.maximum(np.diff(rms_log), 0.0)]) * gate
+    p99_f = float(np.percentile(flux, 99)) + 1e-9
+    p99_r = float(np.percentile(rise, 99)) + 1e-9
+    strength = np.maximum(flux / p99_f, rise / p99_r)
+    times = np.arange(len(strength), dtype=np.float64) * (hop / float(sr))
+    return times, strength
+
+
+def measure_event_onset_offsets(
+    mono: np.ndarray,
+    sr: int,
+    events: List[Dict[str, Any]],
+    window_sec: float = 0.15,
+    thr: float = 0.22,
+    tol_ms: float = 55.0,
+) -> Dict[str, Any]:
+    """对比期望事件时刻（支持单时刻 t 或双锚 [t_on, t_pk]）与成片实测音轨 Onset 毫秒偏差。"""
+    if not events:
+        return {"checked": 0, "synced": 0, "sync_ratio": 1.0, "median_err_ms": 0.0, "max_err_ms": 0.0, "details": []}
+    times, strength = compute_audio_onset_strength(mono, sr)
+    if len(times) < 3:
+        return {"checked": len(events), "synced": 0, "sync_ratio": 0.0, "median_err_ms": 999.0, "max_err_ms": 999.0, "details": []}
+
+    errs_ms: List[float] = []
+    details: List[Dict[str, Any]] = []
+    for ev in events:
+        t_on = float(ev.get("onset_time_sec", ev.get("t", 0.0)))
+        t_pk = float(ev.get("peak_time_sec", t_on))
+        t_lo = min(t_on, t_pk) - float(window_sec)
+        t_hi = max(t_on, t_pk) + float(window_sec)
+        idx = np.flatnonzero((times >= t_lo) & (times <= t_hi))
+        peaks = [
+            int(k) for k in idx
+            if 0 < k < len(strength) - 1
+            and strength[k] >= strength[k - 1]
+            and strength[k] >= strength[k + 1]
+            and strength[k] >= thr
+        ]
+        if not peaks:
+            errs_ms.append(round(window_sec * 1000.0 + 50.0, 1))
+            details.append({"id": ev.get("id", ""), "expected": round(t_pk, 3), "onset": None, "offset_ms": None})
+            continue
+        max_pk = max(float(strength[k]) for k in peaks)
+        sig_peaks = [k for k in peaks if float(strength[k]) >= max(thr, max_pk * 0.45)] or peaks
+        best_k = min(sig_peaks, key=lambda k: min(abs(times[k] - t_on), abs(times[k] - t_pk)))
+        o_t = float(times[best_k])
+        err_on = (o_t - t_on) * 1000.0
+        err_pk = (o_t - t_pk) * 1000.0
+        best_err = err_on if abs(err_on) <= abs(err_pk) else err_pk
+        errs_ms.append(round(abs(best_err), 1))
+        details.append({"id": ev.get("id", ""), "expected": round(t_pk, 3), "onset": round(o_t, 3), "offset_ms": round(best_err, 1)})
+
+    synced = sum(1 for d, e in zip(details, errs_ms) if d["onset"] is not None and e <= tol_ms)
+    return {
+        "checked": len(events),
+        "synced": synced,
+        "sync_ratio": round(synced / float(len(events)), 3),
+        "median_err_ms": round(statistics.median(errs_ms), 1),
+        "max_err_ms": round(max(errs_ms), 1),
+        "details": details,
+    }
+
+
 def verify_sfx_in_window_blackbox(
     audio_ctx: Dict[str, Any],
     pipeline_dir: Optional[Path],
 ) -> Dict[str, Any]:
-    """#20 统一调用 common.compute_sfx_band_windows 对全量 cues 做 [-0.04, +0.16] 同窗净抬升实测。"""
+    """#20 统一调用 common.compute_sfx_band_windows 实测同窗净抬升，并用 5ms 频谱通量校验真实起音毫秒同步。"""
     if not pipeline_dir or not (pipeline_dir / "06_packaging.json").is_file():
         return {"status": "SKIPPED_UNAVAILABLE", "passed": False, "cues_checked": 0, "median_lift_db": 0.0, "max_lift_db": 0.0}
     pkg = read_json(pipeline_dir / "06_packaging.json")
     cues = pkg.get("sfx_cues") or []
     if not cues:
-        return {"status": "PASS", "passed": True, "cues_checked": 0, "median_lift_db": 0.0, "max_lift_db": 0.0, "source": "no_cues"}
+        return {"status": "PASS", "passed": True, "cues_checked": 0, "median_lift_db": 0.0, "max_lift_db": 0.0, "onset_sync_ratio": 1.0, "source": "no_cues"}
 
     bb_arr = audio_ctx["audio_48k"]
     sr1 = int(audio_ctx["sr"])
@@ -701,9 +788,12 @@ def verify_sfx_in_window_blackbox(
     if not lifts:
         return {"status": "FAIL", "passed": False, "cues_checked": 0, "median_lift_db": 0.0, "max_lift_db": 0.0, "source": source_used}
 
+    onset_audit = measure_event_onset_offsets(bb_band, sr1, cues, window_sec=0.14, thr=0.18, tol_ms=60.0)
     med_lift = round(statistics.median(lifts), 2)
     max_lift = round(max(lifts), 2)
-    ok = (med_lift >= 2.5 and max_lift >= 2.5)
+    lift_ok = (med_lift >= 2.5 and max_lift >= 2.5)
+    onset_ok = onset_audit["sync_ratio"] >= 0.65
+    ok = lift_ok and onset_ok
     return {
         "status": "PASS" if ok else "FAIL",
         "passed": ok,
@@ -711,6 +801,9 @@ def verify_sfx_in_window_blackbox(
         "median_lift_db": med_lift,
         "max_lift_db": max_lift,
         "per_cue_lifts_db": lifts,
+        "onset_sync_ratio": onset_audit["sync_ratio"],
+        "median_onset_err_ms": onset_audit["median_err_ms"],
+        "onset_details": onset_audit["details"][:8],
         "source": source_used,
     }
 
@@ -1019,6 +1112,7 @@ def verify_exports_blackbox(pipeline_dir: Path) -> Dict[str, Any]:
             errors.append(f"FCPXML XML 解析异常: {e}")
 
     hf_ok = True
+    browser_smoke_status = "skipped_missing"
     hf_cli = find_bin("hyperframes")
     idx_html = hf_dir / "index.html"
     hf_json = hf_dir / "hyperframes.json"
@@ -1083,6 +1177,37 @@ def verify_exports_blackbox(pipeline_dir: Path) -> Dict[str, Any]:
             hf_ok = False
             errors.append(f"HyperFrames 组装 DOM 存在重复 id: {id_dups[:4]}")
 
+        browser_smoke_status = "skipped_no_browser"
+        br_info = detect_browser_renderer()
+        if hf_ok and br_info.get("available"):
+            with tempfile.TemporaryDirectory(prefix="svs_hf_smoke_") as sm_td:
+                sm_p = Path(sm_td)
+                sm_mp4 = sm_p / "smoke.mp4"
+                sm_json = sm_p / "smoke.json"
+                sm_res = subprocess.run([
+                    str(br_info["node_bin"]),
+                    str(SCRIPTS_DIR / "capture_html_video.mjs"),
+                    str(hf_dir),
+                    "--page", "index.html",
+                    "--fps", "30",
+                    "--frames", "3",
+                    "--size", f"{CANVAS_WIDTH}x{CANVAS_HEIGHT}",
+                    "--out", str(sm_mp4),
+                    "--smoke-json", str(sm_json),
+                ], capture_output=True, text=True)
+                if sm_res.returncode != 0 or not sm_json.is_file():
+                    hf_ok = False
+                    browser_smoke_status = "fail"
+                    errors.append(f"HyperFrames 3帧浏览器真渲失败: {(sm_res.stderr or sm_res.stdout)[:200]}")
+                else:
+                    s_data = read_json(sm_json)
+                    if not s_data.get("ok") or int(s_data.get("non_black_frames", 0)) < 1:
+                        hf_ok = False
+                        browser_smoke_status = "fail"
+                        errors.append(f"HyperFrames 3帧真渲全黑或前端异常: {s_data}")
+                    else:
+                        browser_smoke_status = "pass"
+
     passed = fcpxml_ok and hf_ok and len(errors) == 0
     return {
         "status": "PASS" if passed else "FAIL",
@@ -1090,6 +1215,7 @@ def verify_exports_blackbox(pipeline_dir: Path) -> Dict[str, Any]:
         "fcpxml_checked": len(fcpxmls) > 0,
         "hyperframes_checked": hf_dir.exists(),
         "hyperframes_cli_used": bool(hf_cli and hf_dir.exists()),
+        "hyperframes_browser_smoke": browser_smoke_status,
         "errors": errors,
     }
 
@@ -1196,11 +1322,12 @@ def run_blackbox_verification(
         ),
         _mk_check(
             "bb_sfx_in_window_lift",
-            "[黑盒] 2-8kHz 同窗净抬升 SFX 可听度",
+            "[黑盒] 2-8kHz 同窗净抬升与 Spectral Flux 毫秒起音校准",
             sfx_res["status"],
             f"来源={sfx_res.get('source', '?')} | 抽检 {sfx_res['cues_checked']} 处 | "
-            f"中位={sfx_res['median_lift_db']:+.1f}dB | 峰值={sfx_res['max_lift_db']:+.1f}dB",
-            "中位与峰值净抬升 ≥ +2.5dB",
+            f"中位={sfx_res['median_lift_db']:+.1f}dB | 峰值={sfx_res['max_lift_db']:+.1f}dB | "
+            f"起音同步={sfx_res.get('onset_sync_ratio', 1.0)*100:.0f}% (中位差={sfx_res.get('median_onset_err_ms', 0.0):.1f}ms)",
+            "中位与峰值净抬升 ≥ +2.5dB 且 Onset 偏差≤60ms 命中率≥65%",
             sfx_res,
         ),
         _mk_check(

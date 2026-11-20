@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
 short-video-studio 专业制片流水线编排器
-支持 5 种工作模式：
+支持 6 种工作模式：
 1. full           : 跑通 Step 1 -> Step 9 -> 渲染成片 -> 导出剪映/HyperFrames -> 22项自动+黑盒质检 -> 完工清理
 2. lock-preview   : 停在打断#3，输出锁定音轨与低清粗剪预览 (output_preview.mp4)
 3. reedit-visuals : [打断#3 分支A] 严格保持 Step 3 锁定音轨不变（如 01_normalized 已被 tidy 自动按需重建），重排 Step 4-9 + 出片 + 22项质检
 4. relock-voice   : [打断#3 分支B] 回到 Step 2/3 重新锁定音轨，再重排 Step 4-9 + 出片 + 22项质检
 5. render-locked  : 校验 approval_lock 指纹锁后直接按锁定方案终稿渲染、导出与 22 项质检
+6. code-video     : [入口 3 纯代码制片] 00_code_spec 规约 -> Step 2/3 音轨先锁 -> Chrome HTML/Pillow 渲染分幕 -> Step 1/4-9 -> VERIFY.md
 """
 
 from __future__ import annotations
@@ -24,6 +25,8 @@ from common import (
     CANVAS_WIDTH,
     DEFAULT_FPS,
     SAFE_ZONE,
+    detect_browser_renderer,
+    ffprobe_media,
     find_bin,
     fit_text_line,
     get_cached_font,
@@ -38,9 +41,10 @@ maybe_reexec_in_venv()
 
 from PIL import Image, ImageDraw
 from apply_style_spectrum import resolve_style_runtime_config
+from code_video_spec import generate_verify_template, init_code_spec, validate_code_spec
 from export_hyperframes import export_hyperframes_draft
 from export_jianying import export_jianying_draft
-from generate_code_broll import generate_demo_media_pack
+from generate_code_broll import generate_demo_media_pack, render_spec_scene_html
 from inventory_media import (
     MEDIA_EXTS,
     build_shot_log_dict,
@@ -59,7 +63,7 @@ from step6_packaging import run_step6
 from step7_color_grade import run_step7
 from step8_mix_audio import run_step8
 from step9_title_cover import run_step9
-from workflow_guard import audit_stops, record_stop, tidy_workspace, verify_lock
+from workflow_guard import audit_stops, generate_action_strips, record_stop, tidy_workspace, verify_lock
 
 
 def _run_script_prelint(
@@ -317,9 +321,15 @@ def write_delivery_summary(
         "- 双封面图：`out/09_cover.jpg`（信息流首帧 9:16） / `out/09_cover_3x4.jpg`（主页网格 3:4）",
         "- 排画前盲听音轨：`out/03_blind_audio.m4a`",
         "- 素材可视化接触表：`out/00_contact_sheet.jpg`",
+        "- 动作时间条审片拼图：`out/10_action_strips.jpg`",
         "- 合规审校 & SHA-256 授权清单：`out/00_compliance_report.md` · `out/asset_license_manifest.json`",
         "- 离线打点审片器：`out/review_player.html`",
         "- 双宿主可编辑工程：`pipeline/jianying_draft/timeline.fcpxml` / `pipeline/hyperframes_draft/index.html`",
+        *(
+            ["- 纯代码制片规约与像素核验单：`out/00_code_spec.json` · `out/SPEC.md` · `out/STRUCTURE.md` · `out/VERIFY.md`"]
+            if (pipeline_dir / "00_code_spec.json").is_file()
+            else []
+        ),
         "",
         "## 二、 推荐发布标题（与 `09_title_cover.json` 完全同源）",
         *[f"{i}. {t}" for i, t in enumerate(titles, start=1)],
@@ -391,6 +401,272 @@ def _ensure_stop_recorded(pipeline_dir: Path, stop_type: str, summary: str) -> N
         pass
 
 
+def _run_code_video_branch(
+    pipeline_dir: Path,
+    track: str,
+    script_p: Optional[Path],
+    code_spec_p: Optional[Path],
+    code_html_p: Optional[Path],
+    code_backend: str,
+    active_style_id: Optional[str],
+    bgm_p: Optional[Path],
+    pause_sec: Optional[float],
+    account_profile: Optional[Dict[str, Any]],
+    whitelist_path: Optional[Path],
+    store_anchor: Optional[str],
+) -> Path:
+    """入口 3 纯代码制片工作流：00_code_spec 规约 -> 音轨先锁 -> 比例对齐与校验 -> 渲染分场素材目录。"""
+    import re
+    import subprocess
+
+    eff_style = active_style_id or ("style_14" if track == "store" else "style_11")
+
+    def _compact_title(raw_t: str, limit: int = 12) -> str:
+        s = re.sub(r"[，。！？、；：“”‘’（）().,!?;:\s]+", "", str(raw_t or "")).strip()
+        return (s[:limit] or "核心真相").strip()
+
+    seed_items: List[Dict[str, Any]] = []
+    if script_p and script_p.exists():
+        raw_scr = read_json(script_p)
+        seed_items = raw_scr.get("sentences") or raw_scr.get("segments") or [] if isinstance(raw_scr, dict) else list(raw_scr)
+
+    # 1. 准备初始 00_code_spec.json（如果未传入则由口播/锚点自动收敛）
+    spec_out = pipeline_dir / "00_code_spec.json"
+    if code_spec_p and code_spec_p.exists():
+        spec = read_json(code_spec_p)
+        write_json(spec_out, spec)
+        if not (pipeline_dir / "SPEC.md").is_file() or not (pipeline_dir / "STRUCTURE.md").is_file():
+            fmt = spec.get("format") or {}
+            init_code_spec(
+                title=str(spec.get("title") or store_anchor or "核心拆解"),
+                one_idea=str(spec.get("one_idea") or "一句看懂核心对比真相"),
+                out_dir=pipeline_dir,
+                duration_sec=float(fmt.get("target_duration_sec", 15.0)),
+                width=int(fmt.get("width", CANVAS_WIDTH)),
+                height=int(fmt.get("height", CANVAS_HEIGHT)),
+                fps=int(fmt.get("fps", DEFAULT_FPS)),
+                style_id=str(spec.get("style_id") or eff_style),
+                track=str(spec.get("track") or track),
+                sections=spec.get("sections"),
+                exact_copy=spec.get("exact_copy"),
+                facts=spec.get("facts"),
+                risks=spec.get("risks"),
+                must_haves=spec.get("must_haves"),
+            )
+    else:
+        t_seed = _compact_title(store_anchor or (seed_items[0].get("show") or seed_items[0].get("text") if seed_items else "重点拆解"), 14)
+        idea_parts = [str(it.get("show") or it.get("text") or "").strip() for it in seed_items[:2] if str(it.get("show") or it.get("text") or "").strip()]
+        one_idea = " ".join(idea_parts)[:42] if idea_parts else f"{t_seed}核心原理与实测对比"
+        copy_seed = [t_seed] + [str(it.get("show") or it.get("text") or "")[:24] for it in seed_items if str(it.get("show") or it.get("text") or "").strip()]
+        init_code_spec(
+            title=t_seed,
+            one_idea=one_idea,
+            out_dir=pipeline_dir,
+            duration_sec=15.0,
+            style_id=eff_style,
+            track=track,
+            exact_copy=copy_seed,
+        )
+        spec = read_json(spec_out)
+
+    # 2. 先音后画：无 01_manifest 直接触发 TTS + WordBoundary 与 Step 3 音轨锁
+    run_step2(
+        pipeline_dir,
+        track=track,
+        script_json_path=script_p,
+        force_tts=True,
+        whitelist_path=whitelist_path,
+    )
+    _ensure_stop_recorded(pipeline_dir, "stop1_script", "Code2Video 脚本转写与语音对齐完成")
+    run_step3(
+        pipeline_dir,
+        track=track,
+        bgm_path=bgm_p,
+        pause_sec=pause_sec,
+        account_profile=account_profile,
+    )
+    _ensure_stop_recorded(pipeline_dir, "stop2_blind_audio", "Code2Video 音轨节拍与边界锁定完成")
+
+    # 3. 用真实锁定音长校正并强校验 00_code_spec.json
+    ae = read_json(pipeline_dir / "03_audio_events.json")
+    tr = read_json(pipeline_dir / "02_transcript.json")
+    locked_dur = max(3.0, float(ae.get("total_duration_sec", ae.get("locked_duration_sec", 12.0))))
+    sentences = ae.get("sentences") or tr.get("segments") or tr.get("sentences") or []
+
+    sections = spec.get("sections") or []
+    if sections:
+        raw_sum = sum(max(0.5, float(s.get("duration_sec", 1.0))) for s in sections)
+        scale = locked_dur / max(0.5, raw_sum)
+        cur_t = 0.0
+        for si, sec in enumerate(sections):
+            if si == len(sections) - 1:
+                sd = round(max(1.5, locked_dur - cur_t), 3)
+            else:
+                sd = round(max(1.5, float(sec.get("duration_sec", 2.0)) * scale), 3)
+            sec["start_sec"] = round(cur_t, 3)
+            sec["end_sec"] = round(cur_t + sd, 3)
+            sec["duration_sec"] = sd
+            sec["hold_sec"] = sd
+            cur_t += sd
+
+    spec.setdefault("format", {})
+    spec["format"]["target_duration_sec"] = round(locked_dur, 3)
+    spec["format"]["frame_count"] = int(round(locked_dur * int(spec["format"].get("fps", DEFAULT_FPS))))
+    init_code_spec(
+        title=str(spec.get("title") or "核心拆解"),
+        one_idea=str(spec.get("one_idea") or "一句话看清核心事实"),
+        out_dir=pipeline_dir,
+        duration_sec=locked_dur,
+        width=int(spec["format"].get("width", CANVAS_WIDTH)),
+        height=int(spec["format"].get("height", CANVAS_HEIGHT)),
+        fps=int(spec["format"].get("fps", DEFAULT_FPS)),
+        style_id=str(spec.get("style_id") or eff_style),
+        track=str(spec.get("track") or track),
+        sections=sections,
+        exact_copy=spec.get("exact_copy"),
+        facts=spec.get("facts"),
+        risks=spec.get("risks"),
+        must_haves=spec.get("must_haves"),
+    )
+    spec = read_json(spec_out)
+    val = validate_code_spec(spec)
+    if not val.get("passed"):
+        raise RuntimeError(f"00_code_spec 校验失败，已阻断渲染: {'; '.join(val.get('errors', []))}")
+
+    # 4. 渲染分幕场景入 01_code_scenes/（总净长严格 >= locked_dur * 1.25，避免 step4 额外生成多余卡片或缺少切点跳变）
+    scenes_dir = pipeline_dir / "01_code_scenes"
+    if scenes_dir.exists():
+        shutil.rmtree(scenes_dir, ignore_errors=True)
+    scenes_dir.mkdir(parents=True, exist_ok=True)
+    scene_meta: Dict[str, Any] = {}
+
+    modes_cycle = ["kinetic_text", "data_chart", "flow_diagram", "versus", "proportion", "chips"]
+
+    if code_html_p and code_html_p.exists():
+        html_dir = code_html_p.parent if code_html_p.is_file() else code_html_p
+        entry_page = code_html_p.name if code_html_p.is_file() else "index.html"
+        br = detect_browser_renderer()
+        if not br.get("available"):
+            raise RuntimeError("传入 --code-html 但当前未就绪无头浏览器桥接，请先运行 check_and_setup.py --init-browser")
+        ffmpeg = find_bin("ffmpeg")
+        if not ffmpeg:
+            raise RuntimeError("需要 ffmpeg 切分 --code-html 渲染结果")
+        master_mp4 = scenes_dir / "_master_code.mp4"
+        cap_fps = int(spec["format"].get("fps", DEFAULT_FPS))
+        master_dur = round(locked_dur + 1.0, 2)
+        frames_tot = max(30, int(round(master_dur * cap_fps)))
+        res_cap = subprocess.run([
+            str(br["node_bin"]),
+            str(Path(__file__).resolve().parent / "capture_html_video.mjs"),
+            str(html_dir),
+            "--page", entry_page,
+            "--fps", str(cap_fps),
+            "--frames", str(frames_tot),
+            "--size", f"{CANVAS_WIDTH}x{CANVAS_HEIGHT}",
+            "--out", str(master_mp4),
+        ], capture_output=True, text=True)
+        if res_cap.returncode != 0 or not master_mp4.is_file():
+            raise RuntimeError(f"--code-html 确定性捕获失败: {(res_cap.stderr or res_cap.stdout)[:300]}")
+
+        n_slices = max(4, min(8, len(sentences) or 4))
+        slice_span = master_dur / float(n_slices)
+        for si in range(n_slices):
+            t0 = round(max(0.0, si * slice_span), 3)
+            # 从母片不同时间段切片保证切点视觉跃迁，若剩余不够则保证 ≥3.2s 前向余量
+            seg_len = max(3.2, slice_span + 0.9)
+            t_clip = min(t0, max(0.0, master_dur - seg_len))
+            fn = f"code_scene_{si+1:02d}.mp4"
+            out_s = scenes_dir / fn
+            run_cmd([
+                ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+                "-ss", f"{t_clip:.3f}", "-i", str(master_mp4),
+                "-t", f"{seg_len:.3f}", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-an",
+                str(out_s),
+            ])
+            s_ref = sentences[min(si, len(sentences) - 1)] if sentences else {}
+            scene_meta[fn] = {
+                "role": "b_roll",
+                "semantic_tags": list(s_ref.get("keywords") or []) + [str(spec.get("title") or "主题")],
+                "scene_group": f"code_html_sec_{si+1:02d}",
+                "sharpness_score": 85.0,
+                "stability_score": 1.0,
+            }
+        master_mp4.unlink(missing_ok=True)
+    else:
+        # 至少准备 4 个高差异化场景镜头覆盖全句与前 3s 快切，保证 #19 切点像素跳变与 #18 全动效过关
+        unit_srcs: List[Dict[str, Any]] = []
+        if len(sentences) >= 4:
+            for si, sent in enumerate(sentences[:8]):
+                sec_ref = sections[min(si * len(sections) // max(1, len(sentences[:8])), len(sections) - 1)] if sections else {}
+                st_txt = _compact_title(sent.get("show") or sent.get("text") or sec_ref.get("on_screen_text") or spec.get("title") or "", 10)
+                nums = [int(n) for n in re.findall(r"\b\d{1,3}\b", str(sent.get("text") or ""))][:3]
+                kws = [str(k) for k in (sent.get("keywords") or [])]
+                mode_pick = str(sec_ref.get("mode") or modes_cycle[si % len(modes_cycle)]) if si < len(sections) else modes_cycle[si % len(modes_cycle)]
+                if mode_pick == "data_chart" and not nums:
+                    nums = [68 - (si % 3) * 12, 32 + (si % 3) * 12]
+                if mode_pick == "data_chart":
+                    items_s = [{"label": kws[k] if k < len(kws) else f"核心指标{k+1}", "value": nums[k % len(nums)]} for k in range(max(2, min(3, len(nums))))]
+                elif mode_pick == "versus":
+                    items_s = [{"label": kws[0] if kws else st_txt[:6], "subtitle": "真实实测对比", "positive": True}, {"label": "常规误区", "subtitle": "信息不透明", "positive": False}]
+                else:
+                    items_s = [{"label": st_txt, "subtitle": str(sent.get("text") or "")[:18]}, {"label": kws[0] if kws else "关键要点", "subtitle": str(sec_ref.get("visual_state") or "高清数据拆解")[:18]}]
+                sent_d = max(2.0, float(sent.get("end_sec", 0.0)) - float(sent.get("start_sec", 0.0)))
+                unit_srcs.append({
+                    "mode": mode_pick,
+                    "on_screen_text": st_txt,
+                    "items": items_s,
+                    "duration_sec": max(3.6, sent_d + 1.4),
+                    "keywords": kws + [st_txt],
+                    "bg_shift": si % 2 == 1,
+                })
+        else:
+            src_secs = list(sections)
+            while len(src_secs) < 4:
+                base_s = dict(src_secs[len(src_secs) % max(1, len(sections))] if sections else {"mode": "kinetic_text", "on_screen_text": spec.get("title", "要点"), "duration_sec": 3.5})
+                base_s["mode"] = modes_cycle[len(src_secs) % len(modes_cycle)]
+                src_secs.append(base_s)
+            for si, sec in enumerate(src_secs[:8]):
+                st_txt = _compact_title(sec.get("on_screen_text") or sec.get("name") or spec.get("title") or "", 10)
+                unit_srcs.append({
+                    "mode": str(sec.get("mode") or modes_cycle[si % len(modes_cycle)]),
+                    "on_screen_text": st_txt,
+                    "items": sec.get("items") or [{"label": st_txt, "subtitle": str(sec.get("visual_state") or "")[:18]}],
+                    "duration_sec": max(3.6, float(sec.get("duration_sec", 3.2)) + 1.2),
+                    "keywords": [st_txt, str(spec.get("title") or "")],
+                    "bg_shift": si % 2 == 1,
+                })
+
+        # 计算总净可用余量，不足 locked_dur * 1.28 时匀升每段时长确保不触发 auto_code_*
+        per_net = lambda u: max(0.0, float(u["duration_sec"]) - 0.80)
+        tot_net = sum(per_net(u) for u in unit_srcs)
+        if tot_net < locked_dur * 1.28:
+            add_each = (locked_dur * 1.32 - tot_net) / max(1, len(unit_srcs))
+            for u in unit_srcs:
+                u["duration_sec"] = round(u["duration_sec"] + add_each, 2)
+
+        from generate_code_broll import resolve_style_palette
+        pal_base = resolve_style_palette(eff_style, track=track)
+        for si, u in enumerate(unit_srcs):
+            fn = f"code_scene_{si+1:02d}.mp4"
+            out_mp4 = scenes_dir / fn
+            scene_cfg = dict(u)
+            if u.get("bg_shift"):
+                # 奇偶场微调底色/主强调色对比，增强切点跃迁 (#19)
+                scene_cfg["bg_hex"] = "#162032" if str(pal_base.get("bg_hex", "")).lower().startswith("#0") else "#1E293B"
+            render_spec_scene_html(scene_cfg, style_id=eff_style, track=track, out_mp4=out_mp4, backend=code_backend)
+            scene_meta[fn] = {
+                "role": "b_roll",
+                "semantic_tags": u.get("keywords") or [str(spec.get("title") or "")],
+                "scene_group": f"code_sec_{si+1:02d}",
+                "sharpness_score": 85.0,
+                "stability_score": 1.0,
+            }
+
+    write_json(scenes_dir / "scene_meta.json", scene_meta)
+    print(f"[code-video] 已渲染 {len(scene_meta)} 幕程序场景 ({code_backend}) -> {scenes_dir}")
+    return scenes_dir
+
+
 def _render_and_verify_only(
     pipeline_dir: Path,
     track: str,
@@ -412,6 +688,7 @@ def _render_and_verify_only(
     final_mp4 = render_mp4(pipeline_dir, preview=False)
     if hook_variants > 1:
         _generate_hook_variants(pipeline_dir, hook_variants)
+    generate_action_strips(final_mp4, pipeline_dir / "04_edl.json", pipeline_dir / "10_action_strips.jpg")
     jy_status = export_jianying_draft(pipeline_dir, simulate_failure=simulate_jy_fail)
     hf_status = export_hyperframes_draft(pipeline_dir, simulate_failure=simulate_hf_fail)
 
@@ -505,9 +782,17 @@ def main() -> None:
     parser.add_argument("--track", choices=["store", "creator"], default="store")
     parser.add_argument(
         "--mode",
-        choices=["full", "lock-preview", "reedit-visuals", "relock-voice", "render-locked"],
+        choices=["full", "lock-preview", "reedit-visuals", "relock-voice", "render-locked", "code-video"],
         default="full",
         help="执行模式",
+    )
+    parser.add_argument("--code-spec", help="入口 3 (code-video)：已有 00_code_spec.json 路径")
+    parser.add_argument("--code-html", help="入口 3 (code-video)：自定义程序动画 HTML 目录或入口 HTML 文件路径")
+    parser.add_argument(
+        "--code-backend",
+        choices=["auto", "html", "pillow"],
+        default="auto",
+        help="入口 3 / 代码补镜渲染后端",
     )
     parser.add_argument("--script-json", help="口播或配音台词 JSON 文件")
     parser.add_argument("--force-tts", action="store_true", help="强制使用文案生成 TTS 配音")
@@ -644,6 +929,48 @@ def main() -> None:
             strict_asr=args.strict_asr,
             hook_variants=args.hook_variants,
             ws=ws,
+        )
+    elif args.mode == "code-video":
+        scenes_dir = _run_code_video_branch(
+            pipeline_dir=pipeline_dir,
+            track=args.track,
+            script_p=script_p,
+            code_spec_p=Path(args.code_spec) if args.code_spec else None,
+            code_html_p=Path(args.code_html) if args.code_html else None,
+            code_backend=args.code_backend,
+            active_style_id=active_style_id,
+            bgm_p=bgm_p,
+            pause_sec=args.pause_sec,
+            account_profile=account_profile,
+            whitelist_path=whitelist_path,
+            store_anchor=args.store_anchor,
+        )
+        run_step1([scenes_dir], pipeline_dir)
+        res = run_visual_to_delivery(
+            pipeline_dir=pipeline_dir,
+            track=args.track,
+            j_cut_frames=j_cut_frames,
+            subtitle_template=subtitle_template,
+            lut_name=lut_name,
+            prefer_broll_only=True,
+            benchmark=bench_p,
+            simulate_jy_fail=args.simulate_jy_fail,
+            simulate_hf_fail=args.simulate_hf_fail,
+            preview_only=False,
+            style_id=active_style_id,
+            account_profile=account_profile,
+            dialect=args.dialect,
+            store_anchor=args.store_anchor,
+            require_lock=args.require_lock,
+            strict_asr=args.strict_asr,
+            licenses_path=licenses_path,
+            hook_variants=args.hook_variants,
+            ws=ws,
+        )
+        generate_verify_template(
+            pipeline_dir,
+            spec_path=pipeline_dir / "00_code_spec.json",
+            video_path=pipeline_dir / "output_final.mp4",
         )
     else:
         if args.mode in ("full", "lock-preview"):

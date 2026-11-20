@@ -316,7 +316,14 @@ def run_step7(
     manifest_by_mp4 = {it.get("normalized_mp4"): it for it in manifest.get("items", [])}
     hero_clip = next((c for c in edl["clips"] if c["track_role"] == "a_roll"), None)
     if not hero_clip:
-        hero_clip = next((c for c in edl["clips"] if c["track_role"] != "code_broll"), None)
+        hero_clip = next(
+            (
+                c for c in edl["clips"]
+                if c["track_role"] != "code_broll"
+                and not (manifest_by_mp4.get(c.get("media_path")) or {}).get("source_is_code_scene")
+            ),
+            None,
+        )
 
     hero_mp = hero_clip["media_path"] if hero_clip else ""
     hero_in = float(hero_clip.get("source_in_sec", 0.0)) if hero_clip else 0.0
@@ -363,7 +370,7 @@ def run_step7(
 
     for clip in edl["clips"]:
         mp = clip["media_path"]
-        is_code = clip["track_role"] == "code_broll"
+        is_code = (clip["track_role"] == "code_broll") or bool((manifest_by_mp4.get(mp) or {}).get("source_is_code_scene"))
         if is_code:
             clip_plans.append({
                 "clip_id": clip["clip_id"],

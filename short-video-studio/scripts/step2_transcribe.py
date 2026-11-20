@@ -13,10 +13,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import difflib
+import hashlib
 import json
 import math
 import os
 import re
+import shutil
 import sys
 import wave
 from pathlib import Path
@@ -886,21 +888,100 @@ def apply_semantic_sanity_check(
     return warnings
 
 
-def synthesize_tts_segment(text: str, out_wav: Path, voice: str = "zh-CN-YunxiNeural") -> Tuple[bool, float]:
-    """合成单句 48kHz 立体声 WAV：edge-tts -> macOS say；全部失败时 Fail-Fast 抛错。"""
+def _measure_wav_speech_extent(wav_path: Path, sr_target: int = 16000) -> Tuple[float, float, float]:
+    """实测合成 WAV 10ms RMS 真实语流起止点 (db > peak_db - 38dB)，并返回 (dur, onset_sec, offset_sec)。"""
+    dur = get_wav_duration_sec(wav_path)
+    try:
+        y16, sr = load_wav_16k_mono(wav_path)
+        hop = max(1, int(0.010 * sr))
+        n_fr = len(y16) // hop
+        if n_fr <= 0:
+            return dur, 0.0, dur
+        fr = y16[: n_fr * hop].reshape(n_fr, hop)
+        rms = np.sqrt(np.mean(fr ** 2, axis=1) + 1e-10)
+        db = 20.0 * np.log10(rms + 1e-9)
+        on = np.flatnonzero(db > (float(np.max(db)) - 38.0))
+        if len(on) > 0:
+            onset_sec = round(float(on[0]) * 0.010, 4)
+            offset_sec = round(min(dur, float(on[-1] + 1) * 0.010), 4)
+            return dur, onset_sec, max(onset_sec + 0.05, offset_sec)
+    except Exception:
+        pass
+    return dur, 0.0, dur
+
+
+def synthesize_tts_segment_detailed(
+    speak_text: str,
+    out_wav: Path,
+    voice: str = "zh-CN-YunxiNeural",
+    rate: str = "+8%",
+    cache_dir: Optional[Path] = None,
+) -> Tuple[bool, float, List[Dict[str, Any]], float, float]:
+    """
+    合成单句 48kHz 立体声 WAV 并采集精准 WordBoundary + 10ms RMS 起音修正：
+    - 句级隔离缓存（默认 ~/.short-video-studio/cache/tts）避免重复请求；
+    - edge-tts 流式采集 WordBoundary，自带 3 次重试并将 word offset 平移对齐至真实声波 onset（纠偏 ~40–55ms 提前量）；
+    - 返回 (ok, duration_sec, shifted_words, measured_onset_sec, measured_offset_sec)。
+    """
     ffmpeg = find_bin("ffmpeg")
     if not ffmpeg:
         raise RuntimeError("需要 ffmpeg 转换 TTS 音频格式。")
 
+    eff_cache = cache_dir if cache_dir is not None else (Path.home() / ".short-video-studio" / "cache" / "tts")
+    cache_key = hashlib.sha256(f"{speak_text}|{voice}|{rate}".encode("utf-8")).hexdigest()[:20]
+    c_wav = eff_cache / f"{cache_key}.wav"
+    c_meta = eff_cache / f"{cache_key}.json"
+
+    if c_wav.is_file() and c_meta.is_file() and c_wav.stat().st_size > 1000:
+        try:
+            meta = read_json(c_meta)
+            out_wav.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(c_wav, out_wav)
+            return (
+                True,
+                float(meta.get("duration", get_wav_duration_sec(out_wav))),
+                list(meta.get("words") or []),
+                float(meta.get("onset_sec", 0.0)),
+                float(meta.get("offset_sec", get_wav_duration_sec(out_wav))),
+            )
+        except Exception:
+            pass
+
     tmp_raw = out_wav.with_suffix(".raw.mp3")
+    raw_words: List[Dict[str, Any]] = []
     try:
         import edge_tts
 
-        async def _run_edge() -> None:
-            comm = edge_tts.Communicate(text, voice=voice, rate="+8%")
-            await comm.save(str(tmp_raw))
+        async def _run_edge() -> List[Dict[str, Any]]:
+            comm = edge_tts.Communicate(speak_text, voice=voice, rate=rate, boundary="WordBoundary")
+            w_list: List[Dict[str, Any]] = []
+            with open(tmp_raw, "wb") as f_mp3:
+                async for ch in comm.stream():
+                    ctype = ch.get("type")
+                    if ctype == "audio":
+                        f_mp3.write(ch["data"])
+                    elif ctype == "WordBoundary":
+                        t0 = float(ch.get("offset", 0.0)) / 1e7
+                        dt = float(ch.get("duration", 0.0)) / 1e7
+                        wt = str(ch.get("text") or "").strip()
+                        if wt:
+                            w_list.append({
+                                "word": wt,
+                                "start_sec": round(t0, 4),
+                                "end_sec": round(max(t0 + 0.02, t0 + dt), 4),
+                            })
+            return w_list
 
-        asyncio.run(_run_edge())
+        for attempt in range(3):
+            try:
+                raw_words = asyncio.run(_run_edge())
+                if tmp_raw.exists() and tmp_raw.stat().st_size > 500:
+                    break
+            except Exception:
+                tmp_raw.unlink(missing_ok=True)
+                if attempt == 2:
+                    raise
+
         if tmp_raw.exists() and tmp_raw.stat().st_size > 500:
             run_cmd([
                 ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
@@ -908,9 +989,26 @@ def synthesize_tts_segment(text: str, out_wav: Path, voice: str = "zh-CN-YunxiNe
                 str(out_wav),
             ])
             tmp_raw.unlink(missing_ok=True)
-            dur = get_wav_duration_sec(out_wav)
+            dur, onset_sec, offset_sec = _measure_wav_speech_extent(out_wav)
             if dur > 0.1:
-                return True, dur
+                if raw_words:
+                    shift = onset_sec - float(raw_words[0]["start_sec"])
+                    shifted = []
+                    for w in raw_words:
+                        ws = max(0.0, min(dur - 0.02, float(w["start_sec"]) + shift))
+                        we = max(ws + 0.02, min(dur, float(w["end_sec"]) + shift))
+                        shifted.append({"word": w["word"], "start_sec": round(ws, 4), "end_sec": round(we, 4)})
+                    raw_words = shifted
+                try:
+                    eff_cache.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(out_wav, c_wav)
+                    write_json(c_meta, {
+                        "speak_text": speak_text, "voice": voice, "rate": rate,
+                        "duration": dur, "onset_sec": onset_sec, "offset_sec": offset_sec, "words": raw_words,
+                    })
+                except Exception:
+                    pass
+                return True, dur, raw_words, onset_sec, offset_sec
     except Exception:
         tmp_raw.unlink(missing_ok=True)
 
@@ -918,7 +1016,7 @@ def synthesize_tts_segment(text: str, out_wav: Path, voice: str = "zh-CN-YunxiNe
     if say_bin:
         tmp_aiff = out_wav.with_suffix(".aiff")
         try:
-            run_cmd([say_bin, "-r", "215", "-o", str(tmp_aiff), text])
+            run_cmd([say_bin, "-r", "215", "-o", str(tmp_aiff), speak_text])
             if tmp_aiff.exists() and tmp_aiff.stat().st_size > 500:
                 run_cmd([
                     ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
@@ -926,13 +1024,58 @@ def synthesize_tts_segment(text: str, out_wav: Path, voice: str = "zh-CN-YunxiNe
                     str(out_wav),
                 ])
                 tmp_aiff.unlink(missing_ok=True)
-                dur = get_wav_duration_sec(out_wav)
+                dur, onset_sec, offset_sec = _measure_wav_speech_extent(out_wav)
                 if dur > 0.1:
-                    return True, dur
+                    return True, dur, [], onset_sec, offset_sec
         except Exception:
             tmp_aiff.unlink(missing_ok=True)
 
-    raise RuntimeError(f"TTS 配音合成失败（edge-tts 与系统 say 均不可用），拒绝输出电子合成假语音：{text[:24]}")
+    raise RuntimeError(f"TTS 配音合成失败（edge-tts 与系统 say 均不可用），拒绝输出电子合成假语音：{speak_text[:24]}")
+
+
+def synthesize_tts_segment(text: str, out_wav: Path, voice: str = "zh-CN-YunxiNeural") -> Tuple[bool, float]:
+    """向后兼容简化接口：返回 (ok, duration_sec)。"""
+    ok, dur, _, _, _ = synthesize_tts_segment_detailed(text, out_wav, voice=voice)
+    return ok, dur
+
+
+def _expand_word_boundaries_for_subtitles(
+    wb_words: List[Dict[str, Any]],
+    s_offset_sec: float,
+    keywords: List[str],
+    rms_10ms: Optional[np.ndarray],
+) -> List[Dict[str, Any]]:
+    """将 WordBoundary 词段转为字幕友好字符/数字单元并标注关键词。"""
+    expanded: List[Dict[str, Any]] = []
+    for w in wb_words:
+        tok = str(w.get("word") or "").strip()
+        if not tok:
+            continue
+        t0 = float(w["start_sec"]) + s_offset_sec
+        t1 = max(t0 + 0.02, float(w["end_sec"]) + s_offset_sec)
+        if re.fullmatch(r"[0-9A-Za-z.:/%+\-]+", tok):
+            pieces = [tok]
+        else:
+            pieces = _extract_clean_chars(tok) or [tok]
+        n_p = len(pieces)
+        dt = (t1 - t0) / float(max(1, n_p))
+        for k, pch in enumerate(pieces):
+            pt0 = t0 + k * dt
+            pt1 = max(pt0 + 0.02, t0 + (k + 1) * dt)
+            e_val = 0.72
+            if rms_10ms is not None and len(rms_10ms) >= 4:
+                i0 = max(0, int(round(pt0 * 100)))
+                i1 = min(len(rms_10ms), max(i0 + 1, int(round(pt1 * 100))))
+                e_val = float(np.mean(rms_10ms[i0:i1]))
+            expanded.append({
+                "word": pch,
+                "start_sec": round(pt0, 4),
+                "end_sec": round(pt1, 4),
+                "energy": round(min(1.0, e_val * 5.0), 3),
+                "is_keyword": False,
+            })
+    _mark_word_keywords(expanded, keywords)
+    return expanded
 
 
 def concat_wavs_with_gaps(seg_wavs: List[Path], gap_sec: float, out_wav: Path) -> List[Tuple[float, float]]:
@@ -976,7 +1119,13 @@ def run_step2(
 ) -> Dict[str, Any]:
     from compliance_guard import audit_script_compliance
 
-    manifest = read_json(pipeline_dir / "01_manifest.json")
+    mf_path = pipeline_dir / "01_manifest.json"
+    if mf_path.exists():
+        manifest = read_json(mf_path)
+    elif force_tts:
+        manifest = {"items": []}
+    else:
+        raise FileNotFoundError(f"缺少 01_manifest.json: {mf_path}")
     arolls = [it for it in manifest["items"] if it["role"] == "a_roll" and it.get("normalized_wav")]
     vgrade_by_mp4 = {
         str(it.get("normalized_mp4")): str(it.get("video_grade", "usable"))
@@ -1000,7 +1149,12 @@ def run_step2(
         tts_dir = pipeline_dir / "02_tts_segments"
         tts_dir.mkdir(parents=True, exist_ok=True)
         seg_wavs: List[Path] = []
-        pre_items = [dict(it, id=f"seg_{i:03d}") for i, it in enumerate(script_items, start=1)]
+        pre_items = []
+        for i, it in enumerate(script_items, start=1):
+            show_txt = str(it.get("show") or it.get("text") or "")
+            say_txt = str(it.get("say") or show_txt)
+            pre_items.append(dict(it, id=f"seg_{i:03d}", text=show_txt, show=show_txt, say=say_txt))
+
         pre_comp = audit_script_compliance(
             pre_items,
             source_type="tts",
@@ -1014,11 +1168,13 @@ def run_step2(
             if f.get("action") == "auto_rewrite_or_block" and f.get("suggested_text")
         }
         effective_items = []
-        for idx, item in enumerate(script_items, start=1):
-            it_copy = dict(item, id=f"seg_{idx:03d}")
+        for idx, it_base in enumerate(pre_items, start=1):
+            it_copy = dict(it_base)
             if it_copy["id"] in rewritten_by_idx:
                 it_copy["original_text_before_compliance"] = it_copy["text"]
                 it_copy["text"] = rewritten_by_idx[it_copy["id"]]
+                it_copy["show"] = it_copy["text"]
+                it_copy["say"] = it_copy["text"]
                 # 合规改写后同步刷新 keywords，严防违禁原词穿透到花字与封面
                 it_copy["keywords"] = extract_auto_keywords(it_copy["text"])
             effective_items.append(it_copy)
@@ -1026,13 +1182,39 @@ def run_step2(
         # 先做 TTS 前文本常识校对，确保音频与最终文字 100% 一致
         sanity_warnings = apply_semantic_sanity_check(effective_items, replacements=sanity_replacements)
         for item in effective_items:
+            if item.get("text") != item.get("show"):
+                item["show"] = item["text"]
+                if not item.get("_custom_say_keep"):
+                    item["say"] = item["text"]
             if not item.get("keywords") or item.get("original_text_before_compliance"):
                 item["keywords"] = extract_auto_keywords(item["text"])
 
+        tts_meta_per_seg: List[Tuple[List[Dict[str, Any]], float, float]] = []
         for idx, item in enumerate(effective_items, start=1):
             sp = tts_dir / f"seg_{idx:03d}.wav"
-            synthesize_tts_segment(item["text"], sp)
+            speak_str = str(item.get("say") or item["text"])
+            if speak_str != item["text"]:
+                say_comp = audit_script_compliance(
+                    [{"id": item["id"], "text": speak_str}],
+                    source_type="tts",
+                    pipeline_dir=None,
+                    whitelist_path=whitelist_path,
+                    auto_action=True,
+                )
+                rw_say = next(
+                    (f.get("suggested_text") for f in say_comp.get("findings", []) if f.get("action") == "auto_rewrite_or_block" and f.get("suggested_text")),
+                    None,
+                )
+                if rw_say:
+                    speak_str = str(rw_say)
+                    item["say"] = speak_str
+            v_name = str(item.get("voice") or "zh-CN-YunxiNeural")
+            v_rate = str(item.get("rate") or "+8%")
+            _, _, wb_words, m_on, m_off = synthesize_tts_segment_detailed(
+                speak_str, sp, voice=v_name, rate=v_rate
+            )
             seg_wavs.append(sp)
+            tts_meta_per_seg.append((wb_words, m_on, m_off))
 
         master_tts_wav = pipeline_dir / "02_tts_voice.wav"
         spans = concat_wavs_with_gaps(seg_wavs, gap_sec=0.38, out_wav=master_tts_wav)
@@ -1041,11 +1223,21 @@ def run_step2(
         rms_10ms = compute_10ms_rms(y16, sr16)
 
         segments: List[Dict[str, Any]] = []
-        for idx, (item, (s_sec, e_sec)) in enumerate(zip(effective_items, spans), start=1):
-            kws = item.get("keywords", []) or extract_auto_keywords(item["text"])
+        for idx, (item, (s_sec, e_sec), (wb_words, m_on, m_off)) in enumerate(zip(effective_items, spans, tts_meta_per_seg), start=1):
+            display_txt = str(item.get("show") or item["text"])
+            speak_txt = str(item.get("say") or display_txt)
+            kws = item.get("keywords", []) or extract_auto_keywords(display_txt)
+            wb_joined = "".join(w["word"] for w in wb_words)
+            if wb_words and speak_txt == display_txt and _clean_zh_text(wb_joined) == _clean_zh_text(display_txt):
+                seg_words = _expand_word_boundaries_for_subtitles(wb_words, s_sec, kws, rms_10ms)
+            else:
+                eff_s = min(e_sec - 0.1, s_sec + m_on)
+                eff_e = max(eff_s + 0.1, min(e_sec, s_sec + m_off))
+                seg_words = split_chars_energy_aligned(display_txt, eff_s, eff_e, kws, rms_10ms=rms_10ms)
             segments.append({
                 "id": f"seg_{idx:03d}",
-                "text": item["text"],
+                "text": display_txt,
+                "say_text": speak_txt,
                 "start_sec": s_sec,
                 "end_sec": e_sec,
                 "source_media": None,
@@ -1054,7 +1246,7 @@ def run_step2(
                 "is_filler": bool(item.get("is_filler", False)),
                 "emotion": item.get("emotion", "info"),
                 "keywords": kws,
-                "words": split_chars_energy_aligned(item["text"], s_sec, e_sec, kws, rms_10ms=rms_10ms),
+                "words": seg_words,
             })
         compute_prosody_for_segments(master_tts_wav, segments, audio_pair=(y16, sr16))
         source_type = "tts"

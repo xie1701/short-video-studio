@@ -184,13 +184,16 @@ def normalize_single_media(
     nv = next(s for s in norm_meta["streams"] if s["codec_type"] == "video")
     norm_dur = float(norm_meta.get("format", {}).get("duration") or nv.get("duration") or 0.0)
 
-    # 判定素材角色：显式传入 > inventory 人工/视觉索引 > 音频缺陷(silent/noisy) > 文件名提示
+    # 判定素材角色：纯代码场景保护 > 显式传入 > inventory 人工/视觉索引 > 音频缺陷(silent/noisy) > 文件名提示
     name_low = src.name.lower()
+    is_code_scene = (src.parent.name == "01_code_scenes") or name_low.startswith("code_scene_")
     shot_role = (shot_meta or {}).get("role")
     shot_ag = (shot_meta or {}).get("audio_grade")
     vis_indexed = bool((shot_meta or {}).get("visual_indexed"))
     if role_hint != "auto":
         role = role_hint
+    elif is_code_scene:
+        role = "b_roll"
     elif "code_broll" in name_low:
         role = "code_broll"
     elif not has_audio or shot_ag in ("silent", "noisy"):
@@ -214,6 +217,7 @@ def normalize_single_media(
         "normalized_mp4": str(out_mp4.resolve()),
         "normalized_wav": str(out_wav.resolve()) if has_audio else None,
         "role": role,
+        "source_is_code_scene": is_code_scene,
         "original_size": f"{disp_w}x{disp_h}",
         "coded_size": f"{geom['coded_width']}x{geom['coded_height']}",
         "rotation_deg": geom["rotation_deg"],
@@ -285,9 +289,20 @@ def run_step1(input_paths: List[Path], pipeline_dir: Path) -> Dict[str, Any]:
             if s.get("filename"):
                 shot_by_name[str(s["filename"])] = s
 
+    scene_meta_by_name: Dict[str, Dict[str, Any]] = {}
     media_files: List[Path] = []
     for p in input_paths:
         if p.is_dir():
+            sm_file = p / "scene_meta.json"
+            if sm_file.is_file():
+                try:
+                    sm_raw = read_json(sm_file)
+                    if isinstance(sm_raw, dict):
+                        for fn, m_obj in sm_raw.items():
+                            if isinstance(m_obj, dict):
+                                scene_meta_by_name[str(fn)] = m_obj
+                except Exception:
+                    pass
             for child in sorted(p.iterdir()):
                 if child.is_file() and child.suffix.lower() in MEDIA_EXTS and "benchmark" not in child.name.lower():
                     media_files.append(child)
@@ -297,8 +312,15 @@ def run_step1(input_paths: List[Path], pipeline_dir: Path) -> Dict[str, Any]:
     if not media_files:
         raise FileNotFoundError("未找到任何可用的原始视频素材文件。")
 
+    def _merge_shot_meta(f: Path) -> Optional[Dict[str, Any]]:
+        base = dict(shot_by_path.get(str(f.resolve())) or shot_by_name.get(f.name) or {})
+        extra = scene_meta_by_name.get(f.name)
+        if extra:
+            base.update(extra)
+        return base or None
+
     tasks = [
-        (f, idx, shot_by_path.get(str(f.resolve())) or shot_by_name.get(f.name))
+        (f, idx, _merge_shot_meta(f))
         for idx, f in enumerate(media_files, start=1)
     ]
     if len(tasks) > 1:

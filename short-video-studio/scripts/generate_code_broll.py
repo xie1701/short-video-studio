@@ -13,10 +13,13 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import math
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -30,6 +33,8 @@ from common import (
     CANVAS_WIDTH,
     DEFAULT_FPS,
     SAFE_ZONE,
+    SCRIPTS_DIR,
+    detect_browser_renderer,
     find_bin,
     find_commercial_font,
     fit_text_line,
@@ -42,6 +47,75 @@ from common import (
 def ease_out_cubic(t: float) -> float:
     t = max(0.0, min(1.0, t))
     return 1.0 - (1.0 - t) ** 3
+
+
+def damped_spring(t: float, t0: float = 0.0, freq: float = 2.2, zeta: float = 0.58) -> float:
+    """确定性闭式阻尼弹簧（纯时间函数，zeta<1 时带微过冲后自然收敛到 1.0）。"""
+    x = float(t) - float(t0)
+    if x <= 0.0:
+        return 0.0
+    if x > 2.5:
+        return 1.0
+    w = 2.0 * math.pi * float(freq)
+    z = max(0.05, min(0.99, float(zeta)))
+    wd = w * math.sqrt(max(1e-6, 1.0 - z * z))
+    return 1.0 - math.exp(-z * w * x) * (math.cos(wd * x) + (z * w / wd) * math.sin(wd * x))
+
+
+def stagger_progress(
+    t: float,
+    idx: int,
+    base_t0: float = 0.12,
+    step_sec: float = 0.10,
+    freq: float = 2.2,
+    zeta: float = 0.58,
+) -> float:
+    """多元素 2–5 帧交错阻尼弹簧进度。"""
+    return damped_spring(t, t0=base_t0 + max(0, idx) * step_sec, freq=freq, zeta=zeta)
+
+
+def check_chinese_read_hold(title: str, items: List[Dict[str, Any]], duration_sec: float) -> Dict[str, Any]:
+    """校验视觉文字停顿时长是否满足中文 chars/4.5 + 1.5s 最低可读底线。"""
+    chunks = [str(title or "")]
+    for it in items[:4]:
+        chunks.append(str(it.get("label") or ""))
+    joined = "".join(chunks)
+    cjk_n = sum(1 for c in joined if "\u4e00" <= c <= "\u9fff")
+    other_n = sum(1 for c in joined if c.isalnum() and not ("\u4e00" <= c <= "\u9fff"))
+    est_req = round(max(2.0, min(8.0, (cjk_n / 4.5) + (other_n / 15.0) + 1.2)), 2)
+    ok = float(duration_sec) >= min(est_req, max(2.2, est_req * 0.72))
+    return {"duration_sec": round(float(duration_sec), 2), "recommended_sec": est_req, "ok": ok}
+
+
+def extract_clip_sequence(
+    video_path: Path,
+    out_dir: Path,
+    start_sec: float = 0.0,
+    duration_sec: float = 3.0,
+    fps: int = DEFAULT_FPS,
+    width: int = 720,
+    height: int = 1280,
+) -> List[Path]:
+    """内嵌视频预抽 JPG 帧序列（禁在 HTML 无头抓帧时直接 seek <video>），确保毫秒精确逐帧绘制。"""
+    ffmpeg = find_bin("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("需要 ffmpeg 预抽视频帧序列。")
+    src = Path(video_path).expanduser().resolve()
+    if not src.is_file():
+        raise FileNotFoundError(f"视频资产不存在: {src}")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for old in out_dir.glob("*.jpg"):
+        old.unlink(missing_ok=True)
+    subprocess.run([
+        ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+        "-ss", f"{max(0.0, float(start_sec)):.4f}",
+        "-t", f"{max(0.1, float(duration_sec)):.4f}",
+        "-i", str(src),
+        "-vf", f"fps={int(fps)},scale={int(width)}:{int(height)}:flags=lanczos",
+        "-q:v", "3",
+        str(out_dir / "%04d.jpg"),
+    ], check=True)
+    return sorted(out_dir.glob("*.jpg"))
 
 
 def resolve_style_palette(
@@ -242,7 +316,10 @@ def render_broll_clip_pillow(
 
     total_frames = max(int(round(2.6 * fps)), int(round(duration_sec * fps)))
     anchor_frames = max(4, int(round(anchor_delay_sec * fps)))
-    max_anim_end_frame = min(total_frames - 1, anchor_frames + 35)
+    max_anim_end_frame = min(total_frames - 1, anchor_frames + int(round(1.6 * fps)))
+    hold_check = check_chinese_read_hold(title, items, duration_sec)
+    if not hold_check["ok"]:
+        print(f"[code_broll] [WARN] 图卡 '{title[:10]}' 停留 {hold_check['duration_sec']}s 略短（建议 ≥{hold_check['recommended_sec']}s）")
     output_mp4.parent.mkdir(parents=True, exist_ok=True)
 
     mode_tags = {
@@ -294,19 +371,21 @@ def render_broll_clip_pillow(
             img = base_bg.copy()
             draw = ImageDraw.Draw(img)
 
-            tp = 0.35 + 0.65 * ease_out_cubic(fi / 8.0)
+            t_sec = fi / float(fps)
+            tp = 0.35 + 0.65 * damped_spring(t_sec, t0=0.0, freq=2.4, zeta=0.62)
+            tp_clamped = max(0.0, min(1.0, tp))
             ty = int(340 + (1.0 - tp) * 26)
             draw.text((88, ty), fit_title, fill=title_col, font=f_title)
-            draw.rectangle([88, ty + 84, 88 + int(min(max_title_w, 620) * tp), ty + 90], fill=use_accent)
+            draw.rectangle([88, ty + 84, 88 + int(min(max_title_w, 620) * tp_clamped), ty + 90], fill=use_accent)
 
             if mode == "proportion":
                 raw_vals = [max(1.0, float(it.get("value") or 1.0)) for it in items[:4]]
                 tot_v = max(1e-5, sum(raw_vals))
                 pcts = [v * 100.0 / tot_v for v in raw_vals]
-                p_bar = ease_out_cubic((fi - anchor_frames) / 14.0)
+                p_bar = max(0.0, min(1.0, damped_spring(t_sec, t0=anchor_delay_sec, freq=2.0, zeta=0.65)))
                 bar_x0, bar_x1, bar_y0, bar_y1 = 88, safe_right, 480, 566
                 draw.rounded_rectangle([bar_x0, bar_y0, bar_x1, bar_y1], radius=18, fill=card_bg, outline=border_col, width=2)
-                seg_colors = [use_accent, "#2563EB", "#10B981", "#8B5CF6"]
+                seg_colors = ["#B45309", "#1D4ED8", "#047857", "#6D28D9"] if pal.get("is_light") else [use_accent, "#38BDF8", "#34D399", "#E879F9"]
                 cur_x = bar_x0 + 8
                 avail_w = max(24, int((bar_x1 - bar_x0 - 16) * max(0.08, p_bar)))
                 n_seg = len(pcts)
@@ -324,7 +403,7 @@ def render_broll_clip_pillow(
                     cur_x = ex + gap_w
 
                 for idx, (it, pct) in enumerate(zip(items[:4], pcts)):
-                    p_c = ease_out_cubic((fi - (anchor_frames + idx * 5)) / 10.0)
+                    p_c = max(0.0, min(1.0, stagger_progress(t_sec, idx, base_t0=anchor_delay_sec, step_sec=0.12)))
                     if p_c <= 0.02:
                         continue
                     cy = 610 + idx * 176
@@ -402,12 +481,12 @@ def render_broll_clip_pillow(
                 static_card_w = (safe_right - 28) - (88 + 44)
                 static_bar_max = max(120, (safe_right - 88) - 230)
                 for idx, item in enumerate(items[:4]):
-                    delay = anchor_frames + idx * 6
-                    p = ease_out_cubic((fi - delay) / 10.0)
+                    p = stagger_progress(t_sec, idx, base_t0=anchor_delay_sec, step_sec=0.12, freq=2.3, zeta=0.58)
                     if p <= 0.01:
                         continue
+                    p_val = max(0.0, min(1.0, p))
                     cy = base_y + idx * (card_h + 28)
-                    offset_x = int((1.0 - p) * 64)
+                    offset_x = max(-8, int((1.0 - p) * 64))
                     x1, x2 = 88 + offset_x, safe_right
                     draw.rounded_rectangle([x1, cy, x2, cy + card_h], radius=18, fill=card_bg, outline=border_col, width=2)
                     draw.rounded_rectangle([x1 + 14, cy + 28, x1 + 22, cy + card_h - 28], radius=4, fill=use_accent)
@@ -432,14 +511,14 @@ def render_broll_clip_pillow(
                         draw.text((x1 + 44, cy + 28), tl, fill=title_col, font=fl)
                         if mode == "data_chart" and isinstance(val, (int, float)):
                             unit = str(item.get("unit") if item.get("unit") is not None else ("%" if "%" in raw_lbl else ""))
-                            ratio = max(0.05, min(1.0, float(val) / max(1e-5, max_val))) * p
+                            ratio = max(0.05, min(1.0, float(val) / max(1e-5, max_val))) * p_val
                             draw.rounded_rectangle([x1 + 44, cy + 108, x1 + 44 + static_bar_max, cy + 142], radius=14, fill=grid_col)
                             draw.rounded_rectangle(
                                 [x1 + 44, cy + 108, x1 + 44 + max(24, int(static_bar_max * ratio)), cy + 142],
                                 radius=14,
                                 fill=use_accent,
                             )
-                            val_txt = _format_chart_value(float(val), p, unit)
+                            val_txt = _format_chart_value(float(val), p_val, unit)
                             fv, tv = _fit_single_line(draw, val_txt, font_path, 36, 150)
                             draw.text((x2 - 30, cy + 125), tv, fill=use_accent, font=fv, anchor="rm")
                         elif raw_sub:
@@ -463,6 +542,509 @@ def render_broll_clip_pillow(
             pass
         raise
     return output_mp4
+
+
+def _build_broll_html_page(
+    mode: str,
+    title: str,
+    items: List[Dict[str, Any]],
+    duration_sec: float,
+    pal: Dict[str, Any],
+    font_rel_url: Optional[str],
+    anchor_delay_sec: float = 0.15,
+) -> str:
+    mode_tags = {
+        "kinetic_text": "核心观点",
+        "data_chart": "数据拆解",
+        "flow_diagram": "标准流程",
+        "proportion": "比例拆解",
+        "day_night": "全天接力",
+        "chips": "招牌清单",
+        "versus": "真假对照",
+    }
+    mode_tag = mode_tags.get(mode, "重点提示")
+    safe_right = SAFE_ZONE["x_max"] - 24
+    panel_w = safe_right - 88
+    items_json = json.dumps(items[:4], ensure_ascii=False)
+    font_face_css = ""
+    if font_rel_url:
+        fmt = "opentype" if font_rel_url.lower().endswith(".otf") else "truetype"
+        font_face_css = (
+            "@font-face { font-family: 'SVSCodeFont'; "
+            f"src: url('{html.escape(font_rel_url)}') format('{fmt}'); font-display: block; }}"
+        )
+    ff_name = "'SVSCodeFont', 'PingFang SC', sans-serif" if font_rel_url else "'PingFang SC', sans-serif"
+    card_shadow = "0 12px 32px rgba(0,0,0,0.28)" if not pal.get("is_light") else "0 10px 26px rgba(40,30,20,0.08)"
+
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    {font_face_css}
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    html, body {{
+      width: {CANVAS_WIDTH}px;
+      height: {CANVAS_HEIGHT}px;
+      overflow: hidden;
+      background: {pal['bg_hex']};
+      font-family: {ff_name};
+      color: {pal['title_hex']};
+    }}
+    .canvas-stage {{
+      position: relative;
+      width: {CANVAS_WIDTH}px;
+      height: {CANVAS_HEIGHT}px;
+      overflow: hidden;
+    }}
+    .bg-grid {{
+      position: absolute;
+      inset: 190px {CANVAS_WIDTH - safe_right}px 740px 72px;
+      background-image:
+        linear-gradient(to right, {pal['grid_hex']} 1px, transparent 1px),
+        linear-gradient(to bottom, {pal['grid_hex']} 1px, transparent 1px);
+      background-size: 130px 130px;
+      opacity: 0.72;
+    }}
+    .glow-orb {{
+      position: absolute;
+      width: 520px;
+      height: 520px;
+      border-radius: 50%;
+      background: radial-gradient(circle, {pal['accent_hex']}28 0%, transparent 72%);
+      pointer-events: none;
+    }}
+    .mode-badge {{
+      position: absolute;
+      left: 88px;
+      top: 222px;
+      padding: 10px 26px;
+      border-radius: 12px;
+      background: {pal['accent_hex']};
+      color: {pal['badge_text_hex']};
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+    }}
+    .title-wrap {{
+      position: absolute;
+      left: 88px;
+      top: 316px;
+      width: {panel_w}px;
+    }}
+    .main-title {{
+      font-size: 56px;
+      line-height: 1.18;
+      font-weight: 800;
+      color: {pal['title_hex']};
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }}
+    .title-bar {{
+      margin-top: 14px;
+      height: 6px;
+      border-radius: 4px;
+      background: {pal['accent_hex']};
+      transform-origin: left center;
+    }}
+    .cards-area {{
+      position: absolute;
+      left: 88px;
+      top: 446px;
+      width: {panel_w}px;
+      height: 690px;
+      overflow: hidden;
+    }}
+    .card {{
+      position: relative;
+      background: {pal['card_bg_hex']};
+      border: 2px solid {pal['border_hex']};
+      border-radius: 20px;
+      padding: 18px 24px 18px 32px;
+      margin-bottom: 16px;
+      box-shadow: {card_shadow};
+      overflow: hidden;
+    }}
+    .card-accent-strip {{
+      position: absolute;
+      left: 14px;
+      top: 22px;
+      bottom: 22px;
+      width: 8px;
+      border-radius: 4px;
+      background: {pal['accent_hex']};
+    }}
+    .card-lbl {{
+      font-size: 36px;
+      font-weight: 700;
+      color: {pal['title_hex']};
+      line-height: 1.25;
+    }}
+    .card-sub {{
+      margin-top: 10px;
+      font-size: 28px;
+      color: {pal['sub_hex']};
+      line-height: 1.3;
+    }}
+    .bar-track {{
+      margin-top: 16px;
+      height: 28px;
+      border-radius: 14px;
+      background: {pal['grid_hex']};
+      overflow: hidden;
+      position: relative;
+    }}
+    .bar-fill {{
+      height: 100%;
+      border-radius: 14px;
+      background: linear-gradient(90deg, {pal['accent_hex']}, {pal['accent_hex']}CC);
+    }}
+    .val-readout {{
+      position: absolute;
+      right: 26px;
+      top: 24px;
+      font-size: 40px;
+      font-weight: 800;
+      color: {pal['accent_hex']};
+    }}
+    .prop-track {{
+      display: flex;
+      gap: 6px;
+      padding: 8px;
+      height: 76px;
+      background: {pal['card_bg_hex']};
+      border: 2px solid {pal['border_hex']};
+      border-radius: 18px;
+      margin-bottom: 22px;
+    }}
+    .prop-seg {{
+      height: 100%;
+      border-radius: 11px;
+    }}
+    .motion-rail {{
+      position: absolute;
+      left: 88px;
+      top: 1142px;
+      width: {panel_w}px;
+      height: 6px;
+      border-radius: 3px;
+      background: {pal['grid_hex']};
+      overflow: hidden;
+    }}
+    .motion-dot {{
+      height: 100%;
+      border-radius: 3px;
+      background: {pal['accent_hex']};
+    }}
+  </style>
+</head>
+<body>
+  <div class="canvas-stage" id="stage">
+    <div class="bg-grid" id="bg-grid"></div>
+    <div class="glow-orb" id="orb"></div>
+    <div class="mode-badge" id="badge">{html.escape(mode_tag)}</div>
+    <div class="title-wrap" id="title-wrap">
+      <div class="main-title" id="main-title">{html.escape(title)}</div>
+      <div class="title-bar" id="title-bar"></div>
+    </div>
+    <div class="cards-area" id="cards-area"></div>
+    <div class="motion-rail"><div class="motion-dot" id="motion-dot"></div></div>
+  </div>
+  <script>
+    (function () {{
+      var MODE = {json.dumps(mode)};
+      var ITEMS = {items_json};
+      var DUR = {duration_sec:.4f};
+      var ANCHOR_T = {anchor_delay_sec:.4f};
+      var ACCENT = {json.dumps(pal['accent_hex'])};
+      var IS_LIGHT = {json.dumps(bool(pal.get('is_light')))};
+      var SEG_COLORS = IS_LIGHT
+        ? ['#B45309', '#1D4ED8', '#047857', '#6D28D9']
+        : [ACCENT, '#38BDF8', '#34D399', '#E879F9'];
+      var TITLE_COL = {json.dumps(pal['title_hex'])};
+      var CARD_BG = {json.dumps(pal['card_bg_hex'])};
+      function _hexLum(h) {{
+        var m = /^#?([0-9a-f]{{6}})$/i.exec(String(h || '').trim());
+        if (!m) return null;
+        var n = parseInt(m[1], 16);
+        var vals = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map(function (c) {{
+          var s = c / 255;
+          return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+        }});
+        return 0.2126 * vals[0] + 0.7152 * vals[1] + 0.0722 * vals[2];
+      }}
+      function _safeFg(fgHex, bgHex) {{
+        var l1 = _hexLum(fgHex), l2 = _hexLum(bgHex);
+        if (l1 === null || l2 === null) return TITLE_COL;
+        var cr = (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+        return cr >= 4.8 ? fgHex : TITLE_COL;
+      }}
+      window.DUR = DUR;
+      window.READY = false;
+
+      function clamp(v, lo, hi) {{ return Math.max(lo, Math.min(hi, v)); }}
+      function dampedSpring(t, t0, freq, zeta) {{
+        var x = t - t0;
+        if (x <= 0) return 0;
+        if (x > 2.5) return 1;
+        var w = 2 * Math.PI * (freq || 2.2);
+        var z = clamp(zeta || 0.58, 0.05, 0.99);
+        var wd = w * Math.sqrt(Math.max(1e-6, 1 - z * z));
+        return 1 - Math.exp(-z * w * x) * (Math.cos(wd * x) + (z * w / wd) * Math.sin(wd * x));
+      }}
+
+      var cardsEl = document.getElementById('cards-area');
+      var propSegs = [];
+      var cardNodes = [];
+      var vals = ITEMS.map(function (it) {{ return typeof it.value === 'number' ? it.value : 0; }});
+      var maxVal = Math.max.apply(null, vals.concat([100]));
+      var totalVal = Math.max(1e-5, vals.reduce(function (a, b) {{ return a + Math.max(1, b); }}, 0));
+
+      if (MODE === 'proportion' && ITEMS.length) {{
+        var pTrack = document.createElement('div');
+        pTrack.className = 'prop-track';
+        ITEMS.forEach(function (it, i) {{
+          var s = document.createElement('div');
+          s.className = 'prop-seg';
+          s.style.background = SEG_COLORS[i % SEG_COLORS.length];
+          pTrack.appendChild(s);
+          propSegs.push({{ el: s, pct: (Math.max(1, it.value || 1) * 100) / totalVal }});
+        }});
+        cardsEl.appendChild(pTrack);
+      }}
+
+      ITEMS.forEach(function (it, idx) {{
+        var c = document.createElement('div');
+        c.className = 'card';
+        var strip = document.createElement('div');
+        strip.className = 'card-accent-strip';
+        if (MODE === 'proportion') strip.style.background = SEG_COLORS[idx % SEG_COLORS.length];
+        if (MODE === 'versus') {{
+          var good = (typeof it.positive === 'boolean') ? it.positive : (idx % 2 === 1);
+          strip.style.background = good ? '#16A34A' : '#DC2626';
+          c.style.borderColor = strip.style.background;
+        }}
+        c.appendChild(strip);
+
+        var lbl = document.createElement('div');
+        lbl.className = 'card-lbl';
+        var prefix = (MODE === 'flow_diagram') ? ((idx + 1) + '. ') : (MODE === 'chips' ? '✓ ' : '');
+        lbl.textContent = prefix + String(it.label || '');
+        c.appendChild(lbl);
+
+        var readoutEl = null, fillEl = null;
+        if (MODE === 'data_chart' && typeof it.value === 'number') {{
+          readoutEl = document.createElement('div');
+          readoutEl.className = 'val-readout';
+          readoutEl.style.color = _safeFg(ACCENT, CARD_BG);
+          c.appendChild(readoutEl);
+          var bt = document.createElement('div');
+          bt.className = 'bar-track';
+          fillEl = document.createElement('div');
+          fillEl.className = 'bar-fill';
+          bt.appendChild(fillEl);
+          c.appendChild(bt);
+        }} else if (MODE === 'proportion') {{
+          readoutEl = document.createElement('div');
+          readoutEl.className = 'val-readout';
+          readoutEl.style.color = _safeFg(SEG_COLORS[idx % SEG_COLORS.length], CARD_BG);
+          c.appendChild(readoutEl);
+          if (it.subtitle) {{
+            var sub1 = document.createElement('div');
+            sub1.className = 'card-sub';
+            sub1.textContent = String(it.subtitle);
+            c.appendChild(sub1);
+          }}
+        }} else if (it.subtitle) {{
+          var sub2 = document.createElement('div');
+          sub2.className = 'card-sub';
+          sub2.textContent = String(it.subtitle);
+          c.appendChild(sub2);
+        }}
+        cardsEl.appendChild(c);
+        cardNodes.push({{ el: c, item: it, readoutEl: readoutEl, fillEl: fillEl }});
+      }});
+
+      window.seek = function (t) {{
+        var curT = clamp(Number(t) || 0, 0, DUR);
+        var orb = document.getElementById('orb');
+        orb.style.left = (220 + Math.sin(curT * 1.4) * 160) + 'px';
+        orb.style.top = (280 + Math.cos(curT * 1.1) * 110) + 'px';
+
+        var bg = document.getElementById('bg-grid');
+        bg.style.transform = 'translateY(' + (Math.sin(curT * 0.9) * 10).toFixed(2) + 'px)';
+
+        var tp = 0.35 + 0.65 * dampedSpring(curT, 0.0, 2.4, 0.62);
+        var tw = document.getElementById('title-wrap');
+        tw.style.transform = 'translateY(' + ((1 - tp) * 26).toFixed(2) + 'px)';
+        document.getElementById('title-bar').style.width = (clamp(tp, 0, 1) * 620).toFixed(1) + 'px';
+
+        var barP = clamp(dampedSpring(curT, ANCHOR_T, 2.0, 0.65), 0, 1);
+        propSegs.forEach(function (ps) {{
+          ps.el.style.width = Math.max(4, ps.pct * barP).toFixed(2) + '%';
+        }});
+
+        cardNodes.forEach(function (cn, i) {{
+          var p = dampedSpring(curT, ANCHOR_T + i * 0.11, 2.3, 0.58);
+          var pc = clamp(p, 0, 1);
+          cn.el.style.opacity = clamp(p * 1.35, 0, 1).toFixed(3);
+          cn.el.style.transform = 'translateX(' + ((1 - p) * 58).toFixed(2) + 'px) scale(' + (0.96 + 0.04 * p).toFixed(4) + ')';
+          if (cn.fillEl && typeof cn.item.value === 'number') {{
+            var targetPct = clamp((cn.item.value / maxVal) * 100, 6, 100) * pc;
+            cn.fillEl.style.width = targetPct.toFixed(2) + '%';
+            var unit = (cn.item.unit !== undefined && cn.item.unit !== null) ? String(cn.item.unit) : (String(cn.item.label || '').indexOf('%') >= 0 ? '%' : '');
+            var vNow = cn.item.value * pc;
+            cn.readoutEl.textContent = (Math.abs(cn.item.value - Math.round(cn.item.value)) < 1e-4 ? Math.round(vNow) : vNow.toFixed(1)) + unit;
+          }} else if (MODE === 'proportion' && cn.readoutEl) {{
+            var pctVal = (Math.max(1, cn.item.value || 1) * 100) / totalVal;
+            cn.readoutEl.textContent = Math.round(pctVal * pc) + '%';
+          }}
+        }});
+
+        var prog = clamp(curT / Math.max(0.1, DUR), 0, 1);
+        document.getElementById('motion-dot').style.width = (prog * 100).toFixed(2) + '%';
+      }};
+
+      var fontProm = (document.fonts && document.fonts.ready) ? document.fonts.ready : Promise.resolve();
+      fontProm.then(function () {{
+        window.seek(0);
+        window.READY = true;
+      }});
+    }})();
+  </script>
+</body>
+</html>
+"""
+
+
+def render_broll_clip_html(
+    output_mp4: Path,
+    mode: str,
+    title: str,
+    items: List[Dict[str, Any]],
+    duration_sec: float = 3.0,
+    fps: int = DEFAULT_FPS,
+    accent_hex: Optional[str] = None,
+    bg_hex: Optional[str] = None,
+    style_id: Optional[str] = None,
+    track: str = "store",
+    register: Optional[str] = None,
+    anchor_delay_sec: float = 0.15,
+) -> Path:
+    """使用无头 Chrome + capture_html_video.mjs 渲染确定性 HTML/Canvas/CSS 弹簧动效补镜 MP4。"""
+    br = detect_browser_renderer()
+    if not br.get("available"):
+        raise RuntimeError("HTML 浏览器渲染桥不可用（需 node + playwright-core + Chrome）")
+
+    duration_sec = max(2.6, float(duration_sec))
+    pal = dict(resolve_style_palette(style_id, track=track, register=register))
+    if bg_hex:
+        pal["bg_hex"] = bg_hex
+    if accent_hex:
+        pal["accent_hex"] = accent_hex
+
+    font_path = find_commercial_font(pal.get("font_candidates"))
+    output_mp4.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="svs_html_broll_") as td:
+        tdp = Path(td)
+        font_rel: Optional[str] = None
+        if font_path and Path(font_path).is_file():
+            f_dir = tdp / "fonts"
+            f_dir.mkdir(parents=True, exist_ok=True)
+            dst_f = f_dir / Path(font_path).name
+            shutil.copy2(font_path, dst_f)
+            font_rel = f"fonts/{dst_f.name}"
+
+        html_src = _build_broll_html_page(mode, title, items, duration_sec, pal, font_rel, anchor_delay_sec=anchor_delay_sec)
+        (tdp / "index.html").write_text(html_src, encoding="utf-8")
+        smoke_p = tdp / "smoke.json"
+        res = subprocess.run([
+            str(br["node_bin"]),
+            str(SCRIPTS_DIR / "capture_html_video.mjs"),
+            str(tdp),
+            "--page", "index.html",
+            "--fps", str(int(fps)),
+            "--dur", f"{duration_sec:.4f}",
+            "--size", f"{CANVAS_WIDTH}x{CANVAS_HEIGHT}",
+            "--out", str(output_mp4.resolve()),
+            "--smoke-json", str(smoke_p),
+        ], capture_output=True, text=True)
+        if res.returncode != 0 or not output_mp4.is_file() or output_mp4.stat().st_size < 4096:
+            raise RuntimeError(f"HTML 动效渲染失败 ({res.returncode}): {(res.stderr or res.stdout)[-400:]}")
+    return output_mp4
+
+
+def render_code_clip(
+    output_mp4: Path,
+    mode: str,
+    title: str,
+    items: List[Dict[str, Any]],
+    duration_sec: float = 3.0,
+    fps: int = DEFAULT_FPS,
+    accent_hex: Optional[str] = None,
+    bg_hex: Optional[str] = None,
+    style_id: Optional[str] = None,
+    track: str = "store",
+    register: Optional[str] = None,
+    anchor_delay_sec: float = 0.15,
+    backend: str = "auto",
+) -> Path:
+    """统一代码视频渲染入口：html（确定性无头 Chrome） / pillow（纯 Python） / auto（优先 HTML，缺浏览器无缝回退）。"""
+    b_norm = str(backend or "auto").lower()
+    if b_norm in ("html", "auto"):
+        if detect_browser_renderer().get("available"):
+            try:
+                return render_broll_clip_html(
+                    output_mp4, mode, title, items,
+                    duration_sec=duration_sec, fps=fps,
+                    accent_hex=accent_hex, bg_hex=bg_hex,
+                    style_id=style_id, track=track, register=register,
+                    anchor_delay_sec=anchor_delay_sec,
+                )
+            except Exception as exc:
+                if b_norm == "html":
+                    raise
+                print(f"[code_broll] [WARN] HTML 后端异常已自动回退 Pillow: {exc}")
+        elif b_norm == "html":
+            raise RuntimeError("指定 --backend html 但未检测到可用 Chrome/playwright-core")
+
+    return render_broll_clip_pillow(
+        output_mp4, mode, title, items,
+        duration_sec=duration_sec, fps=fps,
+        accent_hex=accent_hex, bg_hex=bg_hex,
+        style_id=style_id, track=track, register=register,
+        anchor_delay_sec=anchor_delay_sec,
+    )
+
+
+def render_spec_scene_html(
+    scene_cfg: Dict[str, Any],
+    style_id: Optional[str],
+    track: str,
+    out_mp4: Path,
+    backend: str = "auto",
+) -> Path:
+    """按 00_code_spec.json 单幕配置渲染独立高阶动效场景 MP4（保留底部字幕洁净带）。"""
+    mode = str(scene_cfg.get("mode") or "kinetic_text")
+    title = str(scene_cfg.get("on_screen_text") or scene_cfg.get("title") or scene_cfg.get("name") or "核心重点")
+    items = scene_cfg.get("items") or [
+        {"label": title, "subtitle": str(scene_cfg.get("visual_state") or "程序确定性渲染")}
+    ]
+    dur = max(2.6, float(scene_cfg.get("duration_sec", 3.5)))
+    return render_code_clip(
+        out_mp4,
+        mode=mode,
+        title=title,
+        items=items,
+        duration_sec=dur,
+        style_id=style_id,
+        track=track,
+        register=scene_cfg.get("register"),
+        accent_hex=scene_cfg.get("accent_hex"),
+        bg_hex=scene_cfg.get("bg_hex"),
+        backend=backend,
+    )
 
 
 def generate_demo_media_pack(output_dir: Path, style_id: Optional[str] = None) -> Dict[str, Any]:
@@ -555,7 +1137,16 @@ def main() -> None:
     parser.add_argument("--style-id", help="绑定风格谱 ID (style_01 ~ style_20)")
     parser.add_argument("--track", choices=["store", "creator"], default="store")
     parser.add_argument("--register", choices=["warm_food", "craft_paper", "dark_tech"], help="视觉语域保护 (B6)")
+    parser.add_argument("--backend", choices=["auto", "pillow", "html"], default="auto", help="渲染引擎")
+    parser.add_argument("--extract-clip", help="预抽视频帧源路径（禁在 HTML 内播 <video>）")
+    parser.add_argument("--extract-start", type=float, default=0.0)
     args = parser.parse_args()
+
+    if args.extract_clip:
+        out_d = Path(args.output or args.output_dir or "clip_frames")
+        frames = extract_clip_sequence(Path(args.extract_clip), out_d, start_sec=args.extract_start, duration_sec=args.duration)
+        print(f"[code_broll] 已预抽帧 {len(frames)} 张 -> {out_d}")
+        return
 
     if args.output_dir:
         res = generate_demo_media_pack(Path(args.output_dir), style_id=args.style_id)
@@ -564,7 +1155,7 @@ def main() -> None:
 
     if args.output:
         items = json.loads(args.items_json) if args.items_json else [{"label": args.title, "subtitle": "代码生成补镜"}]
-        out = render_broll_clip_pillow(
+        out = render_code_clip(
             Path(args.output),
             args.mode,
             args.title,
@@ -573,6 +1164,7 @@ def main() -> None:
             style_id=args.style_id,
             track=args.track,
             register=args.register,
+            backend=args.backend,
         )
         print(f"[code_broll] 已生成风格化补镜 -> {out}")
         return

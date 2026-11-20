@@ -23,6 +23,7 @@ import sys
 import tempfile
 import urllib.parse
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -31,12 +32,12 @@ _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
-from common import find_bin, maybe_reexec_in_venv, read_json, run_cmd, sha256_file, write_json
+from common import ffprobe_media, find_bin, find_commercial_font, maybe_reexec_in_venv, read_json, run_cmd, sha256_file, write_json
 
 maybe_reexec_in_venv()
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from step2_transcribe import _clean_zh_text
 from step3_lock_audio import detect_bgm_beats
 from vision_inspector import inspect_images
@@ -49,6 +50,7 @@ TEMP_SUBDIRS = (
     "_render_final",
     "_render_preview",
     "01_normalized",
+    "01_code_scenes",
     "02_tts_chunks",
     "02_tts_segments",
     "_stage_assets",
@@ -99,6 +101,11 @@ DELIVERABLE_SYNC_FILES = (
     "asset_license_manifest.json",
     "10_qa_report.md",
     "10_qa_report.json",
+    "10_action_strips.jpg",
+    "00_code_spec.json",
+    "SPEC.md",
+    "STRUCTURE.md",
+    "VERIFY.md",
     "decisions_made.md",
     "11_delivery_summary.md",
     "review_player.html",
@@ -557,6 +564,123 @@ def run_replication_diff(
 """
     (out_dir / "replication_blind_test.html").write_text(blind_html, encoding="utf-8")
     return report
+
+
+def generate_action_strips(
+    video_path: Path,
+    edl_path: Optional[Path],
+    out_jpg: Path,
+) -> Optional[Path]:
+    """生成动态帧带拼图（10_action_strips.jpg）：0–3s 每 0.20s 抽帧 + 至多 4 个关键切点 ±0.30s 验证动作跳变。"""
+    if not video_path.is_file():
+        return None
+    ffmpeg = find_bin("ffmpeg")
+    if not ffmpeg:
+        return None
+
+    try:
+        info = ffprobe_media(video_path)
+        streams = info.get("streams") or []
+        vs = next((s for s in streams if s.get("codec_type") == "video"), None)
+        dur = float(info.get("format", {}).get("duration") or (vs or {}).get("duration") or 0.0)
+    except Exception:
+        return None
+    if dur <= 0.05:
+        return None
+
+    max_t = max(0.02, dur - 0.05)
+    sample_map: Dict[float, str] = {}
+
+    open_end = min(3.0, max_t)
+    cur_t = 0.0
+    while cur_t <= open_end + 1e-4:
+        k = round(min(max_t, cur_t), 2)
+        sample_map.setdefault(k, "OPEN")
+        cur_t += 0.20
+
+    if edl_path and edl_path.is_file():
+        try:
+            edl = read_json(edl_path)
+            cand_cuts = [float(c.get("timeline_in_sec", 0.0)) for c in (edl.get("clips") or [])[1:]]
+            selected_cuts: List[float] = []
+            for tc in cand_cuts:
+                if tc < 3.1 or tc > max_t - 0.1:
+                    continue
+                if all(abs(tc - prev_tc) >= 1.0 for prev_tc in selected_cuts):
+                    selected_cuts.append(tc)
+                if len(selected_cuts) >= 4:
+                    break
+            for tc in selected_cuts:
+                for off in (-0.30, -0.15, 0.0, 0.15, 0.30):
+                    t_samp = round(max(0.0, min(max_t, tc + off)), 2)
+                    sample_map.setdefault(t_samp, "CUT")
+        except Exception:
+            pass
+
+    samples = sorted(sample_map.items(), key=lambda x: x[0])[:40]
+    if not samples:
+        return None
+
+    def _grab_one(item: Tuple[int, Tuple[float, str]], tmp_dir: Path) -> Optional[Tuple[int, float, str, Path]]:
+        idx_i, (t_val, tag) = item
+        dst = tmp_dir / f"strip_{idx_i:03d}.jpg"
+        proc = subprocess.run(
+            [
+                ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+                "-ss", f"{t_val:.3f}",
+                "-i", str(video_path),
+                "-frames:v", "1",
+                "-vf", "scale=240:-2",
+                "-q:v", "4",
+                str(dst),
+            ],
+            capture_output=True,
+        )
+        if proc.returncode == 0 and dst.is_file() and dst.stat().st_size > 0:
+            return (idx_i, t_val, tag, dst)
+        return None
+
+    with tempfile.TemporaryDirectory(prefix="svs_strips_") as td:
+        td_path = Path(td)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            raw_res = list(pool.map(lambda it: _grab_one(it, td_path), enumerate(samples)))
+        frames = [r for r in raw_res if r is not None]
+        if not frames:
+            return None
+
+        frames.sort(key=lambda x: x[0])
+        with Image.open(frames[0][3]) as im0:
+            fw, fh = im0.size
+
+        hdr_h = 28
+        pad = 6
+        cols = min(8, max(1, len(frames)))
+        rows = math.ceil(len(frames) / cols)
+        tile_w = fw + pad * 2
+        tile_h = fh + hdr_h + pad * 2
+        sheet = Image.new("RGB", (cols * tile_w, rows * tile_h), (12, 16, 26))
+        draw = ImageDraw.Draw(sheet)
+
+        font_p = find_commercial_font()
+        try:
+            font_badge = ImageFont.truetype(font_p, 16) if font_p else ImageFont.load_default()
+        except Exception:
+            font_badge = ImageFont.load_default()
+
+        for slot_idx, (_, t_val, tag, fpath) in enumerate(frames):
+            r = slot_idx // cols
+            c = slot_idx % cols
+            x0 = c * tile_w + pad
+            y0 = r * tile_h + pad
+            badge_bg = (30, 41, 59) if tag == "OPEN" else (69, 26, 3)
+            draw.rectangle([x0, y0, x0 + fw, y0 + hdr_h], fill=badge_bg)
+            draw.text((x0 + 8, y0 + 5), f"{tag} {t_val:.2f}s", fill=(250, 204, 21), font=font_badge)
+            with Image.open(fpath) as tile_im:
+                sheet.paste(tile_im.convert("RGB"), (x0, y0 + hdr_h))
+
+        out_jpg.parent.mkdir(parents=True, exist_ok=True)
+        sheet.save(out_jpg, format="JPEG", quality=88)
+        return out_jpg
 
 
 # ------------------------------------------------------------------
