@@ -29,6 +29,7 @@ from common import (
     SUBTITLE_SYMMETRIC_MAX_W,
     bbox_iou,
     check_bbox_in_safe_zone,
+    estimate_read_hold_sec,
     find_commercial_font,
     fit_text_line,
     frames_to_sec,
@@ -46,11 +47,27 @@ import numpy as np
 from step3_lock_audio import SR, load_stereo_wav_np, save_stereo_wav_np
 
 
+def _default_cc0_sfx(role: str) -> Path:
+    """全仓统一 CC0 真录物理音效兜底（彻底淘汰正弦波合成电子音）。"""
+    vibe_sfx = ASSETS_DIR / "sound_vibe" / "sfx"
+    role_map = {
+        "transition": vibe_sfx / "style_14_transition.wav",
+        "accent": vibe_sfx / "style_14_accent.wav",
+        "ui": vibe_sfx / "style_14_ui.wav",
+        "receipt": vibe_sfx / "style_15_receipt.wav",
+    }
+    cand = role_map.get(role, vibe_sfx / "style_14_ui.wav")
+    if cand.is_file():
+        return cand
+    any_wav = next(iter(sorted(vibe_sfx.glob("*.wav"))), None) if vibe_sfx.is_dir() else None
+    return any_wav or cand
+
+
 def rotate_sfx(candidates: List[Path], last_used_name: Optional[str]) -> Path:
     """同族/候选音效自动轮换，避免连续两次重复同一音色引起听觉疲劳。"""
     valid = [p for p in candidates if p and p.is_file()]
     if not valid:
-        return ASSETS_DIR / "sfx" / "pop.wav"
+        return _default_cc0_sfx("ui")
     if len(valid) == 1 or not last_used_name:
         return valid[0]
     for p in valid:
@@ -192,13 +209,13 @@ def run_step6(
         min_sfx_gap = int(6.5 * fps)
 
     sfx_files = {
-        "hook": v_sfx.get("accent") or (ASSETS_DIR / "sfx" / "whoosh.wav"),
-        "info": v_sfx.get("ui") or v_sfx.get("accent") or (ASSETS_DIR / "sfx" / "pop.wav"),
-        "twist": v_sfx.get("accent") or (ASSETS_DIR / "sfx" / "whoosh.wav"),
-        "detail": v_sfx.get("ui") or (ASSETS_DIR / "sfx" / "pop.wav"),
-        "persona": v_sfx.get("ui") or v_sfx.get("transition") or (ASSETS_DIR / "sfx" / "pop.wav"),
-        "cta": v_sfx.get("receipt") or v_sfx.get("ui") or (ASSETS_DIR / "sfx" / "pop.wav"),
-        "cut": v_sfx.get("transition") or (ASSETS_DIR / "sfx" / "whoosh.wav"),
+        "hook": v_sfx.get("accent") or _default_cc0_sfx("accent"),
+        "info": v_sfx.get("ui") or v_sfx.get("accent") or _default_cc0_sfx("ui"),
+        "twist": v_sfx.get("accent") or _default_cc0_sfx("accent"),
+        "detail": v_sfx.get("ui") or _default_cc0_sfx("ui"),
+        "persona": v_sfx.get("ui") or v_sfx.get("transition") or _default_cc0_sfx("ui"),
+        "cta": v_sfx.get("receipt") or v_sfx.get("ui") or _default_cc0_sfx("ui"),
+        "cut": v_sfx.get("transition") or _default_cc0_sfx("transition"),
     }
 
     used_frames: List[int] = []
@@ -207,7 +224,7 @@ def run_step6(
     def can_place_sfx(frame: int) -> bool:
         return len(sfx_cues) < max_sfx_budget and all(abs(frame - f) >= min_sfx_gap for f in used_frames)
 
-    # 优先使用 Freesound CC0 真实物理材质 SFX（次选内置合成音效）
+    # 100% 使用 Freesound CC0 真实物理材质 SFX（彻底剔除塑料电子合成音）
     for clip in edl["clips"][1:]:
         role = clip.get("track_role", "b_roll")
         ev_frame = int(clip.get("timeline_in_frame", clip["cut_event_frame"])) if role == "code_broll" else int(clip["cut_event_frame"])
@@ -219,8 +236,7 @@ def run_step6(
         cand_list = [v_sfx["receipt"]] if is_end_receipt else [
             sfx_files["info"],
             sfx_files["cut"],
-            ASSETS_DIR / "sfx" / "ding.wav",
-            ASSETS_DIR / "sfx" / "whoosh.wav",
+            sfx_files["hook"],
         ]
         sf = rotate_sfx(cand_list, last_sfx_name)
         last_sfx_name = sf.name
@@ -237,13 +253,13 @@ def run_step6(
         })
         used_frames.append(ev_frame)
 
-    # CC0 真实录音优先排在 cut_palette 最前
+    # 100% CC0 真实物理录音轮换池
     cut_palette = [
         sfx_files["cut"],
         sfx_files["info"],
         sfx_files["hook"],
-        ASSETS_DIR / "sfx" / "whoosh.wav",
-        ASSETS_DIR / "sfx" / "shutter.wav",
+        _default_cc0_sfx("transition"),
+        _default_cc0_sfx("ui"),
     ]
     cut_rot = 0
     # 优先选在句首/停顿缝隙切点安放 SFX，确保听感清爽且避免被重读浊音完全掩蔽，第二遍再补足其余切点
@@ -369,41 +385,52 @@ def run_step6(
             "reason": "首帧高冲击无底框居大字（复刻《11月14日延期》开头爆点）" if is_borderless_flower else "首帧高密度视觉钩子（第0帧零淡入直接落位）",
         })
 
+    raw_intel_p = pipeline_dir / "00_raw_intel.json"
+    raw_pain_kws = [str(k) for k in ((read_json(raw_intel_p).get("pain_keywords") or []) if raw_intel_p.is_file() else []) if str(k).strip()]
+
     last_vis_end = hook_ef + int(2.5 * fps)
     last_sent = audio_events["sentences"][-1] if audio_events["sentences"] else None
+    stamp_zone_ys = (310, 860, 240, 940)
+    stamp_seq = 0
+    has_end_cta = False
     for cue in sfx_cues:
         if len(visual_elements) >= max_visual_budget:
             break
         sf = int(cue["frame"])
-        if sf < last_vis_end or sf > int((total_dur - 1.5) * fps):
+        if sf < last_vis_end or sf > int((total_dur - 1.35) * fps):
             continue
         sent = next((s for s in audio_events["sentences"] if s["start_frame"] <= sf <= s["end_frame"] + 15), first_sent)
         if sent.get("emotion_or_info") not in ("hook", "info", "twist", "persona", "cta"):
             continue
 
-        kw_label = sent["keywords"][0] if sent.get("keywords") else sent["text"][:8]
-        cjk_n = sum(1 for ch in kw_label if "\u4e00" <= ch <= "\u9fff")
-        est_hold = max(2.2, round(cjk_n / 4.5 + 1.5, 2))
-        ef = min(int(total_dur * fps), sf + int(math.ceil(min(3.0, est_hold) * fps)))
-        if overlaps_code(sf, ef):
+        # 优先采用与本句重合的客户真实痛点词做花字，否则用句子重点词
+        sent_txt = str(sent.get("text") or "")
+        matched_pain = next((pk for pk in raw_pain_kws if pk in sent_txt), None)
+        kw_label = matched_pain or (sent["keywords"][0] if sent.get("keywords") else sent_txt[:8])
+        est_hold = estimate_read_hold_sec(kw_label, min_sec=2.0, max_sec=3.0)
+        ef = min(int(total_dur * fps), sf + int(math.ceil(est_hold * fps)))
+        if (ef - sf) / float(fps) < 1.35 or overlaps_code(sf, ef):
             continue
         is_end_cta = bool(is_borderless_flower and last_sent and sent.get("id") == last_sent.get("id"))
         box_w = _measure_pkg_badge_width(kw_label, pkg_font_path, max_pkg_w, target_fs=54 if is_borderless_flower else 40, min_w=240)
         box_x = (SUBTITLE_CENTER_X - box_w // 2) if is_borderless_flower else 88
         box_h = 128 if is_end_cta else (96 if is_borderless_flower else 86)
+        init_y = 920 if is_end_cta else (stamp_zone_ys[stamp_seq % len(stamp_zone_ys)] if is_borderless_flower else 210)
         active_faces = []
         for c in edl.get("clips", []):
             if int(c["timeline_in_frame"]) < ef and int(c["timeline_out_frame"]) > sf:
                 active_faces.extend(faces_by_mp4.get(str(c.get("media_path", "")), []))
-        final_bbox = _avoid_faces_for_pkg({"x": box_x, "y": 210, "w": box_w, "h": box_h}, active_faces)
+        final_bbox = _avoid_faces_for_pkg({"x": box_x, "y": init_y, "w": box_w, "h": box_h}, active_faces)
         ok, _ = check_bbox_in_safe_zone(final_bbox)
         elem_kind = "end_card_cta" if is_end_cta else ("stamp_tag" if is_borderless_flower else "flower_text")
+        fg_key = "end_card_color" if is_end_cta else "stamp_color"
+        fg_default = "#FFE28A" if is_end_cta else "#B71C1C"
         elem_obj: Dict[str, Any] = {
             "id": f"pkg_{len(visual_elements)+1:03d}",
             "kind": elem_kind,
             "overlay_mode": "borderless" if is_borderless_flower else ("focus_blur" if sent.get("emotion_or_info") == "twist" else "corner"),
-            "fg_hex": str(flower_spec.get("end_card_color" if is_end_cta else "flank_color") or "#FFE28A"),
-            "stroke_hex": str(flower_spec.get("stroke_color") or "#000000"),
+            "fg_hex": str(flower_spec.get(fg_key) or fg_default),
+            "stroke_hex": str(flower_spec.get("stroke_color") or ("#FFFFFF" if elem_kind == "stamp_tag" else "#000000")),
             "text_or_asset": kw_label,
             "start_frame": sf,
             "end_frame": ef,
@@ -417,8 +444,44 @@ def run_step6(
         }
         if is_end_cta:
             elem_obj["subtext"] = "评论区聊聊你的看法"
+            has_end_cta = True
+        else:
+            stamp_seq += 1
         visual_elements.append(elem_obj)
         last_vis_end = ef + int(2.5 * fps)
+
+    # 保障片尾互动大字在无框风格下不会因末句缺少独立 SFX cue 而丢失
+    if is_borderless_flower and not has_end_cta and last_sent and len(visual_elements) < max_visual_budget:
+        ls_sf = int(last_sent.get("start_frame", 0))
+        ls_ef = min(int(total_dur * fps), max(ls_sf + int(1.45 * fps), int(last_sent.get("end_frame", ls_sf))))
+        if ls_sf >= last_vis_end and (ls_ef - ls_sf) / float(fps) >= 1.40 and not overlaps_code(ls_sf, ls_ef):
+            cta_label = (last_sent["keywords"][0] if last_sent.get("keywords") else str(last_sent.get("text", ""))[:8]) or "欢迎评论聊聊"
+            bw = _measure_pkg_badge_width(cta_label, pkg_font_path, max_pkg_w, target_fs=54, min_w=240)
+            bx = SUBTITLE_CENTER_X - bw // 2
+            active_f = []
+            for c in edl.get("clips", []):
+                if int(c["timeline_in_frame"]) < ls_ef and int(c["timeline_out_frame"]) > ls_sf:
+                    active_f.extend(faces_by_mp4.get(str(c.get("media_path", "")), []))
+            cta_bb = _avoid_faces_for_pkg({"x": bx, "y": 920, "w": bw, "h": 128}, active_f)
+            ok_cta, _ = check_bbox_in_safe_zone(cta_bb)
+            visual_elements.append({
+                "id": f"pkg_{len(visual_elements)+1:03d}",
+                "kind": "end_card_cta",
+                "overlay_mode": "borderless",
+                "fg_hex": str(flower_spec.get("end_card_color") or "#FFE28A"),
+                "stroke_hex": str(flower_spec.get("stroke_color") or "#000000"),
+                "text_or_asset": cta_label,
+                "subtext": "评论区聊聊你的看法",
+                "start_frame": ls_sf,
+                "end_frame": ls_ef,
+                "read_hold_sec": round((ls_ef - ls_sf) / float(fps), 2),
+                "aligned_sfx_or_accent_frame": ls_sf,
+                "alignment_error_frames": 0,
+                "bbox": cta_bb,
+                "final_bbox": cta_bb,
+                "safe_zone_ok": ok_cta,
+                "reason": "片尾收束互动召唤大字（绑定末句起声帧）",
+            })
 
     packaging = {
         "step": "06_packaging",

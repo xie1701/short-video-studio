@@ -237,9 +237,10 @@ async function captureSingleTask(browser, task, chromeBin) {
       totalFrames = checkpoints.length;
     }
 
+    const ffmpegBin = process.env.FFMPEG_BIN || "ffmpeg";
     fs.mkdirSync(path.dirname(outPath), { recursive: true });
     ff = spawn(
-      "ffmpeg",
+      ffmpegBin,
       [
         "-v", "error", "-y",
         "-f", "image2pipe", "-framerate", String(fps), "-i", "-",
@@ -265,6 +266,9 @@ async function captureSingleTask(browser, task, chromeBin) {
         } else if (window.__timelines && window.__timelines.main) {
           window.__timelines.main.seek(curT);
         }
+        const imgs = Array.from(document.querySelectorAll("img"));
+        await Promise.all(imgs.map((im) => (im.complete ? Promise.resolve() : im.decode().catch(() => {}))));
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
       }, t);
 
       const buf = await page.screenshot(shotOpts);
@@ -346,7 +350,11 @@ if (!pw || !pw.chromium) {
 }
 
 const chromeBin = findChromeExecutable();
-const launchOpts = {
+const gpuLaunchOpts = {
+  headless: true,
+  args: ["--ignore-gpu-blocklist", "--no-sandbox"],
+};
+const swLaunchOpts = {
   headless: true,
   args: [
     "--use-gl=angle",
@@ -356,12 +364,19 @@ const launchOpts = {
     "--no-sandbox",
   ],
 };
-if (chromeBin) launchOpts.executablePath = chromeBin;
+if (chromeBin) {
+  gpuLaunchOpts.executablePath = chromeBin;
+  swLaunchOpts.executablePath = chromeBin;
+}
 
 let browser = null;
 const results = [];
 try {
-  browser = await pw.chromium.launch(launchOpts);
+  try {
+    browser = await pw.chromium.launch(gpuLaunchOpts);
+  } catch {
+    browser = await pw.chromium.launch(swLaunchOpts);
+  }
   const concurrency = Math.min(2, tasks.length);
   let cursor = 0;
   async function worker() {

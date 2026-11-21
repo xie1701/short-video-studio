@@ -24,6 +24,7 @@ if str(SCRIPTS_ROOT) not in sys.path:
 
 from common import (
     ASSETS_DIR,
+    HYPERFRAMES_VERSION,
     NODE_TOOLS_DIR,
     SCRIPTS_DIR,
     VENV_DIR,
@@ -58,7 +59,7 @@ def try_install_ffmpeg(sys_name: str) -> None:
 def ensure_venv_and_deps(install_deps: bool, install_heavy_ml: bool) -> tuple[str, bool]:
     py_in_venv = VENV_DIR / ("Scripts/python.exe" if platform.system() == "Windows" else "bin/python")
     install_ok = True
-    if install_deps:
+    if install_deps or install_heavy_ml:
         if not py_in_venv.exists():
             uv = find_bin("uv")
             VENV_DIR.parent.mkdir(parents=True, exist_ok=True)
@@ -86,9 +87,10 @@ def ensure_venv_and_deps(install_deps: bool, install_heavy_ml: bool) -> tuple[st
                 return False
             return True
 
-        print(f"[setup] 安装核心音视频与 DSP 依赖: {', '.join(CORE_PIP_PKGS)} ...")
-        if not pip_install(CORE_PIP_PKGS, required=True):
-            install_ok = False
+        if install_deps:
+            print(f"[setup] 安装核心音视频与 DSP 依赖: {', '.join(CORE_PIP_PKGS)} ...")
+            if not pip_install(CORE_PIP_PKGS, required=True):
+                install_ok = False
         if install_heavy_ml:
             print(f"[setup] 安装语音转写与节拍分析扩展包: {', '.join(HEAVY_ML_PKGS)} ...")
             if not pip_install(HEAVY_ML_PKGS, required=False):
@@ -184,8 +186,10 @@ def main() -> None:
     core_missing = [p for p in ("PIL", "numpy", "scipy", "edge_tts") if not pkg_status.get(p)]
 
     if not args.check_only and args.install_node_tools and npm_path != "MISSING":
-        print("[setup] 检查并安装全局 hyperframes ...")
-        subprocess.run([npm_path, "install", "-g", "hyperframes"], check=False)
+        print(f"[setup] 检查并安装全局 hyperframes@{HYPERFRAMES_VERSION} ...")
+        hf_res = subprocess.run([npm_path, "install", "-g", f"hyperframes@{HYPERFRAMES_VERSION}"], check=False)
+        if hf_res.returncode != 0:
+            print(f"[WARN] hyperframes@{HYPERFRAMES_VERSION} 安装失败（退出码 {hf_res.returncode}），稍后可用 npx 运行。")
 
     if not args.check_only and args.init_browser:
         if npm_path == "MISSING" or node_path == "MISSING":
@@ -213,7 +217,12 @@ def main() -> None:
         print("[WARN] 未在本机发现 Chrome/Edge/Chromium，可手动执行 `npx playwright-core install chromium` 补全浏览器。")
 
     if args.init_assets and not args.check_only:
-        subprocess.run([active_py, str(SCRIPTS_DIR / "generate_builtin_assets.py")], check=True)
+        vibe_mf = ASSETS_DIR / "sound_vibe" / "vibe_sound_manifest.json"
+        if not vibe_mf.is_file():
+            print(f"[ERROR] 缺少 CC0 真录音库清单: {vibe_mf}")
+            sys.exit(1)
+        lut_cnt = len(list((ASSETS_DIR / "style_spectrum" / "luts").glob("*.cube")))
+        print(f"[setup] 已校验 CC0 真录音库 ({vibe_mf.name}) 与 {lut_cnt} 套 3D LUT 资产完整可用。")
 
     if ffmpeg_path == "MISSING" or ffprobe_path == "MISSING":
         print("\n[ERROR] 缺少 ffmpeg/ffprobe，请手动安装后重试。")

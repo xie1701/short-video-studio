@@ -17,7 +17,7 @@ SCRIPTS_ROOT = Path(__file__).resolve().parent
 if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
-from common import CANVAS_HEIGHT, CANVAS_WIDTH, SUBTITLE_SAFE_ZONE, read_json, write_json
+from common import CANVAS_HEIGHT, CANVAS_WIDTH, SUBTITLE_SAFE_ZONE, SUBTITLE_SYMMETRIC_ZONE, read_json, write_json
 
 DEFAULT_SHOTS = [
     {
@@ -28,7 +28,7 @@ DEFAULT_SHOTS = [
         "duration_sec": 4.5,
         "backup_takes": 3,
         "diagram_type": "portrait_hook",
-        "phone_tips": "竖屏 1080p/30fps（关美颜和 HDR 防假脸发灰）；手持允许自然轻微呼吸感、别僵硬；嘴离麦不超两巴掌，脸朝窗户自然光，说错别停直接重念那一句",
+        "phone_tips": "竖屏 1080p/30fps（关美颜和手机高动态模式防假脸发灰）；手持允许自然轻微呼吸感、别僵硬；嘴离麦不超两巴掌，脸朝窗户自然光，说错别停直接重念那一句",
         "spoken_line": "开头前 3 秒留住人的第一句话（先给最带劲的画面和具体事件）",
     },
     {
@@ -91,9 +91,9 @@ INDUSTRY_CHECKLISTS = {
 
 
 def build_sketch_svg(diagram_type: str, shot_no: int) -> str:
-    """生成清晰直观的 9:16 竖屏简笔构图示意 SVG（精准映射 common.SUBTITLE_SAFE_ZONE 与平台安全框）。"""
-    sx = round(SUBTITLE_SAFE_ZONE["x_min"] / CANVAS_WIDTH * 180)
-    sw = round((SUBTITLE_SAFE_ZONE["x_max"] - SUBTITLE_SAFE_ZONE["x_min"]) / CANVAS_WIDTH * 180)
+    """生成清晰直观的 9:16 竖屏简笔构图示意 SVG（精准映射对称居中字幕带与平台安全框）。"""
+    sx = round(SUBTITLE_SYMMETRIC_ZONE["x_min"] / CANVAS_WIDTH * 180)
+    sw = round((SUBTITLE_SYMMETRIC_ZONE["x_max"] - SUBTITLE_SYMMETRIC_ZONE["x_min"]) / CANVAS_WIDTH * 180)
     sy = round(SUBTITLE_SAFE_ZONE["y_min"] / CANVAS_HEIGHT * 320)
     sh = max(24, round((SUBTITLE_SAFE_ZONE["y_max"] - SUBTITLE_SAFE_ZONE["y_min"]) / CANVAS_HEIGHT * 320))
     scy = sy + sh // 2 + 4
@@ -104,10 +104,10 @@ def build_sketch_svg(diagram_type: str, shot_no: int) -> str:
         '<path d="M 0 1 L 10 5 L 0 9 z" fill="#0284C7"/></marker></defs>'
         '<rect x="2" y="2" width="176" height="316" rx="14" fill="#F8FAFC" stroke="#334155" stroke-width="3"/>'
         '<rect x="10" y="27" width="136" height="220" fill="none" stroke="#10B981" stroke-width="1.5" stroke-dasharray="4,3"/>'
-        '<text x="14" y="20" font-size="9" fill="#64748B" font-family="sans-serif">TOP UI SAFE</text>'
-        '<text x="14" y="262" font-size="9" fill="#EF4444" font-family="sans-serif">BOTTOM UI 遮挡区</text>'
+        '<text x="14" y="20" font-size="9" fill="#64748B" font-family="sans-serif">顶部留白防遮挡</text>'
+        '<text x="14" y="262" font-size="9" fill="#EF4444" font-family="sans-serif">底部文案遮挡区</text>'
         '<rect x="148" y="115" width="24" height="125" rx="4" fill="#E2E8F0"/>'
-        '<text x="160" y="180" font-size="8" fill="#64748B" text-anchor="middle" transform="rotate(90 160 180)">互动栏</text>'
+        '<text x="160" y="180" font-size="8" fill="#64748B" text-anchor="middle" transform="rotate(90 160 180)">点赞栏</text>'
     )
     if diagram_type == "portrait_hook":
         body = (
@@ -243,12 +243,13 @@ def generate_shot_card(
     svg_dir = output_md.parent / "shot_sketches"
     svg_dir.mkdir(parents=True, exist_ok=True)
 
+    ind_labels = {"general": "通用门店/账号", "catering": "餐饮美食", "auto_repair": "汽车维修保养"}
     ind_tips = INDUSTRY_CHECKLISTS.get(industry, INDUSTRY_CHECKLISTS["general"])
     lines = [
         f"# 手机拍摄任务卡：{title}",
         "",
-        f"- **拍片目标**：{'实体店同城获客（靠真实细节和老板靠谱感让人来问、进店）' if track=='store' else '个人账号涨粉引流（靠高密度干货和真情绪留住人）'} | **行业参考**：`{industry}`",
-        "- **手机与设备设置**：`竖屏 1080p / 30帧` · 建议 iPhone 15 以上或 Pocket 3 · **严禁开美颜相机**（也关掉 HDR 防发灰）· **开拍前拿袖口擦干净主镜头**",
+        f"- **拍片目标**：{'实体店同城获客（靠真实细节和老板靠谱感让人来问、进店）' if track=='store' else '个人账号涨粉引流（靠高密度干货和真情绪留住人）'} | **行业参考**：{ind_labels.get(industry, industry)}",
+        "- **手机与设备设置**：`竖屏 1080p / 30帧` · 建议新款手机主摄或便携云台相机 · **别开美颜相机**（也关掉手机高动态模式防画面发灰）· **开拍前拿袖口擦干净主镜头**",
         "- **核心原则**：**用「一个手臂 / 一拃 / 退三步」做机位尺子；头尾各多停 1.0 秒（共 +2.0 秒余量）方便后期无缝衔接！**",
         "",
         "## 拍出真实感与好画面的现场铁律（照着做一次过）",
@@ -317,8 +318,11 @@ def main() -> None:
         shots = raw_shots.get("shots", []) if isinstance(raw_shots, dict) else raw_shots
         if not isinstance(shots, list) or not shots:
             raise ValueError(f"shots-json 格式为空或非法: {args.shots_json}")
-    elif args.audio_events and Path(args.audio_events).is_file():
-        ae = read_json(Path(args.audio_events))
+    elif args.audio_events:
+        ae_path = Path(args.audio_events)
+        if not ae_path.is_file():
+            raise FileNotFoundError(f"指定的锁音事件文件不存在: {ae_path}")
+        ae = read_json(ae_path)
         shots = shots_from_audio_events(ae) or DEFAULT_SHOTS
         voice_locked = True
     else:

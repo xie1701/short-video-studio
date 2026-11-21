@@ -80,6 +80,7 @@ def write_source_review(pipeline_dir: Path) -> dict[str, Any]:
             "timeline_sec": _range(clip.get("timeline_in_sec"), clip.get("timeline_out_sec")),
             "picture": media_ref(clip.get("media_path"), clip.get("source_in_sec"), clip.get("source_out_sec")),
         })
+    tts_wav_p = pipeline_dir / "02_tts_voice.wav"
     narration = {}
     for sent in audio.get("sentences", []):
         timeline_sec = _range(sent.get("start_sec"), sent.get("end_sec"))
@@ -90,6 +91,13 @@ def write_source_review(pipeline_dir: Path) -> dict[str, Any]:
                 "path": sent["voice_source"], "sha256": digest(sent["voice_source"]), "origin": "original",
                 "range_sec": _range(max(0, float(sent["source_in_sec"]) - original_offset),
                                     float(sent["source_out_sec"]) - original_offset),
+            }
+        elif voice is None and tts_wav_p.is_file():
+            voice = {
+                "path": str(tts_wav_p.resolve()),
+                "sha256": digest(str(tts_wav_p.resolve())),
+                "origin": "generated",
+                "range_sec": _range(sent.get("source_in_sec"), sent.get("source_out_sec")) or timeline_sec,
             }
         narration[sent["id"]] = {
             "sentence_id": sent["id"], "text": sent.get("text"), "spoken_text": sent.get("say_text"),
@@ -115,21 +123,45 @@ def write_source_review(pipeline_dir: Path) -> dict[str, Any]:
         "id": fact.get("id") or f"fact_{index:03d}",
         "text": fact.get("text") or fact.get("value"),
     } for index, fact in enumerate(spec.get("facts", []), 1))
-    on_screen = [str(line) for line in spec.get("exact_copy", [])] + [
-        str(element.get("text_or_asset") or "") for element in read("06_packaging.json").get("visual_elements", [])
+    subs_data = read("05_subtitles.json")
+    pkg_data = read("06_packaging.json")
+    fps = int(timeline.get("fps") or 30)
+    on_screen_timed: list[tuple[str, list[float] | None]] = [
+        (str(line), None) for line in spec.get("exact_copy", [])
     ]
+    for element in pkg_data.get("visual_elements", []):
+        elem_txt = str(element.get("text_or_asset") or "")
+        sf = element.get("start_frame")
+        ef = element.get("end_frame")
+        tr = _range(sf / float(fps), ef / float(fps)) if (sf is not None and ef is not None) else None
+        on_screen_timed.append((elem_txt, tr))
+    for sub in subs_data.get("entries", []):
+        if sub.get("suppressed"):
+            continue
+        on_screen_timed.append((str(sub.get("text") or ""), _range(sub.get("start_sec"), sub.get("end_sec"))))
+
     checked = []
     for index, claim in enumerate(claims, 1):
         text = str(claim.get("text") or "")
         target = narration.get(str(claim.get("sentence_id")))
+        requested_clip = claim.get("clip_id")
+        shot = next((s for s in shots if s["clip_id"] == requested_clip), None) if requested_clip else None
         if target is not None:
             matched = bool(text and any(text in str(target.get(key) or "") for key in ("text", "spoken_text")))
         else:
-            matched = bool(not claim.get("sentence_id") and text and any(text in line for line in on_screen))
-        requested_clip = claim.get("clip_id")
+            if not claim.get("sentence_id") and text:
+                if shot and shot.get("timeline_sec"):
+                    s0, s1 = shot["timeline_sec"]
+                    matched = any(
+                        text in line and (tr is None or max(s0, tr[0]) < min(s1, tr[1]))
+                        for line, tr in on_screen_timed
+                    )
+                else:
+                    matched = any(text in line for line, _ in on_screen_timed)
+            else:
+                matched = False
         clips = target["overlapping_clips"] if target else []
         if requested_clip:
-            shot = next((s for s in shots if s["clip_id"] == requested_clip), None)
             matched = matched and shot is not None and (target is None or requested_clip in clips)
             if shot:
                 clips = [requested_clip]
@@ -163,11 +195,15 @@ def source_review_status(report: dict[str, Any]) -> str:
     claims = report.get("claims", [])
     if not claims:
         return "NOT_REQUESTED"
+    hash_cache: dict[str, str | None] = {}
     for claim in claims:
         if claim["status"] == "UNRESOLVED":
             return "FAIL"
         for ref in claim["source_refs"]:
-            source = Path(ref["path"])
-            if not source.is_file() or sha256_file(source) != ref["sha256"]:
+            p_str = str(ref["path"])
+            if p_str not in hash_cache:
+                source = Path(p_str)
+                hash_cache[p_str] = sha256_file(source) if source.is_file() else None
+            if not hash_cache[p_str] or hash_cache[p_str] != ref["sha256"]:
                 return "FAIL"
     return "PENDING_REVIEW"

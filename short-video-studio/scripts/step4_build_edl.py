@@ -209,6 +209,11 @@ def run_step4(
     if deictic_gaps:
         print(f"[step4] [WARN] A3 视觉指代缺口 {len(deictic_gaps)} 处: {[g['matched_cue'] for g in deictic_gaps]}")
 
+    raw_intel_p = pipeline_dir / "00_raw_intel.json"
+    raw_intel = read_json(raw_intel_p) if raw_intel_p.is_file() else {}
+    raw_pain_kws = [str(k) for k in (raw_intel.get("pain_keywords") or []) if str(k).strip()]
+    raw_proof_names = [Path(str(a.get("filename") or "")).stem for a in (raw_intel.get("proof_assets") or []) if a.get("filename")]
+
     style_entry = load_style_spectrum_entry(style_id) if style_id else None
     broll_target_ratio = float((style_entry or {}).get("broll_overlay_ratio_target", 0.53))
     ambient_policy = (style_entry or {}).get("broll_ambient_sound_policy") or {}
@@ -405,6 +410,7 @@ def run_step4(
                 cur_aroll_sec += seg_durs_est[best_tail_i]
 
         min_aroll_sec = total_dur * max(0.24, min(0.35, target_aroll_ratio * 0.78))
+        max_aroll_sec = total_dur * min(0.85, max(0.55, target_aroll_ratio + 0.10))
         if cur_aroll_sec < min_aroll_sec:
             cands = []
             for i in range(n_segs):
@@ -417,6 +423,31 @@ def run_step4(
                 roles[i_cand] = "a_roll"
                 cur_aroll_sec += seg_durs_est[i_cand]
                 if cur_aroll_sec >= min_aroll_sec:
+                    break
+        elif cur_aroll_sec > max_aroll_sec and len(broll_pool) > 0:
+            # 精准控制目标 B-roll 覆盖率（如 style_14 的 ~53%）：优先把有语义特写匹配且保持 A/B 交替的中段 A-roll 转为 B-roll
+            drop_cands = []
+            for i in range(1, n_segs - 1):
+                if roles[i] != "a_roll":
+                    continue
+                t_s = frames_to_sec(cut_points[i]["raw_frame"], fps)
+                s_obj = find_sentence_for_time(t_s, cut_points[i]["event"])
+                s_txt_c = str(s_obj.get("text", ""))
+                if any(cue in s_txt_c for cue in PROP_SHOW_CUES):
+                    continue
+                sem_hit = any(
+                    tg and (tg in s_txt_c)
+                    for m in broll_pool if m.get("role") == "b_roll"
+                    for tg in (m.get("semantic_tags", []) + m.get("manual_tags", []))
+                )
+                adj_broll = int((i + 1 < n_segs and roles[i + 1] != "a_roll") or (roles[i - 1] != "a_roll"))
+                drop_cands.append((-int(sem_hit), adj_broll, -seg_durs_est[i], i))
+            for _, _, _, i_drop in sorted(drop_cands):
+                if cur_aroll_sec - seg_durs_est[i_drop] < min_aroll_sec:
+                    continue
+                roles[i_drop] = "b_roll"
+                cur_aroll_sec -= seg_durs_est[i_drop]
+                if cur_aroll_sec <= max_aroll_sec:
                     break
 
     # 真·J-cut (正帧移：声先画后) 与 真·L-cut (负帧移：高语义物证画面先入)
@@ -432,9 +463,10 @@ def run_step4(
                     cut_points[idx]["cut_frame"] = cand_f
                     j_leads[idx] = j_cut_frames
             elif roles[idx - 1] == "a_roll" and roles[idx] != "a_roll" and ev["type"] == "sentence_start":
-                # L-cut：若前一镜为 A-roll 且本段为高相关物证 B-roll，画面先于口播 3 帧入镜（保持前段 >=12f 且不破句界）
+                # L-cut：若前一镜为 A-roll 且本段为 B-roll，当前句或前一句尾部命中实拍特写标签时，画面提前 3 帧入镜（保持前段 >=14f 且不破句界）
                 sent = find_sentence_for_time(frames_to_sec(cut_points[idx]["raw_frame"], fps), ev)
-                s_txt = str(sent.get("text", ""))
+                prev_sent = find_sentence_for_time(frames_to_sec(cut_points[idx - 1]["raw_frame"], fps), cut_points[idx - 1]["event"])
+                s_txt = f"{prev_sent.get('text', '')} {sent.get('text', '')}"
                 has_match = any(
                     tg and (tg in s_txt)
                     for m in broll_pool if m.get("role") == "b_roll"
@@ -476,6 +508,8 @@ def run_step4(
     max_out_by_mp: Dict[str, float] = {}
     taboo_blocked_count = 0
 
+    OPPOSING_MOTION = {("pan_left", "pan_right"), ("pan_right", "pan_left"), ("tilt_up", "tilt_down"), ("tilt_down", "tilt_up")}
+
     def pick_best_broll(
         sent: Dict[str, Any],
         seg_dur: float,
@@ -483,6 +517,8 @@ def run_step4(
         t_start: float,
         prev_media_path: str,
         prev_src_out: float,
+        prev_motion: str = "static",
+        prev_shot_size: str = "medium",
         forbid_code: bool = False,
     ) -> Dict[str, Any]:
         nonlocal taboo_blocked_count
@@ -502,7 +538,20 @@ def run_step4(
                 blocked_here = True
 
             tags = [str(t) for t in (m.get("semantic_tags", []) + m.get("manual_tags", []))]
+            fname_m = Path(str(m.get("source_path") or m.get("normalized_mp4") or "")).stem
             sem_hits = sum(1 for tg in tags if tg and (tg in s_txt or any(tg in k or k in tg for k in s_kws)))
+            # 一手原始痛点词/物证优先匹配加权
+            intel_bonus = 0.0
+            if raw_pain_kws and any(pk in s_txt and (pk in fname_m or any(pk in tg for tg in tags)) for pk in raw_pain_kws):
+                intel_bonus += 4.5
+            if raw_proof_names and any(pn and pn in fname_m for pn in raw_proof_names):
+                intel_bonus += 3.0
+            # 景别交替鼓励与反方向运镜防撞墙惩罚
+            cur_motion = str(m.get("camera_motion") or "static")
+            cur_size = str(m.get("shot_size") or "medium")
+            motion_pen = 8.0 if (prev_motion, cur_motion) in OPPOSING_MOTION else 0.0
+            size_bonus = 2.0 if (cur_size != prev_shot_size) else 0.0
+
             cont_bonus = 1.5 if m.get("scene_group") == last_group else 0.0
             stab_bonus = float(m.get("stability_score", 0.8)) * 1.2
             sharp_bonus = min(1.5, float(m.get("sharpness_score", 40.0)) / 40.0)
@@ -512,7 +561,6 @@ def run_step4(
             is_live_m = m.get("role") == "b_roll" and avail > 2.0
             h_m = 0.40 if (is_live_m and avail >= seg_dur + 0.80) else 0.0
             eff_cur = max(float(used_cursors.get(m["id"], 0.0)), float(max_out_by_mp.get(mp_str, 0.0)))
-            # 若上一镜就是同一条素材，强迫切换或必须有单调后推余量防倒带
             same_media_pen = 0.0
             if mp_str == prev_media_path:
                 if m.get("role") == "code_broll" or (avail - max(eff_cur, prev_src_out + 0.05) < seg_dur):
@@ -523,7 +571,10 @@ def run_step4(
             exhausted_pen = 500.0 if (m.get("role") != "code_broll" and (avail - eff_cur) < seg_dur) else 0.0
             dur_bonus = 2.0 if rem >= seg_dur else (0.5 if avail >= seg_dur else -2.0)
             live_bonus = 3.5 if (t_start < 3.0 and m.get("role") == "b_roll") else 0.0
-            sc = sem_hits * 5.0 + cont_bonus + stab_bonus + sharp_bonus + dur_bonus + live_bonus - reuse_pen - taboo_pen - same_media_pen - exhausted_pen
+            sc = (
+                sem_hits * 6.5 + intel_bonus + size_bonus + cont_bonus + stab_bonus + sharp_bonus
+                + dur_bonus + live_bonus - reuse_pen - taboo_pen - same_media_pen - exhausted_pen - motion_pen
+            )
             if sc > best_score:
                 best_score = sc
                 best_m = m
@@ -533,6 +584,8 @@ def run_step4(
 
     clips: List[Dict[str, Any]] = []
     last_group = "shoot_default"
+    last_motion = "static"
+    last_shot_size = "medium"
     last_aroll_zoom = 1.0
     punch_in_count = 0
     lcut_real_count = 0
@@ -578,11 +631,13 @@ def run_step4(
 
             kb_cfg = {"zoom_start": 1.0, "zoom_end": 1.06, "reason": "防>3s静止微缓推"} if (seg_dur > 3.0 and not vf_extra) else None
             purpose = (
-                "首帧高密度开篇钩子" if idx == 0
-                else ("实拍实物/图纸展示保护" if has_prop_show
-                      else ("锁眼微推拉强调(1.15x)" if cur_zoom > 1.01
-                            else ("结尾人设转化" if idx == n_segs - 1 else "同期声口播强化信任")))
+                "开篇第一眼定调抓人" if idx == 0
+                else ("展示实物与凭据细节" if has_prop_show
+                      else ("拉近画面强调重点" if cur_zoom > 1.01
+                            else ("收尾强化真实感与互动" if idx == n_segs - 1 else "真人出镜说话建信任")))
             )
+            last_motion = str(ar.get("camera_motion") or "static")
+            last_shot_size = "closeup" if cur_zoom > 1.01 else str(ar.get("shot_size") or "medium")
             clips.append({
                 "clip_id": f"clip_{idx+1:03d}",
                 "track_role": "a_roll",
@@ -617,7 +672,10 @@ def run_step4(
             prev_mp = str(clips[-1]["media_path"]) if clips else ""
             prev_so = float(clips[-1]["source_out_sec"]) if clips else 0.0
 
-            br = pick_best_broll(sent, seg_dur, last_group, t_start, prev_mp, prev_so, forbid_code=forbid_code)
+            br = pick_best_broll(
+                sent, seg_dur, last_group, t_start, prev_mp, prev_so,
+                prev_motion=last_motion, prev_shot_size=last_shot_size, forbid_code=forbid_code,
+            )
             bid = br["id"]
             mp_str = str(br["normalized_mp4"])
             avail = float(br.get("duration_sec", 3.0))
@@ -644,6 +702,8 @@ def run_step4(
 
             usage_counts[bid] = usage_counts.get(bid, 0) + 1
             last_group = str(br.get("scene_group", last_group))
+            last_motion = str(br.get("camera_motion") or "static")
+            last_shot_size = str(br.get("shot_size") or "medium")
             need_freeze = src_in + seg_dur > avail + 0.01
             eff_role = str(br["role"])  # 统一保留 b_roll/code_broll，不写入悬空 "freeze"
             kb_cfg = {"zoom_start": 1.0, "zoom_end": 1.06, "reason": "长镜头微推"} if (seg_dur > pacing["static_sec"] and eff_role == "b_roll") else None
@@ -651,20 +711,23 @@ def run_step4(
             if j_leads[idx] < 0:
                 lcut_real_count += 1
             if audio_only_flags[idx]:
-                b_purpose = "声画分离保声遮脸(audio_only)"
+                b_purpose = "原声保留、用特写画面自然盖住瑕疵镜头"
             elif t_start < 3.0:
-                b_purpose = "前3秒视觉高密度切换"
+                b_purpose = "开头前3秒切入细节画面抓人眼"
             elif j_leads[idx] > 0:
-                b_purpose = f"真J-cut({j_leads[idx]}帧)语义B-roll"
+                b_purpose = "声音先响半拍再切入特写，衔接更顺滑"
             elif j_leads[idx] < 0:
-                b_purpose = f"真L-cut({abs(j_leads[idx])}帧物证先入)语义B-roll"
+                b_purpose = "凭据特写画面先露面再听人解释"
             else:
-                b_purpose = "语义互文B-roll保持声音不变"
+                b_purpose = "顺着台词补入对应细节画面"
 
+            amb_audio_src = br.get("normalized_wav") or (br.get("source_path") if br.get("has_audio") else None)
             keep_amb = bool(
                 ambient_enabled
                 and eff_role == "b_roll"
                 and br.get("has_audio", False)
+                and amb_audio_src
+                and Path(str(amb_audio_src)).is_file()
                 and not br.get("source_is_code_scene", False)
                 and any(w in str(sent.get("text", "")) for w in ambient_words)
             )
@@ -687,6 +750,7 @@ def run_step4(
                 "b_roll_overlay": True,
                 "underlying_audio_untouched": True,
                 "keep_broll_ambient": keep_amb,
+                "ambient_audio_path": str(amb_audio_src) if keep_amb else None,
                 "ambient_gain_db": ambient_gain_db if keep_amb else None,
                 "j_cut_lead_frames": j_leads[idx],
                 "punch_in_zoom": 1.0,
@@ -744,22 +808,23 @@ def run_step4(
     write_json(pipeline_dir / "04_edl.json", edl)
 
     md_lines = [
-        "# 以音定画专业剪辑表 (Edit Decision List)",
+        "# 画面剪辑排期表（大白话版）",
         "",
-        f"- **总时长**：{total_dur:.2f}s ({total_frames} 帧 @ {fps}fps)",
-        f"- **前 3 秒画面变化次数**：{first_3s_changes} 次（全部对应音频事件）",
-        f"- **J-cut / L-cut**：真 J-cut {jcut_real_count} 处，真 L-cut {lcut_real_count} 处 | **锁眼推拉**：{punch_in_count} 处",
+        f"- **成片总时长**：{total_dur:.2f} 秒（共 {len(clips)} 个画面段落）",
+        f"- **开头 3 秒画面切换**：{first_3s_changes} 次（全部踩在说话节奏点上）",
+        f"- **声音提前衔接 / 画面微拉近**：声画自然错位 {jcut_real_count + lcut_real_count} 处，重点画面拉近 {punch_in_count} 处",
         "",
-        "| 镜头 | 轨道角色 | 源入点 | 时码起止 | 时长 | 切点事件 | J/L-cut/推拉 | 用途 | 对应文案句 |",
-        "| :--- | :--- | :---: | :--- | :---: | :--- | :---: | :--- | :--- |",
+        "| 序号 | 画面类型 | 截取起点 | 成片时间段 | 时长 | 衔接处理 | 安排用意 | 对应台词 |",
+        "| :--- | :--- | :---: | :--- | :---: | :---: | :--- | :--- |",
     ]
-    for c in clips:
+    role_cn = {"a_roll": "真人出镜", "b_roll": "实拍细节", "code_broll": "动态图表"}
+    for i_c, c in enumerate(clips, start=1):
         jl = c["j_cut_lead_frames"]
-        j_p = f"J+{jl}f" if jl > 0 else (f"L-{abs(jl)}f" if jl < 0 else (f"{c['punch_in_zoom']:.2f}x" if c["punch_in_zoom"] > 1.01 else "-"))
+        j_p = "声音先入半拍" if jl > 0 else ("画面先露半拍" if jl < 0 else ("轻推拉近" if c["punch_in_zoom"] > 1.01 else "常规硬切"))
         md_lines.append(
-            f"| `{c['clip_id']}` | `{c['track_role']}` | {c['source_in_sec']:.2f}s | "
+            f"| 第 {i_c} 镜 | {role_cn.get(c['track_role'], '实拍画面')} | {c['source_in_sec']:.2f}s | "
             f"{c['timeline_in_sec']:.2f}s–{c['timeline_out_sec']:.2f}s | {c['duration_sec']:.2f}s | "
-            f"`{c['cut_event_id']}` ({c['cut_event_type']}) | {j_p} | {c['purpose']} | {c['sentence_text']} |"
+            f"{j_p} | {c['purpose']} | {c['sentence_text']} |"
         )
     (pipeline_dir / "04_edl_table.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
     print(

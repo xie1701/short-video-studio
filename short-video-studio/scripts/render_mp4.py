@@ -368,22 +368,6 @@ def render_packaging_png(
             return out_img
         return Image.new("RGBA", (240, 84), (0, 0, 0, 0))
 
-    if elem_kind == "hook_title_card":
-        line1 = main_text or "核心重点"
-        line2 = str(elem.get("subtext") or "").strip()
-        w = min(max_safe_w, int((elem.get("final_bbox") or elem.get("bbox") or {}).get("w") or max_safe_w))
-        h = 196 if line2 else 132
-        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
-        draw.rounded_rectangle([(0, 0), (w - 1, h - 1)], radius=24, fill=pal["bg"], outline=pal["border"], width=3)
-        draw.rounded_rectangle([(18, 22), (30, h - 22)], radius=6, fill=pal["accent"])
-        f1, t1 = _fit_line(draw, line1, font_path, w - 76, 52, 30)
-        draw.text((52, 26), t1, font=f1, fill=pal["text"])
-        if line2:
-            f2, t2 = _fit_line(draw, line2, font_path, w - 76, 34, 22)
-            draw.text((52, 102), t2, font=f2, fill=pal["accent"])
-        return img
-
     text = main_text or "重点"
     probe = Image.new("RGBA", (8, 8), (0, 0, 0, 0))
     pdraw = ImageDraw.Draw(probe)
@@ -524,6 +508,104 @@ def _compute_base_cache_key(
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def build_graded_segment_cmd(
+    ffmpeg_bin: str,
+    clip: Dict[str, Any],
+    color_vf: Optional[str],
+    eye_by_mp4: Dict[str, Dict[str, Any]],
+    out_mp4: Path,
+    fps: int,
+    tw: int = CANVAS_WIDTH,
+    th: int = CANVAS_HEIGHT,
+    preview: bool = False,
+    geom_cache: Optional[Dict[str, Tuple[int, int]]] = None,
+) -> List[str]:
+    """全仓唯一权威的单分镜裁切 + 锁眼 Ken Burns + 调色 + BT.709 命令构造器（供 render_mp4 / export_jianying / export_hyperframes 共享，消灭 80 行双写）。"""
+    media_path = str(clip.get("media_path") or "")
+    src_in = max(0.0, float(clip.get("source_in_sec", 0.0)))
+    if clip.get("timeline_out_frame") is not None and clip.get("timeline_in_frame") is not None:
+        clip_frames = max(1, int(clip["timeline_out_frame"]) - int(clip["timeline_in_frame"]))
+    else:
+        clip_frames = max(1, sec_to_frames(float(clip.get("duration_sec", 1.0)), fps))
+    clip_dur = frames_to_sec(clip_frames, fps)
+    src_out = float(clip.get("source_out_sec", src_in + clip_dur))
+    src_avail = max(0.1, src_out - src_in)
+
+    if geom_cache is not None and media_path in geom_cache:
+        sw, sh = geom_cache[media_path]
+    else:
+        probe = ffprobe_media(Path(media_path))
+        v_s = next((s for s in probe.get("streams", []) if s.get("codec_type") == "video"), {})
+        g = parse_video_stream_geometry(v_s)
+        sw, sh = g["display_width"], g["display_height"]
+        if geom_cache is not None:
+            geom_cache[media_path] = (sw, sh)
+
+    eye = clip.get("eye_anchor") or eye_by_mp4.get(media_path) or eye_by_mp4.get(str(Path(media_path).resolve())) or {}
+    fx = float(eye.get("cx", eye.get("eye_cx", 0.50)))
+    fy = float(eye.get("cy", eye.get("eye_cy", 0.36)))
+    tx = compute_crop_transform(sw, sh, tw, th, fx, fy)
+
+    trim_dur = min(src_avail, clip_dur) if src_avail >= clip_dur - 0.01 else src_avail
+    vf_parts: List[str] = [f"fps=fps={fps}", f"trim=duration={trim_dur:.4f},setpts=PTS-STARTPTS"]
+
+    vf_extra = str(clip.get("vf_extra") or "").strip()
+    kb = clip.get("ken_burns")
+    has_kb = isinstance(kb, dict) and ("zoom_start" in kb or "zoom_end" in kb)
+    if has_kb and not preview and not vf_extra:
+        z0 = max(1.0, float(kb.get("zoom_start", 1.0)))
+        z1 = max(1.0, float(kb.get("zoom_end", 1.06)))
+        pan_x = float(kb.get("pan_x", 0.0))
+        pan_y = float(kb.get("pan_y", 0.0))
+        if abs(z1 - z0) > 1e-4 or abs(pan_x) > 1e-4 or abs(pan_y) > 1e-4:
+            prog = f"min(t/{clip_dur:.4f},1)"
+            z_expr = f"({z0:.4f}+({z1 - z0:.4f})*{prog})"
+            vf_parts.append(
+                f"scale=w='trunc({tx['scaled_w']}*{z_expr}/2)*2':h='trunc({tx['scaled_h']}*{z_expr}/2)*2':eval=frame:flags=bicubic"
+            )
+            focal_px_x = float(tx["crop_x"]) + fx * tw
+            focal_px_y = float(tx["crop_y"]) + fy * th
+            x_off = f"{z_expr}*{focal_px_x:.2f}-{fx * tw:.2f}+({pan_x:.4f}*iw*{prog})"
+            y_off = f"{z_expr}*{focal_px_y:.2f}-{fy * th:.2f}+({pan_y:.4f}*ih*{prog})"
+            vf_parts.append(f"crop={tw}:{th}:x='max(0,min(iw-{tw},{x_off}))':y='max(0,min(ih-{th},{y_off}))'")
+        elif sw != tw or sh != th:
+            vf_parts.append(f"scale={tx['scaled_w']}:{tx['scaled_h']}:flags=bicubic")
+            vf_parts.append(f"crop={tw}:{th}:{tx['crop_x']}:{tx['crop_y']}")
+    else:
+        if sw != tw or sh != th:
+            vf_parts.append(f"scale={tx['scaled_w']}:{tx['scaled_h']}:flags=bicubic")
+            vf_parts.append(f"crop={tw}:{th}:{tx['crop_x']}:{tx['crop_y']}")
+        if vf_extra and not preview:
+            vf_parts.append(vf_extra)
+
+    if color_vf and not preview:
+        vf_parts.append(color_vf)
+    if src_avail < clip_dur - 0.01:
+        pad_sec = (clip_dur - src_avail) + 0.3
+        vf_parts.append(f"tpad=stop_mode=clone:stop_duration={pad_sec:.4f}")
+    if preview:
+        vf_parts.extend(["setsar=1", "format=yuv420p"])
+    else:
+        vf_parts.extend(BT709_VF_SUFFIX)
+
+    # 正式中间分镜采用 CRF 15 极低损编码，大幅削减三代 H.264 压损
+    return [
+        ffmpeg_bin, "-y",
+        "-ss", f"{src_in:.4f}",
+        "-t", f"{src_avail + 0.1:.4f}",
+        "-i", media_path,
+        "-an",
+        "-vf", ",".join(vf_parts),
+        "-frames:v", str(clip_frames),
+        "-c:v", "libx264",
+        "-preset", "ultrafast" if preview else "medium",
+        "-crf", "26" if preview else "15",
+        "-pix_fmt", "yuv420p",
+        *([] if preview else BT709_FFMPEG_ARGS),
+        str(out_mp4),
+    ]
+
+
 def build_base_video_track(
     pipeline_dir: Path,
     edl: Dict[str, Any],
@@ -577,93 +659,12 @@ def build_base_video_track(
         media_path = str(clip.get("media_path") or "")
         if not media_path or not Path(media_path).exists():
             raise FileNotFoundError(f"EDL 镜头素材不存在: {media_path}")
-
-        src_in = max(0.0, float(clip.get("source_in_sec", 0.0)))
-        if clip.get("timeline_out_frame") is not None and clip.get("timeline_in_frame") is not None:
-            clip_frames = max(1, int(clip["timeline_out_frame"]) - int(clip["timeline_in_frame"]))
-        else:
-            clip_frames = max(1, sec_to_frames(float(clip.get("duration_sec", 1.0)), fps))
-        clip_dur = frames_to_sec(clip_frames, fps)
-        src_out = float(clip.get("source_out_sec", src_in + clip_dur))
-        src_avail = max(0.1, src_out - src_in)
-
-        if media_path not in geom_cache:
-            probe = ffprobe_media(Path(media_path))
-            v_s = next((s for s in probe.get("streams", []) if s.get("codec_type") == "video"), {})
-            g = parse_video_stream_geometry(v_s)
-            geom_cache[media_path] = (g["display_width"], g["display_height"])
-        sw, sh = geom_cache[media_path]
-
-        eye = clip.get("eye_anchor") or eye_by_mp4.get(media_path) or eye_by_mp4.get(str(Path(media_path).resolve())) or {}
-        fx = float(eye.get("cx", eye.get("eye_cx", 0.50)))
-        fy = float(eye.get("cy", eye.get("eye_cy", 0.36)))
-        tx = compute_crop_transform(sw, sh, tw, th, fx, fy)
-
-        vf_parts: List[str] = [f"fps=fps={fps}"]
-        # 防尾帧泄漏：严格按 source_out_sec - source_in_sec 截断源视频，杜绝 tpad 前播放多余 NG 画面
-        trim_dur = min(src_avail, clip_dur) if src_avail >= clip_dur - 0.01 else src_avail
-        vf_parts.append(f"trim=duration={trim_dur:.4f},setpts=PTS-STARTPTS")
-
-        vf_extra = str(clip.get("vf_extra") or "").strip()
-        kb = clip.get("ken_burns")
-        has_kb = isinstance(kb, dict) and ("zoom_start" in kb or "zoom_end" in kb)
-
-        if has_kb and not preview and not vf_extra:
-            z0 = max(1.0, float(kb.get("zoom_start", 1.0)))
-            z1 = max(1.0, float(kb.get("zoom_end", 1.06)))
-            pan_x = float(kb.get("pan_x", 0.0))
-            pan_y = float(kb.get("pan_y", 0.0))
-            if abs(z1 - z0) > 1e-4 or abs(pan_x) > 1e-4 or abs(pan_y) > 1e-4:
-                prog = f"min(t/{clip_dur:.4f},1)"
-                z_expr = f"({z0:.4f}+({z1 - z0:.4f})*{prog})"
-                vf_parts.append(
-                    f"scale=w='trunc({tx['scaled_w']}*{z_expr}/2)*2':h='trunc({tx['scaled_h']}*{z_expr}/2)*2':eval=frame:flags=bicubic"
-                )
-                # 以眼部重心 (fx, fy) 为缩放不动点，保证 1080x1920 原生竖屏也能精准向眼部推近而不锁死在 (0,0)
-                focal_px_x = float(tx["crop_x"]) + fx * tw
-                focal_px_y = float(tx["crop_y"]) + fy * th
-                x_off = f"{z_expr}*{focal_px_x:.2f}-{fx * tw:.2f}+({pan_x:.4f}*iw*{prog})"
-                y_off = f"{z_expr}*{focal_px_y:.2f}-{fy * th:.2f}+({pan_y:.4f}*ih*{prog})"
-                vf_parts.append(f"crop={tw}:{th}:x='max(0,min(iw-{tw},{x_off}))':y='max(0,min(ih-{th},{y_off}))'")
-            elif sw != tw or sh != th:
-                vf_parts.append(f"scale={tx['scaled_w']}:{tx['scaled_h']}:flags=bicubic")
-                vf_parts.append(f"crop={tw}:{th}:{tx['crop_x']}:{tx['crop_y']}")
-        else:
-            if sw != tw or sh != th:
-                vf_parts.append(f"scale={tx['scaled_w']}:{tx['scaled_h']}:flags=bicubic")
-                vf_parts.append(f"crop={tw}:{th}:{tx['crop_x']}:{tx['crop_y']}")
-            if vf_extra and not preview:
-                vf_parts.append(vf_extra)
-
         cf = _build_color_filter_for_clip(clip, color_plan)
-        if cf and not preview:
-            vf_parts.append(cf)
-
-        if src_avail < clip_dur - 0.01:
-            pad_sec = (clip_dur - src_avail) + 0.3
-            vf_parts.append(f"tpad=stop_mode=clone:stop_duration={pad_sec:.4f}")
-
-        if preview:
-            vf_parts.extend(["setsar=1", "format=yuv420p"])
-        else:
-            vf_parts.extend(BT709_VF_SUFFIX)
-
         staged_seg = seg_out.with_suffix(".part.mp4")
-        cmd = [
-            ffmpeg_bin, "-y",
-            "-ss", f"{src_in:.4f}",
-            "-t", f"{src_avail + 0.1:.4f}",
-            "-i", media_path,
-            "-an",
-            "-vf", ",".join(vf_parts),
-            "-frames:v", str(clip_frames),
-            "-c:v", "libx264",
-            "-preset", "ultrafast" if preview else "medium",
-            "-crf", "26" if preview else "18",
-            "-pix_fmt", "yuv420p",
-            *([] if preview else BT709_FFMPEG_ARGS),
-            str(staged_seg),
-        ]
+        cmd = build_graded_segment_cmd(
+            ffmpeg_bin, clip, cf, eye_by_mp4, staged_seg, fps,
+            tw=tw, th=th, preview=preview, geom_cache=geom_cache,
+        )
         seg_key = hashlib.sha256(json.dumps(
             [cmd[:-1], source_hashes[media_path], source_hashes.get(lut_path)]
         ).encode("utf-8")).hexdigest()
@@ -818,7 +819,7 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
             blur_crop_out = f"[bo_{step_idx}]"
             blur_merged = f"[bm_{step_idx}]"
             filter_chains.append(f"{cur_label}split=2{base_copy}{blur_crop_in}")
-            filter_chains.append(f"{blur_crop_in}crop={bw}:{bh}:{bx}:{by},boxblur=10:2{blur_crop_out}")
+            filter_chains.append(f"{blur_crop_in}crop={bw}:{bh}:{bx}:{by},boxblur=10:2:enable='between(t,{s_t:.4f},{e_t:.4f})'{blur_crop_out}")
             filter_chains.append(
                 f"{base_copy}{blur_crop_out}overlay=x={bx}:y={by}:enable='between(t,{s_t:.4f},{e_t:.4f})'{blur_merged}"
             )
@@ -849,7 +850,7 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
     if len(filter_str) < 32768:
         fc_args = ["-filter_complex", filter_str]
     else:
-        help_txt = run_cmd([ffmpeg, "-hide_banner", "-h", "long"], check=False).stdout or ""
+        help_txt = run_cmd([ffmpeg_bin, "-hide_banner", "-h", "long"], check=False).stdout or ""
         fc_flag = "-filter_complex_script" if "filter_complex_script" in help_txt else "-/filter_complex"
         fc_args = [fc_flag, str(filter_script)]
 

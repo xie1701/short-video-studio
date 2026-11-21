@@ -119,10 +119,11 @@ def audit_text_line(
     masked = _mask_exempt_phrases(text)
     acked = acked_terms or set()
     hits: List[Dict[str, Any]] = []
-    rewritten = text
+    must_spans: List[Tuple[int, int, str]] = []
+    masked_chars = list(masked)
 
     for cat, pat, repl, reason in MUST_RULES:
-        for m in re.finditer(pat, masked, flags=re.IGNORECASE):
+        for m in re.finditer(pat, "".join(masked_chars), flags=re.IGNORECASE):
             term = text[m.start() : m.end()]
             hits.append({
                 "severity": "must",
@@ -135,11 +136,18 @@ def audit_text_line(
                 "suggestion": repl,
                 "acked": False,
             })
-            rewritten = rewritten.replace(term, repl, 1)
+            must_spans.append((m.start(), m.end(), repl))
+            for k in range(m.start(), m.end()):
+                masked_chars[k] = " "
 
-    # 重建屏蔽后检查 warn（避开已算作 must 的词语）
+    # 按命中偏移逆序切片替换，绝不误改前面豁免短语；并基于屏蔽掉 must 后的文本检查 warn
+    rewritten = text
+    for st, en, repl in sorted(must_spans, key=lambda x: x[0], reverse=True):
+        rewritten = rewritten[:st] + repl + rewritten[en:]
+
+    masked_for_warn = "".join(masked_chars)
     for cat, pat, repl, reason in WARN_RULES:
-        for m in re.finditer(pat, masked, flags=re.IGNORECASE):
+        for m in re.finditer(pat, masked_for_warn, flags=re.IGNORECASE):
             term = text[m.start() : m.end()]
             is_acked = term in acked
             hits.append({
@@ -158,7 +166,7 @@ def audit_text_line(
         "has_must": any(h["severity"] == "must" for h in hits),
         "has_unacked_warn": any(h["severity"] == "warn" and not h["acked"] for h in hits),
         "hits": hits,
-        "suggested_text": rewritten if any(h["severity"] == "must" for h in hits) else text,
+        "suggested_text": rewritten if must_spans else text,
     }
 
 
@@ -250,6 +258,7 @@ def audit_script_compliance(
         "unacked_warn_count": unacked_warn_count,
         "dropped_real_voice_ids": dropped_sentence_ids,
         "auto_rewritten_count": rewritten_count,
+        "whitelist_path": str(whitelist_path.resolve()) if whitelist_path and whitelist_path.is_file() else None,
         "findings": findings,
     }
 
@@ -295,6 +304,13 @@ def _classify_asset_license(path: Path, asset_kind: str, pipeline_dir: Path,
     resolved = path.resolve()
     if ASSETS_DIR.resolve() in resolved.parents:
         return {"source_tier": "builtin_svs", "license": "见 assets-attribution.md", "commercial_ok": True}
+    if asset_kind == "font" and is_verified_commercial_font(str(resolved)):
+        return {
+            "source_tier": "verified_commercial_font",
+            "license": "已核验免费可商用开源字体 (OFL / Apache-2.0)",
+            "commercial_ok": True,
+            "commercial_verified": True,
+        }
     generated = {"04_generated_broll", "01_normalized", "01_code_scenes"}
     if asset_kind == "code_broll" and any(pipeline_dir.resolve() / name in resolved.parents for name in generated):
         return {"source_tier": "project_generated", "license": "项目生成内容", "commercial_ok": True}
@@ -343,7 +359,7 @@ def build_asset_license_manifest(
         for sfx in pkg.get("sfx_cues", []):
             if sfx.get("file"):
                 raw_assets.append(("sfx", Path(sfx["file"])))
-        for elem in pkg.get("visual_elements", []) + pkg.get("stage_overlays", []):
+        for elem in pkg.get("visual_elements", []):
             cp = elem.get("custom_png")
             if cp:
                 raw_assets.append(("graphic", Path(cp)))
@@ -419,8 +435,8 @@ def build_asset_license_manifest(
     if col_p.is_file() and col.get("source_lut_path") and col.get("lut_path") != col["source_lut_path"]:
         derived = Path(col["lut_path"])
         master = Path(col["source_lut_path"]).resolve()
-        source_entry = next(item for item in entries if item["path"] == str(master))
-        if derived.is_file() and source_entry["commercial_ok"]:
+        source_entry = next((item for item in entries if item["path"] == str(master)), None)
+        if derived.is_file() and source_entry and source_entry.get("commercial_ok"):
             entries.append({
                 "category": "lut", "path": str(derived.resolve()), "sha256": sha256_file(derived),
                 "source_tier": "project_derived_lut", "source_path": str(master),

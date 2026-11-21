@@ -43,7 +43,7 @@ maybe_reexec_in_venv()
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
-from vision_inspector import compute_laplacian_sharpness, inspect_images
+from vision_inspector import compute_laplacian_sharpness, inspect_images, segment_person_mask
 
 _CTA_STOP_KWS = {"评论区", "点赞", "关注", "私信", "门店地址", "戳链接", "收藏"}
 
@@ -57,8 +57,9 @@ def pick_best_cover_frame(
     pipeline_dir: Path,
     work_dir: Path,
     color_plan: Optional[Dict[str, Any]] = None,
+    audio_events: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[Path], Dict[str, Any]]:
-    """按镜头精准 -ss 快速抽帧最多 10 张候选帧，优选高锐度+自然睁眼帧，并同步施加对应 Step 7 调色。"""
+    """结合全片情绪峰值句 + 开篇实拍镜头抽帧最多 12 张，以人脸眼部局部对焦锐度 + 自然睁眼优选黄金封面帧，并同步 Step 7 调色。"""
     ffmpeg = find_bin("ffmpeg")
     clips = edl.get("clips", [])
     if not ffmpeg or not clips:
@@ -69,16 +70,33 @@ def pick_best_cover_frame(
     if not pool:
         return None, {"score": 0.0, "face_bbox": None, "reason": "no_existing_file"}
 
+    # 结合 03_audio_events 定位全片高情绪/爆点句所在镜头加入封面候选（不再局限于前 4 段）
+    selected_clips: List[Dict[str, Any]] = list(pool[:4])
+    seen_cids = {c["clip_id"] for c in selected_clips}
+    if audio_events:
+        high_sents = [
+            s for s in (audio_events.get("sentences") or [])
+            if s.get("emotion_or_info") in ("hook", "twist", "persona") or (s.get("keywords") and len(s.get("keywords", [])) >= 2)
+        ]
+        for hs in high_sents[:4]:
+            hs_t = float(hs.get("start_sec", 0.0))
+            hit_c = next((c for c in pool if float(c.get("timeline_in_sec", 0.0)) <= hs_t <= float(c.get("timeline_out_sec", 0.0))), None)
+            if hit_c and hit_c["clip_id"] not in seen_cids:
+                selected_clips.append(hit_c)
+                seen_cids.add(hit_c["clip_id"])
+            if len(selected_clips) >= 7:
+                break
+
     vf_by_cid = {p["clip_id"]: p.get("vf_filter") for p in (color_plan or {}).get("clip_plans", []) if p.get("apply_color_grade")}
     candidates: List[Tuple[Path, float, str, Optional[str], float]] = []
 
-    for c_idx, c in enumerate(pool[:4]):
+    for c_idx, c in enumerate(selected_clips):
         c_in = float(c.get("source_in_sec", 0.0))
         c_out = float(c.get("source_out_sec", c_in + 1.0))
         span = max(0.1, c_out - c_in)
-        offsets = [0.08, span * 0.45, span * 0.80] if c_idx == 0 else [0.10, span * 0.50]
+        offsets = [0.08, span * 0.45, span * 0.80] if c_idx == 0 else [span * 0.35, span * 0.65]
         for off in offsets:
-            if len(candidates) >= 10:
+            if len(candidates) >= 12:
                 break
             ts = min(max(0.0, c_out - 0.03), max(0.0, c_in + off))
             out_png = work_dir / f"cand_{len(candidates):02d}.png"
@@ -90,7 +108,7 @@ def pick_best_cover_frame(
             ], check=False)
             if out_png.exists():
                 candidates.append((out_png, round(float(c.get("timeline_in_sec", 0.0)) + off, 2), c["clip_id"], c["media_path"], ts))
-        if len(candidates) >= 10:
+        if len(candidates) >= 12:
             break
 
     if not candidates:
@@ -99,8 +117,23 @@ def pick_best_cover_frame(
     vis_map = inspect_images([p for p, _, _, _, _ in candidates])
     sharps = []
     for p, _, _, _, _ in candidates:
+        vr = vis_map.get(str(p), {})
+        faces_c = vr.get("faces") or []
         with Image.open(p) as im:
-            sharps.append(compute_laplacian_sharpness(np.asarray(im.convert("RGB"))))
+            rgb_arr = np.asarray(im.convert("RGB"))
+        full_sh = compute_laplacian_sharpness(rgb_arr)
+        if faces_c and isinstance(faces_c[0].get("bbox"), dict):
+            fb = faces_c[0]["bbox"]
+            h_i, w_i = rgb_arr.shape[:2]
+            x0 = max(0, int(float(fb["x"]) * w_i))
+            y0 = max(0, int(float(fb["y"]) * h_i))
+            x1 = min(w_i, max(x0 + 16, int((float(fb["x"]) + float(fb["w"])) * w_i)))
+            y1 = min(h_i, max(y0 + 16, int((float(fb["y"]) + float(fb["h"])) * h_i)))
+            face_sh = compute_laplacian_sharpness(rgb_arr[y0:y1, x0:x1])
+            # 人像镜头以眼部/人脸 ROI 局部对焦清晰度占 70% 权重，杜绝背景清楚人脸糊拿高分
+            sharps.append(round(face_sh * 0.70 + full_sh * 0.30, 2))
+        else:
+            sharps.append(full_sh)
     s_min, s_max = min(sharps), max(sharps)
 
     best_idx = 0
@@ -267,10 +300,28 @@ def run_step9(pipeline_dir: Path, track: str = "store", style_id: Optional[str] 
     cover_3x4_path = pipeline_dir / "09_cover_3x4.jpg"
     ui_preview_path = pipeline_dir / "09_ui_safe_preview.jpg"
 
+    person_cutout_applied = False
+    person_mask_img: Optional[Image.Image] = None
     with tempfile.TemporaryDirectory(prefix="svs_cover_") as td:
-        best_frame_p, best_meta = pick_best_cover_frame(edl, pipeline_dir, Path(td), color_plan=color_plan)
+        td_p = Path(td)
+        best_frame_p, best_meta = pick_best_cover_frame(
+            edl, pipeline_dir, td_p, color_plan=color_plan, audio_events=audio_events
+        )
         if best_frame_p and best_frame_p.exists():
             base_img = Image.open(best_frame_p).convert("RGBA")
+            # 决策 2A：若存在人脸主体且本机支持 macOS 原生 Apple Vision 前景人像分割，预提取人物前景蒙版用于主体压字纵深海报
+            if best_meta.get("face_bbox"):
+                mask_p = td_p / "person_mask.png"
+                if segment_person_mask(best_frame_p, mask_p):
+                    try:
+                        with Image.open(mask_p) as m_im:
+                            m_l = m_im.convert("L").resize((CANVAS_WIDTH, CANVAS_HEIGHT), Image.Resampling.BILINEAR)
+                            m_arr = np.asarray(m_l, dtype=np.float32)
+                            cov = float(np.mean(m_arr >= 128.0))
+                            if 0.08 <= cov <= 0.65:
+                                person_mask_img = m_l
+                    except Exception:
+                        person_mask_img = None
         else:
             base_img = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), hex_to_rgba(pal["bg_hex"], 255))
 
@@ -283,44 +334,55 @@ def run_step9(pipeline_dir: Path, track: str = "store", style_id: Optional[str] 
     card_y = _choose_cover_card_y(best_meta.get("face_bbox"), card_h=card_h)
 
     overlay = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
+    mid_layer = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
     font_path = find_commercial_font(pal.get("font_candidates"))
 
     if use_jianying_poster:
         # 复刻《11月14日延期》四区高低错落无闷框爆款封面（左上引子+正红巨字 / 中左微斜黄字签 / 下方白引子+红白大字）
-        # 上下轻柔暗角护底（不挡主实景和人脸，纯增文字对比）
         grad = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
         gd = ImageDraw.Draw(grad)
-        for gy in range(0, 520, 4):
-            a = int(115 * (1.0 - gy / 520.0))
+        for gy in range(0, 560, 4):
+            a = int(125 * (1.0 - gy / 560.0))
             gd.rectangle([0, gy, CANVAS_WIDTH, gy + 4], fill=(10, 12, 16, a))
         for gy in range(1060, CANVAS_HEIGHT, 4):
-            a = int(135 * min(1.0, (gy - 1060) / 520.0))
+            a = int(145 * min(1.0, (gy - 1060) / 520.0))
             gd.rectangle([0, gy, CANVAS_WIDTH, gy + 4], fill=(10, 12, 16, a))
         overlay = Image.alpha_composite(overlay, grad)
         draw = ImageDraw.Draw(overlay)
 
         safe_w = SAFE_ZONE["x_max"] - 80  # 800px，严格在 [80, 880] 内不触碰右侧栏
+        # 起始 y=262，严格落在 3:4 主页封面裁切 [240, 1680] 内部，绝不齐头切字！
         lead_small = "门店真实记录" if track == "store" else "实操真相拆解"
-        f_lead, fit_lead = _fit_text(draw, lead_small, font_path, 48, 420, min_size=28)
-        draw.text((88, 220), fit_lead, fill=(255, 255, 255, 255), font=f_lead, stroke_width=5, stroke_fill=(0, 0, 0, 255))
+        f_lead, fit_lead = _fit_text(draw, lead_small, font_path, 46, 420, min_size=28)
+        draw.text((88, 262), fit_lead, fill=(255, 255, 255, 255), font=f_lead, stroke_width=5, stroke_fill=(0, 0, 0, 255))
 
-        f_l1, fit_l1 = _fit_text(draw, cover_main_l1, font_path, 108, safe_w - 20, min_size=56)
-        draw.text((84 + 4, 286 + 6), fit_l1, fill=(0, 0, 0, 220), font=f_l1, stroke_width=7, stroke_fill=(0, 0, 0, 220))
-        draw.text((84, 286), fit_l1, fill=(255, 42, 36, 255), font=f_l1, stroke_width=7, stroke_fill=(0, 0, 0, 255))
+        f_l1, fit_l1 = _fit_text(draw, cover_main_l1, font_path, 106, safe_w - 20, min_size=54)
+        draw.text((84 + 4, 326 + 6), fit_l1, fill=(0, 0, 0, 220), font=f_l1, stroke_width=7, stroke_fill=(0, 0, 0, 220))
+        draw.text((84, 326), fit_l1, fill=(255, 42, 36, 255), font=f_l1, stroke_width=7, stroke_fill=(0, 0, 0, 255))
 
-        # 中左区：微倾斜 -4.5° 明黄黑边贴纸字（cover_main_l2）
-        f_l2, fit_l2 = _fit_text(draw, cover_main_l2, font_path, 82, safe_w - 60, min_size=44)
+        # 中左区：微倾斜明黄黑边贴纸字（cover_main_l2），严格转换归一化 face_bbox 到像素坐标并钳制右边界 <= 868
+        f_l2, fit_l2 = _fit_text(draw, cover_main_l2, font_path, 80, safe_w - 80, min_size=42)
         l2_tmp = Image.new("RGBA", (safe_w + 80, 180), (0, 0, 0, 0))
         l2_d = ImageDraw.Draw(l2_tmp)
         l2_d.text((28 + 3, 42 + 4), fit_l2, fill=(0, 0, 0, 220), font=f_l2, stroke_width=6, stroke_fill=(0, 0, 0, 220))
-        l2_d.text((28, 42), fit_l2, fill=(255, 226, 52, 255), font=f_l2, stroke_width=6, stroke_fill=(0, 0, 0, 255))
+        l2_d.text((28, 42), fit_l2, fill=(255, 226, 52, 255), font=f_l2, stroke_width=6, stroke_fill=(0, 0, 0, 220))
         l2_rot = l2_tmp.rotate(4.5, resample=Image.Resampling.BICUBIC, expand=True)
         l2_bb = l2_rot.getbbox()
         if l2_bb:
             l2_rot = l2_rot.crop(l2_bb)
-        l2_y = 1040 if (best_meta.get("face_bbox") and best_meta["face_bbox"].get("y", 999) < 880) else 860
-        overlay.alpha_composite(l2_rot, dest=(84, min(1120, l2_y)))
+        max_rot_w = SAFE_ZONE["x_max"] - 84 - 12
+        if l2_rot.width > max_rot_w:
+            sc_r = max_rot_w / float(l2_rot.width)
+            l2_rot = l2_rot.resize((max(1, int(l2_rot.width * sc_r)), max(1, int(l2_rot.height * sc_r))), Image.Resampling.LANCZOS)
+        fb_raw = best_meta.get("face_bbox")
+        face_y_px = 9999.0
+        if isinstance(fb_raw, dict):
+            raw_fy = float(fb_raw.get("y", 0.5))
+            face_y_px = raw_fy * CANVAS_HEIGHT if raw_fy <= 1.01 else raw_fy
+        l2_y = 1010 if face_y_px < 860.0 else 760
+        l2_y = max(500, min(1080, l2_y))
+        mid_layer.alpha_composite(l2_rot, dest=(84, l2_y))
 
         # 下方转化区：白字黑边副标 + 红白双色大字（严格落在 y <= 1460 安全区内）
         f_sub, fit_sub = _fit_text(draw, cover_sub, font_path, 44, safe_w - 20, min_size=26)
@@ -338,10 +400,10 @@ def run_step9(pipeline_dir: Path, track: str = "store", style_id: Optional[str] 
             draw.text((86 + lw + 3, 1296 + 5), p_right, fill=(0, 0, 0, 225), font=f_cta, stroke_width=6, stroke_fill=(0, 0, 0, 225))
             draw.text((86 + lw, 1296), p_right, fill=(255, 255, 255, 255), font=f_cta, stroke_width=6, stroke_fill=(0, 0, 0, 255))
 
-        card_y = 220
-        main_txt_col = (255, 255, 255, 255)
-        card_fill = (0, 0, 0, 255)
-        thumb_eval_box = (80, 220, 860, 440)
+        card_y = 262
+        main_txt_col = (255, 42, 36, 255)
+        card_fill = (10, 12, 16, 255)
+        thumb_eval_box = (80, 260, 860, 480)
     else:
         # 其余风格沿用同步色板杂志卡片封套
         card_fill = hex_to_rgba(pal["card_bg_hex"], 224 if pal.get("is_light") else 212)
@@ -371,14 +433,25 @@ def run_step9(pipeline_dir: Path, track: str = "store", style_id: Optional[str] 
         draw.text((inner_x, card_y + 216), fit_l2, fill=l2_col, font=f_l2)
         thumb_eval_box = (card_x1, card_y, card_x2, card_y + card_h)
 
-    composed = Image.alpha_composite(base_img, overlay).convert("RGB")
+    if use_jianying_poster:
+        # 纵深合成：底图 -> 中景贴纸字 -> (可选)前景人像边缘主体压字 -> 顶/底主标题清晰保底
+        stage = Image.alpha_composite(base_img, mid_layer)
+        if person_mask_img is not None:
+            # 仅在中景贴纸区让人物边缘自然压字，避免人物挡死顶/底主标题
+            fg_person = base_img.copy()
+            fg_person.putalpha(person_mask_img)
+            stage = Image.alpha_composite(stage, fg_person)
+            person_cutout_applied = True
+        composed = Image.alpha_composite(stage, overlay).convert("RGB")
+    else:
+        composed = Image.alpha_composite(base_img, overlay).convert("RGB")
     composed.save(cover_path, quality=92)
 
     crop_3x4 = composed.crop((0, 240, CANVAS_WIDTH, 1680))
     crop_3x4.save(cover_3x4_path, quality=92)
 
     _render_ui_safe_preview(composed, ui_preview_path)
-    # 180px 缩略图可读性验收：确认缩放后文字区域保留清晰对比与结构，不糊连
+    # 180px 缩略图真实像素对比度与清晰度验收（直接从最终合成像素采样，消灭硬编码黑白 21:1 假检）
     thumb_180 = composed.resize((180, 320))
     thumb_box = (
         int(thumb_eval_box[0] * 180 / CANVAS_WIDTH),
@@ -387,8 +460,13 @@ def run_step9(pipeline_dir: Path, track: str = "store", style_id: Optional[str] 
         int(thumb_eval_box[3] * 320 / CANVAS_HEIGHT),
     )
     thumb_patch = np.asarray(thumb_180.crop(thumb_box), dtype=np.float32)
-    thumb_luma_std = float(np.std(0.2126 * thumb_patch[:, :, 0] + 0.7152 * thumb_patch[:, :, 1] + 0.0722 * thumb_patch[:, :, 2]))
-    thumb_180_legible_ok = bool(contrast_ratio(main_txt_col[:3], card_fill[:3]) >= 4.5 and thumb_luma_std >= 18.0)
+    thumb_luma = 0.2126 * thumb_patch[:, :, 0] + 0.7152 * thumb_patch[:, :, 1] + 0.0722 * thumb_patch[:, :, 2]
+    thumb_luma_std = float(np.std(thumb_luma))
+    # 实测文字区域前后景相对亮度极端对比 (p92 vs p10)
+    lin_l = np.clip(thumb_luma / 255.0, 0.0, 1.0)
+    lin_l = np.where(lin_l <= 0.03928, lin_l / 12.92, ((lin_l + 0.055) / 1.055) ** 2.4)
+    measured_cover_wcag = round(float((np.percentile(lin_l, 92) + 0.05) / (np.percentile(lin_l, 10) + 0.05)), 2)
+    thumb_180_legible_ok = bool(measured_cover_wcag >= 3.8 and thumb_luma_std >= 18.0)
 
     md_content = "\n".join([
         "# 标题与黄金封面交付方案",
@@ -416,6 +494,9 @@ def run_step9(pipeline_dir: Path, track: str = "store", style_id: Optional[str] 
         "best_frame_meta": best_meta,
         "card_y": card_y,
         "thumb_180_legible_ok": thumb_180_legible_ok,
+        "measured_cover_wcag": measured_cover_wcag,
+        "thumb_180_contrast_ratio": measured_cover_wcag,
+        "person_cutout_applied": person_cutout_applied,
         "cover_jpg": str(cover_path.resolve()),
         "cover_3x4_jpg": str(cover_3x4_path.resolve()),
         "ui_safe_preview_jpg": str(ui_preview_path.resolve()),

@@ -16,7 +16,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
@@ -28,6 +28,7 @@ from common import (
     load_style_applied,
     load_style_spectrum_entry,
     maybe_reexec_in_venv,
+    parse_manifest_faces,
     read_json,
     resolve_lut_path,
     run_cmd,
@@ -62,7 +63,9 @@ def _resolve_style_grade_profile(style_id: Optional[str]) -> Dict[str, float]:
         return {}
     arch = str(entry.get("archetype_id", ""))
     cl = entry.get("color_and_lut", {}) or {}
-    warm = float(cl.get("warmth_index", cl.get("warm_cool_score", 0.0)))  # 正偏暖，负偏冷
+    warm_raw = float(cl.get("warmth_index", cl.get("warm_cool_score", 0.0)))
+    # analyze_style_spectrum 输出的 warmth_index 为 0..255 尺度 (常见 -30..+70)，归一化到 [-1, 1] 防止瞬间打满
+    warm = max(-1.0, min(1.0, warm_raw / 60.0)) if abs(warm_raw) > 1.5 else max(-1.0, min(1.0, warm_raw))
     if arch == "arch_01_tech_ui_console":
         return {"b_off": -0.025, "contrast": 1.15, "sat": 0.94, "rm_off": -0.018, "bm_off": 0.028}
     if arch == "arch_02_high_contrast_story":
@@ -334,15 +337,33 @@ def run_step7(
     hero_face_bbox: Optional[Dict[str, float]] = None
     hero_at_sec = round(hero_in + min(1.5, hero_dur * 0.5), 2)
     if hero_mp and hero_mp in manifest_by_mp4:
-        faces = manifest_by_mp4[hero_mp].get("faces") or []
-        if faces:
-            hero_face_bbox = faces[0]["bbox"]
+        faces_px = parse_manifest_faces(manifest_by_mp4[hero_mp])
+        if faces_px:
+            hero_face_bbox = faces_px[0]
             skin_ycbcr = probe_face_skin_ycbcr(Path(hero_mp), hero_face_bbox, at_sec=hero_at_sec)
 
-    # 闭环 LUT 肤色保护验证：套用建议滤镜回测 Hero 肤色是否跌出健康扇区，仅沿严格不增强度阶梯下探
-    skin_post_grade: Optional[Dict[str, float]] = None
+    # 收集所有含人脸镜头的抽样检验点（不仅 Hero 1 帧，副镜头人脸一并纳入 LUT 肤色保护回测）
+    face_verify_targets: List[Tuple[Path, Dict[str, float], float, Dict[str, float], bool]] = []
     if hero_mp and hero_face_bbox and skin_ycbcr:
-        hero_corr = compute_hero_and_shot_correction(hero_stats, hero_stats, True, skin_ycbcr, style_id=style_id)
+        face_verify_targets.append((Path(hero_mp), hero_face_bbox, hero_at_sec, hero_stats, True))
+    seen_verify_mps = {hero_mp}
+    for c_tmp in edl["clips"]:
+        mp_t = str(c_tmp.get("media_path") or "")
+        if not mp_t or mp_t in seen_verify_mps or mp_t not in manifest_by_mp4:
+            continue
+        f_list = parse_manifest_faces(manifest_by_mp4[mp_t])
+        if not f_list:
+            continue
+        seen_verify_mps.add(mp_t)
+        at_t = round(float(c_tmp.get("source_in_sec", 0.0)) + min(1.5, float(c_tmp.get("duration_sec", 2.0)) * 0.5), 2)
+        st_t = probe_clip_color_stats(Path(mp_t), float(c_tmp.get("source_in_sec", 0.0)), float(c_tmp.get("duration_sec", 2.0)))
+        face_verify_targets.append((Path(mp_t), f_list[0], at_t, st_t, False))
+        if len(face_verify_targets) >= 4:
+            break
+
+    # 闭环 LUT 肤色保护验证：套用建议滤镜回测 Hero 及副镜头人脸肤色是否跌出健康扇区，仅沿严格不增强度阶梯下探
+    skin_post_grade: Optional[Dict[str, float]] = None
+    if face_verify_targets:
         raw_cands = [eff_strength, min(eff_strength, 0.45), min(eff_strength, 0.30), 0.15]
         cand_strengths: List[float] = []
         for cs in raw_cands:
@@ -352,16 +373,22 @@ def run_step7(
         min_cand = min(cand_strengths) if cand_strengths else 0.15
         for cand_str in cand_strengths:
             cand_lut, cand_eff = build_blended_cube_lut(lut_path, cand_str, blended_out_path)
-            test_vf = _build_vf_for_corr(hero_corr, cand_lut)
-            skin_post_grade = probe_face_skin_ycbcr(Path(hero_mp), hero_face_bbox, at_sec=hero_at_sec, extra_vf=test_vf)
             blended_lut, eff_strength = cand_lut, cand_eff
-            if not skin_post_grade:
-                break
-            in_sector = (
-                SKIN_YCBCR_RANGE["cb_min"] <= skin_post_grade["skin_cb"] <= SKIN_YCBCR_RANGE["cb_max"]
-                and SKIN_YCBCR_RANGE["cr_min"] <= skin_post_grade["skin_cr"] <= SKIN_YCBCR_RANGE["cr_max"]
-            )
-            if in_sector or cand_str <= min_cand:
+            all_in_sector = True
+            for vp, v_fb, v_at, v_st, v_is_hero in face_verify_targets:
+                v_skin = skin_ycbcr if v_is_hero else probe_face_skin_ycbcr(vp, v_fb, at_sec=v_at)
+                v_corr = compute_hero_and_shot_correction(v_st, hero_stats, v_is_hero, v_skin, style_id=style_id)
+                test_vf = _build_vf_for_corr(v_corr, cand_lut)
+                pg = probe_face_skin_ycbcr(vp, v_fb, at_sec=v_at, extra_vf=test_vf)
+                if v_is_hero:
+                    skin_post_grade = pg
+                if pg and not (
+                    SKIN_YCBCR_RANGE["cb_min"] <= pg["skin_cb"] <= SKIN_YCBCR_RANGE["cb_max"]
+                    and SKIN_YCBCR_RANGE["cr_min"] <= pg["skin_cr"] <= SKIN_YCBCR_RANGE["cr_max"]
+                ):
+                    all_in_sector = False
+                    break
+            if all_in_sector or cand_str <= min_cand:
                 break
 
     clip_stats_cache: Dict[str, Dict[str, float]] = {}
@@ -391,11 +418,11 @@ def run_step7(
 
         shot_skin: Optional[Dict[str, float]] = skin_ycbcr if is_hero else None
         if not is_hero and mp in manifest_by_mp4:
-            clip_faces = manifest_by_mp4[mp].get("faces") or []
+            clip_faces = parse_manifest_faces(manifest_by_mp4[mp])
             if clip_faces:
                 if cache_key not in clip_skin_cache:
                     c_at = round(c_in + min(1.5, c_dur * 0.5), 2)
-                    clip_skin_cache[cache_key] = probe_face_skin_ycbcr(Path(mp), clip_faces[0]["bbox"], at_sec=c_at)
+                    clip_skin_cache[cache_key] = probe_face_skin_ycbcr(Path(mp), clip_faces[0], at_sec=c_at)
                 shot_skin = clip_skin_cache[cache_key]
 
         corr = compute_hero_and_shot_correction(

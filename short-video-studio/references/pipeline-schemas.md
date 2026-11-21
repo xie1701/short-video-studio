@@ -13,17 +13,17 @@
 | 入口3（可选） | `00_code_spec.json` + `SPEC.md` + `STRUCTURE.md` | 纯代码制片规约（One Idea、Exact Copy 白名单、Fact Ledger、分幕时间表、安全区与可读停留校验） |
 | Step 1 | `01_manifest.json` + `01_normalized/*.mp4/*.wav` | HDR→Rec.709 Hable 色调映射、统一转 CFR 30fps (`1080x1920`) 并提取 48kHz 16-bit WAV |
 | Step 2 | `02_transcript.json` | ASR/VAD 能量包络强制对齐、F0/RMS 真实韵律重音、物理剥离画外声与多条 NG Take 择优 |
-| Step 3 | `03_locked_voice.wav` + `03_locked_bgm.wav` + `03_audio_events.json` | 真实 Room Tone 抽样填缝 + 过零点等功率精剪 + 语义动态呼吸停顿 + 锁定音轨事件时间线 |
-| Step 4 | `04_edl.json` + `04_edl_table.md` | 语义选镜与单向不回退 B-roll 游标、真 J-cut + 真 L-cut、连续 A-roll `1.15x` 锁眼微推拉、6.2s 模式中断守护 |
-| Step 5 | `05_subtitles.json` + `05_subtitles.ass` | 逐字高亮字幕（含 `keywords` 与清洗后 `words`）、7点避脸 `final_bbox` 与已验证可商用字体样式 |
-| Step 6 | `06_packaging.json` + `06_sfx_track.wav` | 流派 CC0 真实物理音效先行（峰值对齐切点 `onset_time_sec`/`peak_time_sec`）+ 字体实测宽胶囊 + 预算控制 |
-| Step 7 | `07_color_plan.json` (+ `07_blended_lut.cube`) | Hero 基准锚定 + 全人脸镜头 BT.709 皮肤矢量保护 + 中点测光矫正 + 单向不升强度 LUT 闭环 |
-| Step 8 | `08_mixed_master.wav` + `08_stem_nosfx.wav` + `08_voice_master.wav` + `08_bgm_ducked.wav` + `08_sfx_master.wav` + `08_sfx_audit_window.json` + `08_mix_metrics.json` | 广播人声链(自适应压缩) + dB 域双频段闪避 + 锁定一致 `-14.0 LUFS` 混音 + 三端四轨同源分轨 +全量 SFX 基线 |
-| Step 9 | `09_title_cover.md` + `09_title_cover.json` + `09_cover.jpg` + `09_cover_3x4.jpg` + `09_ui_safe_preview.jpg` | 黄金封面帧优选（锐度/睁眼）、风格调色同步、避脸双构图封面 + UI遮罩预览 + 180px缩略图可读校验与真实3s `--hook-variants` |
-| 出片 | `output_preview.mp4` / `output_final.mp4` / `jianying_draft/` / `hyperframes_draft/` | 本地 MP4 渲染 (`focus_blur` 柔焦与锁眼 Ken Burns 修复) + 相对 URL FCPXML + 原生 HyperFrames Studio |
-| 质检 | `10_qa_report.json` + `10_qa_report.md` (+ `10_benchmark_comparison.md`) | **22 项 Fail-Closed 门禁**（三态 `PASS \| FAIL \| SKIPPED_UNAVAILABLE`，双态终审 `MACHINE_PASS_PENDING_HUMAN` → `APPROVED`） |
-| 交付与清理 | `out/*` + `11_delivery_summary.md` + `review_player.html` + `10_action_strips.jpg` (+ `VERIFY.md`) + `tidy_report.json` | 交付物同步入 `out/` + 离线打点审片 + 前3秒及切点动作连拍条 + 默认清理高体积中间帧/过程流并保留锁轨 ASSETS 以支撑 `reedit-visuals` (`--deep-clean` 才全清) |
-| 进化闭环 | `content-log/weekly_review.md` + `content-log/account_profile.json` | 按 `--account` 与 `--track` 双重隔离复盘，纳入复播率/同城占比/询单率并反查 EDL 断崖 |
+| Step 3 | `03_locked_voice.wav` + `03_locked_bgm.wav` + `03_audio_events.json` | 真实 Room Tone 抽样填缝 + 过零点真重叠等功率精剪 + 闭口帧微调 + 语义动态呼吸停顿 + 双段 BGM 锁定骨架 |
+| Step 4 | `04_edl.json` + `04_edl_table.md` | 53% 特写动态配比、景别/运镜防撞墙、一手痛点加权、真 J/L-cut、连续 A-roll `1.15x` 锁眼微推拉、特写原声 `ambient_audio_path` 挂载 |
+| Step 5 | `05_subtitles.json` + `05_subtitles.ass` | 逐字高亮字幕（含 `keywords` 与清洗后 `words`）、540px 正中对称带 `[220, 860]` 7 点避脸 `final_bbox` 与已验证可商用字体样式 |
+| Step 6 | `06_packaging.json` + `06_sfx_track.wav` | 流派 CC0 真实物理音效先行（峰值对齐切点 `onset_time_sec`/`peak_time_sec`）+ 多区无重叠花字/片尾召唤 + 预算控制 |
+| Step 7 | `07_color_plan.json` (+ `07_blended_lut.cube`) | Hero 基准锚定 + 多人脸镜头 BT.709 皮肤矢量保护 + 中点测光矫正 + 单向不升强度 `17³` LUT 闭环 |
+| Step 8 | `08_mixed_master.wav` + `08_stem_nosfx.wav` + `08_voice_master.wav` + `08_bgm_ducked.wav` + `08_sfx_master.wav` + `08_sfx_audit_window.json` + `08_mix_metrics.json` | 广播人声链 + 双频段闪避 + 特写现场动作声轻混 + 总线防削波三轨解耦 + `-14.0 ±1.5 LUFS` 混音 |
+| Step 9 | `09_title_cover.md` + `09_title_cover.json` + `09_cover.jpg` + `09_cover_3x4.jpg` + `09_ui_safe_preview.jpg` | 全片情绪+眼部锐度优选封面、可选 Apple Vision 人物前景压字、3:4 防裁切封面、UI 遮罩预览与 180px 真实像素对比度校验 |
+| 出片 | `output_preview.mp4` / `output_final.mp4` / `jianying_draft/` / `hyperframes_draft/` | 本地 MP4 渲染 + 相对 URL FCPXML + 原生 HyperFrames Studio |
+| 质检与盲审 | `10_qa_report.json` + `10_qa_report.md` + `10_blind_review_pack.md` | **全套白盒 + 单遍解码黑盒门禁**（三态 `PASS \| FAIL \| SKIPPED_UNAVAILABLE`，含 540px OCR 居中实测）与一页式《独立盲审取证包》 |
+| 交付与清理 | `out/*` + `11_delivery_summary.md` + `review_player.html` + `10_action_strips.jpg` (+ `VERIFY.md`) + `tidy_report.json` | 交付物同步入 `out/` + 离线打点审片 + 单次 `select` 动作连拍条 + 默认清理大体积过程文件并保留锁轨 ASSETS 以支撑 `reedit-visuals` |
+| 进化闭环 | `content-log/weekly_review_<track>.md` + `content-log/account_profile_<track>.json` | 按 `--account` 与 `--track` 双重隔离复盘，同条件分子/分母对账、对照实验评估与掉点反查 EDL 镜头 |
 
 ---
 
@@ -60,13 +60,14 @@
   "locked_duration_sec": 21.6,
   "locked_duration_frames": 648,
   "bgm": {
-    "file": "assets/bgm/upbeat_store_120bpm.m4a",
+    "file": "assets/sound_vibe/bgm/style_14_bgm.m4a",
     "bpm": 120.0,
     "beat_times_sec": [0.0, 0.5, 1.0, 1.5],
     "downbeat_times_sec": [0.0, 2.0, 4.0],
     "hook_first_word_sec": 0.0,
     "hook_aligned_downbeat_sec": 0.0
   },
+  "dual_bgm_used": true,
   "sentences": [
     {
       "id": "sent_001",
@@ -115,6 +116,9 @@
       "audio_locked": true,
       "b_roll_overlay": false,
       "underlying_audio_untouched": true,
+      "keep_broll_ambient": false,
+      "ambient_audio_path": null,
+      "ambient_gain_db": null,
       "j_cut_lead_frames": 0,
       "cut_event_id": "evt_001",
       "cut_event_time_sec": 0.0,
@@ -142,7 +146,7 @@
     "used_sfx_cues": 5
   },
   "sfx_cues": [
-    {"id": "sfx_001", "file": "assets/sfx/whoosh.wav", "time_sec": 0.90, "frame": 27, "gain_db": -6.0, "event_id": "evt_002"}
+    {"id": "sfx_001", "file": "assets/sound_vibe/sfx/whoosh_bright.wav", "time_sec": 0.90, "frame": 27, "gain_db": -6.0, "event_id": "evt_002"}
   ],
   "visual_elements": [
     {

@@ -91,12 +91,20 @@ def read_source_utterances(files: List[Path]) -> List[Dict[str, Any]]:
         clean = _clean_utterance(raw)
         if len(clean) < 3 or _is_url_or_num_token(clean) or clean.startswith(("#", "---")):
             return
-        role = str(metadata.get("role") or metadata.get("speaker_role") or "").lower()
+        role = str(
+            metadata.get("role")
+            or metadata.get("speaker_role")
+            or metadata.get("角色")
+            or metadata.get("发言人")
+            or ""
+        ).strip().lower()
         role_map = {"客服": "support", "agent": "support", "客户": "customer", "用户": "customer", "viewer": "customer"}
         roles = {"support", "customer"}
         role = role_map.get(role, role)
         if role not in roles:
-            prefix = raw[_TS_PREFIX_RE.match(raw).end():] if _TS_PREFIX_RE.match(raw) else raw
+            raw_s = raw.lstrip()
+            m_ts = _TS_PREFIX_RE.match(raw_s)
+            prefix = raw_s[m_ts.end():] if m_ts else raw_s
             if re.match(r"^\s*客服[^：:]{0,16}[：:]", prefix):
                 role = "support"
             elif re.match(r"^\s*(?:用户|客户|顾客|买家|网友)[^：:]{0,16}[：:]", prefix):
@@ -107,8 +115,8 @@ def read_source_utterances(files: List[Path]) -> List[Dict[str, Any]]:
             "id": f"{digest[:16]}:{locator}",
             "source_path": str(file.resolve()), "source_sha256": digest, "locator": locator,
             "quote": clean, "role": role,
-            "timestamp": metadata.get("timestamp") or metadata.get("created_at"),
-            "participant_id": metadata.get("participant_id") or metadata.get("author_id") or metadata.get("user_id"),
+            "timestamp": metadata.get("timestamp") or metadata.get("created_at") or metadata.get("时间") or metadata.get("发布时间"),
+            "participant_id": metadata.get("participant_id") or metadata.get("author_id") or metadata.get("user_id") or metadata.get("用户id") or metadata.get("作者id") or metadata.get("昵称"),
             "record_id": metadata.get("id") or metadata.get("message_id"),
         })
     for fp in files:
@@ -216,6 +224,7 @@ def extract_raw_intel(
             proof_assets.append({
                 "id": f"proof:{digest[:16]}",
                 "sha256": digest,
+                "locator": "asset",
                 "filename": f.name,
                 "path": str(f.resolve()),
                 "ext": f.suffix.lower(),
@@ -238,26 +247,30 @@ def extract_raw_intel(
     }
 
 
+def _item_text(it: Dict[str, Any]) -> str:
+    return str(it.get("text") or it.get("show") or it.get("say") or "").strip()
+
+
 def lint_script(script_items: List[Dict[str, Any]], raw_intel: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """对口播台词做口语化断句、去 AI 陈词滥调、实证锚点与 6–8 秒留存节拍体检。"""
     issues: List[Dict[str, Any]] = []
-    valid_items = [it for it in script_items if not it.get("is_filler", False) and str(it.get("text", "")).strip()]
+    valid_items = [it for it in script_items if not it.get("is_filler", False) and _item_text(it)]
 
     if valid_items:
-        first_txt = str(valid_items[0]["text"]).strip()
+        first_txt = _item_text(valid_items[0])
         if re.match(r"^(大家好|哈喽|hello|今天我们来|今天给大家|我是)", first_txt, re.IGNORECASE):
             issues.append({
                 "line": 1,
                 "severity": "error",
                 "code": "weak_opening",
                 "text": first_txt,
-                "message": "前3秒禁止寒暄/自我介绍开头，应直接抛出具体冲突、数字或客户原话痛点。",
+                "message": "开头 3 秒别寒暄或自我介绍，直接抛具体问题、数字或顾客最关心的原话。",
             })
 
     chars_since_hook = 0
     dry_abstract_run = 0
     for idx, it in enumerate(valid_items, start=1):
-        txt = str(it.get("text", "")).strip()
+        txt = _item_text(it)
         eff_chars = re.sub(r"[\s，。！？、；：“”‘’（）.,!?]+", "", txt)
         char_len = len(eff_chars)
 
@@ -267,7 +280,7 @@ def lint_script(script_items: List[Dict[str, Any]], raw_intel: Optional[Dict[str
                 "severity": "warn",
                 "code": "too_long_breath",
                 "text": txt,
-                "message": f"单句有效字数 {char_len} 字 > 16 字口播红线，建议拆短为两口短句以利呼吸与字幕单行排布。",
+                "message": f"这句有 {char_len} 个字，一口气念太长，建议拆成两句短话，字幕也更好看。",
             })
 
         cliches = [c for c in AI_CLICHE_BLACKLIST if c in txt]
@@ -277,7 +290,7 @@ def lint_script(script_items: List[Dict[str, Any]], raw_intel: Optional[Dict[str
                 "severity": "error",
                 "code": "ai_cliche",
                 "text": txt,
-                "message": f"命中书面/AI陈词滥调 {cliches}，请替换为行业具体名词或客户原话口语。",
+                "message": f"出现了书面套话 {cliches}，建议换成平时跟客人聊天的大白话。",
             })
 
         has_concrete = bool(re.search(r"\d+|半|两|三|块|元|年|天|小时|分钟|秒|斤|克|米|厘米|后厨|门店|合同|报告|票|图|表|实测|拆", txt))
@@ -291,7 +304,7 @@ def lint_script(script_items: List[Dict[str, Any]], raw_intel: Optional[Dict[str
                     "severity": "warn",
                     "code": "abstract_fluff",
                     "text": txt,
-                    "message": "连续 4 句缺乏具体数字、时间刻度或实物证据锚点，建议插入实拍数字或对比细节消除说教感。",
+                    "message": "连着 4 句没给具体数字、时间或实拍细节，容易显得在讲大道理，建议补一个实拍细节。",
                 })
                 dry_abstract_run = 0
 
@@ -308,12 +321,12 @@ def lint_script(script_items: List[Dict[str, Any]], raw_intel: Optional[Dict[str
                         "severity": "warn",
                         "code": "missing_micro_hook",
                         "text": txt,
-                        "message": f"连续约 {chars_since_hook/4.5:.1f} 秒（{chars_since_hook}字）纯平铺陈述无转折/提问/物证提示，建议在此处插入 Micro-Hook 或视觉证据切换。",
+                        "message": f"连着约 {chars_since_hook/4.5:.1f} 秒（{chars_since_hook}字）一直在平铺直叙，建议在这里加一句转折、反问或切出一个实物特写抓回注意力。",
                     })
                     chars_since_hook = 0
 
     pain_kws = (raw_intel or {}).get("pain_keywords", [])
-    full_txt = "".join(str(it.get("text", "")) for it in valid_items)
+    full_txt = "".join(_item_text(it) for it in valid_items)
     matched_pains = [k for k in pain_kws if k in full_txt]
 
     errors = sum(1 for i in issues if i["severity"] == "error")
@@ -332,39 +345,47 @@ def render_lint_markdown(lint_res: Dict[str, Any], raw_intel: Dict[str, Any]) ->
     honest_banner = (
         ""
         if raw_intel.get("verified_by_real_users")
-        else "> ⚠️ **诚实基线声明**：当前未导入真实评论/客服原话，以上选题假设与角度均来自行业公式推演，**未经真实用户问题验证**。\n\n"
+        else "> ⚠️ **实话提醒**：当前还没导入真实评论区或客服记录，这次的选题角度主要靠行业经验推演，**还没经过真实顾客提问验证**。\n\n"
     )
+    code_zh = {
+        "weak_opening": "开头太客套",
+        "too_long_breath": "句子偏长",
+        "ai_cliche": "书面套话",
+        "abstract_fluff": "缺少具体细节",
+        "missing_micro_hook": "平铺缺少转折",
+    }
+    sev_zh = {"error": "建议必改", "warn": "优化提醒"}
     lines = [
-        "# 一手原材萃取与剧本口语体检报告 (00_script_lint)",
+        "# 顾客原话提炼与口播稿体检报告",
         "",
         honest_banner.rstrip("\n"),
-        f"- **原始评论/对话样本数**：{raw_intel.get('utterance_count', 0)} 条 | 实拍物证资产：{len(raw_intel.get('proof_assets', []))} 件",
-        f"- **真实用户验证状态**：{'✅ 已获真实原话验证' if raw_intel.get('verified_by_real_users') else '⚠️ 仅公式推演（未经真实用户问题验证）'}",
-        f"- **高频客户顾虑词**：{', '.join(raw_intel.get('pain_keywords', [])) or '（未提供原始评论文件）'}",
-        f"- **剧本口语体检结果**：{'✅ PASS' if lint_res['passed'] else '❌ 存在必须修改的AI套话/开篇硬伤'} "
-        f"（Error {lint_res['error_count']} / Warn {lint_res['warn_count']}）",
+        f"- **读入顾客原话数**：{raw_intel.get('utterance_count', 0)} 条 | 实拍凭证材料：{len(raw_intel.get('proof_assets', []))} 件",
+        f"- **是否来自真实顾客反馈**：{'✅ 是，已拿到真实原话' if raw_intel.get('verified_by_real_users') else '⚠️ 暂未导入真实评论，先按经验推演'}",
+        f"- **顾客最常问的关键词**：{', '.join(raw_intel.get('pain_keywords', [])) or '（尚未导入评论记录）'}",
+        f"- **口播稿体检结论**：{'✅ 自然顺口，可以直接拍' if lint_res['passed'] else '❌ 有几处套话或开头太客套，建议先改再拍'} "
+        f"（必改 {lint_res['error_count']} 处 / 建议优化 {lint_res['warn_count']} 处）",
         "",
     ]
     if raw_intel.get("customer_questions"):
-        lines += ["## 客户原话高频追问（可直接做开头嘴替）"]
+        lines += ["## 顾客高频原话提问（可以直接拿来做开头第一句）"]
         for q in raw_intel["customer_questions"][:6]:
             lines.append(f"- 「{q}」")
         lines.append("")
 
     if lint_res["issues"]:
         lines += [
-            "## 剧本逐句体检问题",
+            "## 逐句修改建议",
             "",
-            "| 句号 | 级别 | 类型 | 原句 | 编导修改建议 |",
+            "| 句号 | 重要度 | 问题类型 | 原句 | 修改建议 |",
             "| :---: | :---: | :--- | :--- | :--- |",
         ]
         for iss in lint_res["issues"]:
             lines.append(
-                f"| #{iss['line']} | `{iss['severity'].upper()}` | `{iss['code']}` | "
+                f"| 第{iss['line']}句 | {sev_zh.get(iss['severity'], iss['severity'])} | {code_zh.get(iss['code'], iss['code'])} | "
                 f"{iss['text']} | {iss['message']} |"
             )
     else:
-        lines.append("剧本口语自然度、断句节奏与 Micro-Hook 节拍全部合格。")
+        lines.append("整篇口播稿口语自然、断句顺畅、节奏起伏到位，可以直接开拍。")
     return "\n".join(lines) + "\n"
 
 

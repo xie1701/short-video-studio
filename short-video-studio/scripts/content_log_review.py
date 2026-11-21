@@ -24,36 +24,48 @@ from content_experiment import (
 
 DEMO_RECORDS = [
     {
-        "video_id": "v_001", "date": "2026-11-08", "track": "store", "title": "价格越高的菜利润越低",
-        "a_level": "A1", "script_type": "聊行业看法", "viral_element": "算钱对比",
-        "hook_type": "颠覆切入", "opening_skill": "对立面开篇", "avg_shot_sec": 1.4,
-        "style_id": "style_14", "pause_sec": 0.16, "persona_pause_sec": 0.28, "bounce_2s": 0.28, "retention_5s": 0.52,
-        "rewatch_rate": 0.14, "local_traffic_pct": 0.68, "inquiry_rate": 0.0013,
-        "views": 18500, "retention_3s": 0.64, "completion_rate": 0.34, "likes": 420, "comments": 68, "dm_inquiries": 24,
+        "video_id": "v_001", "date": "2026-11-08", "track": "store", "platform": "douyin",
+        "traffic_source": "local_feed", "observation_hours": 48, "duration_sec": 42,
+        "published_at": "2026-11-08T10:00:00+08:00", "captured_at": "2026-11-10T10:00:00+08:00",
+        "title": "价格越高的菜利润越低", "style_id": "style_14",
+        "metrics": {
+            "retention_3s": {"numerator": 11840, "denominator": 18500},
+            "completion_rate": {"numerator": 6290, "denominator": 18500},
+            "inquiry_rate": {"numerator": 24, "denominator": 18500},
+        },
     },
     {
-        "video_id": "v_002", "date": "2026-11-09", "track": "store", "title": "八年老店老板的底线",
-        "a_level": "A2", "script_type": "给进店理由", "viral_element": "揭秘内幕",
-        "hook_type": "痛点切入", "opening_skill": "不字开头", "avg_shot_sec": 1.6,
-        "style_id": "style_14", "pause_sec": 0.18, "persona_pause_sec": 0.32, "bounce_2s": 0.31, "retention_5s": 0.49,
-        "rewatch_rate": 0.12, "local_traffic_pct": 0.74, "inquiry_rate": 0.0034,
-        "views": 9200, "retention_3s": 0.58, "completion_rate": 0.31, "likes": 210, "comments": 45, "dm_inquiries": 31,
+        "video_id": "v_002", "date": "2026-11-09", "track": "store", "platform": "douyin",
+        "traffic_source": "local_feed", "observation_hours": 48, "duration_sec": 44,
+        "published_at": "2026-11-09T10:00:00+08:00", "captured_at": "2026-11-11T10:00:00+08:00",
+        "title": "八年老店老板的底线", "style_id": "style_14",
+        "metrics": {
+            "retention_3s": {"numerator": 5336, "denominator": 9200},
+            "completion_rate": {"numerator": 2852, "denominator": 9200},
+            "inquiry_rate": {"numerator": 31, "denominator": 9200},
+        },
     },
     {
-        "video_id": "v_003", "date": "2026-11-11", "track": "store", "title": "门店日常工作vlog",
-        "a_level": "A3", "script_type": "晒干活过程", "viral_element": "前后反差",
-        "hook_type": "疑问切入", "opening_skill": "信息密度开篇", "avg_shot_sec": 3.4,
-        "style_id": "style_06", "pause_sec": 0.26, "persona_pause_sec": 0.35, "bounce_2s": 0.54, "retention_5s": 0.26, "drop_off_sec": 4.2,
-        "rewatch_rate": 0.05, "local_traffic_pct": 0.41, "inquiry_rate": 0.0010,
-        "views": 3100, "retention_3s": 0.39, "completion_rate": 0.16, "likes": 52, "comments": 8, "dm_inquiries": 3,
+        "video_id": "v_003", "date": "2026-11-11", "track": "store", "platform": "douyin",
+        "traffic_source": "local_feed", "observation_hours": 48, "duration_sec": 38,
+        "published_at": "2026-11-11T10:00:00+08:00", "captured_at": "2026-11-13T10:00:00+08:00",
+        "title": "门店日常工作实拍", "style_id": "style_06", "drop_off_sec": 4.2,
+        "metrics": {
+            "retention_3s": {"numerator": 1209, "denominator": 3100},
+            "completion_rate": {"numerator": 496, "denominator": 3100},
+            "inquiry_rate": {"numerator": 3, "denominator": 3100},
+        },
     },
     {
-        "video_id": "v_004", "date": "2026-11-13", "track": "store", "title": "高于20块才敢用的鲜羊排真相",
-        "a_level": "A1", "script_type": "教实用知识", "viral_element": "算钱对比",
-        "hook_type": "好奇切入", "opening_skill": "数字开篇", "avg_shot_sec": 1.3,
-        "style_id": "style_02", "pause_sec": 0.15, "persona_pause_sec": 0.26, "bounce_2s": 0.24, "retention_5s": 0.56,
-        "rewatch_rate": 0.17, "local_traffic_pct": 0.65, "inquiry_rate": 0.0012,
-        "views": 24600, "retention_3s": 0.69, "completion_rate": 0.38, "likes": 610, "comments": 95, "dm_inquiries": 29,
+        "video_id": "v_004", "date": "2026-11-13", "track": "store", "platform": "douyin",
+        "traffic_source": "local_feed", "observation_hours": 48, "duration_sec": 41,
+        "published_at": "2026-11-13T10:00:00+08:00", "captured_at": "2026-11-15T10:00:00+08:00",
+        "title": "高于20块才敢用的鲜羊排真相", "style_id": "style_14",
+        "metrics": {
+            "retention_3s": {"numerator": 16974, "denominator": 24600},
+            "completion_rate": {"numerator": 9348, "denominator": 24600},
+            "inquiry_rate": {"numerator": 29, "denominator": 24600},
+        },
     },
 ]
 
@@ -167,12 +179,17 @@ def generate_weekly_review(log_dir: Path, out_md: Optional[Path] = None, track: 
     for row in recent:
         if not row.get("metrics"):
             continue
-        platform, video_id, hours = snapshot_key(row)
+        sk = snapshot_key(row)
+        if not sk or len(sk) != 3 or sk[0] == "legacy" or row.get("duration_sec") is None or not row.get("traffic_source"):
+            continue
+        platform, video_id, hours = sk
         band = int(float(row["duration_sec"]) // 15) * 15
         group = (platform, hours, str(row["traffic_source"]), band)
         totals = cohorts.setdefault(group, {})
         cohort_video_ids.setdefault(group, set()).add(video_id)
         for name, values in row["metrics"].items():
+            if not isinstance(values, dict) or "numerator" not in values or "denominator" not in values:
+                continue
             count = totals.setdefault(name, [0, 0])
             count[0] += values["numerator"]
             count[1] += values["denominator"]
@@ -198,8 +215,13 @@ def generate_weekly_review(log_dir: Path, out_md: Optional[Path] = None, track: 
             label = METRIC_NAMES.get(name, name)
             lines.append(f"  - {label} {numerator}/{denominator}（{numerator / denominator:.2%}）")
     if diagnoses:
-        lines.extend(["", "## 待复核的掉点", ""])
-        lines.extend(f"- {item['title']} · {item['drop_off_sec']:.2f}s · {item['clip_id']} · {item['sentence_text']}" for item in diagnoses)
+        lines.extend(["", "## 观众滑走最集中的画面时间点（建议下次优先改这里）", ""])
+        for item in diagnoses:
+            role_zh = "真人出镜说话" if item.get("track_role") == "a_roll" else "特写/补拍画面"
+            lines.append(
+                f"- 《{item['title']}》第 {item['drop_off_sec']:.1f} 秒滑走最多"
+                f"（对应镜头 {item['clip_span']}，{role_zh}·{item.get('purpose') or '展示画面'}，当时正在讲：「{item['sentence_text']}」）"
+            )
     lines.extend(["", "## 实验与制作参数", ""])
     lines.append(f"- 当前启用版本 {profile.get('active_candidate') or '已有配置或内置默认值'}")
     if not candidates:

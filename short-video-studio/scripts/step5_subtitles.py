@@ -340,13 +340,38 @@ def run_step5(
     kw_hex_bgr = tpl["keyword_color"].lstrip("#")
     ass_kw_color = f"&H00{kw_hex_bgr[4:6]}{kw_hex_bgr[2:4]}{kw_hex_bgr[0:2]}&"
 
+    raw_intel_p = pipeline_dir / "00_raw_intel.json"
+    raw_pain_kws = set(str(k) for k in ((read_json(raw_intel_p).get("pain_keywords") or []) if raw_intel_p.is_file() else []) if str(k).strip())
+
     idx = 1
     suppressed_count = 0
+    tpl_max_chars = max(6, min(14, int(tpl.get("max_chars_per_line", 10))))
+    base_fs = int(tpl.get("font_size", 62))
+    kw_scale_f = float(tpl.get("keyword_scale", 1.133))
+    eff_measure_fs = int(round(base_fs * max(1.0, (1.0 + kw_scale_f) * 0.5)))
+
     for sent in audio_events["sentences"]:
+        sent_eff = dict(sent)
+        if raw_pain_kws:
+            s_kws = list(sent_eff.get("keywords") or [])
+            s_txt_full = str(sent_eff.get("text") or "")
+            for pk in raw_pain_kws:
+                if pk in s_txt_full and pk not in s_kws:
+                    s_kws.append(pk)
+            sent_eff["keywords"] = s_kws
+            if sent_eff.get("words"):
+                new_ws = []
+                for w in sent_eff["words"]:
+                    w2 = dict(w)
+                    if any(str(w2.get("word", "")) in pk or pk in str(w2.get("word", "")) for pk in raw_pain_kws if pk in s_txt_full):
+                        w2["is_keyword"] = True
+                    new_ws.append(w2)
+                sent_eff["words"] = new_ws
         for ch in split_sentence_into_chunks(
-            sent,
+            sent_eff,
+            max_chars=tpl_max_chars,
             font_path=font_path,
-            font_size=int(tpl.get("font_size", 54)),
+            font_size=eff_measure_fs,
             strip_punct=strip_punct,
         ):
             st_sec = round(float(ch["start_sec"]), 4)
@@ -404,8 +429,11 @@ def run_step5(
                         ass_text += w_txt
                 if not ass_text:
                     ass_text = _escape_ass_text(ch["text"])
+                # 将避脸后精确中心坐标写入 ASS \pos(540, cy)，确保 .ass 与 PNG/HyperFrames 避脸与居中完全一致
+                ass_cx = SUBTITLE_CENTER_X
+                ass_cy = int(final_bbox["y"]) + int(final_bbox["h"]) // 2
                 ass_dialogues.append(
-                    f"Dialogue: 0,{fmt_ass_time(st_sec)},{fmt_ass_time(en_sec)},Default,,0,0,0,,{ass_text}"
+                    f"Dialogue: 0,{fmt_ass_time(st_sec)},{fmt_ass_time(en_sec)},Default,,0,0,0,,{{\\an5\\pos({ass_cx},{ass_cy})}}{ass_text}"
                 )
             idx += 1
 

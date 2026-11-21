@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-[Step 10: 22 项硬红线自检 + 独立黑盒外部裁判 + Markdown/JSON 报告]
-自动核查（白盒 #1–#11 + 黑盒 #12–#22，统一三态 PASS | FAIL | SKIPPED_UNAVAILABLE）：
-1–11. 响度(-14 LUFS)、黑帧、静音、音画差(<=1帧)、字幕与03_audio_events真实偏差、切点对齐、
-      平台UI安全区/<=3字残句/包装预算、镜头分布/零倒带/A-Roll占比、前3秒切换、句界严锁、common禁用词防露馅。
-12–22. 调用 independent_verifier.py 执行单遍解码黑盒校验（声学/OCR/WCAG>=3.8单框/SKIN_YCBCR/
-       相对FCPXML与全离线HyperFrames/防静止/全量切点Spot/SFX同窗或tidy基准/本地ASR/合规与商用字体）。
-输出：pipeline/10_qa_report.json 与 pipeline/10_qa_report.md
+[Step 10: 全套白盒硬红线自检 + 独立黑盒外部裁判 + 独立盲审取证包]
+自动核查（白盒 #1–#11 + 黑盒 #12–#22 + 可选同步/来源门禁，统一三态 PASS | FAIL | SKIPPED_UNAVAILABLE）：
+1–11. 响度(-14 LUFS ±1.5)、黑帧、静音、音画差(<=1帧)、字幕与03_audio_events真实偏差、切点对齐、
+      平台UI安全区/540px水平居中/[220,860]对称带/<=3字残句/包装预算、镜头分布/零倒带/A-Roll占比、前3秒切换、句界严锁、禁词防露馅。
+12–22. 调用 independent_verifier.py 执行单遍解码黑盒校验。
+输出：pipeline/10_qa_report.json、pipeline/10_qa_report.md 与 pipeline/10_blind_review_pack.md
 """
 
 from __future__ import annotations
@@ -29,8 +28,11 @@ from common import (
     EXPORT_CHOICES,
     export_selection,
     LEAK_REGEX_PATTERNS,
+    LOUDNESS_TOLERANCE_LUFS,
     SAFE_ZONE,
+    SUBTITLE_CENTER_X,
     SUBTITLE_SAFE_ZONE,
+    SUBTITLE_SYMMETRIC_ZONE,
     TARGET_LUFS,
     check_bbox_in_safe_zone,
     ffprobe_media,
@@ -188,15 +190,15 @@ def inspect_video(
         r128 = audio_ctx["r128"]
         long_sil = audio_ctx["long_silences"]
 
-        # 1. 响度检查 (-14 LUFS ±2 LU)
+        # 1. 响度检查 (-14 LUFS ± LOUDNESS_TOLERANCE_LUFS，与黑盒 #12 同源)
         lufs = float(r128["integrated_lufs"])
-        lufs_ok = abs(lufs - TARGET_LUFS) <= 2.0
+        lufs_ok = abs(lufs - TARGET_LUFS) <= LOUDNESS_TOLERANCE_LUFS
         checks.append(_mk_check(
             "loudness",
-            "综合响度 (-14 LUFS)",
+            f"综合响度 ({TARGET_LUFS:.0f} LUFS)",
             "PASS" if lufs_ok else "FAIL",
             f"{lufs:.2f} LUFS (TP={r128['true_peak_dbtp']} dBTP)",
-            f"{TARGET_LUFS - 2.0:.1f} ~ {TARGET_LUFS + 2.0:.1f} LUFS",
+            f"{TARGET_LUFS - LOUDNESS_TOLERANCE_LUFS:.1f} ~ {TARGET_LUFS + LOUDNESS_TOLERANCE_LUFS:.1f} LUFS",
         ))
 
         # 2. 黑帧检测
@@ -317,7 +319,7 @@ def inspect_video(
             "≤ 1 帧",
         ))
 
-        # 7. UI 安全区 / <=3 字残句 / B9 互斥 / 包装预算
+        # 7. UI 安全区 / 540px 真居中对称带 / <=3 字残句 / B9 互斥 / 包装预算
         ui_violations: List[str] = []
         short_subs = 0
         code_ranges = [
@@ -334,6 +336,18 @@ def inspect_video(
             ok2, msg2 = _check_bbox_in_bounds(bbox, SUBTITLE_SAFE_ZONE, sub.get("id", "sub"))
             if not ok1 or not ok2:
                 ui_violations.append(f"{sub['id']}: {msg1 if not ok1 else msg2}")
+            elif isinstance(bbox, dict):
+                bx = float(bbox["x"])
+                bw = float(bbox["w"])
+                cx = bx + bw / 2.0
+                if abs(cx - float(SUBTITLE_CENTER_X)) > 4.0:
+                    ui_violations.append(
+                        f"{sub['id']}: 字幕未水平居中 (中心 X={cx:.1f}px，目标 {SUBTITLE_CENTER_X}±4px)"
+                    )
+                if bx < SUBTITLE_SYMMETRIC_ZONE["x_min"] or (bx + bw) > SUBTITLE_SYMMETRIC_ZONE["x_max"]:
+                    ui_violations.append(
+                        f"{sub['id']}: 字幕横越居中对称带 [{SUBTITLE_SYMMETRIC_ZONE['x_min']},{SUBTITLE_SYMMETRIC_ZONE['x_max']}] (实测 [{bx:.0f},{bx+bw:.0f}])"
+                    )
             clean_txt = _strip_punct_for_len(sub.get("text", ""))
             ref_sent_txt = _strip_punct_for_len(sents_by_id.get(sub.get("sentence_id", ""), {}).get("text", ""))
             if len(clean_txt) <= 3 and len(ref_sent_txt) >= 5:
@@ -427,18 +441,6 @@ def inspect_video(
         ))
 
         # 10. A-Roll 句界严锁（兼容正常 J/L-cut 声画错位延续）
-        accepted_path = next(
-            (p for p in (pipeline_dir / "02_Accepted_Cuts.json", pipeline_dir.parent / "02_Accepted_Cuts.json") if p.exists()),
-            None,
-        )
-        accepted_by_id: Dict[str, Dict[str, Any]] = {}
-        if accepted_path:
-            acc_raw = read_json(accepted_path)
-            acc_list = acc_raw.get("sentences", acc_raw) if isinstance(acc_raw, dict) else acc_raw
-            if isinstance(acc_list, list):
-                for it in acc_list:
-                    if isinstance(it, dict) and it.get("id"):
-                        accepted_by_id[str(it["id"])] = it
         aroll_boundary_violations: List[str] = []
         max_overrun_sec = 0.0
         max_late_in_sec = 0.0
@@ -450,7 +452,6 @@ def inspect_video(
             if not overlapping:
                 continue
             first_s, last_s = overlapping[0], overlapping[-1]
-            acc_last = accepted_by_id.get(last_s["id"], {})
             base_end = float(last_s["end_sec"]) + 0.08
             src_locked_ok = float(c.get("source_out_sec", 0.0)) <= float(last_s.get("source_out_sec", 99999.0)) + 0.06
             dyn_end = float(last_s["end_sec"]) + float(last_s.get("pause_after_sec", 0.08)) + 0.04 if src_locked_ok else base_end
@@ -461,9 +462,9 @@ def inspect_video(
                 nxt_j = int(clips_list[clip_pos + 1].get("j_cut_lead_frames", 0))
                 if nxt_j < 0:
                     l_lead_allowance = abs(nxt_j) / float(fps) + 0.04
-            cut_end_limit = float(acc_last.get("cut_end_sec") or max(base_end, dyn_end)) + l_lead_allowance
+            cut_end_limit = max(base_end, dyn_end) + l_lead_allowance
             if last_s["id"] == sents_all[-1]["id"] and c is clips_list[-1]:
-                cut_end_limit = max(cut_end_limit, float(acc_last.get("cut_buffer_end_sec") or total_edl_dur))
+                cut_end_limit = max(cut_end_limit, total_edl_dur)
             overrun = c_out - cut_end_limit
             max_overrun_sec = max(max_overrun_sec, max(0.0, overrun))
             if overrun > 0.04:
@@ -624,9 +625,15 @@ def inspect_video(
             else "❌ **未通过质检 (REJECTED - 禁止交付)**"
         )
     )
+    plain_verdict = (
+        "成片声音清晰、字幕居中没被按钮遮挡、画面切换干脆，所有硬性检查都过了，您确认一眼就能发。"
+        if all_passed
+        else f"还有 {fail_cnt} 项硬性问题没过（见下表带 FAIL 的行），建议先修好再发，避免发出后被限流或观感打折。"
+    )
     md_lines = [
-        "# 成片与交付工程质检报告",
+        f"# 成片与交付工程质检报告（共 {len(checks)} 项）",
         "",
+        f"- **一句话大白话结论**：{plain_verdict}",
         f"- **成片文件**：`{video_path.name}`",
         f"- **质量状态**：{status_banner}",
         f"- **统计**：`{pass_cnt}/{len(checks)}` PASS | FAIL `{fail_cnt}` | SKIPPED_UNAVAILABLE `{skip_cnt}`",
@@ -647,16 +654,97 @@ def inspect_video(
         md_lines.extend([
             "",
             "## 对标参考节奏对比",
-            f"- 参考片 `{Path(bc['benchmark_file']).name}` 估算 ASL：`{bc['benchmark_estimated_asl_sec']}s`；本片 ASL：`{bc['our_asl_sec']}s`（差值 `{bc['rhythm_delta_sec']:+.2f}s`）",
+            f"- 参考片 `{Path(bc['benchmark_file']).name}` 平均单镜时长：`{bc['benchmark_estimated_asl_sec']}s`；本片平均单镜时长：`{bc['our_asl_sec']}s`（差值 `{bc['rhythm_delta_sec']:+.2f}s`）",
         ])
 
     (pipeline_dir / "10_qa_report.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+    _write_blind_review_pack(pipeline_dir, video_path, report, edl, subs, audio_events)
     print(f"[qa] {len(checks)} 项质检：{pass_cnt} PASS / {fail_cnt} FAIL / {skip_cnt} SKIP -> 10_qa_report.md")
     return report
 
 
+def _write_blind_review_pack(
+    pipeline_dir: Path,
+    video_path: Path,
+    report: Dict[str, Any],
+    edl: Dict[str, Any],
+    subs: Dict[str, Any],
+    audio_events: Dict[str, Any],
+) -> Path:
+    """生成《独立盲审取证包》(10_blind_review_pack.md)：零内部代号，30 秒人眼/外审一页通关。"""
+    bb_checks = {c["id"]: c for c in (report.get("blackbox_details", {}).get("checks") or [])}
+    asr_detail = bb_checks.get("bb_blind_asr_proxy", {}).get("detail", {}) or {}
+    asr_text = str(asr_detail.get("recognized_text") or "").strip()
+    ocr_detail = bb_checks.get("bb_ocr_av_loop", {}).get("detail", {}) or {}
+    cover_p = pipeline_dir / "09_title_cover.json"
+    cover_meta = read_json(cover_p) if cover_p.is_file() else {}
+
+    strip_p = pipeline_dir / "10_action_strips.jpg"
+    cover_3x4 = pipeline_dir / "09_cover_3x4.jpg"
+    cover_full = pipeline_dir / "09_cover.jpg"
+    ui_prev = pipeline_dir / "09_ui_safe_preview.jpg"
+
+    lines = [
+        "# 成片出厂盲审取证包（不看内部制作过程，直接当普通观众验片）",
+        "",
+        "这份清单把成片的开头、关键切镜、缩略封面和听写下来的台词摊平在一页里，方便你或第三方朋友 30 秒盲看打分：",
+        "",
+        "## 1. 取证材料一览",
+        f"- **最终成片**：`{video_path.name}`（总时长 {float(edl.get('total_duration_sec', 0.0)):.1f} 秒，共 {len(edl.get('clips') or [])} 个镜头）",
+        f"- **开头 3 秒与关键切点连拍长图**：`{strip_p.name}`" + ("（已生成）" if strip_p.is_file() else "（未生成）"),
+        f"- **竖版封面 / 主页 3:4 缩略封面 / 避挡预览图**：`{cover_full.name}` / `{cover_3x4.name}` / `{ui_prev.name}`",
+    ]
+    if cover_meta:
+        lines.append(
+            f"- **封面实测清晰度（缩小到主页尺寸）**：对比度 `{cover_meta.get('thumb_180_contrast_ratio', '-')}:1`（越高越醒目，建议 ≥ 4.5:1），"
+            f"人物前景压字：`{'已启用' if cover_meta.get('person_cutout_applied') else '标准排版'}`"
+        )
+
+    lines.extend([
+        "",
+        "## 2. 脱离字幕直接盲听还原的台词",
+        (f"> {asr_text}" if asr_text else "> （本次未启用独立听写或视频无口播，请直接打开成片外放试听。）"),
+        "",
+        "## 3. 镜头画面与当下台词对照抽样（检查有没有文不对图）",
+        "",
+        "| 时间段 | 画面内容 | 这一刻嘴里正在说什么 |",
+        "| :---: | :--- | :--- |",
+    ])
+    sents = audio_events.get("sentences") or []
+    clips = edl.get("clips") or []
+    step_stride = max(1, len(clips) // 8)
+    for c in clips[::step_stride][:8]:
+        c_in = float(c.get("timeline_in_sec", 0.0))
+        c_out = float(c.get("timeline_out_sec", 0.0))
+        spoken = [
+            str(s.get("text") or "").strip()
+            for s in sents
+            if min(c_out, float(s.get("end_sec", 0.0))) - max(c_in, float(s.get("start_sec", 0.0))) > 0.15
+        ]
+        spoken_str = " / ".join(spoken[:2]) or "（画面过渡/停顿）"
+        role_zh = (
+            "真人出镜说话" if c.get("track_role") == "a_roll"
+            else ("图解动画卡片" if c.get("track_role") == "code_broll" else "实拍特写/空镜")
+        )
+        purp = str(c.get("purpose") or role_zh).replace("|", "｜")
+        lines.append(f"| {c_in:.1f}s–{c_out:.1f}s | {role_zh}：{purp} | {spoken_str.replace('|', '｜')} |")
+
+    center_dev = ocr_detail.get("max_subtitle_center_dev_px")
+    lines.extend([
+        "",
+        "## 4. 盲审人眼 4 问（全勾即可直接发布）",
+        "- [ ] **前 3 秒钩不钩人**：看连拍长图前 3 秒，静音状态下有没有立刻想停下来看？",
+        "- [ ] **画面对不对嘴**：看上面对照表，每段特写和字幕说的事是不是一回事？",
+        f"- [ ] **字幕和按钮打不打架**：字幕都在正中间靠下清晰可读吗？（自动实测居中偏差：`{center_dev if center_dev is not None else '未测得'}px`）",
+        "- [ ] **小图封面清不清楚**：缩小成手机主页小卡片看，上面的主标题能不能 1 秒看清、没被裁切？",
+    ])
+    out_p = pipeline_dir / "10_blind_review_pack.md"
+    out_p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return out_p
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Step 10: 22 项硬红线与独立黑盒质检报告生成")
+    parser = argparse.ArgumentParser(description="Step 10: 全套白盒硬红线与独立黑盒质检报告生成")
     parser.add_argument("--pipeline-dir", required=True)
     parser.add_argument("--video", help="指定待检 MP4（默认 output_final.mp4）")
     parser.add_argument("--benchmark", help="可选：对标视频路径")

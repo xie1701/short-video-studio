@@ -16,11 +16,10 @@ import argparse
 import shutil
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import (
-    ASSETS_DIR,
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
     DEFAULT_FPS,
@@ -29,11 +28,10 @@ from common import (
     EXPORT_CHOICES,
     export_selection,
     SAFE_ZONE,
+    SUBTITLE_CENTER_X,
     detect_browser_renderer,
-    ffprobe_media,
     find_bin,
     fit_text_line,
-    get_cached_font,
     load_style_applied,
     maybe_reexec_in_venv,
     read_json,
@@ -51,7 +49,6 @@ from export_hyperframes import export_hyperframes_draft
 from export_jianying import export_jianying_draft
 from generate_code_broll import (
     generate_demo_media_pack,
-    render_spec_scene_html,
     render_spec_scenes_batch,
     resolve_style_palette,
 )
@@ -111,6 +108,8 @@ def _generate_hook_variants(pipeline_dir: Path, count: int) -> Optional[Path]:
     ffmpeg = find_bin("ffmpeg")
 
     titles = list(dict.fromkeys(title[:18] for title in titles)) or [str(cov.get("cover_main") or "")[:18]]
+    sub_tpl_style = (subs.get("template") or {}) if isinstance(subs, dict) else {}
+    use_borderless = bool(sub_tpl_style.get("bg_box") is False)
     variants: List[Dict[str, Any]] = []
     for idx, raw_t in enumerate(titles[:n_var]):
         clean_headline = raw_t.replace("\n", " ").strip()[:18]
@@ -122,30 +121,38 @@ def _generate_hook_variants(pipeline_dir: Path, count: int) -> Optional[Path]:
                 canvas = im.convert("RGBA")
                 draw = ImageDraw.Draw(canvas)
                 card_y = int(cov.get("card_y", 260))
-                badge_y0 = max(SAFE_ZONE["y_min"] + 12, card_y - 72 if card_y > 300 else card_y + 348)
+                badge_y0 = max(SAFE_ZONE["y_min"] + 16, card_y - 72 if card_y > 320 else card_y + 348)
                 badge_y1 = min(1140, badge_y0 + 62)
                 max_w = SAFE_ZONE["x_max"] - SAFE_ZONE["x_min"] - 40
-                fnt, fitted = fit_text_line(draw, clean_headline, font_path, max_width=max_w - 40, max_size=30, min_size=20)
-                bb = draw.textbbox((0, 0), fitted, font=fnt)
-                bw = min(max_w, max(240, int(bb[2] - bb[0]) + 44))
-                bx0 = SAFE_ZONE["x_min"] + 20
-                draw.rounded_rectangle([(bx0, badge_y0), (bx0 + bw, badge_y1)], radius=14, fill=(18, 24, 38, 224), outline=(250, 204, 21, 220), width=2)
-                draw.text((bx0 + 22, (badge_y0 + badge_y1) // 2), fitted, font=fnt, fill=(255, 255, 255, 255), anchor="lm")
+                fnt, fitted = fit_text_line(draw, clean_headline, font_path, max_width=max_w - 40, max_size=34 if use_borderless else 30, min_size=22)
+                if use_borderless:
+                    cy_t = (badge_y0 + badge_y1) // 2
+                    draw.text((SUBTITLE_CENTER_X, cy_t), fitted, font=fnt, fill=(255, 224, 51, 255), anchor="mm", stroke_width=5, stroke_fill=(12, 12, 12, 245))
+                else:
+                    bb = draw.textbbox((0, 0), fitted, font=fnt)
+                    bw = min(max_w, max(240, int(bb[2] - bb[0]) + 44))
+                    bx0 = max(SAFE_ZONE["x_min"] + 10, SUBTITLE_CENTER_X - bw // 2)
+                    draw.rounded_rectangle([(bx0, badge_y0), (bx0 + bw, badge_y1)], radius=14, fill=(18, 24, 38, 224), outline=(250, 204, 21, 220), width=2)
+                    draw.text((bx0 + bw // 2, (badge_y0 + badge_y1) // 2), fitted, font=fnt, fill=(255, 255, 255, 255), anchor="mm")
                 canvas.convert("RGB").save(out_img, quality=92)
 
-        # 生成真实可播放的 3 秒钩子开篇对比 MP4
+        # 生成真实可播放的 3 秒开篇标题对比 MP4
         vid_ok = False
         if ffmpeg and final_mp4.is_file():
             ov_png = pipeline_dir / f"_tmp_hook_v{idx + 1}.png"
             ov_im = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
             ov_d = ImageDraw.Draw(ov_im)
             max_w = SAFE_ZONE["x_max"] - SAFE_ZONE["x_min"] - 40
-            fnt, fitted = fit_text_line(ov_d, clean_headline, font_path, max_width=max_w - 40, max_size=34, min_size=22)
-            bb = ov_d.textbbox((0, 0), fitted, font=fnt)
-            bw = min(max_w, max(260, int(bb[2] - bb[0]) + 48))
-            bx0, by0, by1 = SAFE_ZONE["x_min"] + 20, SAFE_ZONE["y_min"] + 16, SAFE_ZONE["y_min"] + 88
-            ov_d.rounded_rectangle([(bx0, by0), (bx0 + bw, by1)], radius=16, fill=(15, 23, 42, 226), outline=(250, 204, 21, 230), width=2)
-            ov_d.text((bx0 + 24, (by0 + by1) // 2), fitted, font=fnt, fill=(250, 204, 21, 255), anchor="lm")
+            fnt, fitted = fit_text_line(ov_d, clean_headline, font_path, max_width=max_w - 40, max_size=42 if use_borderless else 34, min_size=22)
+            by0, by1 = SAFE_ZONE["y_min"] + 20, SAFE_ZONE["y_min"] + 96
+            if use_borderless:
+                ov_d.text((SUBTITLE_CENTER_X, (by0 + by1) // 2), fitted, font=fnt, fill=(255, 224, 51, 255), anchor="mm", stroke_width=6, stroke_fill=(12, 12, 12, 250))
+            else:
+                bb = ov_d.textbbox((0, 0), fitted, font=fnt)
+                bw = min(max_w, max(260, int(bb[2] - bb[0]) + 48))
+                bx0 = max(SAFE_ZONE["x_min"] + 10, SUBTITLE_CENTER_X - bw // 2)
+                ov_d.rounded_rectangle([(bx0, by0), (bx0 + bw, by1)], radius=16, fill=(15, 23, 42, 226), outline=(250, 204, 21, 230), width=2)
+                ov_d.text((bx0 + bw // 2, (by0 + by1) // 2), fitted, font=fnt, fill=(250, 204, 21, 255), anchor="mm")
             ov_im.save(ov_png)
             try:
                 result = run_cmd([
@@ -177,7 +184,7 @@ def _generate_hook_variants(pipeline_dir: Path, count: int) -> Optional[Path]:
 
 
 def write_decisions_made(pipeline_dir: Path, track: str) -> Path:
-    """生成《我替你做的决定》专业默认值清单，方便用户一句话直接修改。"""
+    """生成《我替你做的决定》（100% 大白话、零专业黑话，方便一句话直接修改）。"""
     mf = read_json(pipeline_dir / "01_manifest.json") if (pipeline_dir / "01_manifest.json").exists() else {}
     ae = read_json(pipeline_dir / "03_audio_events.json")
     edl = read_json(pipeline_dir / "04_edl.json")
@@ -191,29 +198,43 @@ def write_decisions_made(pipeline_dir: Path, track: str) -> Path:
     hf = qa.get("deliverables", {}).get("hyperframes", {})
 
     hdr_cnt = int(mf.get("hdr_tonemapped_count", 0))
-    rt_src = "原片实录房间底噪" if ae.get("room_tone_source") == "extracted_real" else "柔和合成空气声"
+    rt_src = "从原片里提取的真实环境底声" if ae.get("room_tone_source") == "extracted_real" else "轻微柔和的环境垫底声"
     p_range = ae.get("pause_range_sec", [ae.get("pause_duration_sec", 0.2), ae.get("pause_duration_sec", 0.2)])
     best_cov = cov.get("best_frame_meta", {})
+    dual_bgm_note = "（开场 4 秒用一段情绪铺垫，正文自动丝滑切入主旋律）" if ae.get("dual_bgm_used") else ""
+
+    def _status_zh(st: str) -> str:
+        mp = {
+            "PASS": "已生成且检查通过",
+            "APPROVED": "已通过全部检查并人工确认",
+            "MACHINE_PASS_PENDING_HUMAN": "自动检查全过，等你确认一眼",
+            "REVIEW_REQUIRED": "自动检查全过，等你核对人工项",
+            "NOT_REQUESTED": "本次未要求导出",
+            "SKIPPED_UNAVAILABLE": "环境缺依赖已跳过",
+            "FAIL": "检查未通过（详见体检表）",
+            "REJECTED": "有项未通过，建议改完再发",
+        }
+        return mp.get(str(st or ""), "待核对")
 
     lines = [
-        "# 我替你做的决定（专业默认配置与一句话修改指南）",
+        "# 我替你做的决定（全程大白话说明 + 一句话修改指南）",
         "",
-        "为了让创作尽量少打断你，除核心选题、素材确认和音轨粗剪预览外，其余后期与播控细节已按行业专业标准自动完成：",
+        "为了少打扰你，除了开头定选题、选素材和听一遍声音节奏外，剩下的画面、字幕、配乐、调色细节都已按成熟门店/账号成片标准帮你配齐：",
         "",
-        "| 环节 | 我替你做的专业决定 | 如何一句话修改 |",
+        "| 环节 | 我替你做的安排 | 想改的话直接对我说 |",
         "| :--- | :--- | :--- |",
-        f"| **适用轨道** | `{'门店轨 (同城转化)' if track == 'store' else '博主轨 (留存涨粉)'}` | “改按博主轨/门店轨风格重出” |",
-        f"| **HDR 色彩还原** | 已检测并执行 Hable Rec.709 映射 `{hdr_cnt}` 条素材 | “保留原始对比/调柔和一点” |",
-        f"| **BGM 与强拍对齐** | `{Path(ae['bgm']['file']).name}` ({ae['bgm']['bpm']} BPM)，钩子首字对齐 0.00s 强拍 | “换一首更舒缓/更燃的 BGM” |",
-        f"| **呼吸停顿与房底** | 动态呼吸停顿 `{p_range[0]}s–{p_range[1]}s` + `{rt_src}` + 过零点精剪 | “把句间停顿整体改紧凑/舒缓一点” |",
-        f"| **J-cut 与锁眼推拉** | 真 J-cut `{edl.get('j_cut_applied_count', 0)}` 处（默认 `{edl['j_cut_default_frames']} 帧`），锁眼微推拉 `{edl.get('punch_in_count', 0)}` 处 | “把 J-cut 改成 0/2/4 帧”或“关闭微推拉” |",
-        f"| **字幕样式与避脸** | `{sub['template_name']}` (`{sub['template_id']}`)，商用字体 `{Path(sub['font_path']).name if sub.get('font_path') else '默认'}` + 自动避脸 | “字幕换成其他模板” |",
-        f"| **动效包装密度** | 音效 {pkg['budget']['used_sfx_cues']}/{pkg['budget']['max_sfx_cues']} 个，视觉包装 {pkg['budget']['used_visual_elements']}/{pkg['budget']['max_visual_elements']} 个 | “把花字贴纸再精简一点” |",
-        f"| **肤色保护调色** | Hero基准锚定 + 皮肤矢量校验 + `{int(round(col.get('lut_strength', 0.62)*100))}%` 强度 `{col['lut_name']}` | “调色浓一点(85%)/淡一点(40%)或换 LUT” |",
-        f"| **广播级混音** | 广播人声链 + 250-4kHz 双频段闪避，响度 `{mix['measured_lufs']:.2f} LUFS` / LRA `{mix.get('lra_lu', 0):.1f} LU` / SNR `{mix.get('voice_bgm_snr_db', 0):.1f}dB` | “BGM 音量再小一点 / 大一点” |",
-        f"| **黄金封面优选** | 综合选帧分 `{best_cov.get('score', 0)}` ({best_cov.get('detail', '自动优选')})，输出 9:16 首帧 + 3:4 主页封面 | “换一帧做封面/改封面大字” |",
-        f"| **22项自动+黑盒质检** | `{qa.get('pass_count', 0)}/{qa.get('total_checks', 22)}` 项 PASS（状态：`{qa.get('approval_status', 'PENDING')}`） | 查看 `10_qa_report.md` |",
-        f"| **工程验证** | 高清成片 `output_final.mp4` + 剪映 `{jy.get('status', 'unknown')}` + HyperFrames `{hf.get('status', 'unknown')}` | “导出/修改剪映或 HyperFrames 工程” |",
+        f"| **视频定位** | {'帮实体店拉本地客人（同城获客）' if track == 'store' else '帮个人账号涨粉引流'} | “改按同城门店风格 / 个人博主风格重出” |",
+        f"| **手机高动态色彩还原** | 自动把 `{hdr_cnt}` 条偏灰或过亮的手机素材调回自然耐看的颜色 | “画面再通透一点 / 柔和一点” |",
+        f"| **背景音乐与踩点** | 配乐 `{Path(ae['bgm']['file']).name}`{dual_bgm_note}，开头第一句话正好落在重拍上 | “换一首更轻快 / 更舒缓的背景音乐” |",
+        f"| **气口停顿与不生硬衔接** | 句子之间留出 `{p_range[0]}秒–{p_range[1]}秒` 自然呼吸停顿，垫入{rt_src}，听不出硬剪痕迹 | “说话节奏再紧凑一点 / 慢一点” |",
+        f"| **声画顺滑切换与景别变化** | 做了 `{edl.get('j_cut_applied_count', 0)}` 处“先听到声音再切画面”的顺滑转场，并在 `{edl.get('punch_in_count', 0)}` 处重点话时轻轻推近镜头 | “切镜头再干脆一点”或“关闭镜头轻轻推近” |",
+        f"| **居中字幕与避让脸部** | 用了 `{sub['template_name']}` 样式，免费商用字体 `{Path(sub['font_path']).name if sub.get('font_path') else '默认字体'}`，所有字幕正中对齐、自动躲开人脸和点赞按钮 | “换一种字幕颜色 / 大小” |",
+        f"| **花字提示与音效节奏** | 加了 {pkg['budget']['used_sfx_cues']} 处点睛小音效、{pkg['budget']['used_visual_elements']} 处重点花字提醒（克制不吵眼） | “花字再少一点 / 再活泼一点” |",
+        f"| **人物肤色保护调色** | 统一了不同镜头的亮度颜色，并护住人物自然气色（调色浓度 `{int(round(col.get('lut_strength', 0.62)*100))}%`） | “颜色再鲜亮一点 / 清淡一点” |",
+        f"| **人声清晰与自动压低音乐** | 人声响度已调到平台最舒服的标准，说话时背景音乐自动变小让位，人声清晰不费耳 | “背景音乐再小声一点 / 大声一点” |",
+        f"| **封面挑帧与主页适配** | 自动挑了最清晰、表情自然的一帧做封面（综合分 `{best_cov.get('score', 0)}`），同时配好竖版首帧和 3:4 主页小图 | “换一个画面做封面 / 改封面大字” |",
+        f"| **出厂全套自动检查** | 通过 `{qa.get('pass_count', 0)}/{qa.get('total_checks', 0)}` 项（当前状态：{_status_zh(qa.get('approval_status', ''))}） | 打开 `10_qa_report.md` 或 `10_blind_review_pack.md` 查看 |",
+        f"| **可二次编辑工程** | 高清成片 `output_final.mp4` + 剪映工程（{_status_zh(jy.get('status', ''))}） + 网页时间线工程（{_status_zh(hf.get('status', ''))}） | “帮我导出剪映工程 / 调整某一段” |",
         "",
     ]
     out_md = pipeline_dir / "decisions_made.md"
@@ -317,42 +338,57 @@ def write_delivery_summary(
     hv_note = ""
     if hv_p.is_file():
         hv = read_json(hv_p)
-        hv_note = f"\n- **片头标题叠层预览**：已生成 {hv.get('count', 0)} 个标题样片（`09_hook_variants.json` / `09_cover_v1..jpg`）"
+        hv_note = f"\n- **多版本开头标题预览**：已生成 {hv.get('count', 0)} 版开篇样片（`09_hook_variants.json` / `09_cover_v1..jpg`）"
+
+    pend_manual = list(qa_report.get("required_manual_checks") or [])
+    rev_flags = " ".join(f"--reviewed {m}" for m in pend_manual)
+    approve_cmd = (
+        f"python3 scripts/workflow_guard.py approve-final --pipeline-dir \"{pipeline_dir}\" "
+        + (f"{rev_flags} " if rev_flags else "")
+        + "--note \"已核对成片与人工检查项，同意发布\""
+    )
+    status_label = {
+        "APPROVED": "已通过全部检查并人工确认",
+        "MACHINE_PASS_PENDING_HUMAN": "自动检查全部通过，等你确认一眼即可发布",
+        "REVIEW_REQUIRED": "自动检查通过，请核对人工复查项后确认",
+        "REJECTED": "存在未通过检查项，建议修完再发",
+    }.get(str(qa_report.get("approval_status", "")), "待确认")
 
     lines = [
         f"# 成品交付清单 · 账号 `{ws.get('account_slug', 'default')}` · 项目 `{ws.get('project_id', pipeline_dir.parent.name)}`",
         "",
-        f"- **隔离加工工作区**：`{ws.get('project_dir', pipeline_dir.parent)}`（原素材目录 `{ws.get('raw_dir', '')}` 全程只读零修改）",
-        f"- **22 项自动+黑盒质检**：`{qa_report.get('pass_count', 0)}/{qa_report.get('total_checks', 22)}` PASS | 状态：`{qa_report.get('approval_status', 'MACHINE_PASS_PENDING_HUMAN')}`{hv_note}",
+        f"- **隔离加工目录**：`{ws.get('project_dir', pipeline_dir.parent)}`（你的原素材目录 `{ws.get('raw_dir', '')}` 全程只读未改动）",
+        f"- **出厂自动检查**：通过 `{qa_report.get('pass_count', 0)}/{qa_report.get('total_checks', 0)}` 项 · 状态：{status_label}{hv_note}",
         "",
-        "## 一、 最终交付物（同步于 `out/` 目录）",
-        "- 成片 MP4：`out/output_final.mp4`",
-        "- 双封面图：`out/09_cover.jpg`（信息流首帧 9:16） / `out/09_cover_3x4.jpg`（主页网格 3:4）",
-        "- 排画前盲听音轨：`out/03_blind_audio.m4a`",
-        "- 素材可视化接触表：`out/00_contact_sheet.jpg`",
-        "- 动作时间条审片拼图：`out/10_action_strips.jpg`",
-        "- 合规审校 & SHA-256 授权清单：`out/00_compliance_report.md` · `out/asset_license_manifest.json`",
-        "- 离线打点审片器：`out/review_player.html`",
+        "## 一、 最终交付文件（已同步整理到 `out/` 目录）",
+        "- 高清成片：`out/output_final.mp4`",
+        "- 竖版与主页封面：`out/09_cover.jpg`（竖版首帧 9:16） / `out/09_cover_3x4.jpg`（主页卡片 3:4）",
+        "- 一页盲审取证包：`out/10_blind_review_pack.md`（30 秒快速验片用）",
+        "- 开头与切点连拍图：`out/10_action_strips.jpg`",
+        "- 纯声音盲听版：`out/03_blind_audio.m4a`",
+        "- 素材缩略总览图：`out/00_contact_sheet.jpg`",
+        "- 广告法合规与商用授权清单：`out/00_compliance_report.md` · `out/asset_license_manifest.json`",
+        "- 浏览器离线打点审片页：`out/review_player.html`",
         *[
-            f"- {target} `{result['status']}`" +
-            (f"，实际导入状态 `{result['host_import']}`" if "host_import" in result else "")
+            f"- 可编辑工程（{target}）：`{result['status']}`" +
+            (f"，导入核验状态 `{result['host_import']}`" if "host_import" in result else "")
             for target, result in qa_report["deliverables"].items() if target != "mp4"
         ],
         *(
-            ["- 纯代码制片规约与像素核验单：`out/00_code_spec.json` · `out/SPEC.md` · `out/STRUCTURE.md` · `out/VERIFY.md`"]
+            ["- 图解动画规约与核验单：`out/00_code_spec.json` · `out/SPEC.md` · `out/STRUCTURE.md` · `out/VERIFY.md`"]
             if (pipeline_dir / "00_code_spec.json").is_file()
             else []
         ),
         "",
-        "## 二、 推荐发布标题（与 `09_title_cover.json` 完全同源）",
+        "## 二、 推荐发布标题（与封面方案完全同步）",
         *[f"{i}. {t}" for i, t in enumerate(titles, start=1)],
         "",
-        "## 三、 人工终审签字",
-        "- 详细默认参数与修改口令见 `decisions_made.md`。",
-        f"  `python scripts/workflow_guard.py approve-final --pipeline-dir \"{pipeline_dir}\" --note \"三项终审通过\"`",
+        "## 三、 人工看片确认签字",
+        "- 详细配置说明与修改口令见 `decisions_made.md`。",
+        f"  `{approve_cmd}`",
         "",
-        "## 四、 发布后 48 小时数据闭环",
-        f"  `python scripts/content_log_review.py --account \"{ws.get('account_slug', 'default')}\" --workspace-root \"{ws.get('workspace_root', '')}\" --add-json '<json>'`",
+        "## 四、 发完 48 小时回来复盘",
+        f"  `python3 scripts/content_log_review.py --account \"{ws.get('account_slug', 'default')}\" --track {track} --workspace-root \"{ws.get('workspace_root', '')}\" --add-json '<json>'`",
         "",
     ]
     out_md = pipeline_dir / "11_delivery_summary.md"
@@ -640,6 +676,8 @@ def _run_code_video_branch(
     account_profile: Optional[Dict[str, Any]],
     whitelist_path: Optional[Path],
     store_anchor: Optional[str],
+    dialect: str = "mandarin",
+    whisper_model: Optional[str] = None,
 ) -> Path:
     """入口 3 纯代码制片工作流：00_code_spec 规约 -> 音轨先锁 -> 比例对齐与校验 -> 单浏览器批量渲染分场。"""
     eff_style = active_style_id or ("style_14" if track == "store" else "style_11")
@@ -649,12 +687,18 @@ def _run_code_video_branch(
         raw_scr = read_json(script_p)
         seed_items = raw_scr.get("sentences") or raw_scr.get("segments") or [] if isinstance(raw_scr, dict) else list(raw_scr)
 
-    # 1. 准备初始 00_code_spec.json（如果传入 --code-spec 则标记 _user_custom_sections=True 予以保护）
+    # 1. 准备初始 00_code_spec.json（如果传入 --code-spec 则保留用户全部自定义顶层字段）
     spec_out = pipeline_dir / "00_code_spec.json"
     user_custom_sections = False
+    user_extra_fields: Dict[str, Any] = {}
     if code_spec_p and code_spec_p.exists():
         spec = read_json(code_spec_p)
         user_custom_sections = bool(spec.get("sections"))
+        known_spec_keys = {
+            "version", "title", "one_idea", "format", "style_id", "track", "palette",
+            "sections", "exact_copy", "facts", "assets", "risks", "must_haves",
+        }
+        user_extra_fields = {k: v for k, v in spec.items() if k not in known_spec_keys}
         spec["_user_custom_sections"] = user_custom_sections
         write_json(spec_out, spec)
         if not (pipeline_dir / "SPEC.md").is_file() or not (pipeline_dir / "STRUCTURE.md").is_file():
@@ -698,7 +742,10 @@ def _run_code_video_branch(
         track=track,
         script_json_path=script_p,
         force_tts=True,
+        whisper_model=whisper_model,
         whitelist_path=whitelist_path,
+        dialect=dialect,
+        store_anchor=store_anchor,
     )
     record_milestone(pipeline_dir, "stop1_script", "Code2Video 脚本转写与语音对齐完成")
     run_step3(
@@ -751,8 +798,11 @@ def _run_code_video_branch(
         must_haves=spec.get("must_haves"),
     )
     spec = read_json(spec_out)
-    if user_custom_sections:
-        spec["_user_custom_sections"] = True
+    if user_extra_fields or user_custom_sections:
+        for k_ex, v_ex in user_extra_fields.items():
+            spec.setdefault(k_ex, v_ex)
+        if user_custom_sections:
+            spec["_user_custom_sections"] = True
         write_json(spec_out, spec)
     val = validate_code_spec(spec)
     if not val.get("passed"):
@@ -780,6 +830,7 @@ def _render_and_verify_only(
     hook_variants: int,
     ws: Optional[Dict[str, Any]],
     export_mode: str = "auto",
+    sync_window: Optional[List[float]] = None,
 ) -> Dict[str, Any]:
     if require_lock:
         code, msg, _ = verify_lock(pipeline_dir)
@@ -804,6 +855,7 @@ def _render_and_verify_only(
         store_anchor=store_anchor,
         strict_asr=strict_asr,
         export_mode=export_mode,
+        sync_window=sync_window,
     )
     if (pipeline_dir / "00_code_spec.json").is_file():
         generate_verify_template(
@@ -847,6 +899,7 @@ def run_visual_to_delivery(
     ws: Optional[Dict[str, Any]] = None,
     export_mode: str = "auto",
     edit_profile: str = "talking",
+    sync_window: Optional[List[float]] = None,
 ) -> Dict[str, Any]:
     run_step4(
         pipeline_dir,
@@ -864,8 +917,9 @@ def run_visual_to_delivery(
     run_step8(
         pipeline_dir,
         licenses_path=licenses_path,
+        out_dir=(ws or {}).get("out_dir"),
     )
-    run_step9(pipeline_dir, track=track)
+    run_step9(pipeline_dir, track=track, style_id=style_id)
 
     if preview_only:
         preview_mp4 = render_mp4(pipeline_dir, preview=True)
@@ -884,6 +938,7 @@ def run_visual_to_delivery(
         export_mode=export_mode,
         hook_variants=hook_variants,
         ws=ws,
+        sync_window=sync_window,
     )
 
 
@@ -928,8 +983,11 @@ def main() -> None:
     parser.add_argument("--whitelist", help="可选：账号合规白名单 compliance_whitelist.json 路径")
     parser.add_argument("--licenses-json", help="可选：外部资产商用授权清单 licenses.json 路径")
     parser.add_argument("--opening-title-previews", "--hook-variants", dest="hook_variants", type=int, default=1, help="生成片头标题条对比预览")
-    parser.add_argument("--dialect", choices=["mandarin", "cantonese", "dialect"], default="mandarin", help="口播语种，用于 #21 盲听代理")
-    parser.add_argument("--store-anchor", help="门店听觉锚点（如门店名），用于 #21 盲听核验")
+    parser.add_argument("--dialect", choices=["mandarin", "cantonese", "dialect"], default="mandarin", help="口播语种，用于转写与盲听复核")
+    parser.add_argument("--store-anchor", help="门店听觉锚点（如门店名），用于热词与盲听核验")
+    parser.add_argument("--multi-speaker", action="store_true", help="多人访谈/双人对话模式（禁止抑制第二人声音）")
+    parser.add_argument("--whisper-model", help="可选：显式指定本地 faster-whisper 模型名称")
+    parser.add_argument("--sync-window", type=float, nargs=2, metavar=("START", "END"), help="可选：实测闪帧/测试音同步检测窗")
     parser.add_argument("--require-lock", action="store_true", help="正式渲染前强制校验 approval_lock.json 指纹锁")
     parser.add_argument("--exports", choices=EXPORT_CHOICES, help="auto 尝试两种工程并允许 MP4 降级，显式选择的工程进入必检")
     parser.add_argument("--strict-asr", action="store_true", help="无本地 Whisper 模型时阻止 #21 通过")
@@ -965,7 +1023,11 @@ def main() -> None:
     )
     if prof_path.exists():
         profile = read_json(prof_path)
-        scope_matches = not profile.get("platform") or str(profile["platform"]).casefold() == str(args.platform).casefold()
+        scope_matches = (
+            not profile.get("platform")
+            or args.platform is None
+            or str(profile["platform"]).casefold() == str(args.platform).casefold()
+        )
         if args.account_profile or (profile.get("track", "store") == args.track and scope_matches):
             account_profile = profile
             print(f"[pipeline] 已载入账号参数 ({ws['account_slug']}/{args.track}) -> {prof_path.name}")
@@ -985,9 +1047,15 @@ def main() -> None:
     lock_files = []
     locked_before = []
     if args.mode == "reedit-visuals":
-        audio_events = read_json(pipeline_dir / "03_audio_events.json")
+        ae_check_p = pipeline_dir / "03_audio_events.json"
+        if not ae_check_p.is_file():
+            raise FileNotFoundError("reedit-visuals 模式要求 03_audio_events.json 已锁定存在。")
+        audio_events = read_json(ae_check_p)
         lock_files = [Path(audio_events[key]) if audio_events.get(key) else pipeline_dir / fallback
                       for key, fallback in (("locked_voice_wav", "03_locked_voice.wav"), ("locked_bgm_wav", "03_locked_bgm.wav"))]
+        missing_lf = [str(p) for p in lock_files if not p.is_file()]
+        if missing_lf:
+            raise FileNotFoundError(f"只改画面模式缺少已锁定音轨文件：{', '.join(missing_lf)}")
         locked_before = [sha256_file(path) for path in lock_files]
 
     whitelist_path = Path(args.whitelist) if args.whitelist else ws["compliance_whitelist_path"]
@@ -1001,7 +1069,17 @@ def main() -> None:
             shutil.copy2(args.raw_intel, dst_intel)
         raw_intel_obj = read_json(dst_intel)
 
-    active_style_id = args.style_id or (account_profile.get("preferred_style_id") if account_profile else None)
+    prof_pref_style = (
+        account_profile.get("preferred_style_id")
+        if (account_profile and account_profile.get("sample_sufficient") is True)
+        else None
+    )
+    active_style_id = (
+        args.style_id
+        or prof_pref_style
+        or load_style_applied(pipeline_dir)
+        or ("style_14" if args.track == "store" else "style_11")
+    )
     j_cut_frames = 3 if args.j_cut_frames is None else int(args.j_cut_frames)
     subtitle_template = args.subtitle_template
     lut_name = args.lut
@@ -1019,6 +1097,12 @@ def main() -> None:
             "style_id": active_style_id,
             "style_name_cn": rt_cfg["style_name_cn"],
             "archetype_id": rt_cfg["archetype_id"],
+            "subtitle_template": subtitle_template,
+            "lut_file": lut_name,
+            "j_cut_frames": j_cut_frames,
+            "opening_structure": rt_cfg.get("opening_structure") or {},
+            "title_cover_layout": rt_cfg.get("title_cover_layout") or {},
+            "transition_and_packaging": rt_cfg.get("transition_and_packaging") or {},
         })
         if bgm_p is None:
             try:
@@ -1067,7 +1151,10 @@ def main() -> None:
         (pipeline_dir / "00_inventory.md").write_text(render_markdown_summary(inv), encoding="utf-8")
 
     if args.mode == "render-locked":
-        _ensure_reedit_dependencies(pipeline_dir, track=args.track, bgm_p=bgm_p, pause_sec=args.pause_sec, account_profile=account_profile)
+        code_lk, msg_lk, _ = verify_lock(pipeline_dir)
+        if code_lk != 0:
+            raise RuntimeError(f"哈希锁校验失败，阻断正式渲染：{msg_lk}")
+        _ensure_reedit_dependencies(pipeline_dir, track=args.track, bgm_p=bgm_p, pause_sec=args.pause_sec, account_profile=account_profile, preserve_locked_audio=True)
         res = _render_and_verify_only(
             pipeline_dir=pipeline_dir,
             track=args.track,
@@ -1076,11 +1163,12 @@ def main() -> None:
             simulate_hf_fail=args.simulate_hf_fail,
             dialect=args.dialect,
             store_anchor=args.store_anchor,
-            require_lock=True if not args.require_lock else args.require_lock,
+            require_lock=True,
             strict_asr=args.strict_asr,
             export_mode=args.exports,
             hook_variants=args.hook_variants,
             ws=ws,
+            sync_window=args.sync_window,
         )
     elif args.mode == "code-video":
         scenes_dir = _run_code_video_branch(
@@ -1096,6 +1184,8 @@ def main() -> None:
             account_profile=account_profile,
             whitelist_path=whitelist_path,
             store_anchor=args.store_anchor,
+            dialect=args.dialect,
+            whisper_model=args.whisper_model,
         )
         run_step1([scenes_dir], pipeline_dir)
         res = run_visual_to_delivery(
@@ -1120,6 +1210,7 @@ def main() -> None:
             licenses_path=licenses_path,
             hook_variants=args.hook_variants,
             ws=ws,
+            sync_window=args.sync_window,
         )
     else:
         if args.mode in ("full", "lock-preview"):
@@ -1131,7 +1222,11 @@ def main() -> None:
                 track=args.track,
                 script_json_path=script_p,
                 force_tts=args.force_tts,
+                whisper_model=args.whisper_model,
                 whitelist_path=whitelist_path,
+                dialect=args.dialect,
+                store_anchor=args.store_anchor,
+                multi_speaker=args.multi_speaker,
             )
             record_milestone(pipeline_dir, "stop1_script", "Step 2 脚本转写与合规门禁完成")
             run_step3(
@@ -1154,7 +1249,11 @@ def main() -> None:
                 track=args.track,
                 script_json_path=script_p,
                 force_tts=True if script_p else args.force_tts,
+                whisper_model=args.whisper_model,
                 whitelist_path=whitelist_path,
+                dialect=args.dialect,
+                store_anchor=args.store_anchor,
+                multi_speaker=args.multi_speaker,
             )
             record_milestone(pipeline_dir, "stop1_script", "relock-voice 脚本重建完成")
             run_step3(
@@ -1193,6 +1292,7 @@ def main() -> None:
             licenses_path=licenses_path,
             hook_variants=args.hook_variants,
             ws=ws,
+            sync_window=args.sync_window,
         )
 
     if lock_files:

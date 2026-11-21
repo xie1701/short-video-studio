@@ -226,7 +226,7 @@ def _build_video_clips(pipeline: Path, draft: Path, edl: dict, fps: int, total: 
             destination = draft / "media" / "segments" / f"edit_{index:03d}.mp4"
             destination.parent.mkdir(parents=True, exist_ok=True)
             prepared = pipeline / "_render_final" / f"seg_{index - 1:03d}_f.mp4"
-            if prepared_segments and prepared.is_file():
+            if prepared_segments and prepared.is_file() and prepared.with_suffix(".sha256").is_file():
                 link_or_copy(prepared, destination)
             elif ffmpeg:
                 _export_graded_segment(ffmpeg, shot, vf, eyes, destination, fps)
@@ -255,7 +255,7 @@ def _position(bbox: dict, zone: dict, fallback: tuple[int, int], width: int, hei
 
 
 def _build_graphics(draft: Path, package: dict, fps: int, total: float, style_id: str) -> tuple[list[str], int]:
-    elems = (package.get("visual_elements") or []) + (package.get("stage_overlays") or [])
+    elems = list(package.get("visual_elements") or [])
     pal = _resolve_packaging_palette(style_id)
     def color(name: str) -> str:
         return "#" + "".join(f"{part:02x}" for part in pal[name])
@@ -289,7 +289,8 @@ def _build_graphics(draft: Path, package: dict, fps: int, total: float, style_id
         word_size = 66 if kind == "center_burst_title" else 50 if bare else 40
         word_size = max(24, min(word_size, int((width - 20) / max(1, len(text)))))
         paint = (f"font-size:{word_size}px;color:{elem.get('fg_hex') or color('text')};"
-                 f"-webkit-text-stroke:{3 if bare else 0}px {elem.get('stroke_hex') or '#000'};")
+                 f"paint-order:stroke fill;-webkit-text-stroke:{6 if bare else 0}px {elem.get('stroke_hex') or '#000'};"
+                 + ("text-shadow:3px 4px 8px rgba(0,0,0,0.82);" if bare else ""))
         fill = ""
         if not bare:
             fill = f"background:{color('bg')};border:2px solid {color('border')};border-left:9px solid {color('accent')};border-radius:18px;"
@@ -350,7 +351,7 @@ def _build_captions_track_html(
     css = "\n".join([
         font_css,
         "      .cap-clip { position: absolute; display: flex; align-items: center; justify-content: center; text-align: center; }",
-        f"      .cap-box {{ display: inline-flex; flex-wrap: wrap; align-items: baseline; justify-content: center; "
+        f"      .cap-box {{ display: inline-flex; flex-wrap: wrap; align-items: baseline; justify-content: center; max-width: {SUBTITLE_SYMMETRIC_MAX_W}px; "
         f"font-family: {font_stack}; font-size: {font_sz}px; font-weight: 800; line-height: 1.18; "
         f"color: {c_primary}; paint-order: stroke fill; -webkit-text-stroke: {stroke_css}; {shadow_css} {bg_css} }}",
         f"      .cap-kw {{ color: {c_kw}; font-size: {int(round(font_sz * kw_scale))}px; }}",

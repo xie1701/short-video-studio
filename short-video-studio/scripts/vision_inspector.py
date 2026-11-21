@@ -25,7 +25,9 @@ SCRIPTS_ROOT = Path(__file__).resolve().parent
 if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
-from common import bbox_iou, maybe_reexec_in_venv
+from common import bbox_iou, compute_bt709_luma, maybe_reexec_in_venv
+
+check_bbox_iou = bbox_iou
 
 maybe_reexec_in_venv()
 
@@ -95,10 +97,10 @@ DispatchQueue.concurrentPerform(iterations: args.count) { idx in
     let url = URL(fileURLWithPath: path)
     guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
           let cgImg = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
-        let empty: [String: Any] = ["file": path, "width": 0, "height": 0, "faces": [], "saliency": NSNull(), "texts": []]
+        let empty: [String: Any] = ["file": path, "width": 0, "height": 0, "faces": [], "saliency": NSNull(), "texts": [], "read_error": true]
         if let d = try? JSONSerialization.data(withJSONObject: empty),
            let s = String(data: d, encoding: .utf8) {
-            lock.lock(); outputs[idx] = s; lock.unlock()
+            lock.lock(); outputs[idx] = s; errCount += 1; lock.unlock()
         }
         return
     }
@@ -270,11 +272,7 @@ def ensure_vision_inspector_bin() -> Optional[Path]:
 def compute_laplacian_sharpness(img_arr: np.ndarray) -> float:
     """计算图像灰度拉普拉斯算子方差，数值越高代表画面越锐利不虚焦。"""
     if img_arr.ndim == 3:
-        gray = (
-            0.2126 * img_arr[:, :, 0].astype(np.float32)
-            + 0.7152 * img_arr[:, :, 1].astype(np.float32)
-            + 0.0722 * img_arr[:, :, 2].astype(np.float32)
-        )
+        gray = compute_bt709_luma(img_arr.astype(np.float32))
     else:
         gray = img_arr.astype(np.float32)
     if gray.shape[0] < 4 or gray.shape[1] < 4:
@@ -289,9 +287,81 @@ def compute_laplacian_sharpness(img_arr: np.ndarray) -> float:
     return round(float(np.var(lap)), 2)
 
 
-def check_bbox_iou(b1: Dict[str, float], b2: Dict[str, float]) -> float:
-    """兼容别名：复用 common.bbox_iou。"""
-    return round(bbox_iou(b1, b2), 4)
+_PERSON_SEG_SWIFT = r'''
+import Foundation
+import Vision
+import CoreImage
+import ImageIO
+
+let args = Array(CommandLine.arguments.dropFirst())
+if args.count < 2 { exit(2) }
+let inUrl = URL(fileURLWithPath: args[0])
+let outUrl = URL(fileURLWithPath: args[1])
+
+guard #available(macOS 12.0, *),
+      let src = CGImageSourceCreateWithURL(inUrl as CFURL, nil),
+      let cgImg = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
+    exit(1)
+}
+let req = VNGeneratePersonSegmentationRequest()
+req.qualityLevel = .balanced
+req.outputPixelFormat = kCVPixelFormatType_OneComponent8
+let handler = VNImageRequestHandler(cgImage: cgImg, options: [:])
+do {
+    try handler.perform([req])
+    guard let obs = req.results?.first as? VNPixelBufferObservation else { exit(1) }
+    let ciMask = CIImage(cvPixelBuffer: obs.pixelBuffer)
+    let sx = CGFloat(cgImg.width) / max(1.0, ciMask.extent.width)
+    let sy = CGFloat(cgImg.height) / max(1.0, ciMask.extent.height)
+    let scaled = ciMask.transformed(by: CGAffineTransform(scaleX: sx, y: sy))
+    let ctx = CIContext()
+    guard let outCg = ctx.createCGImage(scaled, from: CGRect(x: 0, y: 0, width: cgImg.width, height: cgImg.height)),
+          let dest = CGImageDestinationCreateWithURL(outUrl as CFURL, "public.png" as CFString, 1, nil) else {
+        exit(1)
+    }
+    CGImageDestinationAddImage(dest, outCg, nil)
+    if !CGImageDestinationFinalize(dest) { exit(1) }
+} catch {
+    exit(1)
+}
+'''
+
+
+def _ensure_person_seg_bin() -> Optional[Path]:
+    if platform.system() != "Darwin" or not shutil.which("swiftc"):
+        return None
+    bin_dir = Path.home() / ".short-video-studio" / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    sig = hashlib.sha256(_PERSON_SEG_SWIFT.encode("utf-8")).hexdigest()[:10]
+    bin_path = bin_dir / f"svs_person_seg_{sig}"
+    if bin_path.is_file() and os.access(bin_path, os.X_OK):
+        return bin_path
+    src_tmp = bin_dir / f"svs_person_seg_{os.getpid()}.swift"
+    bin_tmp = bin_dir / f"svs_person_seg_{os.getpid()}.tmp"
+    try:
+        src_tmp.write_text(_PERSON_SEG_SWIFT, encoding="utf-8")
+        res = subprocess.run(
+            ["swiftc", "-O", str(src_tmp), "-o", str(bin_tmp), "-framework", "Vision", "-framework", "CoreImage", "-framework", "ImageIO"],
+            capture_output=True, text=True, check=False,
+        )
+        if res.returncode == 0 and bin_tmp.is_file():
+            os.replace(bin_tmp, bin_path)
+            return bin_path
+    except Exception:
+        pass
+    finally:
+        src_tmp.unlink(missing_ok=True)
+        bin_tmp.unlink(missing_ok=True)
+    return None
+
+
+def segment_person_mask(image_path: Path, out_mask_png: Path) -> bool:
+    """macOS 原生 Apple Vision 前景人像分割（零外部依赖零 API 费），输出灰度蒙版 PNG；非 macOS 优雅返回 False。"""
+    seg_bin = _ensure_person_seg_bin()
+    if seg_bin is None or not image_path.is_file():
+        return False
+    res = subprocess.run([str(seg_bin), str(image_path), str(out_mask_png)], capture_output=True, check=False)
+    return res.returncode == 0 and out_mask_png.is_file() and out_mask_png.stat().st_size > 128
 
 
 def _fallback_inspect_single(img_path: Path) -> Dict[str, Any]:
@@ -351,7 +421,7 @@ def inspect_images(image_paths: List[Path], batch_size: int = 32) -> Dict[str, D
                         continue
                     try:
                         obj = json.loads(line)
-                        obj["backend"] = "apple_vision"
+                        obj["backend"] = "apple_vision_read_error" if obj.get("read_error") else "apple_vision"
                         results[obj["file"]] = obj
                     except Exception:
                         continue

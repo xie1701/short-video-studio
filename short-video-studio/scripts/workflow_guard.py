@@ -32,7 +32,20 @@ _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
-from common import ffprobe_media, find_bin, find_commercial_font, maybe_reexec_in_venv, read_json, run_cmd, sha256_file, write_json
+from common import (
+    DEFAULT_FPS,
+    SCENE_CUT_THRESHOLD,
+    SUBTITLE_DEFAULT_Y_CENTER,
+    compute_bt709_luma,
+    ffprobe_media,
+    find_bin,
+    find_commercial_font,
+    maybe_reexec_in_venv,
+    read_json,
+    run_cmd,
+    sha256_file,
+    write_json,
+)
 
 maybe_reexec_in_venv()
 
@@ -51,9 +64,7 @@ TEMP_SUBDIRS = (
     "_render_preview",
     "01_normalized",
     "01_code_scenes",
-    "02_tts_chunks",
     "02_tts_segments",
-    "_stage_assets",
     "__pycache__",
 )
 
@@ -62,7 +73,6 @@ TEMP_PROCESS_FILES = (
     "08_voice_denoised.wav",
     "08_premix_raw.wav",
     "08_premix_nosfx_raw.wav",
-    "08_mixed_master.adj.wav",
     "08_mixed_master_adj.wav",
     "output_preview.mp4",
 )
@@ -97,7 +107,6 @@ DELIVERABLE_SYNC_FILES = (
     "00_contact_sheet.jpg",
     "00_compliance_report.md",
     "00_compliance_report.json",
-    "00_asset_licenses.json",
     "asset_license_manifest.json",
     "04_edl.json",
     "04_source_review.json",
@@ -105,6 +114,7 @@ DELIVERABLE_SYNC_FILES = (
     "render_profile.json",
     "10_qa_report.md",
     "10_qa_report.json",
+    "10_blind_review_pack.md",
     "10_action_strips.jpg",
     "10_code_verify_evidence.json",
     "00_code_spec.json",
@@ -249,7 +259,12 @@ def verify_lock(pipeline_dir: Path) -> Tuple[int, str, Dict[str, Any]]:
     return 0, f"方案锁有效 (sha={cur[:12]}, 锁定于 {st.get('locked_at')})", st
 
 
-def approve_final(pipeline_dir: Path, note: str = "", reviewed_checks: tuple[str, ...] = ()) -> Dict[str, Any]:
+def approve_final(
+    pipeline_dir: Path,
+    note: str = "",
+    reviewed_checks: tuple[str, ...] = (),
+    out_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
     qa_p = pipeline_dir / "10_qa_report.json"
     if not qa_p.is_file():
         raise FileNotFoundError("未找到 10_qa_report.json，请先运行自动+黑盒质检。")
@@ -324,12 +339,20 @@ def approve_final(pipeline_dir: Path, note: str = "", reviewed_checks: tuple[str
         md_p.write_text(txt, encoding="utf-8")
 
     # 同步最新 APPROVED 报告至 out/ 目录，确保外部交付口径完全一致
-    out_dir = pipeline_dir.parent / "out"
-    archived_mp4 = out_dir / final_mp4.name
+    target_out = out_dir or (pipeline_dir.parent / "out")
+    archived_mp4 = target_out / final_mp4.name
     if archived_mp4.is_file() and sha256_file(archived_mp4) == cur_mp4_sha:
-        shutil.copy2(qa_p, out_dir / "10_qa_report.json")
+        shutil.copy2(qa_p, target_out / "10_qa_report.json")
         if md_p.is_file():
-            shutil.copy2(md_p, out_dir / "10_qa_report.md")
+            shutil.copy2(md_p, target_out / "10_qa_report.md")
+        for doc_name in ("11_delivery_summary.md", "decisions_made.md"):
+            for doc_p in (pipeline_dir / doc_name, target_out / doc_name):
+                if doc_p.is_file():
+                    dtxt = doc_p.read_text(encoding="utf-8")
+                    dtxt = dtxt.replace("待人工终审确认", "已通过全部检查并人工确认")
+                    dtxt = dtxt.replace("MACHINE_PASS_PENDING_HUMAN", "APPROVED")
+                    dtxt = dtxt.replace("REVIEW_REQUIRED", "APPROVED")
+                    doc_p.write_text(dtxt, encoding="utf-8")
     return st
 
 
@@ -427,7 +450,7 @@ def _analyze_video_profile(video_path: Path, tmp_dir: Path, tag: str) -> Dict[st
             rgb = np.asarray(im.convert("RGB"), dtype=np.float32)
             hsv = np.asarray(im.convert("HSV"), dtype=np.float32)
         phashes.append(_frame_phash_64(g32))
-        luma = 0.2126 * rgb[:, :, 0] + 0.5870 * rgb[:, :, 1] + 0.1140 * rgb[:, :, 2]
+        luma = compute_bt709_luma(rgb)
         lumas.append(float(np.mean(luma)))
         sats.append(float(np.mean(hsv[:, :, 1])))
 
@@ -446,7 +469,7 @@ def _analyze_video_profile(video_path: Path, tmp_dir: Path, tag: str) -> Dict[st
                 roi_arr = rgb[y0:y1, x0:x1]
                 roi = roi_arr.reshape(-1, 3)
                 if len(roi) > 8 and roi_arr.shape[0] >= 3 and roi_arr.shape[1] >= 3:
-                    roi_l_2d = 0.2126 * roi_arr[:, :, 0] + 0.5870 * roi_arr[:, :, 1] + 0.1140 * roi_arr[:, :, 2]
+                    roi_l_2d = compute_bt709_luma(roi_arr)
                     border_l = np.concatenate([roi_l_2d[0, :], roi_l_2d[-1, :], roi_l_2d[:, 0], roi_l_2d[:, -1]])
                     bg_l = float(np.mean(border_l))
                     roi_l = roi_l_2d.ravel()
@@ -461,10 +484,9 @@ def _analyze_video_profile(video_path: Path, tmp_dir: Path, tag: str) -> Dict[st
     # 切镜检测计算中位镜长 & 前 3 秒切镜数
     sc_res = run_cmd([
         ffmpeg, "-hide_banner", "-i", str(video_path),
-        "-vf", "select='gt(scene,0.16)',showinfo", "-f", "null", "-",
+        "-vf", f"select='gt(scene,{SCENE_CUT_THRESHOLD})',showinfo", "-f", "null", "-",
     ], check=False)
     cut_times = sorted(set(float(m) for m in re.findall(r"pts_time:([0-9.]+)", sc_res.stderr)))
-    from common import ffprobe_media
     probe = ffprobe_media(video_path)
     dur = float(probe.get("format", {}).get("duration") or max(1.0, len(frame_files)))
     all_bounds = [0.0] + [t for t in cut_times if 0.25 < t < dur - 0.25] + [dur]
@@ -493,7 +515,7 @@ def _analyze_video_profile(video_path: Path, tmp_dir: Path, tag: str) -> Dict[st
         "ocr_joined": "".join(ocr_stream),
         "median_shot_sec": med_shot,
         "first_3s_cuts": cuts_3s,
-        "sub_y_px": round(statistics.median(ocr_ys), 1) if ocr_ys else 1340.0,
+        "sub_y_px": round(statistics.median(ocr_ys), 1) if ocr_ys else float(SUBTITLE_DEFAULT_Y_CENTER),
         "mean_luma": round(statistics.mean(lumas), 1) if lumas else 128.0,
         "mean_sat": round(statistics.mean(sats), 1) if sats else 64.0,
         "bpm": round(bpm, 1),
@@ -699,9 +721,32 @@ def generate_action_strips(
     if not samples:
         return None
 
-    def _grab_one(item: Tuple[int, Tuple[float, str]], tmp_dir: Path) -> Optional[Tuple[int, float, str, Path]]:
-        idx_i, (t_val, tag) = item
-        dst = tmp_dir / f"strip_{idx_i:03d}.jpg"
+    # 计算实际帧率以支持单遍 FFmpeg select='eq(n,...)' 极速抽帧（40 进程 -> 1 进程）
+    fps_val = float(DEFAULT_FPS)
+    try:
+        r_str = str((vs or {}).get("avg_frame_rate") or (vs or {}).get("r_frame_rate") or f"{DEFAULT_FPS}/1")
+        if "/" in r_str:
+            num, den = r_str.split("/", 1)
+            if float(den) > 0:
+                fps_val = max(1.0, float(num) / float(den))
+        else:
+            fps_val = max(1.0, float(r_str))
+    except Exception:
+        fps_val = float(DEFAULT_FPS)
+
+    max_frame_idx = max(0, int(dur * fps_val) - 1)
+    dedup_targets: List[Tuple[int, float, str]] = []
+    seen_fn: Set[int] = set()
+    for t_val, tag in samples:
+        fn = min(max_frame_idx, max(0, int(round(t_val * fps_val))))
+        if fn in seen_fn:
+            continue
+        seen_fn.add(fn)
+        dedup_targets.append((fn, t_val, tag))
+
+    def _grab_one(item: Tuple[int, float, str], tmp_dir: Path) -> Optional[Tuple[int, float, str, Path]]:
+        idx_i, t_val, tag = item
+        dst = tmp_dir / f"fb_{idx_i:03d}.jpg"
         proc = subprocess.run(
             [
                 ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
@@ -720,9 +765,33 @@ def generate_action_strips(
 
     with tempfile.TemporaryDirectory(prefix="svs_strips_") as td:
         td_path = Path(td)
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            raw_res = list(pool.map(lambda it: _grab_one(it, td_path), enumerate(samples)))
-        frames = [r for r in raw_res if r is not None]
+        frames: List[Tuple[int, float, str, Path]] = []
+        if dedup_targets:
+            select_expr = "+".join(f"eq(n,{fn})" for fn, _, _ in dedup_targets)
+            max_end_t = min(dur + 0.1, dedup_targets[-1][1] + 0.35)
+            single_proc = subprocess.run(
+                [
+                    ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+                    "-i", str(video_path),
+                    "-t", f"{max_end_t:.3f}",
+                    "-vf", f"select='{select_expr}',scale=240:-2",
+                    "-vsync", "0",
+                    "-q:v", "4",
+                    str(td_path / "strip_%03d.jpg"),
+                ],
+                capture_output=True,
+            )
+            extracted = sorted(td_path.glob("strip_*.jpg"))
+            if single_proc.returncode == 0 and len(extracted) == len(dedup_targets):
+                for idx_i, ((_, t_val, tag), fp) in enumerate(zip(dedup_targets, extracted)):
+                    frames.append((idx_i, t_val, tag, fp))
+            else:
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    raw_res = list(pool.map(
+                        lambda it: _grab_one((it[0], it[1][1], it[1][2]), td_path),
+                        enumerate(dedup_targets),
+                    ))
+                frames = [r for r in raw_res if r is not None]
         if not frames:
             return None
 
@@ -783,10 +852,8 @@ def _collect_protected_paths(pipeline_dir: Path) -> Set[Path]:
                 pass
     hf_dir = pipeline_dir / "hyperframes_draft"
     if hf_dir.is_dir():
-        htmls = [hf_dir / "index.html"] + (list((hf_dir / "compositions").glob("*.html")) if (hf_dir / "compositions").is_dir() else [])
-        for hf in htmls:
-            if not hf.is_file():
-                continue
+        hf = hf_dir / "index.html"
+        if hf.is_file():
             txt = hf.read_text(encoding="utf-8", errors="ignore")
             for rel in re.findall(r'(?:data-src|src)=["\']([^"\']+)["\']', txt):
                 if rel.startswith(("http://", "https://", "data:")):
@@ -928,6 +995,7 @@ def main() -> None:
 
     p_ap = sub.add_parser("approve-final")
     p_ap.add_argument("--pipeline-dir", required=True)
+    p_ap.add_argument("--out-dir", help="可选：自定义归档 out 目录路径")
     p_ap.add_argument("--note", default="", help="记录实际复核结果。剪映导入请写明版本和检查到的轨道")
     p_ap.add_argument("--reviewed", action="append", default=[], help="已完成的人工检查 ID，可重复传参")
 
@@ -962,7 +1030,12 @@ def main() -> None:
         print(("[PASS] " if code == 0 else "[BLOCK] ") + msg)
         raise SystemExit(code)
     elif args.cmd == "approve-final":
-        st = approve_final(Path(args.pipeline_dir), note=args.note, reviewed_checks=tuple(args.reviewed))
+        st = approve_final(
+            Path(args.pipeline_dir),
+            note=args.note,
+            reviewed_checks=tuple(args.reviewed),
+            out_dir=Path(args.out_dir) if args.out_dir else None,
+        )
         print(f"[workflow] 人工终审签字完成 -> APPROVED (at={st['approved_at']})")
     elif args.cmd == "verify-out":
         result = verify_archive(args.out_dir)

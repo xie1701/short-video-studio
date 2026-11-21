@@ -14,7 +14,7 @@ import wave
 from pathlib import Path
 from typing import List
 
-SCRIPTS_ROOT = Path(__file__).resolve().parent
+SCRIPTS_ROOT = Path(__file__).resolve().parents[1] / "short-video-studio" / "scripts"
 if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 

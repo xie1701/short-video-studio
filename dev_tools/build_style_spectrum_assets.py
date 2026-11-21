@@ -18,7 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
-_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+_SCRIPTS_DIR = str(Path(__file__).resolve().parents[1] / "short-video-studio" / "scripts")
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 

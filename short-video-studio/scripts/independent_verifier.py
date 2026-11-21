@@ -35,6 +35,12 @@ from common import (
     EXPORT_CHOICES,
     HYPERFRAMES_VERSION,
     EDIT_PROFILES,
+    LOUDNESS_TOLERANCE_LUFS,
+    SAFE_ZONE,
+    SUBTITLE_CENTER_X,
+    bbox_iou,
+    compute_bt709_luma,
+    get_cached_whisper_model,
     sha256_file,
     export_selection,
     review_checks,
@@ -62,7 +68,7 @@ import numpy as np
 from PIL import Image
 from step2_transcribe import _clean_zh_text, vad_speech_intervals
 from step8_mix_audio import compute_mono_phase_correlation
-from vision_inspector import check_bbox_iou, inspect_images
+from vision_inspector import inspect_images
 
 
 META_LEAK_RE = re.compile("|".join(LEAK_REGEX_PATTERNS), re.IGNORECASE)
@@ -155,8 +161,12 @@ def extract_audio_context_once(video_path: Path, tmp_dir: Path) -> Dict[str, Any
     ])
     r128 = measure_lufs_ebur128(ext_wav)
     audio_48k, sr48 = read_wav_as_48k_stereo(ext_wav, target_sr=48000)
-    y16_st, _ = read_wav_as_48k_stereo(ext_wav, target_sr=16000)
-    y16 = y16_st.mean(axis=1)
+    mono_48k = audio_48k.mean(axis=1).astype(np.float32)
+    try:
+        from scipy.signal import resample_poly
+        y16 = resample_poly(mono_48k, 1, 3).astype(np.float32)
+    except Exception:
+        y16 = mono_48k[::3].astype(np.float32)
     speech_spans = vad_speech_intervals(y16, 16000)
     silence_spans = _detect_long_silences_np(audio_48k, sr48)
     return {
@@ -222,7 +232,7 @@ def verify_audio_blackbox(
                 aroll_cov_ok = False
                 missing_aroll_clips.append(str(clip.get("clip_id", "unknown")))
 
-    lufs_ok = abs(r128["integrated_lufs"] - TARGET_LUFS) <= 1.2
+    lufs_ok = abs(r128["integrated_lufs"] - TARGET_LUFS) <= LOUDNESS_TOLERANCE_LUFS
     tp_ok = r128["true_peak_dbtp"] <= -0.5
     lra_ok = 0.0 <= r128["lra_lu"] <= 11.5
     phase_ok = mono_corr >= 0.45
@@ -314,16 +324,23 @@ def verify_visual_and_subtitle_blackbox(
             except Exception:
                 pass
         sub_p = pipeline_dir / "05_subtitles.json"
+        expected_sub_entries: List[Tuple[float, float, str]] = []
         if sub_p.is_file():
             try:
                 subs_j = read_json(sub_p)
-                expected_sub_text = "".join(
-                    str(e.get("text") or "") for e in (subs_j.get("entries") or []) if not e.get("suppressed")
-                )
+                for e in (subs_j.get("entries") or []):
+                    if not e.get("suppressed"):
+                        et = str(e.get("text") or "")
+                        expected_sub_entries.append((float(e.get("start_sec", 0.0)), float(e.get("end_sec", 0.0)), _clean_zh_text(et)))
+                expected_sub_text = "".join(t for _, _, t in expected_sub_entries)
             except Exception:
                 pass
+    else:
+        expected_sub_entries = []
 
     safe_violations: List[str] = []
+    center_violations: List[str] = []
+    max_subtitle_center_dev_px = 0.0
     face_occlusions: List[str] = []
     max_face_text_iou = 0.0
     wcag_ratios: List[float] = []
@@ -338,6 +355,8 @@ def verify_visual_and_subtitle_blackbox(
     speech_frames_with_sub_ocr = 0
     masked_thumbs: List[np.ndarray] = []
     sub_ocr_segments: List[str] = []
+    frame_backends: List[str] = []
+    read_error_frames = 0
 
     cb_min = float(SKIN_YCBCR_RANGE["cb_min"])
     cb_max = float(SKIN_YCBCR_RANGE["cb_max"])
@@ -347,6 +366,10 @@ def verify_visual_and_subtitle_blackbox(
     for idx, fp in enumerate(frame_files):
         t_sec = idx * 0.5
         vr = vis_map.get(str(fp.resolve()), {})
+        b_name = str(vr.get("backend") or "none")
+        frame_backends.append(b_name)
+        if vr.get("read_error") or b_name == "apple_vision_read_error":
+            read_error_frames += 1
         faces = vr.get("faces") or []
         texts = [t for t in (vr.get("texts") or []) if float(t.get("conf", 0.0)) >= 0.32 and len(str(t.get("text", "")).strip()) >= 2]
 
@@ -358,7 +381,7 @@ def verify_visual_and_subtitle_blackbox(
         thumb_masked[260:370, :, :] = 0.0
         masked_thumbs.append(thumb_masked)
 
-        luma = 0.2126 * rgb[:, :, 0] + 0.7152 * rgb[:, :, 1] + 0.0722 * rgb[:, :, 2]
+        luma = compute_bt709_luma(rgb)
         mean_lumas.append(float(np.mean(luma)))
         clipped_white_pcts.append(float(np.mean(luma > 251.0) * 100.0))
         clipped_black_pcts.append(float(np.mean(luma < 6.0) * 100.0))
@@ -392,10 +415,11 @@ def verify_visual_and_subtitle_blackbox(
         in_speech = any((s + 0.15) <= t_sec <= (e - 0.15) for s, e in speech_spans)
         if in_speech:
             speech_frames_checked += 1
-            if any(float(t["y"]) >= 0.50 or len(str(t["text"]).strip()) >= 4 for t in texts):
+            if any(float(t["y"]) >= 0.55 for t in texts):
                 speech_frames_with_sub_ocr += 1
 
         rel_lum = _relative_luminance(rgb)
+        sub_band_boxes: List[Tuple[int, int, int, int, str]] = []
         for t in texts:
             txt_raw = str(t.get("text", "")).strip()
             m_leak = META_LEAK_RE.search(txt_raw)
@@ -409,11 +433,17 @@ def verify_visual_and_subtitle_blackbox(
             px2, py2 = px1 + pw, py1 + ph
 
             if py1 >= SUBTITLE_SAFE_ZONE["y_min"] - 40 and py2 <= SUBTITLE_SAFE_ZONE["y_max"] + 25:
+                sub_band_boxes.append((px1, py1, px2, py2, txt_raw))
                 cleaned_o = _clean_zh_text(txt_raw)
                 if cleaned_o and (not sub_ocr_segments or cleaned_o != sub_ocr_segments[-1]):
                     sub_ocr_segments.append(cleaned_o)
 
-            if py1 < 145 or py2 > 1495 or px1 < 45 or (px2 > 915 and py2 > 660):
+            if (
+                py1 < SAFE_ZONE["y_min"] - 10
+                or py2 > SAFE_ZONE["y_max"] + 15
+                or px1 < SAFE_ZONE["x_min"] - 5
+                or (px2 > SAFE_ZONE["x_max"] + 5 and py2 > 660)
+            ):
                 safe_violations.append(f"t={t_sec:.1f}s '{txt_raw[:10]}' ({px1},{py1})-({px2},{py2})")
 
             t_norm = {"x": float(t["x"]), "y": float(t["y"]), "w": float(t["w"]), "h": float(t["h"])}
@@ -421,7 +451,7 @@ def verify_visual_and_subtitle_blackbox(
                 fb = f.get("bbox")
                 if not fb:
                     continue
-                iou = check_bbox_iou(t_norm, fb)
+                iou = bbox_iou(t_norm, fb)
                 if iou > 0.02:
                     face_occlusions.append(f"t={t_sec:.1f}s '{txt_raw[:8]}' IoU={iou:.3f}")
                 max_face_text_iou = max(max_face_text_iou, iou)
@@ -441,6 +471,38 @@ def verify_visual_and_subtitle_blackbox(
                     wcag_ratios.append(ratio)
                     if ratio < 3.8:
                         low_contrast_hits.append(f"t={t_sec:.1f}s '{txt_raw[:8]}' ratio={ratio:.2f}")
+
+        # 按同一行聚合并校验字幕区实测像素是否以 540px 真居中（排除实拍环境杂字：仅校验宽高比合理的字幕行）
+        if sub_band_boxes:
+            sub_band_boxes.sort(key=lambda b: b[1])
+            row_groups: List[List[Tuple[int, int, int, int, str]]] = []
+            for box in sub_band_boxes:
+                if row_groups and abs(((box[1] + box[3]) / 2.0) - ((row_groups[-1][0][1] + row_groups[-1][0][3]) / 2.0)) <= 36.0:
+                    row_groups[-1].append(box)
+                else:
+                    row_groups.append([box])
+            for grp in row_groups:
+                gx1 = min(b[0] for b in grp)
+                gx2 = max(b[2] for b in grp)
+                gtxt = "".join(b[4] for b in grp)
+                gclean = _clean_zh_text(gtxt)
+                # 只对真正的字幕行校验 540px 居中（与当前时刻期望字幕有字面重合，避免误杀门店招牌/菜单/画面原有标签）
+                if expected_sub_entries:
+                    active_exp = "".join(
+                        et for st_s, en_s, et in expected_sub_entries
+                        if (st_s - 0.35) <= t_sec <= (en_s + 0.35)
+                    )
+                    is_true_sub = bool(active_exp) and (sum(1 for ch in set(gclean) if ch in active_exp) >= min(2, len(gclean)))
+                else:
+                    is_true_sub = True
+                if is_true_sub and len(gclean) >= 3 and (gx2 - gx1) >= 80:
+                    row_cx = (gx1 + gx2) / 2.0
+                    dev_px = abs(row_cx - float(SUBTITLE_CENTER_X))
+                    max_subtitle_center_dev_px = max(max_subtitle_center_dev_px, dev_px)
+                    if dev_px > 42.0:
+                        center_violations.append(
+                            f"t={t_sec:.1f}s '{gtxt[:10]}' 中心X={row_cx:.0f}px(偏{dev_px:.0f}px)"
+                        )
 
     # #18 屏蔽字幕带后的连续 >3s 视觉静止黑盒检测
     freeze_end_idx = max(1, len(masked_thumbs) - 2)
@@ -463,14 +525,9 @@ def verify_visual_and_subtitle_blackbox(
         "threshold_sec": static_limit,
     }
 
-    p_res = run_cmd([
-        ffmpeg, "-hide_banner", "-t", "3.0", "-i", str(video_path),
-        "-vf", "select='gt(scene,0.08)',showinfo", "-f", "null", "-",
-    ], check=False)
-    scene_cuts_3s = re.findall(r"pts_time:([0-9.]+)", p_res.stderr)
-
-    ocr_backend = next(iter(vis_map.values()), {}).get("backend", "none") if vis_map else "none"
-    ocr_supported = (ocr_backend == "apple_vision")
+    uniq_backends = sorted(set(frame_backends)) if frame_backends else ["none"]
+    ocr_backend = uniq_backends[0] if len(uniq_backends) == 1 else ",".join(uniq_backends)
+    ocr_supported = bool(frame_backends) and all(b == "apple_vision" for b in frame_backends) and read_error_frames == 0
 
     sub_match_ratio = (speech_frames_with_sub_ocr / float(speech_frames_checked)) if speech_frames_checked > 0 else 1.0
     exp_clean = _clean_zh_text(expected_sub_text)
@@ -479,19 +536,21 @@ def verify_visual_and_subtitle_blackbox(
 
     if not ocr_supported:
         sub_sync_res = {
-            "status": "SKIPPED_UNAVAILABLE",
+            "status": "FAIL" if read_error_frames > 0 else "SKIPPED_UNAVAILABLE",
             "passed": False,
             "ocr_backend": ocr_backend,
             "ocr_supported": False,
+            "read_error_frames": read_error_frames,
             "frames_checked": len(frame_files),
             "safe_violations": [],
+            "center_violations": [],
+            "max_subtitle_center_dev_px": None,
             "speech_frames_checked": speech_frames_checked,
             "speech_sub_ocr_ratio": 0.0,
             "sub_ocr_content_recall": 0.0,
-            "first_3s_scene_cuts": len(scene_cuts_3s),
         }
         readability_res = {
-            "status": "SKIPPED_UNAVAILABLE",
+            "status": "FAIL" if read_error_frames > 0 else "SKIPPED_UNAVAILABLE",
             "passed": False,
             "max_face_text_iou": 0.0,
             "face_occlusions": [],
@@ -500,7 +559,7 @@ def verify_visual_and_subtitle_blackbox(
             "low_contrast_hits": [],
         }
         meta_leak_res = {
-            "status": "SKIPPED_UNAVAILABLE",
+            "status": "FAIL" if read_error_frames > 0 else "SKIPPED_UNAVAILABLE",
             "passed": False,
             "ocr_backend": ocr_backend,
             "hits_count": 0,
@@ -508,18 +567,25 @@ def verify_visual_and_subtitle_blackbox(
         }
     else:
         sub_content_ok = True if not exp_clean else (sub_content_recall >= 0.45)
-        sub_ok = (len(safe_violations) == 0) and (sub_match_ratio >= 0.65) and sub_content_ok
+        sub_ok = (
+            len(safe_violations) == 0
+            and len(center_violations) == 0
+            and (sub_match_ratio >= 0.65)
+            and sub_content_ok
+        )
         sub_sync_res = {
             "status": "PASS" if sub_ok else "FAIL",
             "passed": sub_ok,
             "ocr_backend": ocr_backend,
             "ocr_supported": True,
+            "read_error_frames": 0,
             "frames_checked": len(frame_files),
             "safe_violations": safe_violations[:8],
+            "center_violations": center_violations[:8],
+            "max_subtitle_center_dev_px": round(max_subtitle_center_dev_px, 1),
             "speech_frames_checked": speech_frames_checked,
             "speech_sub_ocr_ratio": round(sub_match_ratio, 3),
             "sub_ocr_content_recall": sub_content_recall,
-            "first_3s_scene_cuts": len(scene_cuts_3s),
         }
 
         # 绝不在零对比样本时硬写 8.0 伪通过；无期望文本时仅检查零人脸遮挡
@@ -862,6 +928,12 @@ def _normalize_zh_digits_for_cer(s: str) -> str:
                     out.append(mp[str(d)] + units[idx_u])
         return "".join(reversed(out))
 
+    def _conv_dec(m: re.Match) -> str:
+        int_part, frac_part = m.group(1), m.group(2)
+        left = _int_to_zh(int(int_part)) if len(int_part) <= 8 else "".join(mp.get(c, c) for c in int_part)
+        right = "".join(mp.get(c, c) for c in frac_part)
+        return f"{left}点{right}"
+
     def _conv(m: re.Match) -> str:
         tok = m.group(0)
         if len(tok) == 4 and (tok.startswith("19") or tok.startswith("20")):
@@ -870,7 +942,9 @@ def _normalize_zh_digits_for_cer(s: str) -> str:
             return _int_to_zh(int(tok))
         return "".join(mp.get(ch, ch) for ch in tok)
 
-    return re.sub(r"\d+", _conv, s)
+    s = re.sub(r"(\d+)\.(\d+)", _conv_dec, s)
+    s = re.sub(r"\d+", _conv, s)
+    return s.replace("两", "二")
 
 
 def _char_cer(ref: str, hyp: str) -> float:
@@ -915,6 +989,20 @@ def verify_blind_asr_proxy_blackbox(
         except Exception:
             pass
 
+    if not ref_say_text.strip() and not ref_show_text.strip():
+        return {
+            "status": "PASS",
+            "passed": True,
+            "dialect": dialect,
+            "asr_language": "none",
+            "model": "none",
+            "cer": 0.0,
+            "anchor_ok": True,
+            "hyp_preview": "",
+            "recognized_text": "",
+            "reason": "无口播画面视频，跳过人声听写偏差检查",
+        }
+
     hf_hub = get_huggingface_hub_dir()
     model_name = find_cached_whisper_model(hf_hub)
     if not model_name:
@@ -946,8 +1034,7 @@ def verify_blind_asr_proxy_blackbox(
     asr_prompt = "以下是粤语简体中文口播内容：" if asr_lang == "yue" else "以下是普通话简体中文口播内容："
 
     try:
-        from faster_whisper import WhisperModel
-        model = WhisperModel(model_name, device="cpu", compute_type="int8", local_files_only=True)
+        model = get_cached_whisper_model(model_name, local_files_only=True)
         segs, _ = model.transcribe(
             str(audio_48k_path),
             language=asr_lang,
@@ -984,6 +1071,7 @@ def verify_blind_asr_proxy_blackbox(
         "cer": cer,
         "anchor_ok": anchor_ok,
         "hyp_preview": hyp_text[:48],
+        "recognized_text": hyp_text,
     }
 
 
@@ -1003,12 +1091,20 @@ def verify_compliance_and_license_blackbox(pipeline_dir: Optional[Path]) -> Dict
     if rv_total > 0 and (rv_dropped >= rv_total or rv_dropped / float(rv_total) > 0.40):
         comp_ok = False
 
+    wl_path: Optional[Path] = None
+    if comp.get("whitelist_path") and Path(str(comp["whitelist_path"])).is_file():
+        wl_path = Path(str(comp["whitelist_path"]))
+    elif (pipeline_dir.parent / "compliance_whitelist.json").is_file():
+        wl_path = pipeline_dir.parent / "compliance_whitelist.json"
+
     extra_audits = []
     if (pipeline_dir / "05_subtitles.json").is_file():
         subs = read_json(pipeline_dir / "05_subtitles.json")
         sents = [{"id": e["id"], "text": e["text"]} for e in subs.get("entries", []) if not e.get("suppressed")]
         # 只读调用 pipeline_dir=None，严禁覆写覆盖上游的 real_voice drop 留痕！
-        sub_audit = audit_script_compliance(sents, source_type="subtitles", pipeline_dir=None, auto_action=False)
+        sub_audit = audit_script_compliance(
+            sents, source_type="subtitles", pipeline_dir=None, whitelist_path=wl_path, auto_action=False
+        )
         comp_ok = comp_ok and bool(sub_audit.get("passed", False))
         extra_audits.append(sub_audit)
 
@@ -1016,18 +1112,39 @@ def verify_compliance_and_license_blackbox(pipeline_dir: Optional[Path]) -> Dict
         pkg = read_json(pipeline_dir / "06_packaging.json")
         psents = [{"id": e["id"], "text": str(e.get("text_or_asset", ""))} for e in pkg.get("visual_elements", [])]
         if psents:
-            p_audit = audit_script_compliance(psents, source_type="packaging", pipeline_dir=None, auto_action=False)
+            p_audit = audit_script_compliance(
+                psents, source_type="packaging", pipeline_dir=None, whitelist_path=wl_path, auto_action=False
+            )
             comp_ok = comp_ok and bool(p_audit.get("passed", False))
             extra_audits.append(p_audit)
 
-    lic_p = next(
-        (p for p in (pipeline_dir / "asset_license_manifest.json", pipeline_dir / "00_asset_licenses.json") if p.is_file()),
-        None,
-    )
-    if lic_p:
-        lic = read_json(lic_p)
-    else:
-        lic = {}
+    if (pipeline_dir / "09_title_cover.json").is_file():
+        cov = read_json(pipeline_dir / "09_title_cover.json")
+        csents: List[Dict[str, str]] = []
+        for ck in ("cover_main", "cover_sub"):
+            if cov.get(ck):
+                csents.append({"id": f"cover_{ck}", "text": str(cov[ck])})
+        for ti, tline in enumerate(cov.get("titles") or []):
+            if str(tline).strip():
+                csents.append({"id": f"cover_title_{ti+1}", "text": str(tline)})
+        if csents:
+            c_audit = audit_script_compliance(
+                csents, source_type="cover", pipeline_dir=None, whitelist_path=wl_path, auto_action=False
+            )
+            comp_ok = comp_ok and bool(c_audit.get("passed", False))
+            extra_audits.append(c_audit)
+
+    lic_p = pipeline_dir / "asset_license_manifest.json"
+    lic = read_json(lic_p) if lic_p.is_file() else {}
+    tidy_p = pipeline_dir / "tidy_report.json"
+    tidy_removed: set[str] = set()
+    if tidy_p.is_file():
+        try:
+            tr_rep = read_json(tidy_p)
+            if not tr_rep.get("skipped_keep_temp"):
+                tidy_removed = {str(x).rstrip("/") for x in (tr_rep.get("removed_paths") or [])}
+        except Exception:
+            pass
 
     unverified_fonts: List[str] = []
     file_mismatches: List[str] = []
@@ -1035,7 +1152,10 @@ def verify_compliance_and_license_blackbox(pipeline_dir: Optional[Path]) -> Dict
     for item in lic.get("assets", []):
         asset = Path(item["path"])
         generated = item.get("source_tier") == "project_generated"
-        if not (generated and not asset.exists()):
+        tidy_cleaned = generated and (not asset.exists()) and any(
+            d in asset.parts for d in tidy_removed
+        )
+        if not tidy_cleaned:
             if not asset.is_file() or sha256_file(asset) != item.get("sha256"):
                 file_mismatches.append(str(asset))
         cat = item.get("category") or item.get("kind")
@@ -1122,13 +1242,14 @@ def _verify_jianying(pipeline_dir: Path) -> Dict[str, Any]:
                         errors.append(f"FCPXML 引用相对资产缺失或为空: {src}")
             text_style_ids = {d.attrib["id"] for d in root.findall(".//text-style-def") if d.attrib.get("id")}
             for node in root.iter():
-                ref = node.attrib.get("ref") or node.attrib.get("format")
-                if not ref:
-                    continue
-                valid_pool = text_style_ids if node.tag == "text-style" else res_ids
-                if ref not in valid_pool:
-                    fcpxml_ok = False
-                    errors.append(f"FCPXML 存在悬空资源引用 ref={ref}")
+                for attr_name in ("ref", "format"):
+                    ref_val = node.attrib.get(attr_name)
+                    if not ref_val:
+                        continue
+                    valid_pool = text_style_ids if (attr_name == "ref" and node.tag == "text-style") else res_ids
+                    if ref_val not in valid_pool:
+                        fcpxml_ok = False
+                        errors.append(f"FCPXML 存在悬空资源引用 {attr_name}={ref_val}")
 
             # 校验 connected child (<video>/<title>/<marker>) 归属节点与局部时间有效性（严禁错堆超限）
             spine = root.find(".//spine")
@@ -1218,7 +1339,10 @@ def _verify_hyperframes(pipeline_dir: Path) -> Dict[str, Any]:
     for item in timeline["video"]:
         if item.get("original_src"):
             sources.append(item["original_src"])
-    sources.extend(re.findall(r'url\(["\']?([^"\')]+)', entry.read_text(encoding="utf-8")))
+    for css_src in re.findall(r'url\(["\']?([^"\')]+)', entry.read_text(encoding="utf-8")):
+        if css_src.strip().lower().startswith("data:"):
+            continue
+        sources.append(css_src)
     for src in set(sources):
         resolved = (draft / urllib.parse.unquote(src)).resolve()
         if ":" in src or Path(src).is_absolute() or not resolved.is_relative_to(draft) or not resolved.is_file():
@@ -1323,20 +1447,21 @@ def run_blackbox_verification(
     checks: List[Dict[str, Any]] = [
         _mk_check(
             "bb_audio_master",
-            "[黑盒] 声学播控 (TP/LRA/相位/零爆音/画外音)",
+            "[黑盒] 声学播控 (LUFS/TP/LRA/相位/零爆音/画外音)",
             audio_res["status"],
-            f"TP={audio_res['true_peak_dbtp']}dBTP | LRA={audio_res['lra_lu']}LU | 相位={audio_res['mono_phase_corr']:.2f} | "
+            f"LUFS={audio_res['integrated_lufs']:.2f} | TP={audio_res['true_peak_dbtp']}dBTP | LRA={audio_res['lra_lu']}LU | 相位={audio_res['mono_phase_corr']:.2f} | "
             f"爆音={len(audio_res['splice_clicks'])}处 | 画外声风险={audio_res['suspect_offcamera_spans']}段 | A轨覆盖={'是' if audio_res['aroll_voice_coverage_ok'] else '缺'}",
-            "TP≤-0.5, LRA≤11.5, 相位≥0.45, 0爆音, 0画外音, A-Roll语音覆盖",
+            f"{TARGET_LUFS - LOUDNESS_TOLERANCE_LUFS:.1f}~{TARGET_LUFS + LOUDNESS_TOLERANCE_LUFS:.1f} LUFS, TP≤-0.5, LRA≤11.5, 相位≥0.45, 0爆音, 0画外音, A-Roll语音覆盖",
             audio_res,
         ),
         _mk_check(
             "bb_ocr_av_loop",
-            "[黑盒] 成片OCR安全区与声画字幕回环",
+            "[黑盒] 成片OCR安全区、540px居中与声画字幕回环",
             sub_sync_res["status"],
             f"OCR后端={sub_sync_res['ocr_backend']} | 安全区越界={len(sub_sync_res['safe_violations'])} | "
+            f"居中偏移={sub_sync_res.get('max_subtitle_center_dev_px', '-')}px(越限={len(sub_sync_res.get('center_violations', []))}) | "
             f"语音帧字幕={sub_sync_res['speech_sub_ocr_ratio']*100:.1f}% | 内容匹配={sub_sync_res.get('sub_ocr_content_recall', 1.0)*100:.0f}%",
-            "0安全区越界且语音帧字幕≥65%+内容匹配≥45%（依赖Apple Vision）",
+            "0安全区越界, 字幕实测中心=540±42px, 语音帧字幕≥65%+内容匹配≥45%（依赖Apple Vision）",
             sub_sync_res,
         ),
         _mk_check(

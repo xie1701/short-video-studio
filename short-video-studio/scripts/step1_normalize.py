@@ -27,6 +27,7 @@ from common import (
     CANVAS_WIDTH,
     DEFAULT_FPS,
     MEDIA_EXTS,
+    compute_centered_crop_frac,
     compute_crop_transform,
     detect_vfr_hdr,
     ffmpeg_has_filter,
@@ -51,17 +52,19 @@ def _build_hdr_prefix() -> str:
 
 
 def _smart_crop_fractions(shot_meta: Optional[Dict[str, Any]], disp_w: int, disp_h: int) -> Tuple[float, float]:
-    """根据旋转前人脸/显著性中心计算智能重构图裁切比例 (crop_x_frac, crop_y_frac)。"""
+    """根据旋转前人脸/显著性中心计算智能重构图裁切比例，确保横转竖后主体真正落在 540px 正中。"""
     if not shot_meta or disp_w <= 0 or disp_h <= 0:
         return 0.5, 0.5
     faces = shot_meta.get("faces") or []
     cx, cy = 0.5, 0.5
+    is_face = False
     found = False
     if faces and isinstance(faces[0], dict):
         bb = faces[0].get("bbox")
         if isinstance(bb, dict) and bb.get("w", 0) > 0:
             cx = float(bb.get("x", 0.5)) + float(bb.get("w", 0.0)) * 0.5
             cy = float(bb.get("y", 0.5)) + float(bb.get("h", 0.0)) * 0.5
+            is_face = True
             found = True
     if not found:
         sal = shot_meta.get("saliency_bbox")
@@ -71,7 +74,10 @@ def _smart_crop_fractions(shot_meta: Optional[Dict[str, Any]], disp_w: int, disp
             found = True
     if not found:
         return 0.5, 0.5
-    return max(0.0, min(1.0, cx)), max(0.0, min(1.0, cy))
+    base_tx = compute_crop_transform(disp_w, disp_h, CANVAS_WIDTH, CANVAS_HEIGHT, 0.5, 0.5)
+    fx = compute_centered_crop_frac(cx, base_tx["scaled_w"], CANVAS_WIDTH, target_norm_pos=0.5)
+    fy = compute_centered_crop_frac(cy, base_tx["scaled_h"], CANVAS_HEIGHT, target_norm_pos=0.40 if is_face else 0.5)
+    return fx, fy
 
 
 def normalize_single_media(
@@ -103,14 +109,16 @@ def normalize_single_media(
 
     vh = detect_vfr_hdr(meta)
     r_fps, is_vfr, was_hdr = vh["r_fps"], vh["is_vfr"], vh["was_hdr"]
+    log_profile = vh.get("log_profile")
     color_transfer = vh["color_transfer"] or "unknown"
     color_primaries = vh["color_primaries"] or "unknown"
 
     stem = f"norm_{idx:02d}_{src.stem}"
     out_mp4 = out_dir / f"{stem}.mp4"
     out_wav = out_dir / f"{stem}.wav"
+    has_audio = a_stream is not None
 
-    hdr_prefix = _build_hdr_prefix() if was_hdr else ""
+    hdr_prefix = _build_hdr_prefix() if was_hdr else ("eq=contrast=1.18:saturation=1.22:gamma=0.92," if log_profile else "")
     bt709_tail = ",".join(BT709_VF_SUFFIX)
     vf_chain = (
         f"{hdr_prefix}"
@@ -119,51 +127,50 @@ def normalize_single_media(
         f"fps={DEFAULT_FPS},{bt709_tail}"
     )
 
-    cmd_video = [
-        ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
-        "-i", str(src),
-        "-vf", vf_chain,
-        "-an",
-        "-fps_mode", "cfr",
-        "-r", str(DEFAULT_FPS),
-        "-c:v", "libx264", *BT709_FFMPEG_ARGS, "-preset", "fast", "-crf", "18",
-        str(out_mp4),
-    ]
+    def _build_norm_cmd(vf_str: str, include_wav: bool) -> List[str]:
+        cmd = [
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+            "-i", str(src),
+            "-map", "0:v:0",
+            "-vf", vf_str,
+            "-an",
+            "-fps_mode", "cfr",
+            "-r", str(DEFAULT_FPS),
+            "-c:v", "libx264", *BT709_FFMPEG_ARGS, "-preset", "fast", "-crf", "18",
+            str(out_mp4),
+        ]
+        if include_wav:
+            cmd.extend([
+                "-map", "0:a:0",
+                "-vn", "-af", "aresample=async=1:first_pts=0",
+                "-acodec", "pcm_s16le", "-ar", "48000", "-ac", "2",
+                str(out_wav),
+            ])
+        return cmd
 
     hdr_tonemapped = was_hdr
-    res = run_cmd(cmd_video, check=False)
+    res = run_cmd(_build_norm_cmd(vf_chain, has_audio), check=False)
     if res.returncode != 0 and was_hdr:
-        fallback_vf = (
-            f"colorspace=all=bt709:iall=bt2020:fast=1,"
+        plain_vf = (
             f"scale={crop_tx['scaled_w']}:{crop_tx['scaled_h']}:flags=lanczos,"
             f"crop={CANVAS_WIDTH}:{CANVAS_HEIGHT}:{crop_tx['crop_x']}:{crop_tx['crop_y']},"
             f"fps={DEFAULT_FPS},{bt709_tail}"
         )
-        cmd_fb = list(cmd_video)
-        cmd_fb[cmd_fb.index("-vf") + 1] = fallback_vf
-        fb_res = run_cmd(cmd_fb, check=False)
-        if fb_res.returncode != 0:
-            hdr_tonemapped = False
-            plain_vf = (
-                f"scale={crop_tx['scaled_w']}:{crop_tx['scaled_h']}:flags=lanczos,"
-                f"crop={CANVAS_WIDTH}:{CANVAS_HEIGHT}:{crop_tx['crop_x']}:{crop_tx['crop_y']},"
-                f"fps={DEFAULT_FPS},{bt709_tail}"
+        fb_res = None
+        if ffmpeg_has_filter("zscale"):
+            fallback_vf = (
+                f"colorspace=all=bt709:iall=bt2020:fast=1,"
+                f"{plain_vf}"
             )
-            cmd_fb[cmd_fb.index("-vf") + 1] = plain_vf
-            run_cmd(cmd_fb, check=True)
+            fb_res = run_cmd(_build_norm_cmd(fallback_vf, has_audio), check=False)
+        if fb_res is None or fb_res.returncode != 0:
+            hdr_tonemapped = False
+            run_cmd(_build_norm_cmd(plain_vf, has_audio), check=True)
     elif res.returncode != 0:
         raise RuntimeError(f"素材规整失败 ({src.name}): {(res.stderr or '')[-800:]}")
 
-    has_audio = a_stream is not None
     stereo_diag = "ok"
-    if has_audio:
-        run_cmd([
-            ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
-            "-i", str(src),
-            "-vn", "-af", "aresample=async=1:first_pts=0",
-            "-acodec", "pcm_s16le", "-ar", "48000", "-ac", "2",
-            str(out_wav),
-        ])
+    if has_audio and out_wav.is_file():
         # 若无线麦单边明显失效，直接用完好单声道修复归整 WAV
         try:
             import wave
@@ -225,6 +232,7 @@ def normalize_single_media(
         "was_vfr": is_vfr,
         "was_hdr": was_hdr,
         "hdr_tonemapped": hdr_tonemapped,
+        "source_log_profile": log_profile,
         "stereo_diag": stereo_diag,
         "source_color_transfer": color_transfer,
         "source_color_primaries": color_primaries,
@@ -236,12 +244,14 @@ def normalize_single_media(
     if shot_meta:
         for k in (
             "best_in_sec", "sharpness_score", "stability_score",
-            "motion_speed_px", "accel_jitter_px",
-            "audio_grade", "video_grade", "taboo_tags",
+            "motion_speed_px", "accel_jitter_px", "camera_motion", "shot_size", "action_apex_sec",
+            "audio_grade", "video_grade", "taboo_tags", "usable", "visual_indexed",
             "semantic_tags", "manual_tags", "scene_group",
         ):
             if k in shot_meta:
                 item[k] = shot_meta[k]
+        if shot_meta.get("usable") is False and item.get("video_grade", "usable") == "usable":
+            item["video_grade"] = "ng"
 
         mapped_faces: List[Dict[str, Any]] = []
         for f_obj in shot_meta.get("faces") or []:

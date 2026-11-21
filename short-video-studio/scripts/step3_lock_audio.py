@@ -26,6 +26,8 @@ from common import (
     ASSETS_DIR,
     DEFAULT_FPS,
     find_bin,
+    load_style_applied,
+    load_style_spectrum_entry,
     maybe_reexec_in_venv,
     read_json,
     read_wav_as_48k_stereo,
@@ -137,8 +139,8 @@ def _loop_bgm_exact_bars(aligned_bgm: np.ndarray, bar_samples: int, target_len: 
     return out[:target_len].astype(np.float32), usable_bars
 
 
-def detect_bgm_beats(bgm_path: Path) -> Dict[str, Any]:
-    """检测 BGM 节拍与强拍位置：优先校验同目录节拍 JSON（并核对实际音频能量峰值），次选 librosa。"""
+def detect_bgm_beats(bgm_path: Path, audio_arr: Optional[np.ndarray] = None) -> Dict[str, Any]:
+    """检测 BGM 节拍与强拍位置：优先校验同目录节拍 JSON（并复用已加载波形核对首拍偏移），次选 librosa。"""
     meta_json = bgm_path.with_suffix(".json")
     meta_bpm: Optional[float] = None
     if meta_json.exists():
@@ -152,14 +154,13 @@ def detect_bgm_beats(bgm_path: Path) -> Dict[str, Any]:
             if diffs:
                 meta_bpm = round(60.0 / float(np.median(diffs)), 1)
         if beats and downs:
-            # 快速实测首拍附近能量确认是否存在明显前导静音偏差
             method = "meta_only"
             try:
-                audio, sr = load_stereo_wav_np(bgm_path)
-                if len(audio) > int(sr * 0.5):
-                    env = np.sqrt(np.mean(audio[: int(sr * 1.5)] ** 2, axis=1) + 1e-12)
+                audio = audio_arr if audio_arr is not None else load_stereo_wav_np(bgm_path)[0]
+                if len(audio) > int(SR * 0.5):
+                    env = np.sqrt(np.mean(audio[: int(SR * 1.5)] ** 2, axis=1) + 1e-12)
                     act = np.where(env >= float(np.max(env)) * 0.15)[0]
-                    if len(act) > 0 and act[0] / float(sr) <= 0.12:
+                    if len(act) > 0 and act[0] / float(SR) <= 0.15:
                         method = "meta+waveform_verified"
             except Exception:
                 pass
@@ -326,29 +327,95 @@ def resolve_dynamic_pause(
     base_pause: float,
     account_profile: Optional[Dict[str, Any]] = None,
 ) -> Tuple[float, str]:
-    """语义动态呼吸停顿（persona_pause_sec 独立优先回退，避免被 narrative_pause_sec 缩短）。"""
+    """语义动态呼吸停顿（解除 0.24~0.32s 硬钳位死区，确保 --pause-sec 与实验参数全程单调生效）。"""
     if next_seg is None:
         return 0.0, "tail_end"
     prof = account_profile if (account_profile and account_profile.get("sample_sufficient") is True) else {}
     next_txt = str(next_seg.get("text", ""))
     next_emo = str(next_seg.get("emotion", "info"))
     if next_emo in ("twist", "hook") or any(cue in next_txt for cue in TWIST_CUES):
-        val = float(prof.get("twist_pause_sec", max(0.28, min(0.38, base_pause * 1.55))))
-        return round(max(0.24, min(0.40, val)), 3), "dramatic_beat_before_twist"
+        val = float(prof.get("twist_pause_sec", base_pause * 1.35))
+        return round(max(0.22, min(0.45, val)), 3), "dramatic_beat_before_twist"
     if next_emo in ("cta", "persona"):
-        val = float(prof.get("persona_pause_sec", max(0.22, min(0.30, base_pause * 1.25))))
-        return round(max(0.18, min(0.32, val)), 3), "breathing_before_persona_cta"
-    val = float(prof.get("narrative_pause_sec", max(0.11, min(0.17, base_pause * 0.72))))
-    return round(max(0.09, min(0.22, val)), 3), "tight_narrative_pace"
+        val = float(prof.get("persona_pause_sec", base_pause * 1.15))
+        return round(max(0.18, min(0.38, val)), 3), "breathing_before_persona_cta"
+    val = float(prof.get("narrative_pause_sec", base_pause * 0.85))
+    return round(max(0.10, min(0.32, val)), 3), "tight_narrative_pace"
 
 
 def _resolve_default_bgm(track: str) -> Path:
-    stem = "upbeat_store_120bpm" if track == "store" else "chill_story_100bpm"
-    for ext in (".m4a", ".wav"):
-        cand = ASSETS_DIR / "bgm" / f"{stem}{ext}"
-        if cand.exists():
-            return cand
-    return ASSETS_DIR / "bgm" / f"{stem}.m4a"
+    """统一优先使用 CC0 真录 sound_vibe 音库，彻底告别正弦波合成占位音。"""
+    try:
+        from vibe_sound import get_default_sound_profile
+        prof = get_default_sound_profile(track)
+        if prof and prof.get("bgm_wav") and Path(prof["bgm_wav"]).is_file():
+            return Path(prof["bgm_wav"])
+    except Exception:
+        pass
+    sid = "style_14" if track == "store" else "style_12"
+    return ASSETS_DIR / "sound_vibe" / "bgm" / f"{sid}_bgm.m4a"
+
+
+def _equal_power_append(buf: List[np.ndarray], seg: np.ndarray, xf_samples: int) -> Tuple[np.ndarray, int]:
+    """真·等功率重叠相加拼接 (cos²θ + sin²θ = 1)，消除零重叠拼接制造的 24ms 底噪塌陷凹坑。"""
+    if not buf:
+        buf.append(seg.copy())
+        return seg, 0
+    prev = buf[-1]
+    xf = min(xf_samples, len(prev) // 4, len(seg) // 4)
+    if xf < 4:
+        buf.append(seg.copy())
+        return seg, 0
+    theta = np.linspace(0.0, np.pi * 0.5, xf, dtype=np.float32)[:, None]
+    out_prev = prev.copy()
+    out_prev[-xf:] = prev[-xf:] * np.cos(theta) + seg[:xf] * np.sin(theta)
+    buf[-1] = out_prev
+    buf.append(seg[xf:].copy())
+    return seg, xf
+
+
+def _detect_internal_long_pauses(slice_arr: np.ndarray, sr: int = SR, min_pause_sec: float = 0.45) -> List[float]:
+    """检测单句内部的 >0.45s 卡顿犹豫气口位置（秒），供审片或纸面精剪定位。"""
+    hop = int(0.020 * sr)
+    n_hops = len(slice_arr) // hop
+    if n_hops < 25:
+        return []
+    mono = slice_arr[: n_hops * hop].mean(axis=1).reshape(n_hops, hop)
+    rms = np.sqrt(np.mean(mono ** 2, axis=1) + 1e-12)
+    nz = rms[rms > 0.004]
+    if len(nz) < 6:
+        return []
+    thr = max(0.004, float(np.percentile(nz, 60)) * 0.14)
+    silent = rms < thr
+    min_hops = int(round(min_pause_sec / 0.020))
+    found: List[float] = []
+    run_s = -1
+    for hi, is_sil in enumerate(silent):
+        if is_sil and run_s == -1:
+            run_s = hi
+        elif not is_sil and run_s != -1:
+            # 只报句内中间停顿，不报句首/句尾
+            if run_s >= 4 and hi <= n_hops - 4 and (hi - run_s) >= min_hops:
+                found.append(round(run_s * 0.020, 2))
+            run_s = -1
+    return found
+
+
+def _snap_tail_to_closed_mouth_valley(arr: np.ndarray, s1: int, sr: int = SR) -> int:
+    """句尾切点在 ±45ms 内向能量最低谷+过零点微滑，减少张嘴/气音截断导致的口型硬跳。"""
+    win = int(0.045 * sr)
+    lo = max(1, s1 - win)
+    hi = min(len(arr) - 1, s1 + win)
+    if hi - lo < int(0.020 * sr):
+        return snap_to_zero_crossing(arr, s1, int(0.010 * sr))
+    hop = int(0.005 * sr)
+    seg = arr[lo:hi].mean(axis=1)
+    n_h = len(seg) // hop
+    if n_h < 3:
+        return snap_to_zero_crossing(arr, s1, int(0.010 * sr))
+    rms = np.sqrt(np.mean(seg[: n_h * hop].reshape(n_h, hop) ** 2, axis=1) + 1e-12)
+    valley_idx = lo + int(np.argmin(rms)) * hop + hop // 2
+    return snap_to_zero_crossing(arr, valley_idx, int(0.008 * sr))
 
 
 def run_step3(
@@ -381,8 +448,8 @@ def run_step3(
     if not bgm_path.exists():
         raise FileNotFoundError(f"内置 BGM 不存在，请先运行 check_and_setup.py --init-assets: {bgm_path}")
 
-    bgm_info = detect_bgm_beats(bgm_path)
     bgm_arr, _ = load_stereo_wav_np(bgm_path)
+    bgm_info = detect_bgm_beats(bgm_path, audio_arr=bgm_arr)
 
     all_segments = list(transcript.get("segments") or [])
     valid_segments = [s for s in all_segments if not s.get("is_filler", False) and str(s.get("text", "")).strip()]
@@ -435,7 +502,7 @@ def run_step3(
         raw_s0 = max(0, int(round(float(seg["start_sec"]) * SR)))
         raw_s1 = min(len(src_arr), int(round(float(seg["end_sec"]) * SR)))
         s0 = snap_to_zero_crossing(src_arr, raw_s0, int(0.010 * SR))
-        s1 = snap_to_zero_crossing(src_arr, raw_s1, int(0.010 * SR))
+        s1 = _snap_tail_to_closed_mouth_valley(src_arr, raw_s1, SR)
         if s1 <= s0 + int(0.05 * SR):
             s0, s1 = raw_s0, raw_s1
 
@@ -445,7 +512,7 @@ def run_step3(
 
     leveled_slices, leveling_info = level_speech_segments(raw_only_slices)
 
-    # Equal-Power 句间过渡与房间底噪拼接：在停顿中保持柔和底噪而不制造开关黑洞
+    # 真 Equal-Power 重叠相加拼接 (cos²θ + sin²θ = 1)：消除 24ms 零电平凹坑与底噪抽吸
     xf_joint = int(0.012 * SR)
     rt_offset = 0
     for s_idx, (seg, leveled_slice, (_, s0, s1)) in enumerate(
@@ -455,17 +522,19 @@ def run_step3(
         orig_start = float(seg["start_sec"])
         orig_end = float(seg["end_sec"])
 
-        raw_slice = leveled_slice.copy()
-        n_fade = min(len(raw_slice) // 6, xf_joint)
-        if n_fade > 2:
-            theta = np.linspace(0.0, np.pi * 0.5, n_fade, dtype=np.float32)[:, None]
-            raw_slice[:n_fade] *= np.sin(theta)
-            raw_slice[-n_fade:] *= np.cos(theta)
-        chunk = raw_slice
+        chunk = leveled_slice.copy()
+        if s_idx == 1:
+            n_head = min(len(chunk) // 8, int(0.008 * SR))
+            if n_head > 2:
+                chunk[:n_head] *= np.sin(np.linspace(0.0, np.pi * 0.5, n_head, dtype=np.float32))[:, None]
+        internal_pauses = _detect_internal_long_pauses(chunk, SR)
+        _, ov_lead = _equal_power_append(voice_chunks, chunk, xf_joint)
+        chunk_start_samples = max(0, cursor_samples - ov_lead)
+        cursor_samples = chunk_start_samples + len(chunk)
         chunk_dur = len(chunk) / float(SR)
 
-        new_start_sec = round(cursor_samples / float(SR), 4)
-        new_end_sec = round((cursor_samples + len(chunk)) / float(SR), 4)
+        new_start_sec = round(chunk_start_samples / float(SR), 4)
+        new_end_sec = round(cursor_samples / float(SR), 4)
 
         orig_span = max(0.05, orig_end - orig_start)
         new_words: List[Dict[str, Any]] = []
@@ -513,6 +582,7 @@ def run_step3(
             "end_frame": sec_to_frames(new_end_sec, fps),
             "pause_after_sec": cur_pause_sec,
             "pause_reason": pause_reason,
+            "internal_long_pauses": internal_pauses,
             "emotion_or_info": seg.get("emotion", "info"),
             "keywords": seg.get("keywords", []),
             "words": new_words,
@@ -520,7 +590,7 @@ def run_step3(
         locked_sentences.append(sent_obj)
 
         if s_idx == 1:
-            add_event("sentence_start", new_start_sec, "钩子句首字对齐BGM强拍", sid, {"priority": "high"})
+            add_event("sentence_start", new_start_sec, "开篇首字对齐BGM强拍", sid, {"priority": "high"})
         else:
             add_event("sentence_start", new_start_sec, f"第{s_idx}句开始", sid)
 
@@ -542,33 +612,25 @@ def run_step3(
 
         add_event("sentence_end", new_end_sec, f"第{s_idx}句结束", sid)
 
-        voice_chunks.append(chunk)
-        cursor_samples += len(chunk)
-
         if cur_pause_sec > 0.0 and s_idx < len(valid_segments):
-            p_samples = int(round(cur_pause_sec * SR))
+            p_samples = int(round(cur_pause_sec * SR)) + xf_joint * 2
             if rt_offset + p_samples > len(room_tone_bed):
                 rt_offset = 0
             p_buf = room_tone_bed[rt_offset : rt_offset + p_samples].copy()
             rt_offset += p_samples
-            p_fade = min(len(p_buf) // 4, int(0.012 * SR))
-            if p_fade > 2:
-                theta_p = np.linspace(0.0, np.pi * 0.5, p_fade, dtype=np.float32)[:, None]
-                p_buf[:p_fade] *= np.sin(theta_p)
-                p_buf[-p_fade:] *= np.cos(theta_p)
             add_event("pause_start", new_end_sec, f"动态呼吸停顿({cur_pause_sec}s: {pause_reason})", sid)
-            voice_chunks.append(p_buf)
-            cursor_samples += p_samples
-            pause_end_sec = round(cursor_samples / float(SR), 4)
+            _, ov_p = _equal_power_append(voice_chunks, p_buf, xf_joint)
+            cursor_samples = cursor_samples - ov_p + len(p_buf)
+            pause_end_sec = round(max(new_end_sec, (cursor_samples - xf_joint) / float(SR)), 4)
             add_event("pause_end", pause_end_sec, "句间停顿结束", sid)
 
     tail_samples = int(0.24 * SR)
     tail_rt = room_tone_bed[:tail_samples].copy()
-    if len(tail_rt) > 200:
-        tf = min(len(tail_rt) // 4, int(0.015 * SR))
-        tail_rt[:tf] *= np.linspace(0.0, 1.0, tf, dtype=np.float32)[:, None]
-    voice_chunks.append(tail_rt)
+    _equal_power_append(voice_chunks, tail_rt, xf_joint)
     locked_voice = np.concatenate(voice_chunks, axis=0)
+    tail_fo = min(len(locked_voice) // 8, int(0.020 * SR))
+    if tail_fo > 2:
+        locked_voice[-tail_fo:] *= np.cos(np.linspace(0.0, np.pi * 0.5, tail_fo, dtype=np.float32))[:, None]
     total_samples = len(locked_voice)
     total_dur = round(total_samples / float(SR), 4)
 
@@ -592,6 +654,40 @@ def run_step3(
                     shifted_downbeats.append(round(off + d, 4))
 
     locked_bgm = aligned_bgm[:total_samples].copy()
+
+    # 消费风格谱 dual_bgm_structure：开篇引子段切换至正文主 BGM（复刻《11月14日延期》0~2.83s 引子切主曲）
+    dual_bgm_applied = False
+    dual_bgm_switch_sec: Optional[float] = None
+    active_sid = load_style_applied(pipeline_dir) or ("style_14" if track == "store" else None)
+    style_entry = load_style_spectrum_entry(active_sid) if active_sid else None
+    dual_cfg = (style_entry or {}).get("dual_bgm_structure") or {}
+    if bool(dual_cfg.get("enabled")) and total_dur >= 6.0:
+        intro_sec = max(1.8, min(3.8, float(dual_cfg.get("intro_duration_sec") or 2.83)))
+        # 优先吸附到最接近 intro_sec 的句界或强拍
+        snap_cands = [s["end_sec"] for s in locked_sentences if 1.6 <= s["end_sec"] <= 3.8]
+        if snap_cands:
+            intro_sec = min(snap_cands, key=lambda t: abs(t - intro_sec))
+        intro_bgm_p = ASSETS_DIR / "sound_vibe" / "bgm" / "style_06_bgm.m4a"
+        if intro_bgm_p.is_file() and intro_bgm_p.resolve() != bgm_path.resolve():
+            try:
+                intro_arr, _ = load_stereo_wav_np(intro_bgm_p)
+                sw_i = min(total_samples - int(1.0 * SR), max(int(1.2 * SR), int(round(intro_sec * SR))))
+                xf_b = min(int(0.22 * SR), sw_i // 3, (total_samples - sw_i) // 3)
+                if len(intro_arr) >= sw_i + xf_b and xf_b >= 16:
+                    # 引子轨略柔和过渡到主曲，交叉淡化保证节拍连续不突兀
+                    i_seg = intro_arr[: sw_i + xf_b].copy()
+                    i_rms = float(np.sqrt(np.mean(i_seg ** 2) + 1e-10))
+                    m_rms = float(np.sqrt(np.mean(locked_bgm[: sw_i + xf_b] ** 2) + 1e-10))
+                    i_seg *= min(1.8, max(0.4, (m_rms * 0.85) / max(1e-5, i_rms)))
+                    th = np.linspace(0.0, np.pi * 0.5, xf_b, dtype=np.float32)[:, None]
+                    locked_bgm[:sw_i] = i_seg[:sw_i]
+                    locked_bgm[sw_i : sw_i + xf_b] = i_seg[sw_i : sw_i + xf_b] * np.cos(th) + locked_bgm[sw_i : sw_i + xf_b] * np.sin(th)
+                    dual_bgm_applied = True
+                    dual_bgm_switch_sec = round(sw_i / float(SR), 4)
+                    add_event("bgm_section", dual_bgm_switch_sec, "双段BGM切换：引子转入正文主曲")
+            except Exception:
+                pass
+
     fade_out_n = min(len(locked_bgm), int(0.25 * SR))
     if fade_out_n > 2:
         locked_bgm[-fade_out_n:] *= np.linspace(1.0, 0.15, fade_out_n, dtype=np.float32)[:, None]
@@ -643,6 +739,8 @@ def run_step3(
             "file": str(bgm_path.resolve()),
             "bpm": bgm_info["bpm"],
             "beat_method": bgm_info["method"],
+            "dual_bgm_applied": dual_bgm_applied,
+            "dual_bgm_switch_sec": dual_bgm_switch_sec,
             "beat_times_sec": [t for t in shifted_beats if t <= total_dur],
             "downbeat_times_sec": [t for t in shifted_downbeats if t <= total_dur],
             "hook_first_word_sec": locked_sentences[0]["start_sec"],

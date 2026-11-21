@@ -16,11 +16,11 @@ import difflib
 import hashlib
 import json
 import math
-import os
 import re
 import shutil
 import sys
 import wave
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -31,7 +31,7 @@ if str(SCRIPTS_ROOT) not in sys.path:
 from common import (
     find_bin,
     find_cached_whisper_model,
-    get_huggingface_hub_dir,
+    get_cached_whisper_model,
     get_wav_duration_sec,
     maybe_reexec_in_venv,
     read_json,
@@ -359,21 +359,18 @@ def vad_speech_intervals(y16: np.ndarray, sr: int = 16000) -> List[Tuple[float, 
     return [(round(s, 4), round(e, 4)) for s, e in merged if e - s >= 0.16]
 
 
-def _get_whisper_model(model_name: str):
-    if model_name in _WHISPER_MODEL_CACHE:
-        return _WHISPER_MODEL_CACHE[model_name]
-    from faster_whisper import WhisperModel
-    m = WhisperModel(model_name, device="cpu", compute_type="int8", local_files_only=True)
-    _WHISPER_MODEL_CACHE[model_name] = m
-    return m
+def _get_whisper_model(model_name: str) -> Any:
+    return get_cached_whisper_model(model_name, device="cpu", compute_type="int8", local_files_only=True)
 
 
 def try_faster_whisper(
     wav_path: Path,
     model_name: Optional[str] = None,
     y16_cached: Optional[np.ndarray] = None,
+    dialect: str = "mandarin",
+    store_anchor: Optional[str] = None,
 ) -> Optional[List[Dict[str, Any]]]:
-    """使用模块缓存 Faster-Whisper 提取词级时间戳；严格检查本地缓存与有效语音能量防静音幻觉。"""
+    """使用进程级单例 Faster-Whisper 提取词级时间戳；直接喂入内存 16k 音频避免二次解码，接入方言与店名热词提示。"""
     try:
         y16 = y16_cached if y16_cached is not None else load_wav_16k_mono(wav_path)[0]
         global_rms = float(np.sqrt(np.mean(y16 ** 2) + 1e-12)) if len(y16) else 0.0
@@ -383,10 +380,17 @@ def try_faster_whisper(
         if not chosen:
             return None
         model = _get_whisper_model(chosen)
+        lang_code = "yue" if str(dialect or "").lower() == "cantonese" else "zh"
+        anchor_hint = f"相关品牌或门店关键词：{store_anchor}。" if store_anchor else ""
+        prompt = (
+            f"以下为粤语真实口播内容，请保留准确口语词。{anchor_hint}"
+            if lang_code == "yue"
+            else f"以下是简体中文真实口播内容，请准确识别数字、价格与专有名词。{anchor_hint}"
+        )
         segments, _ = model.transcribe(
-            str(wav_path),
-            language="zh",
-            initial_prompt="以下是普通话简体中文口播内容：",
+            y16.astype(np.float32, copy=False),
+            language=lang_code,
+            initial_prompt=prompt,
             word_timestamps=True,
             vad_filter=True,
         )
@@ -436,34 +440,49 @@ def align_script_to_existing_wav(
     source_media: str,
     model_name: Optional[str] = None,
     audio_pair: Optional[Tuple[np.ndarray, int]] = None,
+    dialect: str = "mandarin",
+    store_anchor: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], str]:
-    """将已知台词对齐到现有 WAV：优先使用 Whisper 句界/字长局部比例投影，退化才用 VAD。"""
+    """将已知台词对齐到现有 WAV：优先使用 Whisper 句界+文本相似度核验，退化才用字符配比或 VAD。"""
     y16, sr = audio_pair if audio_pair is not None else load_wav_16k_mono(wav_path)
     rms_10ms = compute_10ms_rms(y16, sr)
     total_dur = len(y16) / float(sr) if sr > 0 else 0.0
 
-    asr_segs = try_faster_whisper(wav_path, model_name=model_name, y16_cached=y16)
+    asr_segs = try_faster_whisper(
+        wav_path, model_name=model_name, y16_cached=y16, dialect=dialect, store_anchor=store_anchor
+    )
     if asr_segs:
         core_asr = [s for s in asr_segs if not is_filler_or_director_cue(s["text"])] or asr_segs
         if len(core_asr) == len(script_items):
-            segments: List[Dict[str, Any]] = []
-            for idx, (item, aseg) in enumerate(zip(script_items, core_asr), start=1):
-                s_sec, e_sec = float(aseg["start_sec"]), float(aseg["end_sec"])
-                kws = item.get("keywords", []) or extract_auto_keywords(item["text"])
-                is_f = bool(item.get("is_filler", False)) or is_filler_or_director_cue(item["text"])
-                segments.append({
-                    "id": f"seg_{idx:03d}",
-                    "text": item["text"],
-                    "start_sec": round(s_sec, 4),
-                    "end_sec": round(e_sec, 4),
-                    "source_media": source_media,
-                    "source_audio": str(wav_path.resolve()),
-                    "is_filler": is_f,
-                    "emotion": "filler" if is_f else item.get("emotion", "info"),
-                    "keywords": kws,
-                    "words": split_chars_energy_aligned(item["text"], s_sec, e_sec, kws, rms_10ms=rms_10ms),
-                })
-            return segments, "asr_script_forced"
+            sims = [
+                difflib.SequenceMatcher(None, _clean_zh_text(it["text"]), _clean_zh_text(aseg["text"])).ratio()
+                for it, aseg in zip(script_items, core_asr)
+            ]
+            avg_sim = (sum(sims) / len(sims)) if sims else 0.0
+            if avg_sim >= 0.35:
+                segments: List[Dict[str, Any]] = []
+                for idx, (item, aseg) in enumerate(zip(script_items, core_asr), start=1):
+                    s_sec, e_sec = float(aseg["start_sec"]), float(aseg["end_sec"])
+                    kws = item.get("keywords", []) or extract_auto_keywords(item["text"])
+                    is_f = bool(item.get("is_filler", False)) or is_filler_or_director_cue(item["text"])
+                    if aseg.get("words") and _clean_zh_text("".join(w["word"] for w in aseg["words"])) == _clean_zh_text(item["text"]):
+                        w_list = [dict(w) for w in aseg["words"]]
+                        _mark_word_keywords(w_list, kws)
+                    else:
+                        w_list = split_chars_energy_aligned(item["text"], s_sec, e_sec, kws, rms_10ms=rms_10ms)
+                    segments.append({
+                        "id": f"seg_{idx:03d}",
+                        "text": item["text"],
+                        "start_sec": round(s_sec, 4),
+                        "end_sec": round(e_sec, 4),
+                        "source_media": source_media,
+                        "source_audio": str(wav_path.resolve()),
+                        "is_filler": is_f,
+                        "emotion": "filler" if is_f else item.get("emotion", "info"),
+                        "keywords": kws,
+                        "words": w_list,
+                    })
+                return segments, "asr_script_forced"
         # 句数略有差异时保留 Whisper 整体活动区间 [(s,e)...] 做字符配比，比纯能量 VAD 更精准！
         vad_spans = [(float(s["start_sec"]), float(s["end_sec"])) for s in core_asr if float(s["end_sec"]) > float(s["start_sec"])]
         mode_tag = "asr_char_mapped"
@@ -582,11 +601,13 @@ def _extract_segment_acoustic_sig(y16: np.ndarray, sr: int, s_sec: float, e_sec:
 def filter_offcamera_and_retakes(
     segments: List[Dict[str, Any]],
     audio_cache: Optional[Dict[str, Tuple[np.ndarray, int]]] = None,
+    multi_speaker: bool = False,
 ) -> Dict[str, int]:
-    """按 source_audio 各自独立分组剥离画外远场导演声，并严谨收敛 NG 重复重录择优。"""
+    """按 source_audio 各自独立分组剥离画外远场导演声（multi_speaker=True 时保护双人对话），并严谨收敛 NG 重复重录择优。"""
     cache = audio_cache if audio_cache is not None else {}
     sigs: List[Optional[Dict[str, Any]]] = []
     by_source: Dict[str, List[int]] = {}
+    seg_source_keys: List[str] = []
 
     for idx, seg in enumerate(segments):
         sa = seg.get("source_audio")
@@ -597,20 +618,22 @@ def filter_offcamera_and_retakes(
             y16, sr = cache[sa_key]
             sigs.append(_extract_segment_acoustic_sig(y16, sr, float(seg["start_sec"]), float(seg["end_sec"])))
             by_source.setdefault(sa_key, []).append(idx)
+            seg_source_keys.append(sa_key)
         else:
             sigs.append(None)
+            seg_source_keys.append("")
 
     offcam_dropped = 0
-    primary_rms_global = -20.0
+    primary_rms_by_source: Dict[str, float] = {}
     for sa_key, idx_list in by_source.items():
         valid_rms = sorted([sigs[i]["rms_db"] for i in idx_list if sigs[i] and not segments[i].get("is_filler")], reverse=True)
         if len(valid_rms) < 3:
             if valid_rms:
-                primary_rms_global = max(primary_rms_global, valid_rms[0])
+                primary_rms_by_source[sa_key] = valid_rms[0]
             continue
         top_n = max(2, int(math.ceil(len(valid_rms) * 0.65)))
         primary_rms = float(np.median(valid_rms[:top_n]))
-        primary_rms_global = primary_rms
+        primary_rms_by_source[sa_key] = primary_rms
         core_bands = [
             sigs[i]["bands"] for i in idx_list
             if sigs[i] and not segments[i].get("is_filler") and sigs[i]["rms_db"] >= primary_rms - 6.0
@@ -622,6 +645,8 @@ def filter_offcamera_and_retakes(
             if seg.get("is_filler") or not sg:
                 continue
             seg["acoustic_rms_db"] = sg["rms_db"]
+            if multi_speaker:
+                continue
             db_drop = primary_rms - sg["rms_db"]
             spec_dist = float(np.linalg.norm(sg["bands"] - primary_band)) if primary_band is not None else 0.0
             if (db_drop >= 9.0 and spec_dist >= 0.14) or db_drop >= 12.0:
@@ -641,7 +666,7 @@ def filter_offcamera_and_retakes(
             continue
 
         group = [i]
-        for pos_b in range(pos_a + 1, min(len(active_indices), pos_a + 4)):
+        for pos_b in range(pos_a + 1, min(len(active_indices), pos_a + 5)):
             j = active_indices[pos_b]
             if segments[j].get("is_filler"):
                 continue
@@ -666,9 +691,10 @@ def filter_offcamera_and_retakes(
                 sg = sigs[gi]
                 txt_c = _clean_zh_text(segments[gi]["text"])
                 internal_pauses = sg["internal_pauses"] if sg else 0
-                rms_db = sg["rms_db"] if sg else primary_rms_global
+                ref_rms = primary_rms_by_source.get(seg_source_keys[gi], -20.0)
+                rms_db = sg["rms_db"] if sg else ref_rms
                 fluency_bonus = 8.0 if txt_c[-1:] not in ("呃", "啊", "那", "这") else -6.0
-                energy_pen = max(0.0, (primary_rms_global - rms_db) * 1.5)
+                energy_pen = max(0.0, (ref_rms - rms_db) * 1.5)
                 sc = len(txt_c) * 1.4 + fluency_bonus - (internal_pauses * 5.0) - energy_pen + (order_k * 1.2)
                 if sc > best_score:
                     best_score = sc
@@ -724,14 +750,23 @@ def refine_word_boundaries_with_energy(
         p75 = float(np.percentile(nonzero, 75)) if len(nonzero) >= 3 else float(np.max(seg_env))
         thr = max(0.008, p75 * 0.16)
 
-        # 收紧句首前导长静音 (> 150ms)
+        # 收紧句首前导长静音 (> 150ms)，同步单调顺推防止制造负时长字
         seg_act = np.where(seg_env >= thr)[0]
         if len(seg_act) > 0 and int(seg_act[0]) >= 15:
             lead_hop = max(0, int(seg_act[0]) - 3)
             new_seg_start = round(float(seg["start_sec"]) + lead_hop * 0.010, 4)
             if words and new_seg_start < float(words[-1]["end_sec"]) - 0.15:
                 seg["start_sec"] = new_seg_start
-                words[0]["start_sec"] = max(float(words[0]["start_sec"]), new_seg_start)
+                cur_floor = new_seg_start
+                seg_end_cap = float(seg["end_sec"])
+                for w_fix in words:
+                    ws = max(float(w_fix["start_sec"]), cur_floor)
+                    we = max(float(w_fix["end_sec"]), min(seg_end_cap, ws + 0.03))
+                    if we < ws:
+                        we = ws
+                    w_fix["start_sec"] = round(ws, 4)
+                    w_fix["end_sec"] = round(we, 4)
+                    cur_floor = we
                 adjusted += 1
 
         for w in words:
@@ -1133,6 +1168,17 @@ def _project_say_words_to_show(
         t1 = max(t0 + 0.015, float(w["end_sec"]) + s_offset_sec)
         if tok.isdigit():
             p_chars = list(_int_to_zh_spoken(tok))
+        elif re.fullmatch(r"\d+(?:\.\d+)?%", tok):
+            num_part = tok[:-1]
+            spoken = _int_to_zh_spoken(num_part) if num_part.isdigit() else num_part.replace(".", "点")
+            p_chars = list("百分之" + spoken)
+        elif re.search(r"\d+", tok):
+            p_chars = []
+            for part in re.findall(r"\d+|[^\d]+", tok):
+                if part.isdigit():
+                    p_chars.extend(list(_int_to_zh_spoken(part)))
+                else:
+                    p_chars.extend(_char_to_phonetic_key(c) for c in (_extract_clean_chars(part) or list(part)))
         else:
             raw_c = _extract_clean_chars(tok) or list(tok)
             p_chars = [_char_to_phonetic_key(c) for c in raw_c]
@@ -1195,16 +1241,20 @@ def _project_say_words_to_show(
                 times[idx_s] = (t_start + step_i * dt_t, t_start + (step_i + 1) * dt_t)
 
     projected: List[Dict[str, Any]] = []
-    for ch, (pt0, pt1) in zip(show_chars, times):
-        pt1_safe = max(pt0 + 0.015, pt1)
+    prev_end = s_offset_sec
+    for idx_ch, (ch, (pt0, pt1)) in enumerate(zip(show_chars, times)):
+        rem = max(1, len(show_chars) - idx_ch)
+        pt0_safe = max(prev_end, min(e_sec - 0.015 * rem, pt0))
+        pt1_safe = max(pt0_safe + 0.015, min(e_sec - 0.015 * (rem - 1), pt1))
+        prev_end = pt1_safe
         e_val = 0.72
         if rms_10ms is not None and len(rms_10ms) >= 4:
-            i0 = max(0, int(round(pt0 * 100)))
+            i0 = max(0, int(round(pt0_safe * 100)))
             i1 = min(len(rms_10ms), max(i0 + 1, int(round(pt1_safe * 100))))
             e_val = float(np.mean(rms_10ms[i0:i1]))
         projected.append({
             "word": ch,
-            "start_sec": round(pt0, 4),
+            "start_sec": round(pt0_safe, 4),
             "end_sec": round(pt1_safe, 4),
             "energy": round(min(1.0, e_val * 5.0), 3),
             "is_keyword": False,
@@ -1243,6 +1293,40 @@ def concat_wavs_with_gaps(seg_wavs: List[Path], gap_sec: float, out_wav: Path) -
     return spans
 
 
+def _build_paper_edit_suggestions(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """纸面精剪（Paper Edit）建议：从全片扫描强数字/强冲突/高能量金句，提示是否值得倒叙提前到开头。"""
+    active = [s for s in segments if not s.get("is_filler") and str(s.get("text", "")).strip()]
+    if len(active) < 4:
+        return []
+    punch_cues = ("真相", "其实", "千万别", "亏", "坑", "翻倍", "凭啥", "实话", "底线", "免费", "直接")
+    scored: List[Tuple[float, int, Dict[str, Any]]] = []
+    for idx, s in enumerate(active):
+        txt = str(s.get("text", ""))
+        sc = 0.0
+        if re.search(r"\d+", txt):
+            sc += 2.2
+        if any(c in txt for c in punch_cues):
+            sc += 2.0
+        if "？" in txt or "?" in txt or "！" in txt or "!" in txt:
+            sc += 1.2
+        if 6 <= len(_clean_zh_text(txt)) <= 14:
+            sc += 1.0
+        sc += float(s.get("energy_score", 0.5)) * 1.5
+        scored.append((sc, idx, s))
+    first_sc = scored[0][0]
+    best = max(scored[2:], key=lambda x: x[0])
+    out: List[Dict[str, Any]] = []
+    if best[0] >= first_sc + 1.8:
+        out.append({
+            "type": "flash_forward_opening_candidate",
+            "segment_id": best[2]["id"],
+            "original_position": best[1] + 1,
+            "text": best[2]["text"],
+            "reason": "中后段存在信息冲击力明显强于首句的金句，纸面精剪可考虑抽到第 0 秒做倒叙开场",
+        })
+    return out
+
+
 def run_step2(
     pipeline_dir: Path,
     track: str = "store",
@@ -1251,6 +1335,9 @@ def run_step2(
     whisper_model: Optional[str] = None,
     whitelist_path: Optional[Path] = None,
     sanity_replacements: Optional[Dict[str, str]] = None,
+    dialect: str = "mandarin",
+    store_anchor: Optional[str] = None,
+    multi_speaker: bool = False,
 ) -> Dict[str, Any]:
     from compliance_guard import audit_script_compliance
 
@@ -1330,7 +1417,8 @@ def run_step2(
             if not item.get("keywords") or item.get("original_text_before_compliance"):
                 item["keywords"] = extract_auto_keywords(item["text"])
 
-        tts_meta_per_seg: List[Tuple[List[Dict[str, Any]], float, float]] = []
+        tts_jobs: List[Tuple[int, Dict[str, Any], Path, str, str, str]] = []
+        tts_meta_per_seg: List[Optional[Tuple[List[Dict[str, Any]], float, float]]] = [None] * len(effective_items)
         for idx, item in enumerate(effective_items, start=1):
             sp = tts_dir / f"seg_{idx:03d}.wav"
             speak_str = str(item.get("say") or item["text"])
@@ -1352,7 +1440,8 @@ def run_step2(
             v_name = str(item.get("voice") or "zh-CN-YunxiNeural")
             v_rate = str(item.get("rate") or "+8%")
             if item.get("voice_file"):
-                assert script_json_path is not None
+                if script_json_path is None:
+                    raise ValueError(f"{item['id']} 指定了 voice_file 但未传入 script_json_path。")
                 original = script_items[idx - 1]
                 original_text = str(original.get("show") or original.get("text") or "")
                 if speak_str != str(original.get("say") or original_text) or item["text"] != original_text:
@@ -1363,17 +1452,33 @@ def run_step2(
                     raise RuntimeError("导入原始配音需要 FFmpeg")
                 run_cmd([ffmpeg, "-y", "-v", "error", "-i", str(voice_source), "-vn",
                          "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le", str(sp)])
+                arr_v, _ = read_wav_as_48k_stereo(sp, target_sr=48000)
+                arr_fixed, st_diag = rescue_stereo_channels(arr_v, imbalance_db=8.0)
+                if st_diag != "ok":
+                    pcm = (np.clip(arr_fixed, -0.99, 0.99) * 32767.0).astype(np.int16)
+                    with wave.open(str(sp), "wb") as wf:
+                        wf.setnchannels(2)
+                        wf.setsampwidth(2)
+                        wf.setframerate(48000)
+                        wf.writeframes(pcm.tobytes())
                 duration, m_on, m_off = _measure_wav_speech_extent(sp)
                 if duration <= 0.1 or m_off <= m_on:
                     raise ValueError(f"原始配音为空或过短：{voice_source}")
-                wb_words = []
                 item["voice_source"] = str(voice_source)
+                tts_meta_per_seg[idx - 1] = ([], m_on, m_off)
             else:
-                _, _, wb_words, m_on, m_off = synthesize_tts_segment_detailed(
-                    speak_str, sp, voice=v_name, rate=v_rate
-                )
+                tts_jobs.append((idx - 1, item, sp, speak_str, v_name, v_rate))
             seg_wavs.append(sp)
-            tts_meta_per_seg.append((wb_words, m_on, m_off))
+
+        if tts_jobs:
+            def _synth_one(job: Tuple[int, Dict[str, Any], Path, str, str, str]) -> Tuple[int, List[Dict[str, Any]], float, float]:
+                j_idx, _it, sp_p, s_txt, vn, vr = job
+                _, _, wbs, mo, mf = synthesize_tts_segment_detailed(s_txt, sp_p, voice=vn, rate=vr)
+                return j_idx, wbs, mo, mf
+
+            with ThreadPoolExecutor(max_workers=min(4, len(tts_jobs))) as pool:
+                for j_idx, wbs, mo, mf in pool.map(_synth_one, tts_jobs):
+                    tts_meta_per_seg[j_idx] = (wbs, mo, mf)
 
         master_tts_wav = pipeline_dir / "02_tts_voice.wav"
         spans = concat_wavs_with_gaps(seg_wavs, gap_sec=0.38, out_wav=master_tts_wav)
@@ -1432,10 +1537,14 @@ def run_step2(
 
             if has_user_script and len(arolls) == 1:
                 ar_segs, stype = align_script_to_existing_wav(
-                    wav_path, script_items, ar["normalized_mp4"], model_name=whisper_model, audio_pair=(y16_ar, sr16_ar)
+                    wav_path, script_items, ar["normalized_mp4"], model_name=whisper_model,
+                    audio_pair=(y16_ar, sr16_ar), dialect=dialect, store_anchor=store_anchor,
                 )
             else:
-                asr_segs = try_faster_whisper(wav_path, model_name=whisper_model, y16_cached=y16_ar)
+                asr_segs = try_faster_whisper(
+                    wav_path, model_name=whisper_model, y16_cached=y16_ar,
+                    dialect=dialect, store_anchor=store_anchor,
+                )
                 if asr_segs:
                     for seg in asr_segs:
                         seg["source_media"] = ar["normalized_mp4"]
@@ -1466,7 +1575,7 @@ def run_step2(
             wk = str(Path(ar["normalized_wav"]).resolve())
             ar_slice = [s for s in segments if s.get("source_audio") == wk]
             compute_prosody_for_segments(Path(ar["normalized_wav"]), ar_slice, audio_pair=audio_cache.get(wk))
-        filter_stats = filter_offcamera_and_retakes(segments, audio_cache=audio_cache)
+        filter_stats = filter_offcamera_and_retakes(segments, audio_cache=audio_cache, multi_speaker=multi_speaker)
         stumble_cnt = detect_prompt_stumbles(segments)
         filter_stats["stumbles_dropped"] = stumble_cnt
         filter_stats["silence_retimed"] = retimed_cnt
@@ -1500,6 +1609,7 @@ def run_step2(
         "compliance_passed": compliance_report.get("passed", True),
         "compliance_report": str((pipeline_dir / "00_compliance_report.json").resolve()),
         "sanity_warnings": sanity_warnings,
+        "paper_edit_suggestions": _build_paper_edit_suggestions(segments),
         "segments": segments,
     }
     write_json(pipeline_dir / "02_transcript.json", transcript)
@@ -1523,6 +1633,9 @@ def main() -> None:
     parser.add_argument("--whisper-model", help="指定 faster-whisper 模型名")
     parser.add_argument("--whitelist", help="可选：compliance_whitelist.json 路径")
     parser.add_argument("--sanity-replacements", help="可选：同音纠偏等长替换字典 JSON 文件或 JSON 字符串")
+    parser.add_argument("--dialect", default="mandarin", help="语言/方言提示 (mandarin|cantonese|dialect)")
+    parser.add_argument("--store-anchor", help="门店/品牌热词提示")
+    parser.add_argument("--multi-speaker", action="store_true", help="多人对话保护模式（不按音量差删除副说话人）")
     args = parser.parse_args()
 
     reps: Optional[Dict[str, str]] = None
@@ -1538,6 +1651,9 @@ def main() -> None:
         whisper_model=args.whisper_model,
         whitelist_path=Path(args.whitelist) if args.whitelist else None,
         sanity_replacements=reps,
+        dialect=args.dialect,
+        store_anchor=args.store_anchor,
+        multi_speaker=args.multi_speaker,
     )
 
 

@@ -290,6 +290,85 @@ class StudioTests(unittest.TestCase):
             offset = measure_sync_marker(path, 0.2, 1.0, 30)["offset_sec"]
             self.assertAlmostEqual(offset, delay / 1000, delta=0.02)
 
+    def test_landscape_to_portrait_crop_and_bt709_luma(self):
+        import numpy as np
+        from common import compute_bt709_luma, compute_centered_crop_frac
+
+        # 1920x1080 等比缩放到高 1920 后宽为 3413，裁宽 1080：
+        left_f = compute_centered_crop_frac(0.20, 3413, 1080, target_norm_pos=0.5)
+        mid_f = compute_centered_crop_frac(0.50, 3413, 1080, target_norm_pos=0.5)
+        right_f = compute_centered_crop_frac(0.80, 3413, 1080, target_norm_pos=0.5)
+        self.assertLess(left_f, mid_f)
+        self.assertLess(mid_f, right_f)
+        self.assertAlmostEqual(mid_f, 0.5, delta=0.01)
+
+        white = np.full((4, 4, 3), 255.0, dtype=np.float32)
+        self.assertAlmostEqual(float(compute_bt709_luma(white).mean()), 255.0, delta=0.05)
+
+    def test_equal_power_overlap_no_dip_and_dynamic_pause(self):
+        import numpy as np
+        from step3_lock_audio import _equal_power_append, resolve_dynamic_pause
+
+        sr = 48000
+        t = np.arange(int(0.2 * sr)) / float(sr)
+        sig = np.column_stack([np.sin(2 * np.pi * 440 * t) * 0.5] * 2).astype(np.float32)
+        buf = [sig.copy()]
+        _, xf = _equal_power_append(buf, sig.copy(), int(0.012 * sr))
+        joined = np.concatenate(buf, axis=0)
+        self.assertEqual(xf, int(0.012 * sr))
+        self.assertEqual(len(joined), len(sig) * 2 - xf)
+        mid = len(sig) - xf // 2
+        seam_rms = float(np.sqrt(np.mean(joined[mid - 240 : mid + 240] ** 2)))
+        self.assertGreater(seam_rms, 0.20)
+        # 停顿不再被 0.24s 硬顶死
+        p_pers, _ = resolve_dynamic_pause(
+            {"emotion": "info"}, {"emotion": "persona"},
+            base_pause=0.22, account_profile={"sample_sufficient": True, "persona_pause_sec": 0.31},
+        )
+        self.assertGreaterEqual(p_pers, 0.28)
+
+    def test_compliance_offset_rewrite_and_system_commercial_font(self):
+        from compliance_guard import _classify_asset_license, audit_text_line
+
+        res = audit_text_line("最近很多老客问，这家是不是全网最好吃的烧烤")
+        self.assertTrue(res["has_must"])
+        self.assertIn("最近", res["suggested_text"])
+        self.assertNotIn("最好吃", res["suggested_text"])
+
+        cls = _classify_asset_license(
+            Path("/System/Library/Fonts/SourceHanSansCN-Bold.otf"), "font", self.pipeline, {}, ""
+        )
+        self.assertTrue(cls["commercial_ok"])
+        self.assertEqual(cls["source_tier"], "verified_commercial_font")
+
+    def test_demo_review_and_zero_jargon_outputs(self):
+        from content_log_review import DEMO_RECORDS, append_record, generate_weekly_review
+        from generate_shot_card import build_sketch_svg, generate_shot_card, DEFAULT_SHOTS
+        from raw_intel_ingest import lint_script, render_lint_markdown
+
+        log_d = self.root / "demo_log"
+        for rec in DEMO_RECORDS:
+            append_record(log_d, dict(rec))
+        rev = generate_weekly_review(log_d, track="store")
+        md_txt = Path(rev["weekly_review_md"]).read_text(encoding="utf-8")
+        self.assertIn("3 秒仍在看", md_txt)
+        self.assertIn("有效咨询", md_txt)
+        self.assertNotIn("本期缺少可对账的分子和分母", md_txt)
+
+        svg = build_sketch_svg("portrait_hook", 1)
+        self.assertNotIn("TOP UI SAFE", svg)
+        self.assertNotIn("BOTTOM UI", svg)
+
+        card_md = self.root / "shot_card.md"
+        generate_shot_card(card_md, "现切羊排实拍", "store", DEFAULT_SHOTS, industry="catering")
+        card_txt = card_md.read_text(encoding="utf-8")
+        self.assertIn("餐饮美食", card_txt)
+        self.assertNotIn("HDR", card_txt)
+
+        lint = lint_script([{"show": "我们坚持手工现切不隔夜", "say": "我们坚持手工现切不隔夜"}])
+        lint_md = render_lint_markdown(lint, {"utterance_count": 0, "verified_by_real_users": False, "pain_keywords": [], "proof_assets": []})
+        self.assertNotIn("Micro-Hook", lint_md)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -25,7 +25,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 ASSETS_DIR = SKILL_ROOT / "assets"
-REFERENCES_DIR = SKILL_ROOT / "references"
 SCRIPTS_DIR = SKILL_ROOT / "scripts"
 VENV_DIR = Path.home() / ".short-video-studio" / "venv"
 NODE_TOOLS_DIR = Path.home() / ".short-video-studio" / "node_tools"
@@ -38,6 +37,8 @@ CANVAS_WIDTH = 1080
 CANVAS_HEIGHT = 1920
 DEFAULT_FPS = 30
 TARGET_LUFS = -14.0
+LOUDNESS_TOLERANCE_LUFS = 1.5
+SCENE_CUT_THRESHOLD = 0.16
 HYPERFRAMES_VERSION = "0.9.72"
 EDITABLE_EXPORTS = ("jianying", "hyperframes")
 EXPORT_CHOICES = ("auto", "mp4", "jianying", "hyperframes", "both")
@@ -91,18 +92,24 @@ SUBTITLE_SAFE_ZONE = {
 
 # 字幕绝对水平居中对称安全带：轴心恒定 540px，右不越 860px（避开右侧互动栏），对称区 [220, 860] 宽 640px
 SUBTITLE_CENTER_X = CANVAS_WIDTH // 2
+SUBTITLE_DEFAULT_Y_CENTER = 1310
 SUBTITLE_SYMMETRIC_HALF_W = min(
     SUBTITLE_CENTER_X - SUBTITLE_SAFE_ZONE["x_min"],
     SUBTITLE_SAFE_ZONE["x_max"] - SUBTITLE_CENTER_X,
 )
 SUBTITLE_SYMMETRIC_MAX_W = SUBTITLE_SYMMETRIC_HALF_W * 2
+SUBTITLE_SYMMETRIC_ZONE = {
+    "x_min": SUBTITLE_CENTER_X - SUBTITLE_SYMMETRIC_HALF_W,
+    "x_max": SUBTITLE_CENTER_X + SUBTITLE_SYMMETRIC_HALF_W,
+    "y_min": SUBTITLE_SAFE_ZONE["y_min"],
+    "y_max": SUBTITLE_SAFE_ZONE["y_max"],
+}
 
 # #20 SFX 2-8kHz 同窗净抬升审计唯一权威窗边界
 SFX_AUDIT_PRE_SEC = 0.04
 SFX_AUDIT_POST_SEC = 0.16
 
 MEDIA_EXTS = {".mp4", ".mov", ".m4v", ".mkv", ".avi", ".webm"}
-AUDIO_EXTS = {".wav", ".m4a", ".mp3", ".aac", ".flac", ".ogg"}
 
 BT709_FFMPEG_ARGS = [
     "-pix_fmt", "yuv420p",
@@ -287,12 +294,26 @@ def detect_vfr_hdr(probe_data: Dict[str, Any]) -> Dict[str, Any]:
     pix_fmt = str(v_stream.get("pix_fmt") or "").lower()
     c_space = str(v_stream.get("color_space") or "").lower()
     was_hdr = any(k in trc for k in ("arib-std-b67", "smpte2084", "hlg")) or ("bt2020" in primaries)
+    tags_blob = " ".join(
+        f"{k}:{v}" for d in (probe_data.get("format", {}).get("tags") or {}, v_stream.get("tags") or {})
+        for k, v in d.items()
+    ).lower() + f" {trc} {primaries} {c_space}"
+    log_profile: Optional[str] = None
+    if "apple" in tags_blob and "log" in tags_blob:
+        log_profile = "apple_log"
+    elif "slog" in tags_blob or "s-log" in tags_blob:
+        log_profile = "slog3"
+    elif "dlog" in tags_blob or "d-log" in tags_blob:
+        log_profile = "dlog"
+    elif "clog" in tags_blob or "c-log" in tags_blob:
+        log_profile = "clog"
     return {
         "v_stream": v_stream,
         "avg_fps": avg_fps,
         "r_fps": r_fps,
         "is_vfr": is_vfr,
         "was_hdr": was_hdr,
+        "log_profile": log_profile,
         "pix_fmt": pix_fmt,
         "color_transfer": trc,
         "color_primaries": primaries,
@@ -336,6 +357,20 @@ def parse_video_stream_geometry(v_stream: Dict[str, Any]) -> Dict[str, Any]:
         "display_height": display_h,
         "orientation": orientation,
     }
+
+
+def compute_centered_crop_frac(
+    norm_subject_pos: float,
+    scaled_dim: int,
+    dst_dim: int,
+    target_norm_pos: float = 0.5,
+) -> float:
+    """将源图归一化主体位置精确映射到裁切窗比例，使主体真正落在目标画布的 target_norm_pos 处（修复恒等失效 Bug）。"""
+    max_shift = max(0, int(scaled_dim) - int(dst_dim))
+    if max_shift <= 0:
+        return 0.5
+    desired_crop = float(norm_subject_pos) * float(scaled_dim) - float(target_norm_pos) * float(dst_dim)
+    return max(0.0, min(1.0, desired_crop / float(max_shift)))
 
 
 def compute_crop_transform(
@@ -1090,12 +1125,57 @@ def resolve_workspace_paths(
     }
 
 
-def sha256_file(path: Path) -> str:
+def compute_bt709_luma(rgb_arr: Any) -> Any:
+    """全仓唯一权威 BT.709 亮度计算 (0.2126R + 0.7152G + 0.0722B)，杜绝 BT.601/709 系数混拼。"""
+    return 0.2126 * rgb_arr[..., 0] + 0.7152 * rgb_arr[..., 1] + 0.0722 * rgb_arr[..., 2]
+
+
+def estimate_read_hold_sec(text: str, min_sec: float = 1.5, max_sec: float = 8.0) -> float:
+    """全仓唯一权威阅读停留时长估算（中文 4.5 字/秒 + 英文数字 15 字符/秒 + 1.35s 视觉落眼缓冲）。"""
+    s = str(text or "")
+    cjk_n = sum(1 for ch in s if "\u4e00" <= ch <= "\u9fff")
+    other_n = sum(1 for ch in s if ch.isascii() and ch.isalnum())
+    return round(max(min_sec, min(max_sec, cjk_n / 4.5 + other_n / 15.0 + 1.35)), 2)
+
+
+@functools.lru_cache(maxsize=512)
+def _sha256_file_cached(path_str: str, inode: int, size: int, mtime_ns: int, ctime_ns: int) -> str:
     h = hashlib.sha256()
-    with path.open("rb") as f:
+    with open(path_str, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    p = path.resolve()
+    st = p.stat()
+    if st.st_size >= 1048576:
+        return _sha256_file_cached(str(p), st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+    h = hashlib.sha256()
+    with p.open("rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+_WHISPER_MODEL_CACHE: Dict[Tuple[str, str, str], Any] = {}
+
+
+def get_cached_whisper_model(
+    model_size: str,
+    device: str = "cpu",
+    compute_type: str = "int8",
+    local_files_only: bool = False,
+) -> Any:
+    """进程级单例缓存 faster-whisper 模型，消除同进程 Step 2 与 Step 10 重复冷加载。"""
+    key = (str(model_size), str(device), str(compute_type))
+    if key not in _WHISPER_MODEL_CACHE:
+        from faster_whisper import WhisperModel
+        _WHISPER_MODEL_CACHE[key] = WhisperModel(
+            model_size, device=device, compute_type=compute_type, local_files_only=local_files_only
+        )
+    return _WHISPER_MODEL_CACHE[key]
 
 
 def detect_browser_renderer() -> Dict[str, Any]:

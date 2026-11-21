@@ -16,21 +16,19 @@ import shutil
 import sys
 import urllib.parse
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from xml.dom import minidom
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import (
-    BT709_FFMPEG_ARGS,
-    BT709_VF_SUFFIX,
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
     DEFAULT_FPS,
     SAFE_ZONE,
+    SUBTITLE_CENTER_X,
     SUBTITLE_SAFE_ZONE,
-    compute_crop_transform,
+    SUBTITLE_SYMMETRIC_MAX_W,
     ffprobe_media,
     find_bin,
     find_commercial_font,
@@ -46,13 +44,14 @@ from common import (
     resolve_audio_stems,
     run_cmd,
     sec_to_frames,
+    sha256_file,
     write_json,
 )
 
 maybe_reexec_in_venv()
 
 from PIL import Image
-from render_mp4 import compute_subtitle_place_xy, render_subtitle_png, resolve_packaging_source
+from render_mp4 import build_graded_segment_cmd, compute_subtitle_place_xy, render_subtitle_png, resolve_packaging_source
 
 
 def _frames_to_rational(frames: int, fps: int = DEFAULT_FPS) -> str:
@@ -196,6 +195,9 @@ def _prepare_static_overlay_layers(
             cleanup_tmp = True
         def_x, def_y = compute_subtitle_place_xy(sw_px, sh_px, tpl)
         px, py = place_bbox_in_zone(sub, sw_px, sh_px, SUBTITLE_SAFE_ZONE, (def_x, def_y))
+        # 严格强制水平居中于 540px，杜绝 final_bbox 估算宽度误差导致剪映字幕偏轴
+        if sw_px <= SUBTITLE_SYMMETRIC_MAX_W:
+            px = SUBTITLE_CENTER_X - sw_px // 2
         rel_name = f"sub_{idx:03d}.png"
         full_png = overlays_dir / rel_name
         _compose_full_canvas_png(use_png, full_png, px, py)
@@ -240,78 +242,9 @@ def _export_graded_segment(
     out_mp4: Path,
     fps: int,
 ) -> None:
-    mp = str(clip.get("media_path") or "")
-    src_in = max(0.0, float(clip.get("source_in_sec", 0.0)))
-    if clip.get("timeline_out_frame") is not None and clip.get("timeline_in_frame") is not None:
-        clip_frames = max(1, int(clip["timeline_out_frame"]) - int(clip["timeline_in_frame"]))
-    else:
-        clip_frames = max(1, sec_to_frames(float(clip.get("duration_sec", 1.0)), fps))
-    clip_dur = frames_to_sec(clip_frames, fps)
-    src_out = float(clip.get("source_out_sec", src_in + clip_dur))
-    src_avail = max(0.1, src_out - src_in)
-
-    probe = ffprobe_media(Path(mp))
-    vs = next((s for s in probe.get("streams", []) if s.get("codec_type") == "video"), {})
-    g = parse_video_stream_geometry(vs)
-    sw, sh = g["display_width"], g["display_height"]
-    eye = clip.get("eye_anchor") or eye_by_mp4.get(mp) or eye_by_mp4.get(str(Path(mp).resolve())) or {}
-    fx = float(eye.get("cx", eye.get("eye_cx", 0.50)))
-    fy = float(eye.get("cy", eye.get("eye_cy", 0.36)))
-    tx = compute_crop_transform(sw, sh, CANVAS_WIDTH, CANVAS_HEIGHT, fx, fy)
-
-    trim_dur = min(src_avail, clip_dur) if src_avail >= clip_dur - 0.01 else src_avail
-    vf_parts: List[str] = [f"fps=fps={fps}", f"trim=duration={trim_dur:.4f},setpts=PTS-STARTPTS"]
-
-    vf_extra = str(clip.get("vf_extra") or "").strip()
-    kb = clip.get("ken_burns")
-    has_kb = isinstance(kb, dict) and ("zoom_start" in kb or "zoom_end" in kb)
-    if has_kb and not vf_extra:
-        z0 = max(1.0, float(kb.get("zoom_start", 1.0)))
-        z1 = max(1.0, float(kb.get("zoom_end", 1.06)))
-        pan_x = float(kb.get("pan_x", 0.0))
-        pan_y = float(kb.get("pan_y", 0.0))
-        if abs(z1 - z0) > 1e-4 or abs(pan_x) > 1e-4 or abs(pan_y) > 1e-4:
-            prog = f"min(t/{clip_dur:.4f},1)"
-            z_expr = f"({z0:.4f}+({z1 - z0:.4f})*{prog})"
-            vf_parts.append(
-                f"scale=w='trunc({tx['scaled_w']}*{z_expr}/2)*2':h='trunc({tx['scaled_h']}*{z_expr}/2)*2':eval=frame:flags=bicubic"
-            )
-            focal_px_x = float(tx["crop_x"]) + fx * CANVAS_WIDTH
-            focal_px_y = float(tx["crop_y"]) + fy * CANVAS_HEIGHT
-            x_off = f"{z_expr}*{focal_px_x:.2f}-{fx * CANVAS_WIDTH:.2f}+({pan_x:.4f}*iw*{prog})"
-            y_off = f"{z_expr}*{focal_px_y:.2f}-{fy * CANVAS_HEIGHT:.2f}+({pan_y:.4f}*ih*{prog})"
-            vf_parts.append(
-                f"crop={CANVAS_WIDTH}:{CANVAS_HEIGHT}:x='max(0,min(iw-{CANVAS_WIDTH},{x_off}))':y='max(0,min(ih-{CANVAS_HEIGHT},{y_off}))'"
-            )
-        elif sw != CANVAS_WIDTH or sh != CANVAS_HEIGHT:
-            vf_parts.append(f"scale={tx['scaled_w']}:{tx['scaled_h']}:flags=bicubic")
-            vf_parts.append(f"crop={CANVAS_WIDTH}:{CANVAS_HEIGHT}:{tx['crop_x']}:{tx['crop_y']}")
-    else:
-        if sw != CANVAS_WIDTH or sh != CANVAS_HEIGHT:
-            vf_parts.append(f"scale={tx['scaled_w']}:{tx['scaled_h']}:flags=bicubic")
-            vf_parts.append(f"crop={CANVAS_WIDTH}:{CANVAS_HEIGHT}:{tx['crop_x']}:{tx['crop_y']}")
-        if vf_extra:
-            vf_parts.append(vf_extra)
-
-    if color_vf:
-        vf_parts.append(color_vf)
-    if src_avail < clip_dur - 0.01:
-        pad_sec = (clip_dur - src_avail) + 0.3
-        vf_parts.append(f"tpad=stop_mode=clone:stop_duration={pad_sec:.4f}")
-    vf_parts.extend(BT709_VF_SUFFIX)
-
-    run_cmd([
-        ffmpeg_bin, "-y",
-        "-ss", f"{src_in:.4f}",
-        "-t", f"{src_avail + 0.1:.4f}",
-        "-i", mp,
-        "-an",
-        "-vf", ",".join(vf_parts),
-        "-frames:v", str(clip_frames),
-        "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-        "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS,
-        str(out_mp4),
-    ])
+    """复用 render_mp4.build_graded_segment_cmd 消除 80 行重复分段管线。"""
+    cmd = build_graded_segment_cmd(ffmpeg_bin, clip, color_vf, eye_by_mp4, out_mp4, fps)
+    run_cmd(cmd)
 
 
 def _stage_media_assets(
@@ -378,9 +311,12 @@ def _stage_media_assets(
         if needs_bake and ffmpeg_bin:
             seg_name = f"seg_{c_idx:03d}.mp4"
             dst_seg = seg_dir / seg_name
-            if not (prebaked_seg.is_file() and prebaked_seg.stat().st_size > 1024):
+            seg_sha = prebaked_seg.with_suffix(".sha256")
+            if not (prebaked_seg.is_file() and seg_sha.is_file() and prebaked_seg.stat().st_size > 1024):
                 render_work_dir.mkdir(parents=True, exist_ok=True)
                 _export_graded_segment(ffmpeg_bin, clip, color_vf, eye_by_mp4, prebaked_seg, fps)
+                if prebaked_seg.is_file():
+                    seg_sha.write_text(sha256_file(prebaked_seg), encoding="utf-8")
             link_or_copy(prebaked_seg, dst_seg)
             real_frames = _probe_video_duration_frames(dst_seg, fps) or clip_frames
             keep_seg_names.add(seg_name)

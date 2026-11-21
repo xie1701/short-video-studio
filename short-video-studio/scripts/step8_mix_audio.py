@@ -219,16 +219,29 @@ def run_step8(
 
     pre_mix_nosfx = voice_arr * 0.95 + ducked_bgm
 
-    # B-roll 现场动作同期声轻混（复刻《11月14日延期》8.47s 说到「敲敲敲」保留 -10dB 工地现场声）
+    # B-roll 现场动作同期声轻混（彻底修复 step1 -an 导致旧版抽 media_path 100% 失败的死链：优先从 normalized_wav / ambient_audio_path 抽取）
+    broll_ambient_arr = np.zeros_like(voice_arr)
+    broll_ambient_mixed_count = 0
     edl_p = pipeline_dir / "04_edl.json"
+    man_p2 = pipeline_dir / "01_manifest.json"
+    wav_by_mp4: Dict[str, str] = {}
+    if man_p2.is_file():
+        for mit in read_json(man_p2).get("items") or []:
+            mp_k = str(mit.get("normalized_mp4") or "")
+            w_cand = mit.get("normalized_wav") or (mit.get("source_path") if mit.get("has_audio") else None)
+            if mp_k and w_cand:
+                wav_by_mp4[mp_k] = str(w_cand)
     if edl_p.is_file():
         try:
             import tempfile
             edl_clips = read_json(edl_p).get("clips") or []
-            amb_clips = [c for c in edl_clips if c.get("keep_broll_ambient") and c.get("media_path") and Path(str(c["media_path"])).is_file()]
+            amb_clips = [c for c in edl_clips if c.get("keep_broll_ambient")]
             if amb_clips:
                 with tempfile.TemporaryDirectory(prefix="svs_amb_") as amb_td:
                     for ai, ac in enumerate(amb_clips):
+                        aud_src = str(ac.get("ambient_audio_path") or wav_by_mp4.get(str(ac.get("media_path") or "")) or "")
+                        if not aud_src or not Path(aud_src).is_file():
+                            continue
                         t0 = max(0.0, float(ac.get("timeline_in_sec", 0.0)))
                         t1 = min(n_samples / float(SR), float(ac.get("timeline_out_sec", t0)))
                         dur_a = t1 - t0
@@ -239,7 +252,7 @@ def run_step8(
                         res_a = run_cmd([
                             ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
                             "-ss", f"{src_in:.4f}", "-t", f"{dur_a:.4f}",
-                            "-i", str(ac["media_path"]),
+                            "-i", aud_src,
                             "-vn", "-af", "highpass=f=150,lowpass=f=7500",
                             "-ar", str(SR), "-ac", "2", "-acodec", "pcm_s16le",
                             str(amb_wav),
@@ -255,16 +268,19 @@ def run_step8(
                         if seg_len < 128:
                             continue
                         seg_amb = amb_arr[:seg_len].copy()
-                        # 增益上限严格低于该段人声至少 9.5dB，保证现场动作质感且不干扰人声清晰度与 ASR
+                        # 有人声时限制现场声比人声低至少 11dB 防掩蔽；无口播的纯特写动作间隙按参考人声/设定增益自然放出滋啦声
                         gain_db = min(-9.5, float(ac.get("ambient_gain_db", -10.0)))
                         v_seg_rms = float(np.sqrt(np.mean((voice_arr[s_i:e_i] * 0.95) ** 2) + 1e-10))
                         a_seg_rms = float(np.sqrt(np.mean(seg_amb ** 2) + 1e-10))
-                        lin_g = min(10.0 ** (gain_db / 20.0), (v_seg_rms * 0.28) / max(1e-5, a_seg_rms))
+                        v_ref_rms = max(v_seg_rms, 0.08) if v_seg_rms < 0.015 else v_seg_rms
+                        lin_g = min(10.0 ** (gain_db / 20.0), (v_ref_rms * 0.30) / max(1e-5, a_seg_rms))
                         fade_n = min(int(0.035 * SR), seg_len // 4)
                         if fade_n > 1:
                             seg_amb[:fade_n] *= np.linspace(0.0, 1.0, fade_n, dtype=np.float32)[:, None]
                             seg_amb[-fade_n:] *= np.linspace(1.0, 0.0, fade_n, dtype=np.float32)[:, None]
+                        broll_ambient_arr[s_i:e_i] += seg_amb * lin_g
                         pre_mix_nosfx[s_i:e_i] += seg_amb * lin_g
+                        broll_ambient_mixed_count += 1
         except Exception:
             pass
 
@@ -357,14 +373,19 @@ def run_step8(
             cur_gain_db = max(-24.0, min(24.0, cur_gain_db))
             metrics = _render_master_pair(cur_gain_db)
 
-    # 同步导出四端同源分离分轨 (人声规范母带 + 已闪避定电平 BGM + 定电平 SFX) 给剪映 & HyperFrames 使用
+    # 同步导出四端同源分离分轨 (人声规范母带 + 已闪避定电平 BGM含现场动作声 + 定电平 SFX)，并按总线安全峰值等比限幅防叠加削波
     final_scale = 10.0 ** (cur_gain_db / 20.0)
+    v_stem_raw = voice_arr * 0.95 * final_scale
+    b_stem_raw = (ducked_bgm + broll_ambient_arr) * final_scale
+    s_stem_raw = sfx_arr * 0.95 * final_scale
+    sum_peak = float(np.max(np.abs(v_stem_raw + b_stem_raw + s_stem_raw))) if n_samples else 0.0
+    bus_safe_scale = min(1.0, 0.89 / max(1e-5, sum_peak))
     voice_master_path = pipeline_dir / "08_voice_master.wav"
     bgm_ducked_path = pipeline_dir / "08_bgm_ducked.wav"
     sfx_master_path = pipeline_dir / "08_sfx_master.wav"
-    save_stereo_wav_np(voice_master_path, 0.96 * np.tanh((voice_arr * 0.95 * final_scale) / 0.96), SR)
-    save_stereo_wav_np(bgm_ducked_path, 0.96 * np.tanh((ducked_bgm * final_scale) / 0.96), SR)
-    save_stereo_wav_np(sfx_master_path, 0.96 * np.tanh((sfx_arr * 0.95 * final_scale) / 0.96), SR)
+    save_stereo_wav_np(voice_master_path, v_stem_raw * bus_safe_scale, SR)
+    save_stereo_wav_np(bgm_ducked_path, b_stem_raw * bus_safe_scale, SR)
+    save_stereo_wav_np(sfx_master_path, s_stem_raw * bus_safe_scale, SR)
 
     # 使用 common 唯一权威函数 compute_sfx_band_windows 持久化全量 SFX 基准，供 #20 复验
     pkg_p = pipeline_dir / "06_packaging.json"
@@ -404,6 +425,8 @@ def run_step8(
         "dual_band_ducking": dual_band_ok,
         "voice_denoised": bool(use_denoise),
         "bgm_ducking_applied": True,
+        "broll_ambient_mixed_count": broll_ambient_mixed_count,
+        "stem_bus_safe_scale": round(bus_safe_scale, 4),
         "duration_sec": round(n_samples / float(SR), 4),
     }
     write_json(pipeline_dir / "08_mix_metrics.json", out_metrics)

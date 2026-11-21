@@ -50,13 +50,12 @@
 ### STYLE_01 · 复古胶片控制台 · AI 模板展示风
 - **原片文件**：`AI剪辑12 个行业模板，老规矩全部免费开源，关注点赞.. #AI剪辑 #Vibe知识大赏 #MotionGit.mp4`（`576×1024` · `30.0 fps` · `150.0s` · `4498 帧`）
 - **所属流派**：`arch_01_tech_ui_console` | **推荐轨道**：`creator` | **适用标签**：AI工具 · 开源展示 · 多案例合集
-- **关键帧采样图谱**：[style_01_contact.jpg](keyframes/style_01_contact.jpg)
 
 | 风格谱维度 | 逐帧实测与视觉精校参数 |
 | :--- | :--- |
 | **1. 镜头时长分布** | 共 **16** 镜（硬切 8 / 微跳剪·推拉 7 / 叠化擦除 36），切镜率 **6.0/min**；前 3 秒切换 **0** 次；`min=1.00s` / `P25=2.41s` / `median=6.55s` / `mean=9.37s` / `P90=21.02s` / `max=36.47s`；分桶占比：`<1s` 占 **0.0%**，`1–2.5s` 占 **25.0%**，`>2.5s` 占 **75.0%** |
 | **2. 切点与节拍对齐率** | 切点对齐音频事件（节拍/气口句首/瞬态音效）`≤1帧` 率 **26.7%**，`≤3帧` 率 **53.3%**；纯踩 BGM 节拍（`≤2帧`）率 **13.3%**；检出 J-cut 比例 **0.0%**（中位提前 `0.0 帧`，建议 J-cut `0 帧`） |
-| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Medium.otf, NotoSansSC-Medium.ttf, STHeiti Medium.ttc`），字重 `Medium`，双语=是；1080p 基准字号 **`40px`**，垂直位置 `Y=0.80`（竖屏 `1536px`）；主色 `#FBFAEE`，关键词色 `#D2BB8C`（放大 `1.1x`）；描边 `2px #0D0C0D`，底框 `#00000000`；动效 **`fade_slide_up`**；保留标点 |
+| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Medium.otf, NotoSansSC-Medium.ttf`），字重 `Medium`，双语=是；1080p 基准字号 **`40px`**，垂直位置 `Y=0.80`（竖屏 `1536px`）；主色 `#FBFAEE`，关键词色 `#D2BB8C`（放大 `1.1x`）；描边 `2px #0D0C0D`，底框 `#00000000`；动效 **`fade_slide_up`**；保留标点 |
 | **4. 色彩统计与 LUT** | 调性：**深沉低饱和质感调**；平均亮度 `Y=43.7/255`（动态范围 `143.8`，暗部占比 `78.0%`，高光占比 `6.2%`）；饱和度 `20.5%`，色温偏移 `6.86`；Top-5 主色板 `#0D0C0D #F3F2EF #2D2B2C #504E4D #73726E`；逆向 3D LUT：[style_01.cube](luts/style_01.cube)（CSS 近似：`brightness(0.934) contrast(1.24) saturate(0.76) sepia(0.057)`） |
 | **5. 转场和音效密度** | 综合转场密度 **20.4/min**，常用手法：暗场淡入、胶片滚动切场、弹窗意见卡滑入；高频瞬态音效实测 **59.6/min**（总计 149 次，建议预算 `60/min`）；核心包装组件：胶片齿孔边框、胶囊场次进度条、圆环倒计时速度表、白底映后意见卡；内部 UI/卡片节奏：每 15-20s 切换一个行业放映场次（01 房产→03 电商→06 数码→08 情感），内部画中画以高倍速快进演示 |
 | **6. BGM 速度与混音** | 估算 BGM 速度 **103.4 BPM**（节拍显著度 `0.186`，类型 `continuous_bgm_bed`）；综合响度 **-12.6 LUFS**（LRA `3.1 LU`，真峰值 `1.1 dBTP`）；检出气口停顿 2 次（平均 `0.173s`） |
@@ -64,17 +63,14 @@
 | **8. 标题封面版式** | **版式类型**：`film_reel_console`（复古胶片齿孔放映控制台）<br>**构图网格**：深黑底色嵌双侧胶片齿孔，顶部常驻 REEL 进度与黄黑胶囊场次条，左侧场次巨数字 `01`，右侧速度表盘 `SPEED 1x`，片尾弹白底评分意见卡<br>**主副标题字号比**：`1.85x` | **高亮手法**：金黄金属渐变大字 + 胶片黄黑胶囊状态标签 |
 
 ```bash
-# 一键复刻 style_01 至 剪映草稿 / Remotion Props / HyperFrames HTML：
-python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_01 \
-  --export-jianying-template ./out_style_01/jianying_draft \
-  --export-remotion-props ./out_style_01/remotion_props.json \
-  --export-hyperframes ./out_style_01/hyperframes_comp.html
+# 在流水线中套用 style_01，或导出离线 HyperFrames 样板工程：
+python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --mode full --style-id style_01
+python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_01 --export-hyperframes ./out_style_01_hyperframes
 ```
 
 ### STYLE_02 · 极简硬核口播 · 书法炸裂封面风
 - **原片文件**：`不是所有人都有机会走进大学校园，但读书，是每个人都能选择的教育。#学历 #读书 #认知提升 #自我成长.mp4`（`576×1024` · `30.0 fps` · `56.1s` · `1680 帧`）
 - **所属流派**：`arch_04_punch_talking_head` | **推荐轨道**：`creator` | **适用标签**：个人成长 · 认知观点 · 读书金句
-- **关键帧采样图谱**：[style_02_contact.jpg](keyframes/style_02_contact.jpg)
 
 | 风格谱维度 | 逐帧实测与视觉精校参数 |
 | :--- | :--- |
@@ -88,23 +84,20 @@ python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_01 \
 | **8. 标题封面版式** | **版式类型**：`calligraphy_contrast_bottom`（下方双行毛笔撞色金句封面）<br>**构图网格**：人物占上 60% 画面，下 40% 压黑色半透渐变衬底，两行毛笔手写大字（首行纯白、次行亮金黄#EFD45F）形成强冲突<br>**主副标题字号比**：`1.05x` | **高亮手法**：全句/半句整段变亮黄并放大 1.24x + 硬切零拖沓 |
 
 ```bash
-# 一键复刻 style_02 至 剪映草稿 / Remotion Props / HyperFrames HTML：
-python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_02 \
-  --export-jianying-template ./out_style_02/jianying_draft \
-  --export-remotion-props ./out_style_02/remotion_props.json \
-  --export-hyperframes ./out_style_02/hyperframes_comp.html
+# 在流水线中套用 style_02，或导出离线 HyperFrames 样板工程：
+python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --mode full --style-id style_02
+python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_02 --export-hyperframes ./out_style_02_hyperframes
 ```
 
 ### STYLE_03 · 十亿访谈长片 · 顶部时间节点进度条风
 - **原片文件**：`专访十亿女总裁！从4000到十亿，她是如何显化的？#女性成长 #女性智慧 #职场 #访谈 #创业.mp4`（`1024×576` · `24.0 fps` · `552.7s` · `13260 帧`）
 - **所属流派**：`arch_02_high_contrast_story` | **推荐轨道**：`creator` | **适用标签**：人物访谈 · 女性创业 · 长视频留存
-- **关键帧采样图谱**：[style_03_contact.jpg](keyframes/style_03_contact.jpg)
 
 | 风格谱维度 | 逐帧实测与视觉精校参数 |
 | :--- | :--- |
 | **1. 镜头时长分布** | 共 **290** 镜（硬切 200 / 微跳剪·推拉 89 / 叠化擦除 8），切镜率 **31.4/min**；前 3 秒切换 **1** 次；`min=0.25s` / `P25=1.00s` / `median=1.58s` / `mean=1.91s` / `P90=3.63s` / `max=10.08s`；分桶占比：`<1s` 占 **23.8%**，`1–2.5s` 占 **53.4%**，`>2.5s` 占 **22.8%** |
 | **2. 切点与节拍对齐率** | 切点对齐音频事件（节拍/气口句首/瞬态音效）`≤1帧` 率 **27.3%**，`≤3帧` 率 **68.9%**；纯踩 BGM 节拍（`≤2帧`）率 **30.1%**；检出 J-cut 比例 **7.6%**（中位提前 `3.3 帧`，建议 J-cut `0 帧`） |
-| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Bold.otf, NotoSansSC-Bold.ttf, STHeiti Medium.ttc`），字重 `Bold`，双语=否；1080p 基准字号 **`46px`**，垂直位置 `Y=0.89`（竖屏 `1709px`）；主色 `#FFFFFF`，关键词色 `#F8E731`（放大 `1.35x`）；描边 `4px #141414`，底框 `#00000000`；动效 **`hard_cut`**；去掉句末标点 |
+| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Bold.otf, NotoSansSC-Bold.ttf`），字重 `Bold`，双语=否；1080p 基准字号 **`46px`**，垂直位置 `Y=0.89`（竖屏 `1709px`）；主色 `#FFFFFF`，关键词色 `#F8E731`（放大 `1.35x`）；描边 `4px #141414`，底框 `#00000000`；动效 **`hard_cut`**；去掉句末标点 |
 | **4. 色彩统计与 LUT** | 调性：**暖色高饱和门店/人物调**；平均亮度 `Y=125.1/255`（动态范围 `189.3`，暗部占比 `22.5%`，高光占比 `15.9%`）；饱和度 `21.1%`，色温偏移 `16.37`；Top-5 主色板 `#070707 #F8F7F3 #2F302E #ADB2AF #D1D2CD`；逆向 3D LUT：[style_03.cube](luts/style_03.cube)（CSS 近似：`brightness(1.023) contrast(0.975) saturate(0.76) sepia(0.136)`） |
 | **5. 转场和音效密度** | 综合转场密度 **32.2/min**，常用手法：双机位正反打硬切、单人特写切入；高频瞬态音效实测 **80.7/min**（总计 743 次，建议预算 `80/min`）；核心包装组件：顶部里程碑进度条与头像游标、全屏大白字重音花字、语气词悬浮花字(嗯~)；内部 UI/卡片节奏：552秒长访谈靠290个双机位正反打与单人特写快切维持 1.58s 中位镜长 |
 | **6. BGM 速度与混音** | 估算 BGM 速度 **111.1 BPM**（节拍显著度 `0.04`，类型 `continuous_bgm_bed`）；综合响度 **-14.2 LUFS**（LRA `4.3 LU`，真峰值 `2.0 dBTP`）；检出气口停顿 1 次（平均 `0.163s`） |
@@ -112,23 +105,20 @@ python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_02 \
 | **8. 标题封面版式** | **版式类型**：`top_milestone_bar_interview`（顶部金线里程碑进度条 + 双机位花字冲击）<br>**构图网格**：正片顶部横贯金线时间轴（4000→300万→3亿→10亿→显化心法）并随播放推进头像游标；重音时居中弹出占屏 1/3 的巨型白黄黑描边花字<br>**主副标题字号比**：`2.1x` | **高亮手法**：巨型亮黄#F8E731重黑描边花字 + 顶部里程碑节点亮起 |
 
 ```bash
-# 一键复刻 style_03 至 剪映草稿 / Remotion Props / HyperFrames HTML：
-python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_03 \
-  --export-jianying-template ./out_style_03/jianying_draft \
-  --export-remotion-props ./out_style_03/remotion_props.json \
-  --export-hyperframes ./out_style_03/hyperframes_comp.html
+# 在流水线中套用 style_03，或导出离线 HyperFrames 样板工程：
+python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --mode full --style-id style_03
+python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_03 --export-hyperframes ./out_style_03_hyperframes
 ```
 
 ### STYLE_04 · 质感拟物纸片 · AI 框架科普风
 - **原片文件**：`个人定制版-人生进化框架 #ai.mp4`（`720×1280` · `24.0 fps` · `46.9s` · `1126 帧`）
 - **所属流派**：`arch_04_punch_talking_head` | **推荐轨道**：`creator` | **适用标签**：AI提示词 · 方法论框架 · 效率工具
-- **关键帧采样图谱**：[style_04_contact.jpg](keyframes/style_04_contact.jpg)
 
 | 风格谱维度 | 逐帧实测与视觉精校参数 |
 | :--- | :--- |
 | **1. 镜头时长分布** | 共 **12** 镜（硬切 10 / 微跳剪·推拉 1 / 叠化擦除 5），切镜率 **14.1/min**；前 3 秒切换 **1** 次；`min=0.08s` / `P25=3.53s` / `median=4.08s` / `mean=3.91s` / `P90=6.28s` / `max=6.83s`；分桶占比：`<1s` 占 **16.7%**，`1–2.5s` 占 **0.0%**，`>2.5s` 占 **83.3%** |
 | **2. 切点与节拍对齐率** | 切点对齐音频事件（节拍/气口句首/瞬态音效）`≤1帧` 率 **36.4%**，`≤3帧` 率 **81.8%**；纯踩 BGM 节拍（`≤2帧`）率 **27.3%**；检出 J-cut 比例 **18.2%**（中位提前 `4.6 帧`，建议 J-cut `3 帧`） |
-| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Medium.otf, NotoSansSC-Medium.ttf, PingFang.ttc`），字重 `Medium`，双语=否；1080p 基准字号 **`48px`**，垂直位置 `Y=0.76`（竖屏 `1459px`）；主色 `#FFFFFF`，关键词色 `#FFFA87`（放大 `1.12x`）；描边 `3px #262B24`，底框 `#00000000`；动效 **`hard_cut`**；去掉句末标点 |
+| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Medium.otf, NotoSansSC-Medium.ttf`），字重 `Medium`，双语=否；1080p 基准字号 **`48px`**，垂直位置 `Y=0.76`（竖屏 `1459px`）；主色 `#FFFFFF`，关键词色 `#FFFA87`（放大 `1.12x`）；描边 `3px #262B24`，底框 `#00000000`；动效 **`hard_cut`**；去掉句末标点 |
 | **4. 色彩统计与 LUT** | 调性：**暖色高饱和门店/人物调**；平均亮度 `Y=153.7/255`（动态范围 `167.4`，暗部占比 `20.1%`，高光占比 `44.8%`）；饱和度 `19.4%`，色温偏移 `21.39`；Top-5 主色板 `#E2DFD2 #140F0D #F6F5F2 #332A2A #B4B0AC`；逆向 3D LUT：[style_04.cube](luts/style_04.cube)（CSS 近似：`brightness(1.057) contrast(1.219) saturate(0.76) sepia(0.178)`） |
 | **5. 转场和音效密度** | 综合转场密度 **20.4/min**，常用手法：硬切、纸片弹出切入、全屏对话UI切屏；高频瞬态音效实测 **75.4/min**（总计 59 次，建议预算 `75/min`）；核心包装组件：倾斜手绘黄标签、折角纸片引文卡、AI聊天模拟手机框、方框勾选清单；内部 UI/卡片节奏：虽镜头切换 12 次，但纸片卡片/清单/对话 UI 每 2-4 秒交替弹出一次 |
 | **6. BGM 速度与混音** | 估算 BGM 速度 **84.5 BPM**（节拍显著度 `0.035`，类型 `continuous_bgm_bed`）；综合响度 **-13.2 LUFS**（LRA `4.8 LU`，真峰值 `0.1 dBTP`）；检出气口停顿 0 次（平均 `0.0s`） |
@@ -136,23 +126,20 @@ python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_03 \
 | **8. 标题封面版式** | **版式类型**：`center_dual_stroke_badge`（居中红黄撞色圆角双行封面 + 拟物纸片卡）<br>**构图网格**：首帧居中红底白描边大字配下排金黄黑描边标题；正片频繁使用倾斜便签纸片、折角卡片、全屏米白模拟微信/AI对话窗+左上角圆形人物PIP<br>**主副标题字号比**：`1.25x` | **高亮手法**：红底黄字胶囊 + 米白纸张折角卡片 + 打勾清单贴纸 |
 
 ```bash
-# 一键复刻 style_04 至 剪映草稿 / Remotion Props / HyperFrames HTML：
-python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_04 \
-  --export-jianying-template ./out_style_04/jianying_draft \
-  --export-remotion-props ./out_style_04/remotion_props.json \
-  --export-hyperframes ./out_style_04/hyperframes_comp.html
+# 在流水线中套用 style_04，或导出离线 HyperFrames 样板工程：
+python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --mode full --style-id style_04
+python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_04 --export-hyperframes ./out_style_04_hyperframes
 ```
 
 ### STYLE_05 · 皱纹纸拼贴定格 · 工程图解科普风
 - **原片文件**：`买鞋自由，从加密鞋柜开始😎#收纳设计#鞋柜设计#室内设计.mp4`（`576×1024` · `24.0 fps` · `169.9s` · `4076 帧`）
 - **所属流派**：`arch_06_paper_stopmotion` | **推荐轨道**：`store` | **适用标签**：室内设计 · 收纳改造 · 尺寸科普
-- **关键帧采样图谱**：[style_05_contact.jpg](keyframes/style_05_contact.jpg)
 
 | 风格谱维度 | 逐帧实测与视觉精校参数 |
 | :--- | :--- |
 | **1. 镜头时长分布** | 共 **11** 镜（硬切 5 / 微跳剪·推拉 5 / 叠化擦除 10），切镜率 **3.5/min**；前 3 秒切换 **3** 次；`min=0.17s` / `P25=0.60s` / `median=1.50s` / `mean=15.44s` / `P90=52.62s` / `max=90.25s`；分桶占比：`<1s` 占 **36.4%**，`1–2.5s` 占 **27.3%**，`>2.5s` 占 **36.4%** |
 | **2. 切点与节拍对齐率** | 切点对齐音频事件（节拍/气口句首/瞬态音效）`≤1帧` 率 **30.0%**，`≤3帧` 率 **80.0%**；纯踩 BGM 节拍（`≤2帧`）率 **30.0%**；检出 J-cut 比例 **20.0%**（中位提前 `2.1 帧`，建议 J-cut `3 帧`） |
-| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Bold.otf, NotoSansSC-Bold.ttf, STHeiti Medium.ttc`），字重 `Bold`，双语=否；1080p 基准字号 **`48px`**，垂直位置 `Y=0.88`（竖屏 `1690px`）；主色 `#FFFFFF`，关键词色 `#FFD54F`（放大 `1.15x`）；描边 `4px #1E1E1E`，底框 `#00000000`；动效 **`fade_slide_up`**；去掉句末标点 |
+| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Bold.otf, NotoSansSC-Bold.ttf`），字重 `Bold`，双语=否；1080p 基准字号 **`48px`**，垂直位置 `Y=0.88`（竖屏 `1690px`）；主色 `#FFFFFF`，关键词色 `#FFD54F`（放大 `1.15x`）；描边 `4px #1E1E1E`，底框 `#00000000`；动效 **`fade_slide_up`**；去掉句末标点 |
 | **4. 色彩统计与 LUT** | 调性：**暖色高饱和门店/人物调**；平均亮度 `Y=185.0/255`（动态范围 `123.0`，暗部占比 `4.3%`，高光占比 `57.4%`）；饱和度 `9.1%`，色温偏移 `12.51`；Top-5 主色板 `#D2D2D1 #030302 #4E3A28 #F6F6F6 #A87950`；逆向 3D LUT：[style_05.cube](luts/style_05.cube)（CSS 近似：`brightness(1.066) contrast(1.24) saturate(0.76) sepia(0.104)`） |
 | **5. 转场和音效密度** | 综合转场密度 **7.1/min**，常用手法：实物手势定格切、纸片滑动位移；高频瞬态音效实测 **78.1/min**（总计 221 次，建议预算 `78/min`）；核心包装组件：皱纹纸全局底纹、红色CAD尺寸标尺、3D等轴测柜体图、卡通小人交互；内部 UI/卡片节奏：前 3 秒定格手势连切 3 次；中段依靠木纹柜体拆解与红色尺寸线动态延展支撑 170s 科普 |
 | **6. BGM 速度与混音** | 估算 BGM 速度 **96.8 BPM**（节拍显著度 `0.007`，类型 `continuous_bgm_bed`）；综合响度 **-10.9 LUFS**（LRA `1.9 LU`，真峰值 `-0.3 dBTP`）；检出气口停顿 1 次（平均 `0.415s`） |
@@ -160,23 +147,20 @@ python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_04 \
 | **8. 标题封面版式** | **版式类型**：`paper_cutout_hero`（褶皱纸面立体模型 + 红色工程标注线）<br>**构图网格**：浅灰褶皱纸纹贯穿全片，顶部粗黑/红底白描边大字标题，左侧标尺红字标注尺寸(11/15/18/24cm)，底部极简白字字幕<br>**主副标题字号比**：`1.45x` | **高亮手法**：红字工程尺寸标注线 + 立体纸模抽拉动效 |
 
 ```bash
-# 一键复刻 style_05 至 剪映草稿 / Remotion Props / HyperFrames HTML：
-python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_05 \
-  --export-jianying-template ./out_style_05/jianying_draft \
-  --export-remotion-props ./out_style_05/remotion_props.json \
-  --export-hyperframes ./out_style_05/hyperframes_comp.html
+# 在流水线中套用 style_05，或导出离线 HyperFrames 样板工程：
+python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --mode full --style-id style_05
+python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_05 --export-hyperframes ./out_style_05_hyperframes
 ```
 
 ### STYLE_06 · 10秒情感金句 · 衬线宋体剪影大片风
 - **原片文件**：`人这一生，有3次成长：第一次发现父母是普通人，第二次发现自己是普通人，第三次发现孩子是普通人。#心理学#个人成长#自我成长#人生智慧#情感共鸣#成长.mp4`（`1080×1920` · `30.0 fps` · `10.0s` · `299 帧`）
 - **所属流派**：`arch_05_cinema_slow_space` | **推荐轨道**：`creator` | **适用标签**：心理学 · 人生金句 · 高转发情绪短片
-- **关键帧采样图谱**：[style_06_contact.jpg](keyframes/style_06_contact.jpg)
 
 | 风格谱维度 | 逐帧实测与视觉精校参数 |
 | :--- | :--- |
 | **1. 镜头时长分布** | 共 **4** 镜（硬切 3 / 微跳剪·推拉 0 / 叠化擦除 1），切镜率 **18.0/min**；前 3 秒切换 **2** 次；`min=0.10s` / `P25=1.15s` / `median=2.32s` / `mean=2.49s` / `P90=4.60s` / `max=5.23s`；分桶占比：`<1s` 占 **25.0%**，`1–2.5s` 占 **25.0%**，`>2.5s` 占 **50.0%** |
 | **2. 切点与节拍对齐率** | 切点对齐音频事件（节拍/气口句首/瞬态音效）`≤1帧` 率 **0.0%**，`≤3帧` 率 **66.7%**；纯踩 BGM 节拍（`≤2帧`）率 **33.3%**；检出 J-cut 比例 **0.0%**（中位提前 `0.0 帧`，建议 J-cut `0 帧`） |
-| **3. 字幕样式与动效** | 字体族 **`Source Han Serif CN`**（候选：`SourceHanSerifCN-Bold.otf, NotoSerifSC-Bold.ttf, STHeiti Medium.ttc`），字重 `Bold`，双语=否；1080p 基准字号 **`78px`**，垂直位置 `Y=0.69`（竖屏 `1325px`）；主色 `#FFFFFF`，关键词色 `#F7CE77`（放大 `1.38x`）；描边 `4px #1A1A1A`，底框 `#00000000`；动效 **`hard_cut`**；去掉句末标点 |
+| **3. 字幕样式与动效** | 字体族 **`Source Han Serif CN`**（候选：`SourceHanSerifCN-Bold.otf, NotoSerifSC-Bold.ttf`），字重 `Bold`，双语=否；1080p 基准字号 **`78px`**，垂直位置 `Y=0.69`（竖屏 `1325px`）；主色 `#FFFFFF`，关键词色 `#F7CE77`（放大 `1.38x`）；描边 `4px #1A1A1A`，底框 `#00000000`；动效 **`hard_cut`**；去掉句末标点 |
 | **4. 色彩统计与 LUT** | 调性：**均衡自然高通透调**；平均亮度 `Y=192.3/255`（动态范围 `154.2`，暗部占比 `3.5%`，高光占比 `51.5%`）；饱和度 `9.0%`，色温偏移 `10.63`；Top-5 主色板 `#EEEFF0 #D0D0D2 #AFADAD #909093 #080809`；逆向 3D LUT：[style_06.cube](luts/style_06.cube)（CSS 近似：`brightness(1.066) contrast(1.24) saturate(0.76) sepia(0.089)`） |
 | **5. 转场和音效密度** | 综合转场密度 **24.0/min**，常用手法：叠化转黑白剪影、人物渐隐消散特效；高频瞬态音效实测 **72.1/min**（总计 12 次，建议预算 `72/min`）；核心包装组件：置顶常驻双行宋体标题、名牌小标签、逆光家庭剪影、行内大小字混排金句；内部 UI/卡片节奏：10秒极短结构：前 2s 人物背书，后 8s 纯剪影渐消意境动画 + 强情绪 BGM |
 | **6. BGM 速度与混音** | 估算 BGM 速度 **146.3 BPM**（节拍显著度 `0.087`，类型 `minimal_or_pure_voice`）；综合响度 **-14.4 LUFS**（LRA `2.1 LU`，真峰值 `0.7 dBTP`）；检出气口停顿 0 次（平均 `0.0s`） |
@@ -184,17 +168,14 @@ python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_05 \
 | **8. 标题封面版式** | **版式类型**：`minimal_serif_title_top`（置顶红白衬线主题 + 剪影高光句中大小字错落）<br>**构图网格**：首帧居中大字后，0.6s 起顶部常驻双行衬线红字/白字主题；正文金句采用同一行内大小字混排（核心名词放大 1.38x 如「父母」「普通」「真实」）<br>**主副标题字号比**：`1.38x` | **高亮手法**：行内关键词字号突增 1.38x + 朱红渐变「第N次」角标 |
 
 ```bash
-# 一键复刻 style_06 至 剪映草稿 / Remotion Props / HyperFrames HTML：
-python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_06 \
-  --export-jianying-template ./out_style_06/jianying_draft \
-  --export-remotion-props ./out_style_06/remotion_props.json \
-  --export-hyperframes ./out_style_06/hyperframes_comp.html
+# 在流水线中套用 style_06，或导出离线 HyperFrames 样板工程：
+python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --mode full --style-id style_06
+python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_06 --export-hyperframes ./out_style_06_hyperframes
 ```
 
 ### STYLE_07 · 商业导师书桌 · 暗金波点全屏花字风
 - **原片文件**：`创业者如何一年顶三年，苦练基本功#商业思维#创业#管理.mp4`（`576×1024` · `24.0 fps` · `126.6s` · `3038 帧`）
 - **所属流派**：`arch_04_punch_talking_head` | **推荐轨道**：`creator` | **适用标签**：商业思维 · 创业管理 · 干货拆解
-- **关键帧采样图谱**：[style_07_contact.jpg](keyframes/style_07_contact.jpg)
 
 | 风格谱维度 | 逐帧实测与视觉精校参数 |
 | :--- | :--- |
@@ -208,17 +189,14 @@ python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_06 \
 | **8. 标题封面版式** | **版式类型**：`warm_desk_keynote_pop`（暖琥珀书桌中景 + 全屏波点黑板关键词卡）<br>**构图网格**：主体固定在书堆后方（强烈橙黄品牌识别色），重点金句直接以 110px 双行巨字砸在画面中央，并频繁切全屏暗金波点剪影插画与白底工具箱表格<br>**主副标题字号比**：`1.7x` | **高亮手法**：屏中巨型双行花字 + 暗金波点剪影全屏转场 + 结构化白底表格 |
 
 ```bash
-# 一键复刻 style_07 至 剪映草稿 / Remotion Props / HyperFrames HTML：
-python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_07 \
-  --export-jianying-template ./out_style_07/jianying_draft \
-  --export-remotion-props ./out_style_07/remotion_props.json \
-  --export-hyperframes ./out_style_07/hyperframes_comp.html
+# 在流水线中套用 style_07，或导出离线 HyperFrames 样板工程：
+python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --mode full --style-id style_07
+python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_07 --export-hyperframes ./out_style_07_hyperframes
 ```
 
 ### STYLE_08 · 真实生活随拍 · 文艺双语宋体微跳剪风
 - **原片文件**：`别只盯着赛道，先想你为谁说话。 #垂直IP #价值观 #共愿 #超级个体.mp4`（`1080×1920` · `24.0 fps` · `278.2s` · `6677 帧`）
 - **所属流派**：`arch_05_cinema_slow_space` | **推荐轨道**：`creator` | **适用标签**：超级个体 · IP价值观 · 真实对话Vlog
-- **关键帧采样图谱**：[style_08_contact.jpg](keyframes/style_08_contact.jpg)
 
 | 风格谱维度 | 逐帧实测与视觉精校参数 |
 | :--- | :--- |
@@ -232,23 +210,20 @@ python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_07 \
 | **8. 标题封面版式** | **版式类型**：`candid_serif_no_cover`（无包装封面直入 · 双语宋体电影感版式）<br>**构图网格**：零花字贴纸、零彩色底框，仅在极少数核心拆解处用左中偏上竖排纯白宋体双语词条（如「人群 crowd / 生活方式 Lifestyle」）<br>**主副标题字号比**：`1.1x` | **高亮手法**：中英双语思源宋体 + 零特效音克制呼吸感 |
 
 ```bash
-# 一键复刻 style_08 至 剪映草稿 / Remotion Props / HyperFrames HTML：
-python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_08 \
-  --export-jianying-template ./out_style_08/jianying_draft \
-  --export-remotion-props ./out_style_08/remotion_props.json \
-  --export-hyperframes ./out_style_08/hyperframes_comp.html
+# 在流水线中套用 style_08，或导出离线 HyperFrames 样板工程：
+python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --mode full --style-id style_08
+python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_08 --export-hyperframes ./out_style_08_hyperframes
 ```
 
 ### STYLE_09 · 电影剪辑工作站 · 3D 胶片墙极客风
 - **原片文件**：`剪辑skill全流程。aroll-broll-包装-配音，都跑通了。 #ai创业 #自动剪辑 #ai剪辑 #ai自动剪辑.mp4`（`1280×720` · `30.0 fps` · `151.3s` · `4537 帧`）
 - **所属流派**：`arch_01_tech_ui_console` | **推荐轨道**：`creator` | **适用标签**：AI剪辑 · 影视工作流 · 工具发布
-- **关键帧采样图谱**：[style_09_contact.jpg](keyframes/style_09_contact.jpg)
 
 | 风格谱维度 | 逐帧实测与视觉精校参数 |
 | :--- | :--- |
 | **1. 镜头时长分布** | 共 **24** 镜（硬切 20 / 微跳剪·推拉 3 / 叠化擦除 20），切镜率 **9.1/min**；前 3 秒切换 **1** 次；`min=0.43s` / `P25=1.07s` / `median=2.12s` / `mean=6.30s` / `P90=7.83s` / `max=52.37s`；分桶占比：`<1s` 占 **20.8%**，`1–2.5s` 占 **37.5%**，`>2.5s` 占 **41.7%** |
 | **2. 切点与节拍对齐率** | 切点对齐音频事件（节拍/气口句首/瞬态音效）`≤1帧` 率 **30.4%**，`≤3帧` 率 **60.9%**；纯踩 BGM 节拍（`≤2帧`）率 **26.1%**；检出 J-cut 比例 **8.7%**（中位提前 `4.7 帧`，建议 J-cut `3 帧`） |
-| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Regular.otf, NotoSansSC-Regular.ttf, STHeiti Medium.ttc`），字重 `Regular`，双语=是；1080p 基准字号 **`36px`**，垂直位置 `Y=0.90`（竖屏 `1728px`）；主色 `#FCFCF6`，关键词色 `#FFD54F`（放大 `1.05x`）；描边 `2px #050505`，底框 `#00000000`；动效 **`hard_cut`**；保留标点 |
+| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Regular.otf, NotoSansSC-Regular.ttf`），字重 `Regular`，双语=是；1080p 基准字号 **`36px`**，垂直位置 `Y=0.90`（竖屏 `1728px`）；主色 `#FCFCF6`，关键词色 `#FFD54F`（放大 `1.05x`）；描边 `2px #050505`，底框 `#00000000`；动效 **`hard_cut`**；保留标点 |
 | **4. 色彩统计与 LUT** | 调性：**深沉低饱和质感调**；平均亮度 `Y=36.8/255`（动态范围 `116.4`，暗部占比 `79.9%`，高光占比 `2.6%`）；饱和度 `43.4%`，色温偏移 `10.79`；Top-5 主色板 `#0F0C09 #2F2E2B #51504D #70706D #EEF1EF`；逆向 3D LUT：[style_09.cube](luts/style_09.cube)（CSS 近似：`brightness(0.934) contrast(1.24) saturate(1.28) sepia(0.09)`） |
 | **5. 转场和音效密度** | 综合转场密度 **17.1/min**，常用手法：3D镜头穿梭、暗场UI界面切屏、VHS复古录像带叠加；高频瞬态音效实测 **69.0/min**（总计 174 次，建议预算 `69/min`）；核心包装组件：3D胶片墙、取景器REC角标、2.39:1遮幅画中画、终端CHANGELOG卡片；内部 UI/卡片节奏：BGM 120.0 BPM 节拍强度全库第一 (0.225)，硬切与特效卡片紧密呼应鼓点 |
 | **6. BGM 速度与混音** | 估算 BGM 速度 **120.0 BPM**（节拍显著度 `0.225`，类型 `continuous_bgm_bed`）；综合响度 **-11.2 LUFS**（LRA `5.6 LU`，真峰值 `2.8 dBTP`）；检出气口停顿 1 次（平均 `0.87s`） |
@@ -256,23 +231,20 @@ python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_08 \
 | **8. 标题封面版式** | **版式类型**：`cyber_film_workstation`（暗黑极客剪辑室 · 2.39:1 宽幅画中画版式）<br>**构图网格**：深黑高反差基底，穿插时间线音轨波形放大镜、右侧 5 步任务清单面板、2.39:1 电影遮幅暗场画中画与黑底绿字终端 CHANGELOG 卡片<br>**主副标题字号比**：`2.2x` | **高亮手法**：取景器 HUD 细线角标 + 等宽数字计时 + 衬线主标题 |
 
 ```bash
-# 一键复刻 style_09 至 剪映草稿 / Remotion Props / HyperFrames HTML：
-python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_09 \
-  --export-jianying-template ./out_style_09/jianying_draft \
-  --export-remotion-props ./out_style_09/remotion_props.json \
-  --export-hyperframes ./out_style_09/hyperframes_comp.html
+# 在流水线中套用 style_09，或导出离线 HyperFrames 样板工程：
+python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --mode full --style-id style_09
+python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_09 --export-hyperframes ./out_style_09_hyperframes
 ```
 
 ### STYLE_10 · 暗黑幕后工作室 · 右下固定画中画教程风
 - **原片文件**：`口播动效包装，从0-1完整教程分享！ 一直在催催催催麻了。紧急给你们做出来了！ 看视频吧～ #视频剪辑 #口播剪辑 #动效设计 #后期剪辑 #ai教程 #aiagent #自动剪辑 #视频制作.mp4`（`960×544` · `25.0 fps` · `229.3s` · `5732 帧`）
 - **所属流派**：`arch_01_tech_ui_console` | **推荐轨道**：`creator` | **适用标签**：后期教程 · 口播动效 · Agent工作流
-- **关键帧采样图谱**：[style_10_contact.jpg](keyframes/style_10_contact.jpg)
 
 | 风格谱维度 | 逐帧实测与视觉精校参数 |
 | :--- | :--- |
 | **1. 镜头时长分布** | 共 **11** 镜（硬切 8 / 微跳剪·推拉 2 / 叠化擦除 47），切镜率 **2.6/min**；前 3 秒切换 **0** 次；`min=0.04s` / `P25=6.56s` / `median=17.76s` / `mean=20.84s` / `P90=41.68s` / `max=51.68s`；分桶占比：`<1s` 占 **9.1%**，`1–2.5s` 占 **0.0%**，`>2.5s` 占 **90.9%** |
 | **2. 切点与节拍对齐率** | 切点对齐音频事件（节拍/气口句首/瞬态音效）`≤1帧` 率 **10.0%**，`≤3帧` 率 **60.0%**；纯踩 BGM 节拍（`≤2帧`）率 **30.0%**；检出 J-cut 比例 **0.0%**（中位提前 `0.0 帧`，建议 J-cut `0 帧`） |
-| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Bold.otf, NotoSansSC-Bold.ttf, STHeiti Medium.ttc`），字重 `Bold`，双语=否；1080p 基准字号 **`44px`**，垂直位置 `Y=0.91`（竖屏 `1747px`）；主色 `#FFFEFB`，关键词色 `#FFD54F`（放大 `1.12x`）；描边 `3px #080406`，底框 `#00000000`；动效 **`hard_cut`**；去掉句末标点 |
+| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Bold.otf, NotoSansSC-Bold.ttf`），字重 `Bold`，双语=否；1080p 基准字号 **`44px`**，垂直位置 `Y=0.91`（竖屏 `1747px`）；主色 `#FFFEFB`，关键词色 `#FFD54F`（放大 `1.12x`）；描边 `3px #080406`，底框 `#00000000`；动效 **`hard_cut`**；去掉句末标点 |
 | **4. 色彩统计与 LUT** | 调性：**深沉低饱和质感调**；平均亮度 `Y=47.4/255`（动态范围 `125.2`，暗部占比 `68.4%`，高光占比 `1.8%`）；饱和度 `26.1%`，色温偏移 `5.18`；Top-5 主色板 `#0E0D0E #2E2B2C #746E6E #6B574E #50332D`；逆向 3D LUT：[style_10.cube](luts/style_10.cube)（CSS 近似：`brightness(0.934) contrast(1.24) saturate(0.932) sepia(0.043)`） |
 | **5. 转场和音效密度** | 综合转场密度 **14.9/min**，常用手法：中心样片放大推入、暗黑工作台UI交叉叠化；高频瞬态音效实测 **78.2/min**（总计 299 次，建议预算 `78/min`）；核心包装组件：右下圆角主播PIP、黑胶旋转角标、声波时间轴图示、三栏方案对比卡；内部 UI/卡片节奏：机位大结构仅切换 11 次，但中央 UI 演示框每 3-5 秒切换波形/对比图/聊天窗 |
 | **6. BGM 速度与混音** | 估算 BGM 速度 **93.8 BPM**（节拍显著度 `0.109`，类型 `continuous_bgm_bed`）；综合响度 **-13.7 LUFS**（LRA `3.1 LU`，真峰值 `-0.6 dBTP`）；检出气口停顿 0 次（平均 `0.0s`） |
@@ -280,17 +252,14 @@ python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_09 \
 | **8. 标题封面版式** | **版式类型**：`dark_studio_pip_bottom_right`（暗黑工作台 + 右下角常驻主播画中画）<br>**构图网格**：主画面区（左/中 80%）专门用来展示音频波形、三栏字体对照卡、深色对话气泡窗口，右下角锚定主播陪伴感<br>**主副标题字号比**：`2.4x` | **高亮手法**：背后巨型白字「幕后」+ 三栏蓝色卡片对照 |
 
 ```bash
-# 一键复刻 style_10 至 剪映草稿 / Remotion Props / HyperFrames HTML：
-python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_10 \
-  --export-jianying-template ./out_style_10/jianying_draft \
-  --export-remotion-props ./out_style_10/remotion_props.json \
-  --export-hyperframes ./out_style_10/hyperframes_comp.html
+# 在流水线中套用 style_10，或导出离线 HyperFrames 样板工程：
+python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --mode full --style-id style_10
+python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_10 --export-hyperframes ./out_style_10_hyperframes
 ```
 
 ### STYLE_11 · 人物前景遮罩巨字 · 高级感杂志教程风
 - **原片文件**：`如何才能让视频包装有“高级感”：1字体越少越好；2少用字体效果；3每个字放到每个地方都是有原因的！#高级感 #视频包装 #审美分享 #新片场.mp4`（`1280×720` · `24.0 fps` · `156.3s` · `3752 帧`）
 - **所属流派**：`arch_03_editorial_matte_depth` | **推荐轨道**：`creator` | **适用标签**：审美分享 · 剪辑包装 · 高级感设计
-- **关键帧采样图谱**：[style_11_contact.jpg](keyframes/style_11_contact.jpg)
 
 | 风格谱维度 | 逐帧实测与视觉精校参数 |
 | :--- | :--- |
@@ -304,23 +273,20 @@ python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_10 \
 | **8. 标题封面版式** | **版式类型**：`depth_matte_behind_subject`（人物前景遮罩穿插巨字 + 极简高反差全屏卡）<br>**构图网格**：利用人物抠像遮罩将巨字压在人物背后；中段穿插深红渐变留白大字卡（左上「到底」+ 底部极小字罗列对比）、9宫格网页墙、2.39:1电影片断<br>**主副标题字号比**：`3.0x` | **高亮手法**：珊瑚红#E57373与琥珀黄#F4AB09巨型无描边净字 + 极简负空间 |
 
 ```bash
-# 一键复刻 style_11 至 剪映草稿 / Remotion Props / HyperFrames HTML：
-python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_11 \
-  --export-jianying-template ./out_style_11/jianying_draft \
-  --export-remotion-props ./out_style_11/remotion_props.json \
-  --export-hyperframes ./out_style_11/hyperframes_comp.html
+# 在流水线中套用 style_11，或导出离线 HyperFrames 样板工程：
+python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --mode full --style-id style_11
+python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_11 --export-hyperframes ./out_style_11_hyperframes
 ```
 
 ### STYLE_12 · Apple/Notion 极简白底 · 人像抠像卡片风
 - **原片文件**：`如何用workbuddy全自动剪辑视频？ #三毛算力 #workbuddy #AI自动剪视频 #chatcut ##codex.mp4`（`720×1280` · `24.0 fps` · `224.8s` · `5395 帧`）
 - **所属流派**：`arch_03_editorial_matte_depth` | **推荐轨道**：`creator` | **适用标签**：AI工具教学 · 极简PPT风 · 效率办公
-- **关键帧采样图谱**：[style_12_contact.jpg](keyframes/style_12_contact.jpg)
 
 | 风格谱维度 | 逐帧实测与视觉精校参数 |
 | :--- | :--- |
 | **1. 镜头时长分布** | 共 **4** 镜（硬切 0 / 微跳剪·推拉 3 / 叠化擦除 1），切镜率 **0.8/min**；前 3 秒切换 **1** 次；`min=0.08s` / `P25=30.05s` / `median=65.81s` / `mean=56.20s` / `P90=92.63s` / `max=93.08s`；分桶占比：`<1s` 占 **25.0%**，`1–2.5s` 占 **0.0%**，`>2.5s` 占 **75.0%** |
 | **2. 切点与节拍对齐率** | 切点对齐音频事件（节拍/气口句首/瞬态音效）`≤1帧` 率 **66.7%**，`≤3帧` 率 **100.0%**；纯踩 BGM 节拍（`≤2帧`）率 **33.3%**；检出 J-cut 比例 **0.0%**（中位提前 `0.0 帧`，建议 J-cut `0 帧`） |
-| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Bold.otf, NotoSansSC-Bold.ttf, STHeiti Medium.ttc`），字重 `Bold`，双语=否；1080p 基准字号 **`54px`**，垂直位置 `Y=0.77`（竖屏 `1478px`）；主色 `#FFFFFF`，关键词色 `#FFD54F`（放大 `1.12x`）；描边 `4px #2A2A2A`，底框 `#00000000`；动效 **`hard_cut`**；去掉句末标点 |
+| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Bold.otf, NotoSansSC-Bold.ttf`），字重 `Bold`，双语=否；1080p 基准字号 **`54px`**，垂直位置 `Y=0.77`（竖屏 `1478px`）；主色 `#FFFFFF`，关键词色 `#FFD54F`（放大 `1.12x`）；描边 `4px #2A2A2A`，底框 `#00000000`；动效 **`hard_cut`**；去掉句末标点 |
 | **4. 色彩统计与 LUT** | 调性：**均衡自然高通透调**；平均亮度 `Y=224.7/255`（动态范围 `125.6`，暗部占比 `2.8%`，高光占比 `85.4%`）；饱和度 `5.1%`，色温偏移 `0.97`；Top-5 主色板 `#F1F3F5 #D0D6CE #EEC8B2 #D3AC94 #2F2D2A`；逆向 3D LUT：[style_12.cube](luts/style_12.cube)（CSS 近似：`brightness(1.066) contrast(1.24) saturate(0.76) sepia(0.008)`） |
 | **5. 转场和音效密度** | 综合转场密度 **1.1/min**，常用手法：卡片内容平滑替换、人像微缩放；高频瞬态音效实测 **30.4/min**（总计 114 次，建议预算 `40/min`）；核心包装组件：红竖线眉标、Notion风白底要点列表、过去vs现在左右对比卡、流程图箭头；内部 UI/卡片节奏：背景/机位稳定（仅4次全局景别变更），全靠上半屏白底卡片内逐条动态列表保持高留存 |
 | **6. BGM 速度与混音** | 估算 BGM 速度 **146.3 BPM**（节拍显著度 `0.152`，类型 `continuous_bgm_bed`）；综合响度 **-14.5 LUFS**（LRA `4.0 LU`，真峰值 `1.6 dBTP`）；检出气口停顿 1 次（平均 `0.19s`） |
@@ -328,23 +294,20 @@ python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_11 \
 | **8. 标题封面版式** | **版式类型**：`apple_notion_light_top`（极净浅灰白底 · 上方结构化 Notion 卡片 + 下方人像抠像）<br>**构图网格**：画幅上下严密分区：Y:[0.10, 0.48] 为动态卡片舞台（红竖线分类眉标 + 黑粗标题 + 圆点要点表 + 左右对比卡`过去vs现在`），Y:[0.48, 1.0] 为半身抠像口播<br>**主副标题字号比**：`1.6x` | **高亮手法**：朱红竖线眉标(#D9383A) + 红色胶囊状态徽章 + 白底微阴影方卡 |
 
 ```bash
-# 一键复刻 style_12 至 剪映草稿 / Remotion Props / HyperFrames HTML：
-python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_12 \
-  --export-jianying-template ./out_style_12/jianying_draft \
-  --export-remotion-props ./out_style_12/remotion_props.json \
-  --export-hyperframes ./out_style_12/hyperframes_comp.html
+# 在流水线中套用 style_12，或导出离线 HyperFrames 样板工程：
+python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --mode full --style-id style_12
+python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_12 --export-hyperframes ./out_style_12_hyperframes
 ```
 
 ### STYLE_13 · 建筑空间漫游 · 电影感慢调奢享风
 - **原片文件**：`孙建亚最新展厅RARA HOUSE @汪先生RARA.mp4`（`720×1280` · `30.0 fps` · `473.4s` · `14203 帧`）
 - **所属流派**：`arch_05_cinema_slow_space` | **推荐轨道**：`store` | **适用标签**：高端室内设计 · 展厅探店 · 奢华家居
-- **关键帧采样图谱**：[style_13_contact.jpg](keyframes/style_13_contact.jpg)
 
 | 风格谱维度 | 逐帧实测与视觉精校参数 |
 | :--- | :--- |
 | **1. 镜头时长分布** | 共 **34** 镜（硬切 28 / 微跳剪·推拉 5 / 叠化擦除 70），切镜率 **4.2/min**；前 3 秒切换 **0** 次；`min=0.67s` / `P25=1.53s` / `median=1.57s` / `mean=13.93s` / `P90=40.75s` / `max=98.57s`；分桶占比：`<1s` 占 **11.8%**，`1–2.5s` 占 **50.0%**，`>2.5s` 占 **38.2%** |
 | **2. 切点与节拍对齐率** | 切点对齐音频事件（节拍/气口句首/瞬态音效）`≤1帧` 率 **27.3%**，`≤3帧` 率 **72.7%**；纯踩 BGM 节拍（`≤2帧`）率 **21.2%**；检出 J-cut 比例 **6.1%**（中位提前 `4.0 帧`，建议 J-cut `0 帧`） |
-| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Regular.otf, PingFang.ttc, NotoSansSC-Regular.ttf`），字重 `Regular`，双语=否；1080p 基准字号 **`46px`**，垂直位置 `Y=0.72`（竖屏 `1382px`）；主色 `#FAFFFA`，关键词色 `#FFD54F`（放大 `1.08x`）；描边 `2px #26251C`，底框 `#00000000`；动效 **`hard_cut`**；去掉句末标点 |
+| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Regular.otf, NotoSansSC-Regular.ttf`），字重 `Regular`，双语=否；1080p 基准字号 **`46px`**，垂直位置 `Y=0.72`（竖屏 `1382px`）；主色 `#FAFFFA`，关键词色 `#FFD54F`（放大 `1.08x`）；描边 `2px #26251C`，底框 `#00000000`；动效 **`hard_cut`**；去掉句末标点 |
 | **4. 色彩统计与 LUT** | 调性：**深沉低饱和质感调**；平均亮度 `Y=95.9/255`（动态范围 `170.8`，暗部占比 `25.8%`，高光占比 `5.0%`）；饱和度 `33.8%`，色温偏移 `26.52`；Top-5 主色板 `#0E0D0B #704E33 #8E6D50 #91948D #31302B`；逆向 3D LUT：[style_13.cube](luts/style_13.cube)（CSS 近似：`brightness(0.972) contrast(1.194) saturate(1.207) sepia(0.221)`） |
 | **5. 转场和音效密度** | 综合转场密度 **13.1/min**，常用手法：缓慢推拉长镜、柔和叠化；高频瞬态音效实测 **76.9/min**（总计 607 次，建议预算 `20/min`）；核心包装组件：极简细字投影字幕；内部 UI/卡片节奏：7分53秒深度漫游（34个大场切换，包含70次平滑叠化/空间缓推运镜），95.2 BPM 舒缓氛围乐 |
 | **6. BGM 速度与混音** | 估算 BGM 速度 **95.2 BPM**（节拍显著度 `0.031`，类型 `soft_ambient_bgm`）；综合响度 **-14.9 LUFS**（LRA `8.1 LU`，真峰值 `-0.7 dBTP`）；检出气口停顿 4 次（平均 `0.205s`） |
@@ -352,47 +315,41 @@ python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_12 \
 | **8. 标题封面版式** | **版式类型**：`architectural_no_overlay`（零遮挡实景长镜 · 电影字幕极简版式）<br>**构图网格**：全片无封面大字板、无弹幕花字，所有视觉空间留给暖木石材光影与慢推运镜；字幕小号细字投影居下，不挡空间结构<br>**主副标题字号比**：`1.0x` | **高亮手法**：暖木温润调色(warmth=26.5) + 极简无框细投影字幕 |
 
 ```bash
-# 一键复刻 style_13 至 剪映草稿 / Remotion Props / HyperFrames HTML：
-python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_13 \
-  --export-jianying-template ./out_style_13/jianying_draft \
-  --export-remotion-props ./out_style_13/remotion_props.json \
-  --export-hyperframes ./out_style_13/hyperframes_comp.html
+# 在流水线中套用 style_13，或导出离线 HyperFrames 样板工程：
+python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --mode full --style-id style_13
+python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_13 --export-hyperframes ./out_style_13_hyperframes
 ```
 
-### STYLE_14 · 毛玻璃卡片叠映 · 居家创始人信任风
-- **原片文件**：`家是用来享受的，不是用来忍受的 #家是用来享受的 #MAJOR名家 #墙面家的体面 #家装设计 #治愈系家居.mp4`（`720×1280` · `24.0 fps` · `259.3s` · `6224 帧`）
-- **所属流派**：`arch_04_punch_talking_head` | **推荐轨道**：`store` | **适用标签**：门店创始人 · 家居服务 · 口碑转化
-- **关键帧采样图谱**：[style_14_contact.jpg](keyframes/style_14_contact.jpg)
+### STYLE_14 · 剪映门店原生爆款风 · 居中双字号暖黄高亮（默认）
+- **标杆来源**：剪映实操标杆工程《11月14日延期》（`1080×1920` · `30.0 fps` · `68.5s` · `25 轨` · `49 字幕`）与居家创始人信任样本融合升级，已设为门店轨默认旗舰输出风格谱
+- **所属流派**：`arch_04_punch_talking_head` | **推荐轨道**：`store` | **适用标签**：实体门店 · 真人口播 · 实拍特写 · 信任转化
 
 | 风格谱维度 | 逐帧实测与视觉精校参数 |
 | :--- | :--- |
-| **1. 镜头时长分布** | 共 **25** 镜（硬切 16 / 微跳剪·推拉 8 / 叠化擦除 24），切镜率 **5.5/min**；前 3 秒切换 **0** 次；`min=1.00s` / `P25=4.46s` / `median=8.71s` / `mean=10.37s` / `P90=21.71s` / `max=33.38s`；分桶占比：`<1s` 占 **0.0%**，`1–2.5s` 占 **12.0%**，`>2.5s` 占 **88.0%** |
-| **2. 切点与节拍对齐率** | 切点对齐音频事件（节拍/气口句首/瞬态音效）`≤1帧` 率 **37.5%**，`≤3帧` 率 **91.7%**；纯踩 BGM 节拍（`≤2帧`）率 **45.8%**；检出 J-cut 比例 **0.0%**（中位提前 `0.0 帧`，建议 J-cut `0 帧`） |
-| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Medium.otf, NotoSansSC-Medium.ttf, STHeiti Medium.ttc`），字重 `Medium`，双语=否；1080p 基准字号 **`50px`**，垂直位置 `Y=0.74`（竖屏 `1421px`）；主色 `#FFFFFF`，关键词色 `#FFD54F`（放大 `1.15x`）；描边 `3px #2B3242`，底框 `#00000000`；动效 **`fade_slide_up`**；去掉句末标点 |
-| **4. 色彩统计与 LUT** | 调性：**均衡自然高通透调**；平均亮度 `Y=142.8/255`（动态范围 `179.7`，暗部占比 `8.8%`，高光占比 `28.7%`）；饱和度 `20.5%`，色温偏移 `0.9`；Top-5 主色板 `#E8ECED #35476E #D1D3D3 #2B3551 #514E51`；逆向 3D LUT：[style_14.cube](luts/style_14.cube)（CSS 近似：`brightness(1.046) contrast(1.135) saturate(0.76) sepia(0.008)`） |
-| **5. 转场和音效密度** | 综合转场密度 **11.1/min**，常用手法：背景高斯虚化过渡、圆角图条连续弹窗；高频瞬态音效实测 **94.6/min**（总计 409 次，建议预算 `92/min`）；核心包装组件：宋体顶部渐显标题、细字创始人名牌、4连横条实拍图卡、毛玻璃02大数字卡；内部 UI/卡片节奏：切点/卡片弹出与 120 BPM 音频事件对齐率高达 91.7%，音效密度 94.6/min 全库最高 |
-| **6. BGM 速度与混音** | 估算 BGM 速度 **120.0 BPM**（节拍显著度 `0.037`，类型 `continuous_bgm_bed`）；综合响度 **-12.9 LUFS**（LRA `3.7 LU`，真峰值 `-0.6 dBTP`）；检出气口停顿 0 次（平均 `0.0s`） |
-| **7. 开头黄金 3–5 秒** | **时序拆解**：0.0s 顶部渐显优雅白色宋体标题「一个家 / 住了几年」+ 胸前创始人细字名牌 → 1.55s~2.65s 下半屏人物背景虚化，上半屏随口播节奏连弹 4 条圆角发霉开裂墙面实拍对比卡<br>**钩子公式**：共鸣痛点场景具象化 + 连续4图强视觉证据 | **首帧信息密度**：高（创始人稳重坐姿 + 顶部宋体主题 + 快速弹出的痛点图卡） |
-| **8. 标题封面版式** | **版式类型**：`frosted_top_cards_founder`（顶部渐显宋体主题 + 半屏毛玻璃实拍对比图卡）<br>**构图网格**：利用人物上方大片干净窗帘留白作为实拍B-roll卡片展示舞台，结合深灰毛玻璃背景大数字章节页（如 `02 能力二`）做结构清晰分段<br>**主副标题字号比**：`1.65x` | **高亮手法**：圆角横向对比图条 + 毛玻璃叠层大数字章节卡 |
+| **1. 镜头时长分布** | **24 主口播 + 21 特写补镜**（零缝紧剪，B-roll 覆盖占比 **53.3%**）；主口播中位 **1.87s** / 特写补镜中位 **1.67s**；前 3 秒至少 2 次切镜，强锁定景别交替与运镜防撞墙 |
+| **2. 切点与节拍对齐率** | 切点对齐音频事件 `≤3帧` 率 **91.7%**；默认 J-cut `3 帧` 声先入画，高语义物证切点自动启用 `-3 帧` 真 L-cut |
+| **3. 字幕样式与动效** | 字体族 **`Alimama ShuHeiTi`**（候选：`AlimamaShuHeiTi-Bold.otf, SourceHanSansCN-Bold.otf, NotoSansSC-Bold.ttf`），无底框 4px 纯黑描边；1080p 基准字号 **`62px`**，关键词放大 **`1.133x`（70px）** 暖金 **`#FFE28A`**；绝对水平正中 **`X=540px`**（对称带 `[220, 860]` 宽 `640px`），基准 **`Y=1310px` (`0.682`)**；动效 **`pop_subtle`**，单行上限 10 字 |
+| **4. 色彩统计与 LUT** | 调性：**均衡自然高通透调**；全人脸 BT.709 肤色保护闭环；逆向 `17³` 3D LUT：[style_14.cube](luts/style_14.cube) |
+| **5. 转场和音效密度** | 无底框高冲击花字（多区排版防堆叠）+ 片尾召唤大字；CC0 真实物理音效实测 **24/min**（峰值对齐切点）+ 特写镜保留原片现场动作声轻混（`-18dB`） |
+| **6. BGM 速度与混音** | 支持 **开场铺垫 → 正文主旋律** 双段 CC0 真实录制 BGM 丝滑切换（`style_14_bgm.m4a`，`120 BPM`）；综合响度 **`-14.0 ±1.5 LUFS`**，三轨总线防削波 |
+| **7. 开头黄金 3–5 秒** | **时序拆解**：0.0s 真人近景直入冲突或具体事件 → 前 3 秒内快速切入实拍细节特写 + 无底框重点花字强化视觉停留 |
+| **8. 标题封面版式** | **版式类型**：`jianying_poster_4zone`（顶部引语 `Y≥262` 防 3:4 裁切 + 主视觉巨字 + 倾斜亮色贴纸 + 可选人物前景压字），180px 主页缩略实测对比度达标 |
 
 ```bash
-# 一键复刻 style_14 至 剪映草稿 / Remotion Props / HyperFrames HTML：
-python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_14 \
-  --export-jianying-template ./out_style_14/jianying_draft \
-  --export-remotion-props ./out_style_14/remotion_props.json \
-  --export-hyperframes ./out_style_14/hyperframes_comp.html
+# 在流水线中套用 style_14（门店轨默认），或导出离线 HyperFrames 样板工程：
+python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --track store --mode full --style-id style_14
+python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_14 --export-hyperframes ./out_style_14_hyperframes
 ```
 
 ### STYLE_15 · AI Agent 流程导航 · 工牌/账单小票风
 - **原片文件**：`把所有权限交给 AI，让它自己做一期口播视频：文案、配音、数字人、动效全由它完成。片尾算了笔账：会员之外，真正多花的只有几毛配音费。总有人说我的视频像数字人，今天我把我真正的数字人请出来。 #AI视频.mp4`（`1280×720` · `24.0 fps` · `123.3s` · `2959 帧`）
 - **所属流派**：`arch_01_tech_ui_console` | **推荐轨道**：`creator` | **适用标签**：数字人 · AI全自动 · 工作流复盘
-- **关键帧采样图谱**：[style_15_contact.jpg](keyframes/style_15_contact.jpg)
 
 | 风格谱维度 | 逐帧实测与视觉精校参数 |
 | :--- | :--- |
 | **1. 镜头时长分布** | 共 **11** 镜（硬切 10 / 微跳剪·推拉 0 / 叠化擦除 18），切镜率 **4.9/min**；前 3 秒切换 **0** 次；`min=0.25s` / `P25=4.96s` / `median=11.71s` / `mean=11.21s` / `P90=22.29s` / `max=27.46s`；分桶占比：`<1s` 占 **18.2%**，`1–2.5s` 占 **0.0%**，`>2.5s` 占 **81.8%** |
 | **2. 切点与节拍对齐率** | 切点对齐音频事件（节拍/气口句首/瞬态音效）`≤1帧` 率 **80.0%**，`≤3帧` 率 **90.0%**；纯踩 BGM 节拍（`≤2帧`）率 **60.0%**；检出 J-cut 比例 **0.0%**（中位提前 `0.0 帧`，建议 J-cut `0 帧`） |
-| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Bold.otf, NotoSansSC-Bold.ttf, STHeiti Medium.ttc`），字重 `Bold`，双语=否；1080p 基准字号 **`40px`**，垂直位置 `Y=0.90`（竖屏 `1728px`）；主色 `#FBFFFE`，关键词色 `#FBE088`（放大 `1.15x`）；描边 `3px #1E221D`，底框 `#00000000`；动效 **`pop_spring`**；去掉句末标点 |
+| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Bold.otf, NotoSansSC-Bold.ttf`），字重 `Bold`，双语=否；1080p 基准字号 **`40px`**，垂直位置 `Y=0.90`（竖屏 `1728px`）；主色 `#FBFFFE`，关键词色 `#FBE088`（放大 `1.15x`）；描边 `3px #1E221D`，底框 `#00000000`；动效 **`pop_spring`**；去掉句末标点 |
 | **4. 色彩统计与 LUT** | 调性：**暗黑高对比科技调**；平均亮度 `Y=84.3/255`（动态范围 `186.0`，暗部占比 `49.1%`，高光占比 `9.7%`）；饱和度 `29.7%`，色温偏移 `6.84`；Top-5 主色板 `#0D1013 #8F8E8F #F5F5EE #71706F #302D2E`；逆向 3D LUT：[style_15.cube](luts/style_15.cube)（CSS 近似：`brightness(0.934) contrast(0.966) saturate(1.061) sepia(0.057)`） |
 | **5. 转场和音效密度** | 综合转场密度 **13.6/min**，常用手法：工作流步骤高亮跳转、人物居中缩入左下PIP；高频瞬态音效实测 **72.0/min**（总计 148 次，建议预算 `72/min`）；核心包装组件：顶部步骤条导航、黄色工牌吊绳、深色终端清单、制片小票账单UI；内部 UI/卡片节奏：音频事件 1 帧精确对齐率 80.0%（全库最高！），3 帧对齐率 90.0%，完美践行以音定画 |
 | **6. BGM 速度与混音** | 估算 BGM 速度 **162.2 BPM**（节拍显著度 `0.036`，类型 `soft_ambient_bgm`）；综合响度 **-13.0 LUFS**（LRA `2.6 LU`，真峰值 `-0.6 dBTP`）；检出气口停顿 23 次（平均 `0.368s`） |
@@ -400,23 +357,20 @@ python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_14 \
 | **8. 标题封面版式** | **版式类型**：`agent_workflow_step_bar`（顶部步骤条进度导航 + 拟物工牌与制片小票 UI）<br>**构图网格**：顶部全时展示工作流当前进度胶囊，中段左下方固定方框口播画中画，主区展示深色终端卡片、高亮流程表格与结尾白底`制片小票`账单清单<br>**主副标题字号比**：`2.6x` | **高亮手法**：亮黄#FBE088粗字黑描边 + 挂绳工牌卡 + 制片账单小票 |
 
 ```bash
-# 一键复刻 style_15 至 剪映草稿 / Remotion Props / HyperFrames HTML：
-python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_15 \
-  --export-jianying-template ./out_style_15/jianying_draft \
-  --export-remotion-props ./out_style_15/remotion_props.json \
-  --export-hyperframes ./out_style_15/hyperframes_comp.html
+# 在流水线中套用 style_15，或导出离线 HyperFrames 样板工程：
+python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --mode full --style-id style_15
+python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_15 --export-hyperframes ./out_style_15_hyperframes
 ```
 
 ### STYLE_16 · 商业悬疑纪实 · 撕纸拍立得拼贴风
 - **原片文件**：`被恒大坑的最惨的大佬，遭全网悬赏财产线索！#南通三建 #施工行业#黄裕辉 #恒大.mp4`（`576×1024` · `30.0 fps` · `313.8s` · `9413 帧`）
 - **所属流派**：`arch_02_high_contrast_story` | **推荐轨道**：`creator` | **适用标签**：财经深度 · 企业兴衰 · 商业人物
-- **关键帧采样图谱**：[style_16_contact.jpg](keyframes/style_16_contact.jpg)
 
 | 风格谱维度 | 逐帧实测与视觉精校参数 |
 | :--- | :--- |
 | **1. 镜头时长分布** | 共 **118** 镜（硬切 95 / 微跳剪·推拉 22 / 叠化擦除 13），切镜率 **22.4/min**；前 3 秒切换 **1** 次；`min=0.07s` / `P25=1.53s` / `median=2.20s` / `mean=2.66s` / `P90=5.08s` / `max=11.33s`；分桶占比：`<1s` 占 **10.2%**，`1–2.5s` 占 **52.5%**，`>2.5s` 占 **37.3%** |
 | **2. 切点与节拍对齐率** | 切点对齐音频事件（节拍/气口句首/瞬态音效）`≤1帧` 率 **37.6%**，`≤3帧` 率 **76.1%**；纯踩 BGM 节拍（`≤2帧`）率 **21.4%**；检出 J-cut 比例 **12.8%**（中位提前 `2.8 帧`，建议 J-cut `3 帧`） |
-| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Bold.otf, NotoSansSC-Bold.ttf, STHeiti Medium.ttc`），字重 `Bold`，双语=否；1080p 基准字号 **`48px`**，垂直位置 `Y=0.84`（竖屏 `1613px`）；主色 `#FFF8F3`，关键词色 `#E1A187`（放大 `1.25x`）；描边 `3px #26150E`，底框 `#00000000`；动效 **`hard_cut`**；去掉句末标点 |
+| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Bold.otf, NotoSansSC-Bold.ttf`），字重 `Bold`，双语=否；1080p 基准字号 **`48px`**，垂直位置 `Y=0.84`（竖屏 `1613px`）；主色 `#FFF8F3`，关键词色 `#E1A187`（放大 `1.25x`）；描边 `3px #26150E`，底框 `#00000000`；动效 **`hard_cut`**；去掉句末标点 |
 | **4. 色彩统计与 LUT** | 调性：**深沉低饱和质感调**；平均亮度 `Y=100.6/255`（动态范围 `179.3`，暗部占比 `28.0%`，高光占比 `8.9%`）；饱和度 `25.2%`，色温偏移 `7.45`；Top-5 主色板 `#0C0B0B #302E2F #514F4D #B4B2B0 #D0CECC`；逆向 3D LUT：[style_16.cube](luts/style_16.cube)（CSS 近似：`brightness(0.978) contrast(1.138) saturate(0.9) sepia(0.062)`） |
 | **5. 转场和音效密度** | 综合转场密度 **24.9/min**，常用手法：航拍转拍立得画中画、锯齿撕纸分屏、报刊全屏章节卡；高频瞬态音效实测 **89.7/min**（总计 469 次，建议预算 `88/min`）；核心包装组件：复古拍立得边框、锯齿撕纸上下分屏、报刊衬线章节卡、红条数据标；内部 UI/卡片节奏：5分13秒共 118 镜（med=2.20s），音效密度高达 89.7/min，全程营造调查纪录片紧张感 |
 | **6. BGM 速度与混音** | 估算 BGM 速度 **109.1 BPM**（节拍显著度 `0.149`，类型 `continuous_bgm_bed`）；综合响度 **-12.3 LUFS**（LRA `2.7 LU`，真峰值 `-0.7 dBTP`）；检出气口停顿 1 次（平均 `0.213s`） |
@@ -424,23 +378,20 @@ python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_15 \
 | **8. 标题封面版式** | **版式类型**：`polaroid_torn_paper_finance`（拍立得画中画 + 报刊撕纸拼贴）<br>**构图网格**：混合使用复古棕色拍立得边框、白边锯齿撕纸上下分拼贴、米白报刊衬线章节卡（`四面楚歌 UNDER SIEGE`）与红色数据柱条<br>**主副标题字号比**：`2.4x` | **高亮手法**：超大白色数字`360亿` + 朱红报刊衬线标题 + 锯齿撕纸分割线 |
 
 ```bash
-# 一键复刻 style_16 至 剪映草稿 / Remotion Props / HyperFrames HTML：
-python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_16 \
-  --export-jianying-template ./out_style_16/jianying_draft \
-  --export-remotion-props ./out_style_16/remotion_props.json \
-  --export-hyperframes ./out_style_16/hyperframes_comp.html
+# 在流水线中套用 style_16，或导出离线 HyperFrames 样板工程：
+python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --mode full --style-id style_16
+python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_16 --export-hyperframes ./out_style_16_hyperframes
 ```
 
 ### STYLE_17 · 深蓝 SaaS 演示 · 右下圆角画中画风
 - **原片文件**：`视频-AI自动剪！🎬 给自己找个AI助手！还可以帮你梳理思路！ 提需求、提意见、拿成片，视频和封面一键搞定！ #闹闹带你玩AI #AI剪辑 #房产经纪人.mp4`（`720×1280` · `24.0 fps` · `79.8s` · `1916 帧`）
 - **所属流派**：`arch_01_tech_ui_console` | **推荐轨道**：`creator` | **适用标签**：AI助手 · 房产/垂直Demo · 产品讲解
-- **关键帧采样图谱**：[style_17_contact.jpg](keyframes/style_17_contact.jpg)
 
 | 风格谱维度 | 逐帧实测与视觉精校参数 |
 | :--- | :--- |
 | **1. 镜头时长分布** | 共 **15** 镜（硬切 8 / 微跳剪·推拉 6 / 叠化擦除 4），切镜率 **10.5/min**；前 3 秒切换 **1** 次；`min=0.25s` / `P25=1.06s` / `median=1.75s` / `mean=5.32s` / `P90=19.55s` / `max=22.50s`；分桶占比：`<1s` 占 **26.7%**，`1–2.5s` 占 **33.3%**，`>2.5s` 占 **40.0%** |
 | **2. 切点与节拍对齐率** | 切点对齐音频事件（节拍/气口句首/瞬态音效）`≤1帧` 率 **21.4%**，`≤3帧` 率 **78.6%**；纯踩 BGM 节拍（`≤2帧`）率 **21.4%**；检出 J-cut 比例 **28.6%**（中位提前 `2.2 帧`，建议 J-cut `3 帧`） |
-| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Medium.otf, NotoSansSC-Medium.ttf, STHeiti Medium.ttc`），字重 `Medium`，双语=否；1080p 基准字号 **`46px`**，垂直位置 `Y=0.70`（竖屏 `1344px`）；主色 `#F9FFFF`，关键词色 `#F1E1B3`（放大 `1.15x`）；描边 `2px #0E172B`，底框 `#00000000`；动效 **`hard_cut`**；去掉句末标点 |
+| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Medium.otf, NotoSansSC-Medium.ttf`），字重 `Medium`，双语=否；1080p 基准字号 **`46px`**，垂直位置 `Y=0.70`（竖屏 `1344px`）；主色 `#F9FFFF`，关键词色 `#F1E1B3`（放大 `1.15x`）；描边 `2px #0E172B`，底框 `#00000000`；动效 **`hard_cut`**；去掉句末标点 |
 | **4. 色彩统计与 LUT** | 调性：**暗黑高对比科技调**；平均亮度 `Y=63.5/255`（动态范围 `166.4`，暗部占比 `68.9%`，高光占比 `6.1%`）；饱和度 `50.9%`，色温偏移 `-13.98`；Top-5 主色板 `#0E172B #17264B #D0B292 #F7F8F9 #2C2C30`；逆向 3D LUT：[style_17.cube](luts/style_17.cube)（CSS 近似：`brightness(0.934) contrast(1.226) saturate(1.28) sepia(0.0)`） |
 | **5. 转场和音效密度** | 综合转场密度 **13.5/min**，常用手法：演示卡片无缝切换、流程图节点点亮；高频瞬态音效实测 **75.2/min**（总计 100 次，建议预算 `75/min`）；核心包装组件：深蓝科技边框卡片、右下圆角真人PIP、机器人节点架构图、STEP混排标卡；内部 UI/卡片节奏：J-cut 比例全库最高（28.6%），音频先进后切换上方演示卡片，极具现代 SaaS 发布会质感 |
 | **6. BGM 速度与混音** | 估算 BGM 速度 **93.8 BPM**（节拍显著度 `0.134`，类型 `continuous_bgm_bed`）；综合响度 **-14.5 LUFS**（LRA `2.1 LU`，真峰值 `0.0 dBTP`）；检出气口停顿 0 次（平均 `0.0s`） |
@@ -448,17 +399,14 @@ python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_16 \
 | **8. 标题封面版式** | **版式类型**：`dark_navy_saas_pip`（深海蓝科技面板 · 上2/3演示区 + 右下真人PIP）<br>**构图网格**：深蓝(#0E172B -> #17264B)渐变面板贯穿全片；上半区切换横/竖成片窗、机器人架构流程图、蓝色微信气泡对话；左下角呈现 `STEP 01` 衬线+黑体混排标卡<br>**主副标题字号比**：`1.8x` | **高亮手法**：深蓝微边框卡片 + 暖金胶囊标(`#F1E1B3`) + 衬线混排步骤卡 |
 
 ```bash
-# 一键复刻 style_17 至 剪映草稿 / Remotion Props / HyperFrames HTML：
-python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_17 \
-  --export-jianying-template ./out_style_17/jianying_draft \
-  --export-remotion-props ./out_style_17/remotion_props.json \
-  --export-hyperframes ./out_style_17/hyperframes_comp.html
+# 在流水线中套用 style_17，或导出离线 HyperFrames 样板工程：
+python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --mode full --style-id style_17
+python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_17 --export-hyperframes ./out_style_17_hyperframes
 ```
 
 ### STYLE_18 · 白板方法论 · 手写字纸片反差条风
 - **原片文件**：`让ip能放松回答的提问就是编导八大问#个人ip#短视频运营#新媒体运营#珠海.mp4`（`720×1280` · `24.0 fps` · `190.1s` · `4563 帧`）
 - **所属流派**：`arch_03_editorial_matte_depth` | **推荐轨道**：`store` | **适用标签**：编导教学 · 短视频运营 · 实战复盘
-- **关键帧采样图谱**：[style_18_contact.jpg](keyframes/style_18_contact.jpg)
 
 | 风格谱维度 | 逐帧实测与视觉精校参数 |
 | :--- | :--- |
@@ -472,23 +420,20 @@ python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_17 \
 | **8. 标题封面版式** | **版式类型**：`whiteboard_matte_sticky`（浅灰手写水印底板 + 黑白反差条 + 暗调白板清单）<br>**构图网格**：三段式质感切换：白板抠像开场 → 浅灰底(上方实拍花絮小窗 + 黑色反白条 + 手写黑字字幕) → 暗调白板透明黑底压出白色/亮黄竖排结构清单<br>**主副标题字号比**：`1.5x` | **高亮手法**：纯黑底白字矩形反差块 + 手写字体亲和力 + 暗调亮黄关键句 |
 
 ```bash
-# 一键复刻 style_18 至 剪映草稿 / Remotion Props / HyperFrames HTML：
-python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_18 \
-  --export-jianying-template ./out_style_18/jianying_draft \
-  --export-remotion-props ./out_style_18/remotion_props.json \
-  --export-hyperframes ./out_style_18/hyperframes_comp.html
+# 在流水线中套用 style_18，或导出离线 HyperFrames 样板工程：
+python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --mode full --style-id style_18
+python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_18 --export-hyperframes ./out_style_18_hyperframes
 ```
 
 ### STYLE_19 · 专业剪辑大师课 · 顶部细条章节 + 绿块冲击风
 - **原片文件**：`质感剪辑的“3大法宝”！#剪辑思维 #剪辑教学 #剪辑教程 #影视剪辑 #商业剪辑 #南门录像厅.mp4`（`1024×576` · `24.0 fps` · `233.1s` · `5594 帧`）
 - **所属流派**：`arch_02_high_contrast_story` | **推荐轨道**：`creator` | **适用标签**：影视剪辑 · 调色音效 · 专业教程
-- **关键帧采样图谱**：[style_19_contact.jpg](keyframes/style_19_contact.jpg)
 
 | 风格谱维度 | 逐帧实测与视觉精校参数 |
 | :--- | :--- |
 | **1. 镜头时长分布** | 共 **137** 镜（硬切 122 / 微跳剪·推拉 14 / 叠化擦除 24），切镜率 **35.0/min**；前 3 秒切换 **1** 次；`min=0.25s` / `P25=0.71s` / `median=1.25s` / `mean=1.70s` / `P90=3.12s` / `max=11.54s`；分桶占比：`<1s` 占 **35.8%**，`1–2.5s` 占 **45.3%**，`>2.5s` 占 **19.0%** |
 | **2. 切点与节拍对齐率** | 切点对齐音频事件（节拍/气口句首/瞬态音效）`≤1帧` 率 **44.1%**，`≤3帧` 率 **82.4%**；纯踩 BGM 节拍（`≤2帧`）率 **43.4%**；检出 J-cut 比例 **9.6%**（中位提前 `3.0 帧`，建议 J-cut `3 帧`） |
-| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Bold.otf, NotoSansSC-Bold.ttf, STHeiti Medium.ttc`），字重 `Bold`，双语=否；1080p 基准字号 **`46px`**，垂直位置 `Y=0.90`（竖屏 `1728px`）；主色 `#FFFFFF`，关键词色 `#2ECC71`（放大 `1.2x`）；描边 `3px #111111`，底框 `#00000000`；动效 **`hard_cut`**；去掉句末标点 |
+| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Bold.otf, NotoSansSC-Bold.ttf`），字重 `Bold`，双语=否；1080p 基准字号 **`46px`**，垂直位置 `Y=0.90`（竖屏 `1728px`）；主色 `#FFFFFF`，关键词色 `#2ECC71`（放大 `1.2x`）；描边 `3px #111111`，底框 `#00000000`；动效 **`hard_cut`**；去掉句末标点 |
 | **4. 色彩统计与 LUT** | 调性：**暗黑高对比科技调**；平均亮度 `Y=77.2/255`（动态范围 `169.5`，暗部占比 `43.1%`，高光占比 `4.1%`）；饱和度 `27.2%`，色温偏移 `0.56`；Top-5 主色板 `#0F0F0F #2D2D2F #515252 #6F7070 #90908E`；逆向 3D LUT：[style_19.cube](luts/style_19.cube)（CSS 近似：`brightness(0.934) contrast(1.204) saturate(0.971) sepia(0.005)`） |
 | **5. 转场和音效密度** | 综合转场密度 **41.2/min**，常用手法：高速B-roll素材硬切、双侧竖排巨字黑底切；高频瞬态音效实测 **63.3/min**（总计 246 次，建议预算 `64/min`）；核心包装组件：顶部4栏极细章节导航、绿底方框单字花字、双侧竖排白字夹心画中画、达芬奇示波器录屏；内部 UI/卡片节奏：全片 137 镜，med=1.25s（<1s快切 35.8%），146.3 BPM 强动感，82.4% 切点精准对齐事件 |
 | **6. BGM 速度与混音** | 估算 BGM 速度 **146.3 BPM**（节拍显著度 `0.117`，类型 `continuous_bgm_bed`）；综合响度 **-15.3 LUFS**（LRA `8.4 LU`，真峰值 `0.2 dBTP`）；检出气口停顿 1 次（平均 `0.382s`） |
@@ -496,23 +441,20 @@ python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_18 \
 | **8. 标题封面版式** | **版式类型**：`pro_editor_chapter_nav`（顶部极细章节导航条 + 亮绿圆角方块与左右竖排巨字）<br>**构图网格**：顶部 32px 高灰黑导航条全片高亮当前章节；关键重音用高饱和翠绿方框单字排列或黑底双侧竖排超大白字(`音 效 / 设 计`)夹击中间工程软件画面<br>**主副标题字号比**：`2.5x` | **高亮手法**：高饱和亮绿渐变方框单字块(#10B981) + 双侧竖排巨型白字 |
 
 ```bash
-# 一键复刻 style_19 至 剪映草稿 / Remotion Props / HyperFrames HTML：
-python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_19 \
-  --export-jianying-template ./out_style_19/jianying_draft \
-  --export-remotion-props ./out_style_19/remotion_props.json \
-  --export-hyperframes ./out_style_19/hyperframes_comp.html
+# 在流水线中套用 style_19，或导出离线 HyperFrames 样板工程：
+python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --mode full --style-id style_19
+python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_19 --export-hyperframes ./out_style_19_hyperframes
 ```
 
 ### STYLE_20 · 模型盒悬念开篇 · 书墙双语毛玻璃金句风
 - **原片文件**：`那些活跃在一线的大师，到底是时代红利还是能力强？ 才华只是入场券，时代红利是助推器 #室内设计#设计师思考#设计行业观察#设计师创业.mp4`（`1024×576` · `24.0 fps` · `210.0s` · `5039 帧`）
 - **所属流派**：`arch_03_editorial_matte_depth` | **推荐轨道**：`creator` | **适用标签**：设计行业洞察 · 商业思辨 · 知识女性IP
-- **关键帧采样图谱**：[style_20_contact.jpg](keyframes/style_20_contact.jpg)
 
 | 风格谱维度 | 逐帧实测与视觉精校参数 |
 | :--- | :--- |
 | **1. 镜头时长分布** | 共 **88** 镜（硬切 66 / 微跳剪·推拉 21 / 叠化擦除 20），切镜率 **24.9/min**；前 3 秒切换 **1** 次；`min=0.08s` / `P25=0.88s` / `median=1.27s` / `mean=2.39s` / `P90=5.30s` / `max=11.58s`；分桶占比：`<1s` 占 **38.6%**，`1–2.5s` 占 **29.5%**，`>2.5s` 占 **31.8%** |
 | **2. 切点与节拍对齐率** | 切点对齐音频事件（节拍/气口句首/瞬态音效）`≤1帧` 率 **27.6%**，`≤3帧` 率 **75.9%**；纯踩 BGM 节拍（`≤2帧`）率 **23.0%**；检出 J-cut 比例 **16.1%**（中位提前 `2.4 帧`，建议 J-cut `3 帧`） |
-| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Medium.otf, NotoSansSC-Medium.ttf, STHeiti Medium.ttc`），字重 `Medium`，双语=是；1080p 基准字号 **`42px`**，垂直位置 `Y=0.87`（竖屏 `1670px`）；主色 `#FFFFFF`，关键词色 `#E6D267`（放大 `1.1x`）；描边 `3px #120B01`，底框 `#00000000`；动效 **`fade_slide_up`**；去掉句末标点 |
+| **3. 字幕样式与动效** | 字体族 **`Source Han Sans CN`**（候选：`SourceHanSansCN-Medium.otf, NotoSansSC-Medium.ttf`），字重 `Medium`，双语=是；1080p 基准字号 **`42px`**，垂直位置 `Y=0.87`（竖屏 `1670px`）；主色 `#FFFFFF`，关键词色 `#E6D267`（放大 `1.1x`）；描边 `3px #120B01`，底框 `#00000000`；动效 **`fade_slide_up`**；去掉句末标点 |
 | **4. 色彩统计与 LUT** | 调性：**深沉低饱和质感调**；平均亮度 `Y=98.3/255`（动态范围 `184.8`，暗部占比 `29.0%`，高光占比 `7.7%`）；饱和度 `30.1%`，色温偏移 `22.32`；Top-5 主色板 `#0F0C0C #342E2B #534E4A #F6F7F7 #736F6D`；逆向 3D LUT：[style_20.cube](luts/style_20.cube)（CSS 近似：`brightness(0.965) contrast(0.963) saturate(1.075) sepia(0.186)`） |
 | **5. 转场和音效密度** | 综合转场密度 **30.6/min**，常用手法：实物盒子跳切人物、背景虚化+毛玻璃清单浮现；高频瞬态音效实测 **89.2/min**（总计 312 次，建议预算 `88/min`）；核心包装组件：实物微缩开篇模型、卡通描边贴纸(AI)、暗色毛玻璃编号清单、荧光黄绿金句底块；内部 UI/卡片节奏：88镜，med=1.27s（<1s快切 38.6%），音效密度 89.2/min，J-cut 16.1%，极佳的思辨口播节奏 |
 | **6. BGM 速度与混音** | 估算 BGM 速度 **90.9 BPM**（节拍显著度 `0.038`，类型 `continuous_bgm_bed`）；综合响度 **-14.7 LUFS**（LRA `3.5 LU`，真峰值 `-0.2 dBTP`）；检出气口停顿 1 次（平均 `0.249s`） |
@@ -520,18 +462,15 @@ python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_19 \
 | **8. 标题封面版式** | **版式类型**：`physical_prop_bookshelf_highlight`（实物道具开篇 + 毛玻璃编号清单 + 荧光黄绿底块金句）<br>**构图网格**：高密度书墙暖调背景，中段用半透明暗色毛玻璃左对齐罗列 1~5.5 条思考清单，高潮金句用荧光黄绿底块(`#D9E35B`)衬托加粗黑字横向铺满画面<br>**主副标题字号比**：`1.8x` | **高亮手法**：中英同步关键词高亮 + 荧光黄绿底块黑字金句条 |
 
 ```bash
-# 一键复刻 style_20 至 剪映草稿 / Remotion Props / HyperFrames HTML：
-python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_20 \
-  --export-jianying-template ./out_style_20/jianying_draft \
-  --export-remotion-props ./out_style_20/remotion_props.json \
-  --export-hyperframes ./out_style_20/hyperframes_comp.html
+# 在流水线中套用 style_20，或导出离线 HyperFrames 样板工程：
+python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --mode full --style-id style_20
+python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_20 --export-hyperframes ./out_style_20_hyperframes
 ```
 
 ---
 
 ## 四、 跨平台复刻接入指南
 
-1. **Remotion 复刻**：在 `assets/remotion_templates/` 中直接引入 `StyleSpectrumShowcase` 或原子组件 (`StyleCoverCard`, `StyleSubtitleBar`, `StyleChapterBar`, `StyleGraphicCard`)，传入 `styleId: 'style_01'..'style_20'` 或用 `--export-remotion-props` 导出的 JSON 渲染。
-2. **HyperFrames 复刻**：直接使用 [style-spectrum-template.html](hyperframes/style-spectrum-template.html)?style=style_02 预览，或用 `apply_style_spectrum.py --export-hyperframes` 生成内联样式的独立 HTML 交由 `npx hyperframes check && npx hyperframes render` 出片。
-3. **剪映专业版复刻**：运行 `apply_style_spectrum.py --export-jianying-template <目录>` 生成包含对应 `.cube` 3D LUT、节拍切分视频轨与字幕样式轨的剪映草稿，拷入剪映草稿目录即可打开精修。
-4. **`short-video-studio` 流水线一键应用**：运行 `apply_style_spectrum.py --style-id style_XX --apply-pipeline <project>/pipeline`，自动同步 `.cube` LUT 与字幕模板至当前项目。
+1. **`short-video-studio` 流水线一键应用（推荐）**：在 `run_pipeline.py` 传入 `--style-id style_XX`（门店默认 `style_14`，博主默认 `style_11`），或运行 `apply_style_spectrum.py --style-id style_XX --apply-pipeline <project>/pipeline`，自动同步 `17³` `.cube` LUT、字幕模板、配乐与 J-cut 规则。
+2. **HyperFrames Studio 离线工程**：运行 `apply_style_spectrum.py --style-id style_XX --export-hyperframes <工程目录>` 导出离线样式样板，或由流水线 `export_hyperframes.py` 导出全片原生多轨工程。
+3. **剪映专业版可编辑工程**：由流水线 `export_jianying.py --pipeline-dir <project>/pipeline` 导出全相对路径 FCPXML 多轨工程（含分镜、透明 PNG 字幕与花字、三轨分离音频、`.srt` 与 `.cube` 滤镜）。

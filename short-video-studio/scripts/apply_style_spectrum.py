@@ -127,7 +127,7 @@ def export_hyperframes_html(
         f"    #main {{ position:relative; width:{CANVAS_WIDTH}px; height:{CANVAS_HEIGHT}px; font-family:sans-serif; }}",
         f"    .headline {{ position:absolute; left:96px; right:160px; top:220px; font-size:68px; font-weight:800; color:{pri_col}; line-height:1.2; }}",
         f"    .accent-bar {{ display:block; width:88px; height:10px; border-radius:5px; background:{accent_hex}; margin-bottom:24px; }}",
-        f"    .sub-line {{ position:absolute; left:100px; right:160px; top:{y_px}px; text-align:center; font-size:{font_sz}px; font-weight:800; color:{pri_col}; -webkit-text-stroke:{stroke_css}; paint-order:stroke fill; }}",
+        f"    .sub-line {{ position:absolute; left:220px; right:220px; top:{y_px}px; text-align:center; font-size:{font_sz}px; font-weight:800; color:{pri_col}; -webkit-text-stroke:{stroke_css}; paint-order:stroke fill; }}",
         f"    .kw {{ color:{kw_col}; }}",
         "  </style>",
         "</head>",
@@ -173,6 +173,11 @@ def apply_to_pipeline(lib: Dict[str, Any], style_id: str, pipeline_dir: Path) ->
         "subtitle_spec": entry.get("subtitle_spec"),
         "transition_and_packaging": entry.get("transition_and_packaging"),
         "opening_structure": entry.get("opening_structure"),
+        "subtitle_symmetry_lock": entry.get("subtitle_symmetry_lock"),
+        "broll_overlay_ratio_target": entry.get("broll_overlay_ratio_target"),
+        "broll_ambient_sound_policy": entry.get("broll_ambient_sound_policy"),
+        "dual_bgm_structure": entry.get("dual_bgm_structure"),
+        "multi_zone_flower_spec": entry.get("multi_zone_flower_spec"),
     })
     print(f"[apply-style] 已应用 {style_id} ({entry.get('style_name_cn')}) -> {out}")
     return out

@@ -16,7 +16,10 @@ from common import read_json, write_json
 PARAMETER_LIMITS = {
     "pause_sec": (0.14, 0.32),
     "persona_pause_sec": (0.18, 0.32),
+    "twist_pause_sec": (0.20, 0.36),
+    "narrative_pause_sec": (0.16, 0.30),
     "target_median_shot_sec": (1.12, 2.82),
+    "target_aroll_ratio": (0.25, 0.70),
     "micro_hook_max_sec": (3.0, 20.0),
 }
 METRICS = {
@@ -161,7 +164,11 @@ def evaluate_plan(
         if not compatible:
             excluded += 1
             continue
-        validate_snapshot(row)
+        try:
+            validate_snapshot(row)
+        except ValueError:
+            excluded += 1
+            continue
         seen_videos.add(str(row["video_id"]))
         groups[arm].append(row)
 

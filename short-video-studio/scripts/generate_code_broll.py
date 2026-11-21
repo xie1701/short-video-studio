@@ -16,6 +16,7 @@ import argparse
 import html
 import json
 import math
+import os
 import shutil
 import subprocess
 import sys
@@ -403,11 +404,11 @@ def render_broll_clip_pillow(
                         draw.rounded_rectangle([cur_x, bar_y0 + 10, ex, bar_y1 - 10], radius=12, fill=seg_colors[si % len(seg_colors)])
                     cur_x = ex + gap_w
 
-                for idx, (it, pct) in enumerate(zip(items[:4], pcts)):
+                for idx, (it, pct) in enumerate(zip(items[:3], pcts[:3])):
                     p_c = max(0.0, min(1.0, stagger_progress(t_sec, idx, base_t0=anchor_delay_sec, step_sec=0.12)))
                     if p_c <= 0.02:
                         continue
-                    cy = 610 + idx * 176
+                    cy = 600 + idx * 172
                     draw.rounded_rectangle([88, cy, safe_right, cy + 148], radius=16, fill=card_bg, outline=border_col, width=2)
                     draw.rounded_rectangle([104, cy + 28, 120, cy + 120], radius=6, fill=seg_colors[idx % len(seg_colors)])
                     fl, tl = _fit_single_line(draw, str(it.get("label", "")), font_path, 38, safe_right - 300)
@@ -455,12 +456,12 @@ def render_broll_clip_pillow(
                     draw.text((208 + ox, cy + 68), tl, fill=title_col, font=fl, anchor="lm")
 
             elif mode == "versus":
-                for idx, it in enumerate(items[:4]):
+                for idx, it in enumerate(items[:3]):
                     delay = anchor_frames + idx * 6
                     p_c = ease_out_cubic((fi - delay) / 9.0)
                     if p_c <= 0.02:
                         continue
-                    cy = 490 + idx * 210
+                    cy = 480 + idx * 210
                     is_good = bool(it.get("positive", idx % 2 == 1))
                     side_col = "#16A34A" if is_good else "#DC2626"
                     mark = "✓" if is_good else "✗"
@@ -475,18 +476,18 @@ def render_broll_clip_pillow(
                         draw.text((206, cy + 104), ts_txt, fill=sub_col, font=fs)
 
             else:
-                base_y = 490
-                card_h = 206 if mode != "flow_diagram" else 192
-                max_val = max([float(it["value"]) for it in items[:4] if isinstance(it.get("value"), (int, float))] + [100.0])
+                base_y = 480
+                card_h = 196 if mode != "flow_diagram" else 188
+                max_val = max([float(it["value"]) for it in items[:3] if isinstance(it.get("value"), (int, float))] + [100.0])
                 static_flow_w = (safe_right - 24) - (88 + 128)
                 static_card_w = (safe_right - 28) - (88 + 44)
                 static_bar_max = max(120, (safe_right - 88) - 230)
-                for idx, item in enumerate(items[:4]):
+                for idx, item in enumerate(items[:3]):
                     p = stagger_progress(t_sec, idx, base_t0=anchor_delay_sec, step_sec=0.12, freq=2.3, zeta=0.58)
                     if p <= 0.01:
                         continue
                     p_val = max(0.0, min(1.0, p))
-                    cy = base_y + idx * (card_h + 28)
+                    cy = base_y + idx * (card_h + 24)
                     offset_x = max(-8, int((1.0 - p) * 64))
                     x1, x2 = 88 + offset_x, safe_right
                     draw.rounded_rectangle([x1, cy, x2, cy + card_h], radius=18, fill=card_bg, outline=border_col, width=2)
@@ -948,7 +949,7 @@ def _build_broll_html_page(
         strip.className = 'card-accent-strip';
         if (MODE === 'proportion') strip.style.background = SEG_COLORS[idx % SEG_COLORS.length];
         if (MODE === 'versus') {{
-          var good = (typeof it.positive === 'boolean') ? it.positive : (idx % 2 === 0);
+          var good = (typeof it.positive === 'boolean') ? it.positive : (idx % 2 === 1);
           strip.style.background = good ? '#16A34A' : '#DC2626';
           c.style.borderColor = strip.style.background;
         }}
@@ -1105,13 +1106,15 @@ def _prepare_html_scene_dir(
         font_rel = f"fonts/{dst_f.name}"
 
     frame_seq_rels: List[str] = []
+    seq_fps = fps
     if clip_asset and Path(clip_asset).is_file():
         ca_p = Path(clip_asset)
         f_seq_dir = tdp / "frames"
         f_seq_dir.mkdir(parents=True, exist_ok=True)
         if ca_p.suffix.lower() in (".mp4", ".mov", ".mkv", ".m4v"):
+            seq_fps = min(15, fps)
             extracted = extract_clip_sequence(
-                ca_p, f_seq_dir, start_sec=0.0, duration_sec=min(4.0, duration_sec), fps=min(15, fps), width=640, height=360
+                ca_p, f_seq_dir, start_sec=0.0, duration_sec=min(4.0, duration_sec), fps=seq_fps, width=640, height=360
             )
             frame_seq_rels = [f"frames/{p.name}" for p in extracted]
         elif ca_p.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp"):
@@ -1121,7 +1124,7 @@ def _prepare_html_scene_dir(
 
     html_src = _build_broll_html_page(
         mode, title, items, duration_sec, pal, font_rel,
-        anchor_delay_sec=anchor_delay_sec, frame_seq_rels=frame_seq_rels, fps=fps,
+        anchor_delay_sec=anchor_delay_sec, frame_seq_rels=frame_seq_rels, fps=seq_fps,
     )
     (tdp / "index.html").write_text(html_src, encoding="utf-8")
 
@@ -1162,6 +1165,8 @@ def render_broll_clip_html(
             anchor_delay_sec=anchor_delay_sec, clip_asset=clip_asset, fps=fps,
         )
         smoke_p = tdp / "smoke.json"
+        cap_env = dict(os.environ)
+        cap_env["FFMPEG_BIN"] = find_bin("ffmpeg")
         res = subprocess.run([
             str(br["node_bin"]),
             str(SCRIPTS_DIR / "capture_html_video.mjs"),
@@ -1173,7 +1178,7 @@ def render_broll_clip_html(
             "--jpeg",
             "--out", str(output_mp4.resolve()),
             "--smoke-json", str(smoke_p),
-        ], capture_output=True, text=True)
+        ], capture_output=True, text=True, env=cap_env)
         if res.returncode != 0 or not output_mp4.is_file() or output_mp4.stat().st_size < 4096:
             raise RuntimeError(f"HTML 动效渲染失败 ({res.returncode}): {(res.stderr or res.stdout)[-400:]}")
     return output_mp4
@@ -1302,12 +1307,14 @@ def render_spec_scenes_batch(
                     })
                 batch_json_p = tdp / "batch_manifest.json"
                 write_json(batch_json_p, {"tasks": batch_items})
+                cap_env = dict(os.environ)
+                cap_env["FFMPEG_BIN"] = find_bin("ffmpeg")
                 res = subprocess.run([
                     str(br["node_bin"]),
                     str(SCRIPTS_DIR / "capture_html_video.mjs"),
                     "--batch-json",
                     str(batch_json_p),
-                ], capture_output=True, text=True)
+                ], capture_output=True, text=True, env=cap_env)
                 if res.returncode == 0 and all(p.is_file() and p.stat().st_size >= 4096 for _, p in scene_tasks):
                     return [p for _, p in scene_tasks]
                 if b_norm == "html":
@@ -1373,16 +1380,32 @@ def generate_demo_media_pack(output_dir: Path, style_id: Optional[str] = None) -
         "-i", "pipe:0", "-c:v", "libx264", *BT709_FFMPEG_ARGS, str(broll_food),
     ], stdin=subprocess.PIPE)
     assert proc.stdin is not None
-    for fi in range(90):
-        img = Image.new("RGB", (CANVAS_WIDTH, CANVAS_HEIGHT), (48, 26, 16))
+    for fi in range(150):
+        img = Image.new("RGB", (CANVAS_WIDTH, CANVAS_HEIGHT), (54, 34, 24))
         d = ImageDraw.Draw(img)
-        shift = int(math.sin(fi / 15.0) * 35)
-        d.ellipse([180 + shift, 480, 820 + shift, 1080], fill=(180, 83, 9), outline=(251, 191, 36), width=8)
-        d.text((500 + shift, 780), "鲜切烤羊排特写", fill=(255, 251, 235), font=f_big, anchor="mm")
-        d.text((480, 1180), "实拍B-roll素材示例", fill=(253, 224, 71), font=f_sub, anchor="mm")
+        shift = int(math.sin(fi / 14.0) * 52)
+        d.ellipse([180 + shift, 440, 860 + shift, 1020], fill=(92, 34, 12), outline=(251, 191, 36), width=8)
+        d.text((520 + shift, 730), "鲜切烤羊排特写", fill=(255, 255, 255), font=f_big, anchor="mm")
         proc.stdin.write(img.tobytes())
     proc.stdin.close()
     proc.wait()
+
+    broll_grill = output_dir / "broll_charcoal_fire.mp4"
+    proc2 = subprocess.Popen([
+        ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+        "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{CANVAS_WIDTH}x{CANVAS_HEIGHT}", "-r", "30",
+        "-i", "pipe:0", "-c:v", "libx264", *BT709_FFMPEG_ARGS, str(broll_grill),
+    ], stdin=subprocess.PIPE)
+    assert proc2.stdin is not None
+    for fi in range(150):
+        img = Image.new("RGB", (CANVAS_WIDTH, CANVAS_HEIGHT), (34, 52, 68))
+        d = ImageDraw.Draw(img)
+        shift_y = int(math.cos(fi / 12.0) * 44)
+        d.rounded_rectangle([140, 420 + shift_y, 820, 960 + shift_y], radius=36, fill=(18, 28, 42), outline=(56, 189, 248), width=6)
+        d.text((480, 690 + shift_y), "明档现秤实拍", fill=(255, 255, 255), font=f_big, anchor="mm")
+        proc2.stdin.write(img.tobytes())
+    proc2.stdin.close()
+    proc2.wait()
 
     bench = output_dir / "benchmark_sample.mp4"
     subprocess.run([

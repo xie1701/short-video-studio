@@ -383,6 +383,11 @@ def get_style_sound_profile(style_id: str) -> Optional[Dict[str, Any]]:
     return raw_prof
 
 
+def get_default_sound_profile(track: str = "store") -> Optional[Dict[str, Any]]:
+    """当未指定 style_id 时按轨道返回默认 CC0 真录音库（门店轨 style_14 / 博主轨 style_12）。"""
+    return get_style_sound_profile("style_14" if track == "store" else "style_12")
+
+
 def main() -> None:
     maybe_reexec_in_venv()
     ap = argparse.ArgumentParser(description="Vibe Sound CC0 真实音效检索与清洗")
