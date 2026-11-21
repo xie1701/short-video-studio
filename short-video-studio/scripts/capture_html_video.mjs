@@ -154,11 +154,12 @@ function normalizeTask(raw) {
       ? String(smokeOpt)
       : path.resolve(process.cwd(), String(smokeOpt))
     : null;
-  return { projectDir, pageName, fps, W, H, outPath, durOpt, startFrame, framesOpt, useJpeg, smokePath };
+  return { projectDir, pageName, fps, W, H, outPath, durOpt, startFrame, framesOpt, useJpeg, smokePath,
+    smokeCheckpoints: Boolean(raw.smokeCheckpoints) };
 }
 
 async function captureSingleTask(browser, task, chromeBin) {
-  const { projectDir, pageName, fps, W, H, outPath, durOpt, startFrame, framesOpt, useJpeg, smokePath } = task;
+  const { projectDir, pageName, fps, W, H, outPath, durOpt, startFrame, framesOpt, useJpeg, smokePath, smokeCheckpoints } = task;
   const server = http.createServer((req, res) => {
     const rawUrl = decodeURIComponent((req.url || "/").split("?")[0]);
     if (rawUrl === "/favicon.ico") {
@@ -191,6 +192,7 @@ async function captureSingleTask(browser, task, chromeBin) {
   let context = null;
   let framesRendered = 0;
   let totalFrames = 0;
+  let checkpoints = null;
   const tStart = Date.now();
 
   try {
@@ -229,6 +231,11 @@ async function captureSingleTask(browser, task, chromeBin) {
     const pageDur = await page.evaluate(() => Number(window.DUR || 0));
     const effDur = Number(durOpt || pageDur || 3.0);
     totalFrames = framesOpt ? Math.max(1, Number(framesOpt)) : Math.max(1, Math.round(effDur * fps) - startFrame);
+    if (smokeCheckpoints) {
+      const lastFrame = Math.max(0, Math.round(effDur * fps) - 1);
+      checkpoints = [...new Set([0, Math.floor(lastFrame / 2), lastFrame])].map((frame) => frame / fps);
+      totalFrames = checkpoints.length;
+    }
 
     fs.mkdirSync(path.dirname(outPath), { recursive: true });
     ff = spawn(
@@ -250,8 +257,8 @@ async function captureSingleTask(browser, task, chromeBin) {
     });
 
     const shotOpts = useJpeg ? { type: "jpeg", quality: 96 } : { type: "png" };
-    for (let idx = startFrame; idx < startFrame + totalFrames; idx++) {
-      const t = idx / fps;
+    for (let idx = 0; idx < totalFrames; idx++) {
+      const t = checkpoints ? checkpoints[idx] : (startFrame + idx) / fps;
       await page.evaluate(async (curT) => {
         if (typeof window.seek === "function") {
           await window.seek(curT);
@@ -286,12 +293,13 @@ async function captureSingleTask(browser, task, chromeBin) {
   if (smokePath) {
     const pxRes = fs.existsSync(outPath) ? measureSmokePixels(outPath, framesRendered) : { nonBlackFrames: 0, meanLumas: [] };
     const smokeReport = {
-      ok: errors.length === 0 && framesRendered > 0 && pxRes.nonBlackFrames >= 1,
+      ok: errors.length === 0 && framesRendered === totalFrames && totalFrames > 0 && pxRes.nonBlackFrames === totalFrames,
       frames_rendered: framesRendered,
       expected_frames: totalFrames,
       non_black_frames: pxRes.nonBlackFrames,
       mean_lumas: pxRes.meanLumas,
       avg_ms_per_frame: avgMsPerFrame,
+      checkpoints_sec: checkpoints,
       chrome_executable: chromeBin,
       errors,
     };
@@ -321,6 +329,7 @@ if (batchJsonOpt) {
       frames: opt("frames", null),
       jpeg: Boolean(opt("jpeg", false)),
       smokeJson: opt("smoke-json", null),
+      smokeCheckpoints: Boolean(opt("smoke-checkpoints", false)),
     }),
   ];
 }

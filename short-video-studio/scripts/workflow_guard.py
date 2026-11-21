@@ -99,6 +99,10 @@ DELIVERABLE_SYNC_FILES = (
     "00_compliance_report.json",
     "00_asset_licenses.json",
     "asset_license_manifest.json",
+    "04_edl.json",
+    "04_source_review.json",
+    "08_locked_audio_receipt.json",
+    "render_profile.json",
     "10_qa_report.md",
     "10_qa_report.json",
     "10_action_strips.jpg",
@@ -149,12 +153,24 @@ def compute_plan_digest(pipeline_dir: Path) -> str:
         "06_packaging.json",
         "07_color_plan.json",
         "08_mix_metrics.json",
+        "04_source_review.json",
+        "asset_license_manifest.json",
     ):
         p = pipeline_dir / name
         h.update(name.encode("utf-8"))
         if p.is_file():
             h.update(p.read_bytes())
     return h.hexdigest()
+
+
+def package_digest(directory: Path) -> str:
+    digest = hashlib.sha256()
+    for path in sorted(directory.rglob("*")):
+        if path.is_file() and path.name != ".DS_Store":
+            digest.update(path.relative_to(directory).as_posix().encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(bytes.fromhex(sha256_file(path)))
+    return digest.hexdigest()
 
 
 def record_stop(pipeline_dir: Path, stop_type: str, summary: str = "", rehearsal: bool = False) -> Dict[str, Any]:
@@ -166,14 +182,23 @@ def record_stop(pipeline_dir: Path, stop_type: str, summary: str = "", rehearsal
         "summary": summary,
         "at": _now_iso(),
         "rehearsal": bool(rehearsal),
+        "source": "human_interaction",
     })
     write_json(pipeline_dir / LOCK_FILENAME, st)
     return st
 
 
+def record_milestone(pipeline_dir: Path, step: str, summary: str) -> None:
+    path = pipeline_dir / "pipeline_progress.json"
+    progress = read_json(path) if path.is_file() else {}
+    progress[step] = {"status": summary, "at": _now_iso()}
+    write_json(path, progress)
+
+
 def audit_stops(pipeline_dir: Path, require_all: bool = False) -> Dict[str, Any]:
     st = _load_lock_state(pipeline_dir)
-    items = st.get("interruptions", [])
+    items = [item for item in st.get("interruptions", [])
+             if item.get("source") == "human_interaction" and not item.get("rehearsal")]
     types = [i.get("type") for i in items]
     over = len(items) > BUDGET
     dup = len(types) != len(set(types))
@@ -224,34 +249,61 @@ def verify_lock(pipeline_dir: Path) -> Tuple[int, str, Dict[str, Any]]:
     return 0, f"方案锁有效 (sha={cur[:12]}, 锁定于 {st.get('locked_at')})", st
 
 
-def approve_final(pipeline_dir: Path, note: str = "人工终审确认三项通过") -> Dict[str, Any]:
+def approve_final(pipeline_dir: Path, note: str = "", reviewed_checks: tuple[str, ...] = ()) -> Dict[str, Any]:
     qa_p = pipeline_dir / "10_qa_report.json"
     if not qa_p.is_file():
         raise FileNotFoundError("未找到 10_qa_report.json，请先运行自动+黑盒质检。")
     qa = read_json(qa_p)
-    if not qa.get("machine_passed", qa.get("all_passed")):
-        raise RuntimeError("22 项机检尚未全部通过，禁止人工终审签字。")
+    if not qa.get("all_passed", qa.get("machine_passed")):
+        raise RuntimeError("必检项尚未通过，禁止人工终审签字。")
+    required = set(qa.get("required_manual_checks", []))
+    if not required <= set(reviewed_checks) or (required and not note.strip()):
+        raise RuntimeError(f"请完成并记录人工审查后签字：{', '.join(sorted(required))}")
+
+    final_mp4 = pipeline_dir / "output_final.mp4"
+    if not final_mp4.is_file():
+        raise FileNotFoundError("缺少 output_final.mp4，无法签字。")
 
     st = _load_lock_state(pipeline_dir)
     cur_digest = compute_plan_digest(pipeline_dir)
+    cur_mp4_sha = sha256_file(final_mp4)
+    if qa.get("plan_sha256") != cur_digest or qa.get("output_final_sha256") != cur_mp4_sha:
+        raise RuntimeError("质检报告与当前方案或成片指纹不匹配，请重新质检再签字。")
+    for target, expected in qa.get("required_package_hashes", {}).items():
+        package = pipeline_dir / f"{target}_draft"
+        if not package.is_dir() or package_digest(package) != expected:
+            raise RuntimeError(f"{target} 工程与质检版本不一致，请重新质检再签字。")
+    from source_review import source_review_status
+    provenance_path = pipeline_dir / "04_source_review.json"
+    if provenance_path.is_file() and source_review_status(read_json(provenance_path)) == "FAIL":
+        raise RuntimeError("主张来源已缺失或变更，请更新来源并重新质检。")
+    if (pipeline_dir / "asset_license_manifest.json").is_file():
+        from independent_verifier import verify_compliance_and_license_blackbox
+        if not verify_compliance_and_license_blackbox(pipeline_dir)["passed"]:
+            raise RuntimeError("授权原件或实际资产已变更，请重新质检。")
     if st.get("plan_sha256") and st["plan_sha256"] != cur_digest:
         raise RuntimeError(f"当前 EDL/字幕/包装/音色方案已被修改 (sha={cur_digest[:12]} != 锁={st['plan_sha256'][:12]})，请先重新渲染并质检。")
-    final_mp4 = pipeline_dir / "output_final.mp4"
-    cur_mp4_sha = sha256_file(final_mp4) if final_mp4.is_file() else None
-    if st.get("output_final_sha256") and cur_mp4_sha and st["output_final_sha256"] != cur_mp4_sha:
+    if st.get("output_final_sha256") and st["output_final_sha256"] != cur_mp4_sha:
         raise RuntimeError("output_final.mp4 与锁定指纹不一致，禁止人工签字。")
     if not st.get("plan_sha256"):
         st["plan_sha256"] = cur_digest
         st["locked_at"] = _now_iso()
-    if cur_mp4_sha:
-        st["output_final_sha256"] = cur_mp4_sha
+    st["output_final_sha256"] = cur_mp4_sha
 
     st["human_approved"] = True
     st["approved_at"] = _now_iso()
     st["approval_note"] = note
+    st["reviewed_checks"] = sorted(set(reviewed_checks))
+    st["export_mode"] = qa.get("export_mode", "auto")
+    st["required_package_hashes"] = qa.get("required_package_hashes", {})
     write_json(pipeline_dir / LOCK_FILENAME, st)
 
     qa["approval_status"] = "APPROVED"
+    qa["pending_manual_checks"] = []
+    if qa.get("deliverables", {}).get("mp4", {}).get("status") == "PENDING_REVIEW":
+        qa["deliverables"]["mp4"]["status"] = "PASS"
+    if "jianying_import" in reviewed_checks and "jianying" in qa.get("deliverables", {}):
+        qa["deliverables"]["jianying"]["host_import"] = "USER_VERIFIED"
     qa["human_approved_at"] = st["approved_at"]
     qa["human_approval_note"] = note
     write_json(qa_p, qa)
@@ -259,6 +311,8 @@ def approve_final(pipeline_dir: Path, note: str = "人工终审确认三项通�
     md_p = pipeline_dir / "10_qa_report.md"
     if md_p.is_file():
         txt = md_p.read_text(encoding="utf-8")
+        for state in ("MACHINE_PASS_PENDING_HUMAN", "REVIEW_REQUIRED"):
+            txt = txt.replace(f"🟡 **待人工终审确认 ({state})**", "✅ **机检与人工终审完成 (APPROVED)**")
         txt = txt.replace("MACHINE_PASS_PENDING_HUMAN", "APPROVED")
         for pend_banner in (
             "🟡 **全部必检通过，待人工终审确认 (APPROVED)**",
@@ -271,11 +325,31 @@ def approve_final(pipeline_dir: Path, note: str = "人工终审确认三项通�
 
     # 同步最新 APPROVED 报告至 out/ 目录，确保外部交付口径完全一致
     out_dir = pipeline_dir.parent / "out"
-    if out_dir.is_dir():
+    archived_mp4 = out_dir / final_mp4.name
+    if archived_mp4.is_file() and sha256_file(archived_mp4) == cur_mp4_sha:
         shutil.copy2(qa_p, out_dir / "10_qa_report.json")
         if md_p.is_file():
             shutil.copy2(md_p, out_dir / "10_qa_report.md")
     return st
+
+
+def verify_archive(out_dir: Path) -> dict[str, Any]:
+    receipt = read_json(out_dir / "archive_receipt.json")
+    missing, changed = [], []
+    for name, expected in receipt["files"].items():
+        path = out_dir / name
+        if not path.is_file():
+            missing.append(name)
+        elif sha256_file(path) != expected:
+            changed.append(name)
+    qa_file = out_dir / "10_qa_report.json"
+    if qa_file.is_file():
+        qa = read_json(qa_file)
+        if (qa.get("output_final_sha256") != receipt["files"].get("output_final.mp4")
+                or qa.get("plan_sha256") != receipt["plan_sha256"]):
+            changed.append(qa_file.name)
+    return {"passed": "output_final.mp4" in receipt["files"] and not missing and not changed,
+            "missing": missing, "changed": changed, "files": len(receipt["files"])}
 
 
 # ------------------------------------------------------------------
@@ -747,6 +821,11 @@ def tidy_workspace(
         if src.is_file():
             shutil.copy2(src, target_out / fname)
             synced.append(fname)
+    write_json(target_out / "archive_receipt.json", {
+        "plan_sha256": compute_plan_digest(pipeline_dir),
+        "files": {name: sha256_file(target_out / name) for name in synced
+                  if name not in ("10_qa_report.json", "10_qa_report.md")},
+    })
 
     if keep_temp:
         rep = {
@@ -849,7 +928,8 @@ def main() -> None:
 
     p_ap = sub.add_parser("approve-final")
     p_ap.add_argument("--pipeline-dir", required=True)
-    p_ap.add_argument("--note", default="人工终审确认三项通过")
+    p_ap.add_argument("--note", default="", help="记录实际复核结果。剪映导入请写明版本和检查到的轨道")
+    p_ap.add_argument("--reviewed", action="append", default=[], help="已完成的人工检查 ID，可重复传参")
 
     p_rd = sub.add_parser("replication-diff")
     p_rd.add_argument("--reference", required=True)
@@ -862,6 +942,8 @@ def main() -> None:
     p_td.add_argument("--out-dir")
     p_td.add_argument("--keep-temp", action="store_true")
     p_td.add_argument("--deep-clean", action="store_true")
+    p_arch = sub.add_parser("verify-out")
+    p_arch.add_argument("--out-dir", required=True, type=Path)
 
     args = parser.parse_args()
     if args.cmd == "record-stop":
@@ -880,8 +962,12 @@ def main() -> None:
         print(("[PASS] " if code == 0 else "[BLOCK] ") + msg)
         raise SystemExit(code)
     elif args.cmd == "approve-final":
-        st = approve_final(Path(args.pipeline_dir), note=args.note)
+        st = approve_final(Path(args.pipeline_dir), note=args.note, reviewed_checks=tuple(args.reviewed))
         print(f"[workflow] 人工终审签字完成 -> APPROVED (at={st['approved_at']})")
+    elif args.cmd == "verify-out":
+        result = verify_archive(args.out_dir)
+        print(result)
+        raise SystemExit(0 if result["passed"] else 2)
     elif args.cmd == "replication-diff":
         rep = run_replication_diff(
             Path(args.reference),

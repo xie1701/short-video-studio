@@ -77,10 +77,12 @@ check_environment() {
   if ! command -v ffmpeg >/dev/null 2>&1; then
     echo "[WARN] 未检测到 ffmpeg：预览可打开，但渲染导出 MP4 时需先执行 brew install ffmpeg。"
   fi
-  if command -v hyperframes >/dev/null 2>&1; then
+  if [ -n "${SVS_HYPERFRAMES_CLI:-}" ]; then
+    HF_CMD=("${SVS_HYPERFRAMES_CLI}")
+  elif command -v hyperframes >/dev/null 2>&1; then
     HF_CMD=(hyperframes)
   elif command -v npx >/dev/null 2>&1; then
-    HF_CMD=(npx --yes hyperframes)
+    HF_CMD=(npx --yes --prefer-offline hyperframes@0.9.72)
   else
     echo "[ERROR] 未检测到 npx，请重新安装 Node.js >= 22。"
     return 1
@@ -106,11 +108,15 @@ resolve_export_script() {
 
 resolve_pipeline_to_hf() {
   local dir="$1"
-  if [ -f "${dir}/hyperframes.json" ] || [ -f "${dir}/index.html" ]; then
+  local p_dir=""
+  if [ -f "${dir}/hyperframes.json" ] &&
+     [[ "$(<"${dir}/hyperframes.json")" == *hyperframes-local-v1* ]] &&
+     [ -f "${dir}/../04_edl.json" ]; then
+    p_dir="$(cd "${dir}/.." && pwd)"
+  elif [ -f "${dir}/index.html" ]; then
     printf '%s\n' "${dir}"
     return 0
   fi
-  local p_dir=""
   if [ -f "${dir}/04_edl.json" ]; then
     p_dir="${dir}"
   elif [ -f "${dir}/pipeline/04_edl.json" ]; then
@@ -118,7 +124,7 @@ resolve_pipeline_to_hf() {
   fi
   if [ -n "${p_dir}" ]; then
     local hf_dir="${p_dir}/hyperframes_draft"
-    if [ ! -f "${hf_dir}/index.html" ]; then
+    if [ ! -f "${hf_dir}/studio_export.json" ]; then
       local exp_script py_bin
       exp_script="$(resolve_export_script || true)"
       py_bin="$(resolve_python_bin || true)"
@@ -157,7 +163,7 @@ launch_preview() {
   echo "    ${proj_dir}"
   echo ">>> 浏览器即将自动打开实时时间线窗口（按 Ctrl+C 可停止预览服务）。"
   echo ""
-  "${HF_CMD[@]}" preview "$@"
+  "${HF_CMD[@]}" preview . "$@"
 }
 
 choose_existing_project() {

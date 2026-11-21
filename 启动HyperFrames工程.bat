@@ -25,7 +25,7 @@ if errorlevel 1 (
   echo [WARN] 未检测到 ffmpeg：预览可开启，导出 MP4 时建议先安装 ffmpeg（winget install Gyan.FFmpeg）。
 )
 
-set "HF_RUNNER=npx --yes hyperframes"
+set "HF_RUNNER=npx --yes --prefer-offline hyperframes@0.9.72"
 where hyperframes >nul 2>nul
 if not errorlevel 1 set "HF_RUNNER=hyperframes"
 
@@ -105,17 +105,22 @@ if not exist "%TARGET%" (
   exit /b 1
 )
 set "P_DIR="
+if exist "%TARGET%\hyperframes.json" if exist "%TARGET%\..\04_edl.json" (
+  findstr /c:"hyperframes-local-v1" "%TARGET%\hyperframes.json" >nul
+  if not errorlevel 1 set "P_DIR=%TARGET%\.."
+)
 if not exist "%TARGET%\hyperframes.json" if not exist "%TARGET%\index.html" (
   if exist "%TARGET%\04_edl.json" set "P_DIR=%TARGET%"
   if exist "%TARGET%\pipeline\04_edl.json" set "P_DIR=%TARGET%\pipeline"
 )
 if not "%P_DIR%"=="" (
-  if not exist "%P_DIR%\hyperframes_draft\index.html" (
+  if not exist "%P_DIR%\hyperframes_draft\studio_export.json" (
     set "EXP_PY=%SCRIPT_DIR%\short-video-studio\scripts\export_hyperframes.py"
     if not exist "!EXP_PY!" set "EXP_PY=%USERPROFILE%\.claude\skills\short-video-studio\scripts\export_hyperframes.py"
     if exist "!EXP_PY!" (
       echo ^>^>^> 检测到剪辑流水线目录，正在自动生成 HyperFrames 工程...
       python "!EXP_PY!" --pipeline-dir "%P_DIR%"
+      if errorlevel 1 (pause & exit /b 1)
     )
   )
   if exist "%P_DIR%\hyperframes_draft\index.html" set "TARGET=%P_DIR%\hyperframes_draft"
@@ -131,5 +136,5 @@ echo.
 echo ^>^>^> 正在启动 HyperFrames Studio 工程：%TARGET%
 echo ^>^>^> 浏览器即将自动打开实时预览界面（关闭窗口或 Ctrl+C 可停止预览）。
 echo.
-call %HF_RUNNER% preview
+call %HF_RUNNER% preview .
 if errorlevel 1 pause

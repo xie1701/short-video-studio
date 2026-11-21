@@ -1351,9 +1351,27 @@ def run_step2(
                     item["say"] = speak_str
             v_name = str(item.get("voice") or "zh-CN-YunxiNeural")
             v_rate = str(item.get("rate") or "+8%")
-            _, _, wb_words, m_on, m_off = synthesize_tts_segment_detailed(
-                speak_str, sp, voice=v_name, rate=v_rate
-            )
+            if item.get("voice_file"):
+                assert script_json_path is not None
+                original = script_items[idx - 1]
+                original_text = str(original.get("show") or original.get("text") or "")
+                if speak_str != str(original.get("say") or original_text) or item["text"] != original_text:
+                    raise ValueError(f"{item['id']} 的台词已调整，需提供匹配的新录音。")
+                voice_source = (script_json_path.resolve().parent / item["voice_file"]).resolve()
+                ffmpeg = find_bin("ffmpeg")
+                if not ffmpeg:
+                    raise RuntimeError("导入原始配音需要 FFmpeg")
+                run_cmd([ffmpeg, "-y", "-v", "error", "-i", str(voice_source), "-vn",
+                         "-ar", "48000", "-ac", "2", "-c:a", "pcm_s16le", str(sp)])
+                duration, m_on, m_off = _measure_wav_speech_extent(sp)
+                if duration <= 0.1 or m_off <= m_on:
+                    raise ValueError(f"原始配音为空或过短：{voice_source}")
+                wb_words = []
+                item["voice_source"] = str(voice_source)
+            else:
+                _, _, wb_words, m_on, m_off = synthesize_tts_segment_detailed(
+                    speak_str, sp, voice=v_name, rate=v_rate
+                )
             seg_wavs.append(sp)
             tts_meta_per_seg.append((wb_words, m_on, m_off))
 
@@ -1386,6 +1404,8 @@ def run_step2(
                 "source_media": None,
                 "source_video_grade": "usable",
                 "source_audio": str(master_tts_wav.resolve()),
+                "voice_source": item.get("voice_source"),
+                "voice_source_offset_sec": s_sec,
                 "is_filler": bool(item.get("is_filler", False)),
                 "emotion": item.get("emotion", "info"),
                 "keywords": kws,
@@ -1472,6 +1492,7 @@ def run_step2(
     transcript = {
         "step": "02_transcribe",
         "source_type": source_type,
+        "uses_synthetic_voice": source_type == "tts" and any(not seg.get("voice_source") for seg in segments),
         "language": "zh",
         "primary_audio": primary_audio,
         "duration_sec": round(total_dur, 4),

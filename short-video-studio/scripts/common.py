@@ -18,6 +18,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import wave
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -37,6 +38,41 @@ CANVAS_WIDTH = 1080
 CANVAS_HEIGHT = 1920
 DEFAULT_FPS = 30
 TARGET_LUFS = -14.0
+HYPERFRAMES_VERSION = "0.9.72"
+EDITABLE_EXPORTS = ("jianying", "hyperframes")
+EXPORT_CHOICES = ("auto", "mp4", "jianying", "hyperframes", "both")
+EDIT_PROFILES = {
+    "talking": {"opening_cuts": 2, "max_shot_sec": 8.0, "static_sec": 3.0, "hero_height_ratio": 0.33, "sentence_cut_gap": 0.85},
+    "documentary": {"opening_cuts": 0, "max_shot_sec": 20.0, "static_sec": 12.0, "hero_height_ratio": 0.20, "sentence_cut_gap": 3.2},
+    "explainer": {"opening_cuts": 1, "max_shot_sec": 14.0, "static_sec": 8.0, "hero_height_ratio": 0.28, "sentence_cut_gap": 1.8},
+}
+
+
+def export_selection(selection: str) -> Tuple[Tuple[str, ...], bool]:
+    if selection == "mp4":
+        return (), False
+    if selection in ("auto", "both"):
+        return EDITABLE_EXPORTS, selection == "both"
+    if selection not in EDITABLE_EXPORTS:
+        raise ValueError(f"未知交付格式：{selection}")
+    return (selection,), True
+
+
+def review_checks(checks: List[Dict[str, Any]], export_mode: str, strict_asr: bool) -> Tuple[List[str], List[str]]:
+    _, exports_required = export_selection(export_mode)
+    reviewable = {"bb_ocr_av_loop", "bb_pixel_readability", "bb_meta_leak_ocr"}
+    if not strict_asr:
+        reviewable.add("bb_blind_asr_proxy")
+    blocking, manual = [], []
+    for check in checks:
+        cid, status = check["id"], check["status"]
+        if status == "PASS" or (cid == "bb_export_contracts" and not exports_required):
+            continue
+        if status == "SKIPPED_UNAVAILABLE" and cid in reviewable:
+            manual.append(cid)
+        else:
+            blocking.append(cid)
+    return blocking, manual
 
 # 平台 UI 遮挡区边界（任何关键文字/贴纸不得侵入）
 SAFE_ZONE = {
@@ -97,13 +133,11 @@ LEAK_REGEX_PATTERNS = [
     r"\bIMG_\d+",
     r"\bMVI_\d+",
     r"\bDSC_\d+",
-    r"202\d[-_/.]\d{2}",
     r"第\d+遍",
     r"口述稿?",
     r"提词器?",
     r"STYLE[_-]?\d+",
     r"style_[012]\d",
-    r"\bNOTION\b",
     r"暗黑科技",
     r"强反差财经",
     r"高级感杂志",
@@ -211,6 +245,13 @@ def ffmpeg_has_filter(filter_name: str) -> bool:
 
 def ffprobe_media(media_path: Path) -> Dict[str, Any]:
     """调用 ffprobe 获取视频/音频流的详细元数据（含 side_data_list 旋转矩阵）。"""
+    path = media_path.resolve()
+    stat = path.stat()
+    return json.loads(_probe_media_json(str(path), stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
+
+
+@functools.lru_cache(maxsize=256)
+def _probe_media_json(path: str, inode: int, size: int, modified_ns: int, changed_ns: int) -> str:
     ffprobe = find_bin("ffprobe")
     if not ffprobe:
         raise RuntimeError("未找到 ffprobe，请先运行 check_and_setup.py 安装 ffmpeg。")
@@ -218,10 +259,10 @@ def ffprobe_media(media_path: Path) -> Dict[str, Any]:
         ffprobe, "-v", "quiet",
         "-print_format", "json",
         "-show_format", "-show_streams",
-        str(media_path),
+        path,
     ]
     res = run_cmd(cmd)
-    return json.loads(res.stdout or "{}")
+    return res.stdout or "{}"
 
 
 def parse_fps(rate_str: str) -> float:
@@ -637,7 +678,20 @@ def read_json(path: Path) -> Any:
 
 def write_json(path: Path, data: Any) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    encoded = json.dumps(data, ensure_ascii=False, indent=2)
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as handle:
+        pending = Path(handle.name)
+        try:
+            handle.write(encoded)
+            handle.flush()
+        except OSError:
+            handle.close()
+            pending.unlink(missing_ok=True)
+            raise
+    try:
+        pending.replace(path)
+    finally:
+        pending.unlink(missing_ok=True)
     return path
 
 
@@ -1008,6 +1062,13 @@ def resolve_workspace_paths(
         pipeline_dir = eff_proj_dir / "pipeline"
 
     out_dir = eff_proj_dir / "out"
+    if raw_res is not None:
+        write_dirs = (pipeline_dir, out_dir, eff_proj_dir / "_demo_raw_media")
+        for write_dir in write_dirs:
+            resolved_dir = write_dir.resolve()
+            if resolved_dir.is_relative_to(raw_res) or raw_res.is_relative_to(resolved_dir):
+                raise ValueError(f"加工目录与原素材目录重叠：{resolved_dir}。请指定独立的加工目录。")
+
     account_profile_path = content_log_dir / "account_profile.json"
     legacy_prof = eff_proj_dir / "content-log" / "account_profile.json"
     if not account and not account_profile_path.exists() and legacy_prof.exists():

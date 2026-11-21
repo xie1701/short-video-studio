@@ -128,6 +128,9 @@ def audit_text_line(
                 "severity": "must",
                 "category": cat,
                 "matched_term": term,
+                "start_char": m.start(),
+                "end_char": m.end(),
+                "context": text[max(0, m.start() - 22): m.end() + 22],
                 "reason": reason,
                 "suggestion": repl,
                 "acked": False,
@@ -143,6 +146,9 @@ def audit_text_line(
                 "severity": "warn",
                 "category": cat,
                 "matched_term": term,
+                "start_char": m.start(),
+                "end_char": m.end(),
+                "context": text[max(0, m.start() - 22): m.end() + 22],
                 "reason": reason,
                 "suggestion": repl,
                 "acked": is_acked,
@@ -213,8 +219,11 @@ def audit_script_compliance(
 
         findings.append({
             "sentence_id": sid,
-            "source_type": "real_voice" if is_real_voice else "script",
+            "source_type": source_type,
             "original_text": txt,
+            "source_media": seg.get("source_media"),
+            "start_sec": seg.get("start_sec"),
+            "end_sec": seg.get("end_sec"),
             "suggested_text": res["suggested_text"],
             "action": action,
             "hits": res["hits"],
@@ -271,66 +280,25 @@ def audit_script_compliance(
     return report
 
 
-def _classify_asset_license(path: Path, asset_kind: str, pipeline_dir: Path, reg_map: Dict[str, Any]) -> Dict[str, Any]:
-    res_p = path.resolve()
-    res_str = str(res_p)
-    assets_res = ASSETS_DIR.resolve()
-    pipe_res = pipeline_dir.resolve()
-
-    if res_str in reg_map or path.name in reg_map:
-        info = reg_map.get(res_str) or reg_map.get(path.name)
+def _classify_asset_license(path: Path, asset_kind: str, pipeline_dir: Path,
+                            reg_map: Dict[str, Any], asset_hash: str) -> Dict[str, Any]:
+    if asset_hash in reg_map:
+        info = reg_map[asset_hash]
         return {
             "source_tier": "external_registered",
-            "license": str(info.get("license", "Registered Commercial License")),
-            "commercial_ok": bool(info.get("commercial_ok", True)),
-            "note": str(info.get("source", "用户授权登记")),
+            "license": str(info["license"]),
+            "commercial_ok": bool(info["commercial_ok"]),
+            "authorization_path": info["authorization_path"],
+            "authorization_sha256": info["authorization_sha256"],
         }
 
-    if (assets_res / "sound_vibe") in res_p.parents:
-        return {
-            "source_tier": "vibe_sound_cc0",
-            "license": "CC0 1.0 Public Domain (Freesound)",
-            "commercial_ok": True,
-            "note": "内置 vibe_sound 免版权物理音库",
-        }
-    if assets_res in res_p.parents:
-        return {
-            "source_tier": "builtin_svs_cc0",
-            "license": "CC0 1.0 / MIT (SVS Built-in)",
-            "commercial_ok": True,
-            "note": "随仓内置原创/数学合成资产",
-        }
-    if pipe_res in res_p.parents:
-        return {
-            "source_tier": "project_generated",
-            "license": "Original Project Asset",
-            "commercial_ok": True,
-            "note": "本项目流水线现场生成素材",
-        }
-    if asset_kind == "font":
-        if is_verified_commercial_font(res_p):
-            return {
-                "source_tier": "verified_commercial_font",
-                "license": "SIL OFL 1.1 / Alimama Verified Commercial Free",
-                "commercial_ok": True,
-                "commercial_verified": True,
-                "note": "经 common.is_verified_commercial_font 验证通过的免费可商用字体",
-            }
-        return {
-            "source_tier": "unverified_system_or_custom_font",
-            "license": "UNVERIFIED_FONT_COPYRIGHT_RISK",
-            "commercial_ok": False,
-            "commercial_verified": False,
-            "note": "系统字体或未验证商用授权字体，禁止无授权商用交付（请改用 OFL/Alimama 字体或写入 licenses.json）",
-        }
-
-    return {
-        "source_tier": "unregistered_external",
-        "license": "UNKNOWN_UNREGISTERED",
-        "commercial_ok": False,
-        "commercial_verified": False,
-        "note": "未在 licenses.json 或内置 CC0 库登记的第三方外置素材",
-    }
+    resolved = path.resolve()
+    if ASSETS_DIR.resolve() in resolved.parents:
+        return {"source_tier": "builtin_svs", "license": "见 assets-attribution.md", "commercial_ok": True}
+    generated = {"04_generated_broll", "01_normalized", "01_code_scenes"}
+    if asset_kind == "code_broll" and any(pipeline_dir.resolve() / name in resolved.parents for name in generated):
+        return {"source_tier": "project_generated", "license": "项目生成内容", "commercial_ok": True}
+    return {"source_tier": "unregistered_external", "license": "未关联授权原件", "commercial_ok": False}
 
 
 def build_asset_license_manifest(
@@ -338,18 +306,22 @@ def build_asset_license_manifest(
     out_dir: Optional[Path] = None,
     licenses_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """扫描本次成片实际使用的 BGM/SFX/字体/LUT，生成带 SHA-256 的渲染副产物授权清单。"""
     reg_map: Dict[str, Any] = {}
     cand_lic = licenses_path or (pipeline_dir.parent / "licenses.json")
     if cand_lic.is_file():
-        try:
-            raw = read_json(cand_lic)
-            for item in (raw.get("assets", []) if isinstance(raw, dict) else raw):
-                if isinstance(item, dict) and item.get("path"):
-                    reg_map[str(Path(item["path"]).resolve())] = item
-                    reg_map[Path(item["path"]).name] = item
-        except Exception:
-            pass
+        raw = read_json(cand_lic)
+        for item in (raw.get("assets", []) if isinstance(raw, dict) else raw):
+            if not isinstance(item, dict) or not item.get("license") or not item.get("authorization_path"):
+                continue
+            asset_hash = str(item.get("sha256") or "").lower()
+            document = (cand_lic.resolve().parent / item["authorization_path"]).resolve()
+            if not re.fullmatch(r"[a-f0-9]{64}", asset_hash) or not document.is_file():
+                continue
+            document_hash = sha256_file(document)
+            if item.get("authorization_sha256") and item["authorization_sha256"].lower() != document_hash:
+                continue
+            reg_map[asset_hash] = {**item, "commercial_ok": item.get("commercial_ok") is True,
+                                   "authorization_path": str(document), "authorization_sha256": document_hash}
 
     raw_assets: List[Tuple[str, Path]] = []
     ae_p = pipeline_dir / "03_audio_events.json"
@@ -382,14 +354,20 @@ def build_asset_license_manifest(
     col_p = pipeline_dir / "07_color_plan.json"
     if col_p.is_file():
         col = read_json(col_p)
-        if col.get("lut_path"):
-            raw_assets.append(("lut", Path(col["lut_path"])))
+        if col.get("source_lut_path") or col.get("lut_path"):
+            raw_assets.append(("lut", Path(col.get("source_lut_path") or col["lut_path"])))
 
     edl_p = pipeline_dir / "04_edl.json"
     if edl_p.is_file():
         for clip in (read_json(edl_p).get("clips") or []):
             if clip.get("track_role") == "code_broll" and clip.get("media_path"):
                 raw_assets.append(("code_broll", Path(clip["media_path"])))
+
+    code_spec = pipeline_dir / "00_code_spec.json"
+    if code_spec.is_file():
+        for asset in read_json(code_spec).get("assets", []):
+            if asset.get("path"):
+                raw_assets.append(("code_input", Path(asset["path"])))
 
     # 扫描 02_transcript.json 是否使用了 edge-tts 配音并记录商用授权风险提醒
     tts_commercial_notice: Optional[str] = None
@@ -399,7 +377,7 @@ def build_asset_license_manifest(
             tr = read_json(tr_p)
             src_t = str(tr.get("source_type") or "")
             tts_prov = str(tr.get("tts_provider") or "")
-            if src_t == "tts" or "edge" in tts_prov.lower():
+            if tr.get("uses_synthetic_voice", src_t == "tts") or "edge" in tts_prov.lower():
                 tts_commercial_notice = (
                     "检测到当前成片音频由 Edge TTS 在线语音合成：Microsoft Edge TTS 仅面向演示/测试与非直接商业转售，"
                     "正式商业投放或广告购买前建议替换为真人实拍配音或采购商业 TTS 授权。"
@@ -420,7 +398,7 @@ def build_asset_license_manifest(
         exists = p.is_file()
         sha = sha256_file(p) if exists else ""
         sz = p.stat().st_size if exists else 0
-        cls = _classify_asset_license(p, kind, pipeline_dir, reg_map)
+        cls = _classify_asset_license(p, kind, pipeline_dir, reg_map, sha)
         if kind == "font" and not cls.get("commercial_ok"):
             unverified_fonts.append(p.name)
         if not exists or not cls["commercial_ok"]:
@@ -437,6 +415,20 @@ def build_asset_license_manifest(
             "commercial_verified": bool(cls.get("commercial_verified", cls.get("commercial_ok", False))),
             **cls,
         })
+
+    if col_p.is_file() and col.get("source_lut_path") and col.get("lut_path") != col["source_lut_path"]:
+        derived = Path(col["lut_path"])
+        master = Path(col["source_lut_path"]).resolve()
+        source_entry = next(item for item in entries if item["path"] == str(master))
+        if derived.is_file() and source_entry["commercial_ok"]:
+            entries.append({
+                "category": "lut", "path": str(derived.resolve()), "sha256": sha256_file(derived),
+                "source_tier": "project_derived_lut", "source_path": str(master),
+                "source_sha256": source_entry["sha256"], "commercial_ok": True,
+                "commercial_verified": True,
+            })
+        else:
+            unregistered.append(f"lut:{derived.name} 缺少可核对的底表授权或派生文件")
 
     all_ok = (len(unregistered) == 0 and len(unverified_fonts) == 0 and len(entries) > 0)
     warnings: List[str] = [tts_commercial_notice] if tts_commercial_notice else []
@@ -455,11 +447,9 @@ def build_asset_license_manifest(
     }
     p_manifest = pipeline_dir / "asset_license_manifest.json"
     write_json(p_manifest, manifest)
-    write_json(pipeline_dir / "00_asset_licenses.json", manifest)
-
-    target_out = out_dir or (pipeline_dir.parent / "out")
-    target_out.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(p_manifest, target_out / "asset_license_manifest.json")
+    if out_dir is not None:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(p_manifest, out_dir / "asset_license_manifest.json")
     return manifest
 
 

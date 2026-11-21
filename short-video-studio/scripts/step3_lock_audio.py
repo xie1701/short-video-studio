@@ -502,6 +502,8 @@ def run_step3(
             "text": seg["text"],
             "say_text": str(seg.get("say_text") or seg.get("text") or ""),
             "source_media": seg.get("source_media"),
+            "voice_source": seg.get("voice_source"),
+            "voice_source_offset_sec": seg.get("voice_source_offset_sec"),
             "source_video_grade": seg.get("source_video_grade", "usable"),
             "source_in_sec": round(s0 / float(SR), 4),
             "source_out_sec": round(s1 / float(SR), 4),

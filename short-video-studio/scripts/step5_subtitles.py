@@ -326,7 +326,13 @@ def run_step5(
     if not template_id or template_id not in templates:
         template_id = "store_bold_yellow" if track == "store" else "creator_clean_white"
     tpl = templates[template_id]
-    font_path = find_commercial_font(tpl.get("font_candidates"))
+    from common import ASSETS_DIR
+    bundled = ASSETS_DIR / "fonts"
+    font_path = next((str(bundled / name) for name in (tpl.get("font_candidates") or [])
+                      if (bundled / name).is_file()), None)
+    fallback = bundled / "AlimamaShuHeiTi-Bold.otf"
+    if font_path is None:
+        font_path = str(fallback) if fallback.is_file() else find_commercial_font(tpl.get("font_candidates"))
     strip_punct = bool(tpl.get("punct_stripped", True))
 
     entries: List[Dict[str, Any]] = []

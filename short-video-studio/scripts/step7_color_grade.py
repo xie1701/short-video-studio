@@ -421,6 +421,7 @@ def run_step7(
         "step": "07_color_grade",
         "style_id": style_id,
         "lut_name": lut_path.name,
+        "source_lut_path": str(lut_path.resolve()),
         "lut_strength": round(eff_strength, 2),
         "lut_path": str(blended_lut.resolve()),
         "hero_media": hero_mp,

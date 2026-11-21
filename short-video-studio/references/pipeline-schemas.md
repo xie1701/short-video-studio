@@ -20,7 +20,7 @@
 | Step 7 | `07_color_plan.json` (+ `07_blended_lut.cube`) | Hero 基准锚定 + 全人脸镜头 BT.709 皮肤矢量保护 + 中点测光矫正 + 单向不升强度 LUT 闭环 |
 | Step 8 | `08_mixed_master.wav` + `08_stem_nosfx.wav` + `08_voice_master.wav` + `08_bgm_ducked.wav` + `08_sfx_master.wav` + `08_sfx_audit_window.json` + `08_mix_metrics.json` | 广播人声链(自适应压缩) + dB 域双频段闪避 + 锁定一致 `-14.0 LUFS` 混音 + 三端四轨同源分轨 +全量 SFX 基线 |
 | Step 9 | `09_title_cover.md` + `09_title_cover.json` + `09_cover.jpg` + `09_cover_3x4.jpg` + `09_ui_safe_preview.jpg` | 黄金封面帧优选（锐度/睁眼）、风格调色同步、避脸双构图封面 + UI遮罩预览 + 180px缩略图可读校验与真实3s `--hook-variants` |
-| 出片 | `output_preview.mp4` / `output_final.mp4` / `jianying_draft/` / `hyperframes_draft/` | 本地 MP4 渲染 (`focus_blur` 柔焦与锁眼 Ken Burns 修复) + 相对 URL FCPXML + `<template>` 可播放离线 HyperFrames |
+| 出片 | `output_preview.mp4` / `output_final.mp4` / `jianying_draft/` / `hyperframes_draft/` | 本地 MP4 渲染 (`focus_blur` 柔焦与锁眼 Ken Burns 修复) + 相对 URL FCPXML + 原生 HyperFrames Studio |
 | 质检 | `10_qa_report.json` + `10_qa_report.md` (+ `10_benchmark_comparison.md`) | **22 项 Fail-Closed 门禁**（三态 `PASS \| FAIL \| SKIPPED_UNAVAILABLE`，双态终审 `MACHINE_PASS_PENDING_HUMAN` → `APPROVED`） |
 | 交付与清理 | `out/*` + `11_delivery_summary.md` + `review_player.html` + `10_action_strips.jpg` (+ `VERIFY.md`) + `tidy_report.json` | 交付物同步入 `out/` + 离线打点审片 + 前3秒及切点动作连拍条 + 默认清理高体积中间帧/过程流并保留锁轨 ASSETS 以支撑 `reedit-visuals` (`--deep-clean` 才全清) |
 | 进化闭环 | `content-log/weekly_review.md` + `content-log/account_profile.json` | 按 `--account` 与 `--track` 双重隔离复盘，纳入复播率/同城占比/询单率并反查 EDL 断崖 |
@@ -172,20 +172,66 @@
 
 ---
 
-## 3. HyperFrames Studio 全离线工程封装说明 (`export_hyperframes.py`)
-- `run_pipeline.py` 每次完成剪辑包装后，同步生成**零外链 CDN、符合 `hyperframes-core` `<template>` 契约、可直接在浏览器播放拖拽 Seek 的 `pipeline/hyperframes_draft/`**：
-  - `index.html` + `hyperframes.json`：根编排文件（内嵌支持 `<template>` 注水与逐帧同步显隐的离线时间线驱动引擎，零 `http(s)://` 外链 CDN）
-  - `compositions/video_track.html`（`video`）、`compositions/flower_track.html`（`graphics`，如有包装元素时生成）及 `compositions/captions_track.html`（`captions`：样式与 `@font-face` 全置于 `<template>` 内、唯一 ID 根、遵循 `bg_box_color`/`bg_radius`、严控 `y <= 1468`）
-  - `启动HyperFrames工程.command`（`0o755` macOS 双击启动器）与 `启动HyperFrames工程.bat`（Windows 双击启动器）。
+## 3. HyperFrames Studio 工程
+
+导出目录 `pipeline/hyperframes_draft/` 直接在 `index.html` 的根合成写入视频、花字、字幕、人声片段、音乐和音效的独立时间线条目。原生条目使用唯一 ID、`data-start`、`data-duration`、`data-track-index` 和适用的 `data-media-start`，由 Studio 播放和保存编辑。
+
+`studio_export.json` 保存导出剪辑数、视频源映射及导出版本。启动器调用 `hyperframes preview .`。工程质检包括本地资产完整性、官方时间线识别和片头、中段、片尾抽帧。
 
 ---
 
-## 4. 原材、合规授权、闸门锁与 22 项 Fail-Closed 契约 Schema
+## 4. 取证、终审与归档
 - **专属隔离目录结构**：`<workspace_root>/accounts/<account_slug>/{account_profile.json, compliance_whitelist.json, content-log/, projects/<project_id>/{pipeline/, out/}}`（原素材 `--raw-dir` 全程只读零写入）。
 - **`00_raw_intel.json`**：`verified_by_real_users`、`pain_keywords`、`raw_pain_phrases`、`customer_questions`、`proof_assets`、`script_lint` (`passed`, `error_count`, `warn_count`, `issues`)。
 - **`00_shot_log.json` & `00_contact_sheet.jpg`**：每条素材的 `best_in_sec`、`sharpness_score`、`stability_score`（二阶加速度）、`motion_speed_px`、`accel_jitter_px`、`audio_grade` (`usable|noisy|silent`)、`video_grade` (`usable|audio_only|ng`)、`taboo_tags`、`color_meta`、`faces`、`eye_anchor`、`saliency_bbox`、`semantic_tags`、`scene_group`。
-- **`00_compliance_report.json` & `00_asset_licenses.json` / `asset_license_manifest.json`**：广告法 `must`/`warn` 双级命中（实拍人声弃用 `>40%` 或清空即阻断 `passed=False`，`#22` 黑盒复核严格只读不覆写）；实际用到 BGM/SFX/字体/LUT/code_broll 逐项 `sha256`、`commercial_verified`、`tts_commercial_notice`。
-- **`approval_lock.json` & `tidy_report.json` & `08_sfx_audit_window.json`**：`interruptions` (3 必停点审计)、`plan_sha256`（锁 03~08 核心工件及存在的 `00_code_spec.json`）、`output_final_sha256`、`human_approved`、`approved_at`（签字自动同步 `out/10_qa_report.*`）；`blind_test_answer_key.json` 独立真随机盲测。
-- **`content-log/account_profile.json`**：按 `--account` 与 `--track` 双重隔离，`sample_sufficient`、`defaults_frozen`、`pause_sec`、`persona_pause_sec`、`target_median_shot_sec`、`target_aroll_ratio`、`preferred_style_id`、`winning_hooks`。
+- **`00_compliance_report.json` 与 `asset_license_manifest.json`**：广告法 `must`/`warn` 双级命中（实拍人声弃用 `>40%` 或清空即阻断 `passed=False`，`#22` 黑盒复核严格只读不覆写）；实际用到 BGM/SFX/字体/LUT/code_broll 逐项 `sha256`、`commercial_verified`、`tts_commercial_notice`。
+- **`approval_lock.json` & `tidy_report.json` & `08_sfx_audit_window.json`**：`interruptions`（人工沟通记录）、`plan_sha256`（锁 03~08 核心工件及存在的 `00_code_spec.json`）、`output_final_sha256`、`human_approved`、`approved_at`（签字自动同步 `out/10_qa_report.*`）；`blind_test_answer_key.json` 独立真随机盲测。
+- **`content-log/account_profile_<track>.json`**：在账号目录内按门店轨或博主轨保存。字段包括 `active_candidate`、`platform`、启用时间和实际生效的制作参数。轨道匹配时仍可读取旧版 `account_profile.json`。
 - **`00_code_spec.json` & `SPEC.md` & `STRUCTURE.md` & `VERIFY.md` & `10_code_verify_evidence.json`**：入口 3 `--mode code-video` 契约，含 `title`、`one_idea`、`format` (`width`/`height`/`fps`/`target_duration_sec`/`frame_count`)、`exact_copy`、`facts`、`assets` (真实 `ffprobe_media` 元数据)、`typography` (字号下限 ≥28/36/64px)、`subtitle_reserved_band`、`sections` (含 `hold_sec` 可读性验证)、自动抽帧像素几何+OCR实测取证 `10_code_verify_evidence.json` 及填满真实证据的 `VERIFY.md`；`--script-json` 同时兼容每条对象附带独立 `say`（TTS 读法）与 `show`（上屏显示）字段，并通过跨通道单调投射保留 `WordBoundary` 词级时间戳。
-- **`10_qa_report.json`（22 项 Fail-Closed）**：每项含 `status: PASS|FAIL|SKIPPED_UNAVAILABLE` 与 `passed: (status=="PASS")`；汇总 `pass_count`, `fail_count`, `skipped_count`, `approval_status` (`MACHINE_PASS_PENDING_HUMAN` | `APPROVED` | `REJECTED`)；其中 `#16` 支持 HyperFrames 3 帧真实无头浏览器烟测、`#20` 同时核验 2–8kHz 抬升与 5ms Spectral Flux 毫秒起音同步。
+- **`10_qa_report.json`**：每项含 `status: PASS|FAIL|SKIPPED_UNAVAILABLE|NOT_REQUESTED` 与 `passed: (status=="PASS")`。终审核对 `plan_sha256` 与 `output_final_sha256`，成片版本或方案变化后须重新质检。代码制片的 `10_code_verify_evidence.json` 独立记录抽样与 OCR 覆盖，`VERIFY.md` 列出待人工复核的要求。
+
+## 5. 来源和授权
+
+`run_pipeline.py --sources-json sources.json` 接收相对该 JSON 的原件路径。首次导入记录源文件 SHA-256。可显式传入预期 `sha256`。台词 ID 来自 `03_audio_events.json`，也可给 `clip_id` 限定画面。定位可用 `page:3`、`row:12`、`line:4`、`json:/items/0` 或 `time:1.0-2.5`。来源校验匹配文件和实际台词，主张是否成立由人回查原件。
+
+```json
+{
+  "sources": [{"id": "rates", "path": "price-list.csv"}],
+  "claims": [
+    {"id": "quoted-price", "sentence_id": "sent_001", "text": "七十二元",
+     "source_id": "rates", "locator": "row:2"}
+  ]
+}
+```
+
+`04_source_review.json` 记录成片时段、原素材时段和原件位置。已登记来源发生变更时，签字要求复核。代码制片的脚本句可加 `voice_file`，路径相对脚本 JSON，配音原件会进入取证报告。编导可单独看 `VERIFY.md`，其中列明自动抽样覆盖和实查项目。
+
+外部资产登记接受 `{"assets":[{"sha256":"<素材 SHA-256>","authorization_path":"./license.pdf","license":"<授权名>","commercial_ok":true}]}`。可给 `authorization_sha256` 固定授权原件。授权内容、适用渠道、有效期由人工复核。
+
+## 6. 发布快照与实验
+
+`content_log_review.py --add-json` 接受单条 JSON 或文件。比率数据使用原始整数分子分母。下面这条记录的窗口是发布后 48 小时。
+
+```json
+{
+  "track": "creator", "platform": "douyin", "video_id": "v-01",
+  "published_at": "2026-11-01T12:00:00+08:00", "captured_at": "2026-11-03T12:00:00+08:00",
+  "observation_hours": 48, "duration_sec": 23, "traffic_source": "organic",
+  "metrics": {"retention_3s": {"numerator": 630, "denominator": 1000}},
+  "experiment": {"id": "pause-test", "pair_id": "pair-01", "arm": "variant",
+                 "variable": "pause_sec", "value": 0.26}
+}
+```
+
+`--register-plan plan.json` 在发布前登记参数及判定规则。相同编号的规则只能提交同一份。匹配实验需给每对视频唯一 `pair_id`，每组一条。实际随机分流须由发布者确认并保留分配记录。工具按独立视频估计变化区间。
+
+```json
+{
+  "id": "pause-test", "track": "creator", "design": "matched", "platform": "douyin",
+  "traffic_source": "organic", "observation_hours": 48, "duration_band_sec": [20, 30],
+  "variable": "pause_sec", "parameter": "pause_sec", "control_value": 0.20, "variant_value": 0.26,
+  "primary_metric": "retention_3s", "min_units_per_arm": 8, "min_effect": 0.04
+}
+```
+
+在同一账号日志目录生成周复盘，达标结果以内容指纹保存到 `candidates/`。`--replay-plan plan.json` 输出历史检验，历史回放没有启用资格。审核同条件对照、样本和分配证据后，`--activate-candidate <ID>` 复算当前数据并更新对应轨道配置，旧版本留在 `profile_history/`。制作时用 `--platform douyin` 载入对应平台参数。候选和观察结论不写入线上账号。

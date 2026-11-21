@@ -103,6 +103,8 @@ def export_hyperframes_html(
     accent_hex = palette[1] if len(palette) > 1 else "#FACC15"
 
     dur = max(1.0, float(duration_sec))
+    if out_html.suffix.lower() != ".html":
+        out_html = out_html / "index.html"
     out_html.parent.mkdir(parents=True, exist_ok=True)
     safe_title = html.escape(str(title or "核心视觉样板"))
 
@@ -122,42 +124,30 @@ def export_hyperframes_html(
         f"  <title>{safe_title}</title>",
         "  <style>",
         f"    html, body {{ margin:0; padding:0; width:{CANVAS_WIDTH}px; height:{CANVAS_HEIGHT}px; overflow:hidden; background:{bg_hex}; }}",
-        f"    #main {{ position:relative; width:{CANVAS_WIDTH}px; height:{CANVAS_HEIGHT}px; font-family:'Alimama ShuHeiTi','Noto Sans CJK SC',sans-serif; }}",
+        f"    #main {{ position:relative; width:{CANVAS_WIDTH}px; height:{CANVAS_HEIGHT}px; font-family:sans-serif; }}",
         f"    .headline {{ position:absolute; left:96px; right:160px; top:220px; font-size:68px; font-weight:800; color:{pri_col}; line-height:1.2; }}",
-        f"    .accent-bar {{ width:88px; height:10px; border-radius:5px; background:{accent_hex}; margin-bottom:24px; }}",
+        f"    .accent-bar {{ display:block; width:88px; height:10px; border-radius:5px; background:{accent_hex}; margin-bottom:24px; }}",
         f"    .sub-line {{ position:absolute; left:100px; right:160px; top:{y_px}px; text-align:center; font-size:{font_sz}px; font-weight:800; color:{pri_col}; -webkit-text-stroke:{stroke_css}; paint-order:stroke fill; }}",
         f"    .kw {{ color:{kw_col}; }}",
         "  </style>",
         "</head>",
         "<body>",
-        f'  <div id="main" data-composition-id="main" data-start="0" data-duration="{dur:.4f}" data-fps="{DEFAULT_FPS}" data-width="{CANVAS_WIDTH}" data-height="{CANVAS_HEIGHT}">',
-        '    <div class="clip headline" data-start="0" data-duration="{0:.4f}" data-track-index="1">'.format(min(dur, 3.0)),
-        '      <div class="accent-bar"></div>',
-        f"      <div>{safe_title}</div>",
+        f'  <div id="main" data-composition-id="main" data-no-timeline data-start="0" data-duration="{dur:.4f}" data-fps="{DEFAULT_FPS}" data-width="{CANVAS_WIDTH}" data-height="{CANVAS_HEIGHT}">',
+        '    <div id="sample-headline" class="clip headline" data-start="0" data-duration="{0:.4f}" data-track-index="1">'.format(min(dur, 3.0)),
+        '      <span class="accent-bar"></span>',
+        f"      <span>{safe_title}</span>",
         "    </div>",
-        f'    <div class="clip sub-line" data-start="0" data-duration="{dur:.4f}" data-track-index="2">核心<span class="kw">关键信息</span>直观呈现</div>',
+        f'    <div id="sample-caption" class="clip sub-line" data-start="0" data-duration="{dur:.4f}" data-track-index="2">核心<span class="kw">关键信息</span>直观呈现</div>',
         "  </div>",
-        "  <script>",
-        "    (function () {",
-        "      window.__timelines = window.__timelines || {};",
-        "      var st = { paused: true, time: 0 };",
-        "      function sync(t) {",
-        "        st.time = Number(t) || 0;",
-        "        document.querySelectorAll('.clip[data-start]').forEach(function (el) {",
-        "          var s = parseFloat(el.getAttribute('data-start') || '0');",
-        "          var d = parseFloat(el.getAttribute('data-duration') || '0');",
-        "          el.style.visibility = (st.time >= s && st.time < s + d) ? 'visible' : 'hidden';",
-        "        });",
-        "      }",
-        "      window.__timelines.main = { pause: function (t) { st.paused = true; if (typeof t === 'number') sync(t); return this; }, seek: function (t) { sync(t); return this; }, play: function () { st.paused = false; return this; }, time: function (t) { if (typeof t === 'number') sync(t); return st.time; } };",
-        "      sync(0);",
-        "    })();",
-        "  </script>",
         "</body>",
         "</html>",
     ]) + "\n"
     out_html.write_text(html_doc, encoding="utf-8")
-    attach_hyperframes_launchers(out_html.parent)
+    if out_html.name == "index.html":
+        config = out_html.parent / "hyperframes.json"
+        if not config.exists():
+            write_json(config, {"media": {"autoProxy": True}})
+        attach_hyperframes_launchers(out_html.parent)
     print(f"[apply-style] HyperFrames 样板 HTML 已导出 -> {out_html}")
     return out_html
 

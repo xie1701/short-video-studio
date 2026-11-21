@@ -1,6 +1,6 @@
 ---
 name: short-video-studio
-description: 面向零拍摄剪辑基础用户的全流程短视频生产智能体技能（含实拍双轨 + 纯代码制片 Code2Video 三入口）。支持多账号物理隔离 (--account) 与专属工作区零污染加工（严禁改动原素材目录，完工自动清理过程垃圾文件）、门店/博主双轨与《建立可循环的内容系统》（融合编导思维笔记+179页编导课全量生产线，内部严格溯源、对外全程大白话零黑话）、一手原材与诚实基线、广告法/平台合规双级前置拦截（含实拍原声整句弃用与 SHA-256 商用授权清单）、影视反 NG 五大硬守卫（2D FFT 相位相关二阶加速度稳度、声画分离 audio_only 保声遮脸、Handles 0.40s 掐头去尾、视觉指代词与禁忌反讽守卫、真静音重计时+提词半截词剔除）、纯代码制片方法论 (`frame(t)->image` 确定性渲染/阻尼弹簧/预抽帧/`say`/`show` 听看分离/SPEC与像素证据)、广电级包装、风格复刻洁净室与 22 项自动+独立黑盒质检及双态终审、MP4/自包含剪映/HyperFrames 三端出片与离线打点/动作连拍审片闭环。
+description: 策划、剪辑和交付面向实体门店获客或个人账号增长的短视频。适用于从真实素材策划选题、编写口播和拍摄任务卡、剪辑已有实拍，或用代码制作图解与产品演示。以锁定音轨为剪辑骨架，支持成片质检、MP4 与可编辑工程导出，以及发布数据复盘。
 ---
 
 # short-video-studio 短视频制片工作室
@@ -28,7 +28,7 @@ description: 面向零拍摄剪辑基础用户的全流程短视频生产智能�
 **三条硬性约束**：
 1. **【最高优先级】对用户全程说大白话，严禁蹦出课件或专业黑话**：内部思考与脚本编排严格按方法论选型（阶段配比、六大脚本类型、八大爆款元素、客户五层问题、漏斗/水桶串场、八大钩子、十大开篇技巧、中间六种结构、结尾一主一辅、17 种口播拍法），但**在面对用户对话、交付 4 周内容日历、口播稿、分镜表、拍摄卡与周复盘时，严禁直接输出「水桶流、漏斗流、5A、A1–A5、开篇钩子、人设、爆点前置、A-roll/B-roll、J-cut/L-cut、Room Tone、LUFS、完播率」等黑话或英文缩写**，必须全部按 [methodology-cheatsheet.md](references/methodology-cheatsheet.md) 第零节转译成老百姓听得懂的人话（用「拉新让更多人认识 / 晒真实细节亮老板底线 / 开头3秒留住人的第一句话 / 真人出镜镜头与特写补拍」等表达）。
 2. **写稿前必过「事件一句话」自检**：动笔前先答「一句话能不能说清这条视频里发生了什么事？」。说不清具体事件（只剩形容词和口号）必须退回重想；写稿落实**「用看得见的画面代替抽象感受」**与**「把专业词换成老奶奶也听得懂的话」**。
-3. **开头 3 秒画面硬标准**：**第一眼画面信息密度大于第一句话** + 开头前 3 秒至少 2 次以上画面切换（晒过程类把最值钱/最意外的完整一幕直接放最开头，单镜不超 3–4 秒，禁重复镜头与无效空镜）。
+3. **开篇先让观众看懂发生了什么**。口播默认前三秒两次切换。纪实片允许连续展示完整动作，图解默认一次切换。结合证据可读性和对应片型调整镜长。
 
 ---
 
@@ -41,6 +41,7 @@ description: 面向零拍摄剪辑基础用户的全流程短视频生产智能�
   ```bash
   python3 scripts/raw_intel_ingest.py --comments-file <评论/客服导出.txt> --proof-dir <物证目录> --script-json <脚本.json> --track <store|creator> --output <项目目录>/pipeline/00_raw_intel.json
   ```
+  源记录保留原文件指纹、定位及已知角色。只有明确核实客户导出来源后才加 `--verified-customer-export`。价格、数据、比较和实拍承诺用 `--sources-json` 关联原件，格式见 [pipeline-schemas.md](references/pipeline-schemas.md)。
 - **入口 1（从实拍创作开始）**：完成账号主页四件套与用户定位（面向企业/个人消费/大众流量 + 6 维画像）→ 按三阶段配比生成大白话 4 周内容日历 → 逐条先过「事件一句话」自检再产出大白话口播稿、分镜与拍法建议（17 种口播拍法）。
 - **入口 2（带实拍素材进来）**：运行深度素材盘点（HDR/10-bit 探测 + 拉普拉斯锐度/抖动锁 `best_in_sec` + Apple Vision 人脸/显著性感知），输出 `00_inventory.json` 与 `00_shot_log.json` 反推选题：
   ```bash
@@ -61,8 +62,8 @@ description: 面向零拍摄剪辑基础用户的全流程短视频生产智能�
 
 ### 专属工作区零污染与多账号物理隔离铁律（MUST）
 - **原素材严格只读**：所有剪辑加工、转码、临时帧和成片导出统一写入独立专属加工目录（默认 `~/.short-video-studio/workspaces/accounts/<account_slug>/projects/<project_id>/`，可用 `--workspace-root` 指定），**严禁向用户原素材 `--raw-dir` 写入任何文件**。若误将 `--project-dir` 配到 `--raw-dir` 内部，流水线自动重定向隔离并告警。
-- **多账号隔离 (`--account`)**：按账号隔离 `account_profile.json`、`compliance_whitelist.json` 与 `content-log/records.jsonl`，跨店代运营互不串味。
-- **完工自动清理 (`tidy_workspace`)**：正式成片通过 22 项质检并同步交付物至 `out/` 后，默认清理 `_render_final/`、`01_normalized/`、`08_voice_denoised.wav`、`08_premix_*.wav` 等高体积中间临时文件，同时保留锁轨音视频分轨与 `08_sfx_audit_window.json` 以支持 `tidy` 后二次复验 `#20` 及 `--mode reedit-visuals` / `--mode render-locked` 无损重剪（传入 `--deep-clean` 才全清，`--keep-temp` 可全留调试）。
+- **账号与轨道归档**：`--account` 定位账号的合规白名单与发布记录。流水线按 `--track` 读取对应的 `content-log/account_profile_<track>.json`。
+- **完工自动清理 (`tidy_workspace`)**：适用机检完成且成片进入审片或归档后，复制本次产物至 `out/` 后，默认清理 `_render_final/`、`01_normalized/`、`08_voice_denoised.wav`、`08_premix_*.wav` 等高体积中间临时文件，同时保留锁轨音视频分轨与 `08_sfx_audit_window.json` 以支持 `tidy` 后二次复验 `#20` 及 `--mode reedit-visuals` / `--mode render-locked` 无损重剪（传入 `--deep-clean` 才全清，`--keep-temp` 可全留调试）。
 
 ### 广告法与平台合规前置 + 诚实基线
 - **文本/转写双级审校 (`compliance_guard.py`)**：`must` 级违禁词（极限词/绝对承诺/功效/机关背书，精准排除「最近/最后/最怕/第一口」零误杀）必须改写或弃用；`warn` 级支持账号白名单 `ack`。**实拍真人口播命中 `must` 时严禁靠改字幕遮掩，必须整句弃用或重拍并留痕**（`00_compliance_report.json/.md`）。
@@ -85,15 +86,15 @@ description: 面向零拍摄剪辑基础用户的全流程短视频生产智能�
      python3 scripts/run_pipeline.py --account <账号> --raw-dir <原素材目录> --track <store|creator> --mode lock-preview
      ```
    - 拍板可用 `workflow_guard.py lock --pipeline-dir <dir>` 上锁（改 EDL/字幕/包装一个字节锁即失效），并根据反馈走分支：`--mode render-locked`（锁定重渲染）、`--mode reedit-visuals`（只改画面音轨不动）或 `--mode relock-voice`（重锁音轨）。
-   - 用 `workflow_guard.py record-stop` / `audit-stops` 确保全流程打扰严格 `<= 3` 次。
+   - 仅在确实向用户发起确认时调用 `workflow_guard.py record-stop`，用 `audit-stops` 核算。自动运行节点记录在 `pipeline_progress.json`。
 
 ---
 
-## 四、 「先音后画，以音定画」v5 剪辑流水线与 22 项 Fail-Closed 质检门禁
+## 四、先音后画与交付质检
 
 所有中间文件契约见 [references/pipeline-schemas.md](references/pipeline-schemas.md)，安全区与预算规范见 [references/platform-safe-zones.md](references/platform-safe-zones.md)。
 
-一键完整跑通流水线（盘点+接触表 → Step 1–9 → MP4/自包含剪映/可播放离线 HyperFrames → 22 项 Fail-Closed 验收 → 《我替你做的决定》+ 防 XSS 打点审片页 `review_player.html` → 归档 `out/` → 自动分级清理）：
+一键完整跑通流水线（盘点+接触表 → Step 1–9 → MP4 与按需工程 → 分目标验收 → 《我替你做的决定》+ 防 XSS 打点审片页 `review_player.html` → 归档 `out/` → 自动分级清理）：
 ```bash
 python3 scripts/run_pipeline.py --account <账号> --raw-dir <原素材目录> --track <store|creator> --mode <full|code-video|...> [--style-id style_14] [--code-spec <00_code_spec.json>] [--code-html <index.html>] [--code-backend auto] [--visual-index <00_visual_index.json>] [--licenses-json <licenses.json>] [--hook-variants 2] [--dialect mandarin|cantonese|dialect] [--store-anchor <店名>]
 ```
@@ -104,22 +105,23 @@ python3 scripts/run_pipeline.py --account <账号> --raw-dir <原素材目录> -
 - **`step4_build_edl.py`**：**A1** `0.40s` Handles；**A2** `audio_only` 保声遮脸与首镜门控；**A3/A4** 指代词缺失告警；单向不回退 B-roll 游标、真 J-cut + 真 L-cut 声画错位、`1.15x` 锁眼微推拉。
 - **`step5_subtitles.py` & `render_mp4.py` & `step6/7/8/9`**：保护跨词数字冒号/小数点、透传 `keywords`、动态重写合规 ASS 样式、7点避脸 `final_bbox` (`y<=1468`)；Peak-aligned SFX（零 `+18dB` 噪点注水）；中点测光与全部人脸镜 BT.709 皮肤保护；锁定一致 `-14.0 LUFS` 四端三轨 (`voice_master` / `bgm_ducked` / `sfx_master`)；`focus_blur` 毛玻璃背板 + 不动点眼部 Ken Burns；封面去套话、`09_ui_safe_preview.jpg` 遮罩验收与真 3 秒 `--hook-variants` (`09_hook_v*.mp4`)。
 
-### 22 项 Fail-Closed 门禁与双态终审 (`qa_inspector.py` + `independent_verifier.py`)
-- 全部 22 项统一输出 **`PASS | FAIL | SKIPPED_UNAVAILABLE`**（缺依赖/缺草稿绝不伪装通过，`PASS` 方计入 `passed=True`）：
+### 机检、缺项复核与终审 (`qa_inspector.py` + `independent_verifier.py`)
+- 检查输出 `PASS / FAIL / SKIPPED_UNAVAILABLE / NOT_REQUESTED`。默认 `--exports auto`，工程故障单独报。`--exports mp4` 只做成片，明确选中的工程进入必检。OCR 等缺项列为人工实查。`approve-final --reviewed <ID> --note <实查结果>` 记录实际结果，剪映需写明导入版本和轨道检查结果。
   - **1–11 项流水线契约**（响度/黑帧/静音/音画同步/字幕与 `03_audio_events` 交叉校准/切点含 L-cut 对齐/安全区与零 `<=3` 残句及预算/非相邻零倒带与保声遮脸/前3秒切镜/A-Roll句界严锁/`common.LEAK_REGEX_PATTERNS` 防露馅）；
-  - **12–22 项单遍解码黑盒裁判**（300–3400Hz 语谱画外音与 A 轨覆盖、OCR 安全区+字幕内容回环 Recall、人脸零遮挡与实测单框 WCAG `>=3.8:1`、BT.709 矩阵 `common.SKIN_YCBCR_RANGE` 肤色与 `max_luma_jump`、URL 编码相对 FCPXML 与 `<template>` 可播放离线 HyperFrames 3 帧真实浏览器烟测、OCR 防露馅、屏蔽字幕静止检测、双带遮罩+相对 MAD 全量切点 Spot-Verify、统一 `compute_sfx_band_windows` 全量 cues 净抬升 + **5ms Spectral Flux 毫秒起音偏差校验**、`large-v3` 优先+粤语 `yue` 独立 ASR 盲听、严格只读广告法复核与 `is_verified_commercial_font` 清单）。
-- **双态终审 + Cold Read + 自动化像素取证 (`10_code_verify_evidence.json` & `VERIFY.md`)**：出片自动生成前 3 秒（0.2s 步长）与关键切点（0.15s 步长）动作连拍条 `out/10_action_strips.jpg`；入口 3 纯代码模式下采用 `--batch-json` 单 Chrome 实例批量渲染 SVG/Canvas/2.5D Camera 场景（`tidy` 后亦支持 `--mode reedit-visuals` 自动重渲代码分幕自愈重建），并由 `code_video_spec.py` 自动抽帧实测主视觉高度占比（`>=33%`）与 Apple Vision OCR 事实台账对账填入 `VERIFY.md`；必检全过输出 `MACHINE_PASS_PENDING_HUMAN`；人工复核后运行 `workflow_guard.py approve-final --pipeline-dir <dir>` 校验 `plan_sha256`（含 `00_code_spec.json`）+ `output_final_sha256` 升级签字为 `APPROVED` 并同步更新 `out/10_qa_report.*`。
+  - **12–22 项单遍解码黑盒裁判**（300–3400Hz 语谱画外音与 A 轨覆盖、OCR 安全区+字幕内容回环 Recall、人脸零遮挡与实测单框 WCAG `>=3.8:1`、BT.709 矩阵 `common.SKIN_YCBCR_RANGE` 肤色与 `max_luma_jump`、相对 FCPXML、HyperFrames 原生逐条剪辑与官方运行时三点抽帧、OCR 防露馅、屏蔽字幕静止检测、双带遮罩+相对 MAD 全量切点 Spot-Verify、统一 `compute_sfx_band_windows` 全量 cues 净抬升 + **5ms Spectral Flux 毫秒起音偏差校验**、`large-v3` 优先+粤语 `yue` 独立 ASR 盲听、严格只读广告法复核与 `is_verified_commercial_font` 清单）。
+- **成片取证与终审**：`10_action_strips.jpg` 提供开篇及关键切点连拍。代码制片的 `VERIFY.md` 记录实际抽到的画面和 OCR 覆盖，事实台账、遮挡、阅读时间和闪烁留给人工复核。通用机检通过后状态为 `MACHINE_PASS_PENDING_HUMAN`。人工复核后运行 `workflow_guard.py approve-final --pipeline-dir <dir>`，签字要求质检报告中的方案与成片 SHA-256 均匹配当前版本。旧报告需重新质检。
+- **片型与归档验证**：`--edit-profile auto|talking|documentary|explainer` 控制开头切换、镜长和静止容限。改画面时核对锁定人声和音乐指纹。`workflow_guard.py verify-out --out-dir <dir>` 校验归档文件指纹。
 - **风格复刻洁净室 (`workflow_guard.py replication-diff`)**：pHash 距离 `≤6` 或 OCR 连续 12 字重合直接 `BLOCK`，明暗自适应采样 ΔE，`secrets.SystemRandom` 真随机洗牌并将答案键分离至 `blind_test_answer_key.json`。
 
 ---
 
-## 五、 平台微观留存诊断与参数基因真闭环
+## 五、发布复盘与参数实验
 
 每条发布后收集后台数据（2 秒划走比例 `bounce_2s`、3 秒/5 秒留住多少人、复播比例 `rewatch_rate`、本地观众占比 `local_traffic_pct`、有效咨询率 `inquiry_rate`、掉人最狠的秒数 `drop_off_sec`、脚本类型 `script_type`、吸引角度 `viral_element`、关联 `edl_path`），写入按 `--account` 与 `--track` 双重隔离的 `content-log`：
 ```bash
 python3 scripts/content_log_review.py --account <账号> --track <store|creator> --add-json '<数据JSON>'
 ```
-输出大白话《每周运营复盘报告》(`weekly_review.md`) 与 `account_profile.json`：按「脚本类型 × 吸引角度」及开头写法统计高转化组合，将后台掉人最狠的秒数反查回 `04_edl.json` 具体镜头开出通俗处方，并把跑赢平均线的镜长/动态停顿（含 `persona_pause_sec`）/首选风格谱自动写回 `account_profile.json` 驱动下一条视频进化。
+按平台、视频 ID、观察窗口去重，保留指标分子分母。每周报告按同条件汇总，将留存掉点落回剪辑表，供人工提出假设。使用 `--register-plan` 提前登记规则，`--replay-plan` 回放历史，`--activate-candidate` 显式启用达标且可复验的候选。启用后在制作命令指定相应 `--platform`。旧资料按原轨道保留，演示使用单独目录。[实验输入与证据字段](references/pipeline-schemas.md)
 
 ---
 

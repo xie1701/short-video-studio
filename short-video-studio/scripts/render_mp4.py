@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import sys
+from time import perf_counter
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -48,6 +50,8 @@ from common import (
     read_json,
     run_cmd,
     sec_to_frames,
+    sha256_file,
+    write_json,
 )
 from generate_code_broll import resolve_style_palette
 
@@ -503,20 +507,21 @@ def _manifest_lookups(manifest: Dict[str, Any]) -> Tuple[Dict[str, List[Dict[str
 def _compute_base_cache_key(
     edl: Dict[str, Any],
     color_plan: Dict[str, Any],
-    master_wav: Path,
     target_frames: int,
     preview: bool,
+    source_hashes: Dict[str, str],
+    eye_by_mp4: Dict[str, Any],
 ) -> str:
-    st = master_wav.stat()
     payload = {
+        "version": 2,
         "edl": edl,
         "color_plan": color_plan,
-        "master_wav_size": st.st_size,
-        "master_wav_mtime_ns": st.st_mtime_ns,
+        "sources": source_hashes,
+        "eyes": eye_by_mp4,
         "target_frames": target_frames,
         "preview": preview,
     }
-    return hashlib.sha256(str(payload).encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 def build_base_video_track(
@@ -528,6 +533,7 @@ def build_base_video_track(
     preview: bool = False,
 ) -> Path:
     """按 EDL 分镜精确裁切、单次高质量 Ken Burns / 锁眼推拉 + 调色 + 严防尾帧泄漏地拼接底轨。"""
+    started = perf_counter()
     ffmpeg_bin = find_bin("ffmpeg")
     work_dir = pipeline_dir / "_render_final"
     work_dir.mkdir(parents=True, exist_ok=True)
@@ -537,20 +543,37 @@ def build_base_video_track(
     fps = int(edl.get("fps") or DEFAULT_FPS)
     master_dur = get_wav_duration_sec(master_wav)
     target_frames = max(1, round(master_dur * fps))
-    cache_key = _compute_base_cache_key(edl, color_plan, master_wav, target_frames, preview)
+    clips = edl.get("clips") or []
+    _, eye_by_mp4 = _manifest_lookups(manifest or {"items": []})
+    paths = {str(clip["media_path"]) for clip in clips}
+    lut_path = str(color_plan.get("lut_path") or "")
+    if not preview and lut_path and Path(lut_path).is_file():
+        paths.add(lut_path)
+    source_hashes = {path: sha256_file(Path(path)) for path in sorted(paths)}
+    cache_key = _compute_base_cache_key(edl, color_plan, target_frames, preview, source_hashes, eye_by_mp4)
+    suffix = "p" if preview else "f"
+    expected_segments = [work_dir / f"seg_{index:03d}_{suffix}.mp4" for index in range(len(clips))]
 
-    if base_mp4.exists() and cache_flag.exists() and cache_flag.read_text(encoding="utf-8").strip() == cache_key:
+    def profile(base_hit: bool, reused: int) -> None:
+        write_json(pipeline_dir / "render_profile.json", {
+            "preview": preview, "base_cache_hit": base_hit, "segments_reused": reused,
+            "segments_rendered": len(clips) - reused, "base_elapsed_sec": round(perf_counter() - started, 4),
+        })
+
+    if (base_mp4.is_file() and cache_flag.is_file()
+            and cache_flag.read_text(encoding="utf-8").strip() == cache_key
+            and all(seg.is_file() for seg in expected_segments)):
+        profile(True, len(clips))
         return base_mp4
 
     tw = 540 if preview else CANVAS_WIDTH
     th = 960 if preview else CANVAS_HEIGHT
     seg_files: List[Path] = []
     geom_cache: Dict[str, Tuple[int, int]] = {}
-    _, eye_by_mp4 = _manifest_lookups(manifest or {"items": []})
+    reused = 0
 
-    clips = edl.get("clips") or []
     for idx, clip in enumerate(clips):
-        seg_out = work_dir / f"seg_{idx:03d}_{'p' if preview else 'f'}.mp4"
+        seg_out = expected_segments[idx]
         media_path = str(clip.get("media_path") or "")
         if not media_path or not Path(media_path).exists():
             raise FileNotFoundError(f"EDL 镜头素材不存在: {media_path}")
@@ -625,6 +648,7 @@ def build_base_video_track(
         else:
             vf_parts.extend(BT709_VF_SUFFIX)
 
+        staged_seg = seg_out.with_suffix(".part.mp4")
         cmd = [
             ffmpeg_bin, "-y",
             "-ss", f"{src_in:.4f}",
@@ -638,9 +662,21 @@ def build_base_video_track(
             "-crf", "26" if preview else "18",
             "-pix_fmt", "yuv420p",
             *([] if preview else BT709_FFMPEG_ARGS),
-            str(seg_out),
+            str(staged_seg),
         ]
-        run_cmd(cmd)
+        seg_key = hashlib.sha256(json.dumps(
+            [cmd[:-1], source_hashes[media_path], source_hashes.get(lut_path)]
+        ).encode("utf-8")).hexdigest()
+        seg_flag = seg_out.with_suffix(".sha256")
+        if seg_out.is_file() and seg_flag.is_file() and seg_flag.read_text(encoding="utf-8") == seg_key:
+            reused += 1
+        else:
+            try:
+                run_cmd(cmd)
+                staged_seg.replace(seg_out)
+            finally:
+                staged_seg.unlink(missing_ok=True)
+            seg_flag.write_text(seg_key, encoding="utf-8")
         seg_files.append(seg_out)
 
     concat_txt = work_dir / f"concat_{'p' if preview else 'f'}.txt"
@@ -657,6 +693,7 @@ def build_base_video_track(
         str(base_mp4),
     ])
     cache_flag.write_text(cache_key, encoding="utf-8")
+    profile(False, reused)
     return base_mp4
 
 

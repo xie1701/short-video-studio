@@ -16,6 +16,7 @@ import json
 import math
 import re
 import statistics
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -24,6 +25,9 @@ from typing import Any, Dict, List, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import (
     DEFAULT_FPS,
+    EDIT_PROFILES,
+    EXPORT_CHOICES,
+    export_selection,
     LEAK_REGEX_PATTERNS,
     SAFE_ZONE,
     SUBTITLE_SAFE_ZONE,
@@ -33,7 +37,9 @@ from common import (
     find_bin,
     maybe_reexec_in_venv,
     read_json,
+    review_checks,
     run_cmd,
+    sha256_file,
     write_json,
 )
 
@@ -50,7 +56,7 @@ def _mk_check(
     measured: str,
     threshold: str,
 ) -> Dict[str, Any]:
-    st = status if status in ("PASS", "FAIL", "SKIPPED_UNAVAILABLE") else "FAIL"
+    st = status if status in ("PASS", "FAIL", "SKIPPED_UNAVAILABLE", "NOT_REQUESTED") else "FAIL"
     return {
         "id": cid,
         "name": name,
@@ -102,6 +108,49 @@ def compare_with_benchmark(video_path: Path, benchmark_path: Path, edl: Dict[str
     }
 
 
+def detect_black_intervals(video_path: Path) -> tuple[str, List[str]]:
+    ffmpeg = find_bin("ffmpeg")
+    if not ffmpeg:
+        return "SKIPPED_UNAVAILABLE", []
+    result = run_cmd([
+        ffmpeg, "-hide_banner", "-nostats", "-i", str(video_path),
+        "-vf", "blackdetect=d=0:pix_th=0.10", "-an", "-f", "null", "-",
+    ], check=False)
+    if result.returncode:
+        return "FAIL", []
+    hits = re.findall(r"black_start:([0-9.]+)", result.stderr or "")
+    return ("FAIL" if hits else "PASS"), hits
+
+
+def measure_sync_marker(video_path: Path, start: float, end: float, fps: int) -> Dict[str, Any]:
+    """Measure the onset offset of a bright slate flash and a paired test tone."""
+    import numpy as np
+
+    ffmpeg = find_bin("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("需要 FFmpeg 测量同步测试信号")
+    if not (0 <= start < end and end - start <= 10):
+        raise ValueError("同步测试窗须位于成片内且长度不超过 10 秒")
+    seek = [ffmpeg, "-v", "error", "-ss", str(start), "-i", str(video_path), "-t", str(end - start)]
+    visual = subprocess.check_output([
+        *seek, "-an", "-vf", f"fps={fps},scale=16:16,format=gray", "-f", "rawvideo", "-",
+    ])
+    audio = subprocess.check_output([*seek, "-vn", "-ac", "1", "-ar", "8000", "-f", "s16le", "-"])
+    image_levels = np.frombuffer(visual, dtype=np.uint8).reshape(-1, 256).mean(axis=1)
+    samples = np.frombuffer(audio, dtype="<i2").astype(float)
+    levels = np.sqrt(np.mean(samples[: len(samples) // 80 * 80].reshape(-1, 80) ** 2, axis=1))
+    if len(image_levels) < 3 or len(levels) < 3:
+        raise ValueError("同步测试窗内的信号不足")
+    background = float(np.percentile(image_levels, 20))
+    flash = np.flatnonzero(image_levels > background + 40)
+    beep = np.flatnonzero(levels > max(500, np.max(levels) * 0.35))
+    if flash.size == 0 or beep.size == 0:
+        raise ValueError("未同时测到测试闪帧与声音")
+    video_on = start + int(flash[0]) / fps
+    audio_on = start + int(beep[0]) / 100
+    return {"video_sec": video_on, "audio_sec": audio_on, "offset_sec": audio_on - video_on}
+
+
 def inspect_video(
     pipeline_dir: Path,
     video_path: Optional[Path] = None,
@@ -109,21 +158,28 @@ def inspect_video(
     dialect: str = "mandarin",
     store_anchor: Optional[str] = None,
     strict_asr: bool = False,
+    export_mode: str = "auto",
+    sync_window: Optional[List[float]] = None,
 ) -> Dict[str, Any]:
+    from workflow_guard import compute_plan_digest, package_digest
+    from source_review import source_review_status
+
     if video_path is None:
         video_path = pipeline_dir / "output_final.mp4"
     if not video_path.exists():
         raise FileNotFoundError(f"待检成片不存在: {video_path}")
 
+    plan_sha256 = compute_plan_digest(pipeline_dir)
+    video_sha256 = sha256_file(video_path)
     audio_events = read_json(pipeline_dir / "03_audio_events.json")
     edl = read_json(pipeline_dir / "04_edl.json")
     subs = read_json(pipeline_dir / "05_subtitles.json")
     pkg = read_json(pipeline_dir / "06_packaging.json")
 
     fps = int(edl.get("fps", DEFAULT_FPS))
+    pacing = EDIT_PROFILES.get(edl.get("edit_profile"), EDIT_PROFILES["talking"])
     frame_dur = 1.0 / fps
     checks: List[Dict[str, Any]] = []
-    ffmpeg = find_bin("ffmpeg")
 
     from independent_verifier import extract_audio_context_once, run_blackbox_verification
 
@@ -144,19 +200,11 @@ def inspect_video(
         ))
 
         # 2. 黑帧检测
-        black_hits: List[str] = []
-        if ffmpeg:
-            b_res = run_cmd([
-                ffmpeg, "-hide_banner", "-i", str(video_path),
-                "-vf", "blackdetect=d=0.2:pix_th=0.10", "-an", "-f", "null", "-",
-            ], check=False)
-            black_hits = re.findall(r"black_duration:([0-9.]+)", b_res.stderr or "")
+        black_status, black_hits = detect_black_intervals(video_path)
         checks.append(_mk_check(
-            "black_frames",
-            "黑帧检测",
-            "PASS" if len(black_hits) == 0 else ("FAIL" if ffmpeg else "SKIPPED_UNAVAILABLE"),
-            f"{len(black_hits)} 处连续黑帧",
-            "0 处黑帧 (>=0.2s)",
+            "black_frames", "黑帧检测", black_status,
+            ", ".join(black_hits[:5]) if black_hits else "未检出" if black_status == "PASS" else "解码失败",
+            "0 处非预期黑帧",
         ))
 
         # 3. 超过 0.8s 静音段检测（复用单次音频抽取结果）
@@ -178,14 +226,24 @@ def inspect_video(
         dur_diff_sec = abs(v_dur - a_dur)
         dur_diff_frames = dur_diff_sec / frame_dur
         aroll_sync_ok = all(bool(c.get("audio_locked", True)) for c in edl["clips"] if c.get("track_role") == "a_roll")
-        sync_ok = (v_s is not None and a_s is not None and dur_diff_frames <= 1.05 and aroll_sync_ok)
+        start_delta = abs(float((v_s or {}).get("start_time") or 0) - float((a_s or {}).get("start_time") or 0))
+        sync_ok = (v_s is not None and a_s is not None and max(dur_diff_sec, start_delta) <= frame_dur + 1e-6 and aroll_sync_ok)
         checks.append(_mk_check(
             "av_sync",
-            "音画同步与总时长差 (≤1帧)",
+            "音视频流起点与时长 (≤1帧)",
             "PASS" if sync_ok else "FAIL",
-            f"时长差 {dur_diff_sec*1000:.1f}ms ({dur_diff_frames:.2f} 帧), 同期声锁定={'是' if aroll_sync_ok else '否'}",
+            f"起点差 {start_delta*1000:.1f}ms，时长差 {dur_diff_sec*1000:.1f}ms ({dur_diff_frames:.2f} 帧), 同期声锁定={'是' if aroll_sync_ok else '否'}",
             f"≤ 1.0 帧 ({frame_dur*1000:.1f}ms)",
         ))
+        if sync_window:
+            try:
+                marker = measure_sync_marker(video_path, *sync_window, fps)
+                offset = marker["offset_sec"]
+                status = "PASS" if abs(offset) <= frame_dur + 0.005 else "FAIL"
+                detail = f"声音相对闪帧偏移 {offset * 1000:+.1f}ms"
+            except (ValueError, RuntimeError, subprocess.CalledProcessError) as exc:
+                status, detail = "FAIL", str(exc)
+            checks.append(_mk_check("sync_marker", "闪帧与测试音同步", status, detail, "≤1 帧，计入 5ms 测量误差"))
 
         # 5. 字幕与 03_audio_events 真实锁定语音时间戳交叉偏差（禁止与自身 words 相减作假）
         sents_all = audio_events.get("sentences", [])
@@ -347,25 +405,25 @@ def inspect_video(
         )
         aroll_tail_ok = True if not aroll_clips else any(float(c["timeline_out_sec"]) >= total_edl_dur - 10.0 for c in aroll_clips)
         aroll_ok = (aroll_ratio >= 0.18 and aroll_tail_ok) if aroll_clips else True
-        dist_ok = (min_d >= 0.30 and max_d <= 8.0 and rewind_count == 0 and aroll_ok)
+        dist_ok = (min_d >= 0.30 and max_d <= pacing["max_shot_sec"] and rewind_count == 0 and aroll_ok)
         checks.append(_mk_check(
             "shot_duration_dist",
             "镜头分布 / 零同源倒带 / A-Roll 占比",
             "PASS" if dist_ok else "FAIL",
             f"共{len(durs)}镜 | min={min_d:.2f}s, med={med_d:.2f}s, max={max_d:.2f}s | 倒带={rewind_count}, A-roll={aroll_ratio*100:.1f}%",
-            "0.30s≤单镜≤8.0s, 0倒带, A-roll≥18%且结尾出镜",
+            f"0.30s≤单镜≤{pacing['max_shot_sec']:.1f}s, 0非预期倒带",
         ))
 
         # 9. 前 3 秒画面变化次数
         first_3s_cuts = [c for c in edl["clips"][1:] if int(c["timeline_in_frame"]) < 3 * fps]
         all_on_events = all(c.get("cut_event_id") in events_by_id for c in first_3s_cuts)
-        first3_ok = len(first_3s_cuts) >= 2 and all_on_events
+        first3_ok = len(first_3s_cuts) >= pacing["opening_cuts"] and all_on_events
         checks.append(_mk_check(
             "first_3s_changes",
             "前 3 秒画面变化次数",
             "PASS" if first3_ok else "FAIL",
             f"{len(first_3s_cuts)} 次变化 (对齐事件: {'全部' if all_on_events else '部分缺失'})",
-            "≥ 2 次且均对齐音频事件",
+            f"≥ {pacing['opening_cuts']} 次且切点对齐音频事件",
         ))
 
         # 10. A-Roll 句界严锁（兼容正常 J/L-cut 声画错位延续）
@@ -416,7 +474,7 @@ def inspect_video(
                 aroll_boundary_violations.append(f"{c['clip_id']} ({first_s['id']}): 晚入 +{late_in:.2f}s")
         checks.append(_mk_check(
             "aroll_sentence_lock",
-            "A-Roll 句界严锁与口型同步",
+            "同期声句界契约",
             "PASS" if len(aroll_boundary_violations) == 0 else "FAIL",
             f"违规 {len(aroll_boundary_violations)} 处 (超界 {max_overrun_sec:.2f}s, 晚入 {max_late_in_sec:.2f}s)",
             "0 违规 (超界≤0.04s, 晚入≤1.20s)",
@@ -461,6 +519,7 @@ def inspect_video(
             store_anchor=store_anchor,
             strict_asr=strict_asr,
             precomputed_audio=audio_ctx,
+            export_mode=export_mode,
         )
 
     for bchk in bb_res["checks"]:
@@ -472,18 +531,52 @@ def inspect_video(
             bchk["threshold"],
         ))
 
-    mandatory_ok = all(c["status"] == "PASS" for c in checks if c["id"] != "bb_blind_asr_proxy")
-    asr_chk = next((c for c in checks if c["id"] == "bb_blind_asr_proxy"), {"status": "FAIL"})
-    asr_ok = (asr_chk["status"] == "PASS") if strict_asr else (asr_chk["status"] != "FAIL")
-    all_passed = mandatory_ok and asr_ok
+    provenance_path = pipeline_dir / "04_source_review.json"
+    provenance = source_review_status(read_json(provenance_path)) if provenance_path.is_file() else "NOT_REQUESTED"
+    if provenance == "FAIL":
+        checks.append(_mk_check("source_claims", "主张来源", "FAIL", "存在缺失或变更的来源或台词", "逐条可回查"))
+    requested_exports, export_required = export_selection(export_mode)
+    export_check = next((c for c in bb_res["checks"] if c["id"] == "bb_export_contracts"), {})
+    export_results = export_check.get("detail", {}).get("targets", {})
+    required_package_hashes = {
+        name: package_digest(pipeline_dir / f"{name}_draft") for name in requested_exports
+        if export_required and export_results.get(name, {}).get("status") == "PASS"
+    }
+    manual_checks = []
+    if export_required and "jianying" in requested_exports:
+        manual_checks.append("jianying_import")
+    if provenance == "PENDING_REVIEW":
+        manual_checks.append("source_claims")
+    if (pipeline_dir / "00_code_spec.json").is_file():
+        manual_checks.append("code_visual_review")
+    commercial = next((c["detail"] for c in bb_res["checks"]
+                       if c["id"] == "bb_compliance_and_license"), {})
+    if commercial.get("unacked_warn_count"):
+        manual_checks.append("compliance_context")
+    if commercial.get("external_documents"):
+        manual_checks.append("authorization_documents")
+    blocking, unavailable = review_checks(checks, export_mode, strict_asr)
+    manual_checks.extend(unavailable)
+    all_passed = not blocking
+
+    if plan_sha256 != compute_plan_digest(pipeline_dir) or video_sha256 != sha256_file(video_path):
+        raise RuntimeError("质检期间方案或成片已变更，请重新质检。")
 
     approval_status = "REJECTED"
     if all_passed:
-        approval_status = "MACHINE_PASS_PENDING_HUMAN"
+        approval_status = "REVIEW_REQUIRED" if manual_checks else "MACHINE_PASS_PENDING_HUMAN"
         lock_p = pipeline_dir / "approval_lock.json"
         if lock_p.is_file():
             try:
-                if read_json(lock_p).get("human_approved"):
+                lock = read_json(lock_p)
+                if (
+                    lock.get("human_approved") is True
+                    and lock.get("plan_sha256") == plan_sha256
+                    and lock.get("output_final_sha256") == video_sha256
+                    and lock.get("export_mode", "auto") == export_mode
+                    and lock.get("required_package_hashes", {}) == required_package_hashes
+                    and set(manual_checks) <= set(lock.get("reviewed_checks", []))
+                ):
                     approval_status = "APPROVED"
             except Exception:
                 pass
@@ -495,8 +588,19 @@ def inspect_video(
     report: Dict[str, Any] = {
         "step": "10_qa_inspector",
         "video_path": str(video_path.resolve()),
+        "plan_sha256": plan_sha256,
+        "output_final_sha256": video_sha256,
         "all_passed": all_passed,
-        "machine_passed": all_passed,
+        "machine_passed": all_passed and not manual_checks,
+        "blocking_checks": blocking,
+        "pending_manual_checks": manual_checks if approval_status != "APPROVED" else [],
+        "required_manual_checks": manual_checks,
+        "export_mode": export_mode,
+        "required_package_hashes": required_package_hashes,
+        "sync_window": sync_window,
+        "deliverables": {"mp4": {"status": "FAIL" if any(c != "bb_export_contracts" for c in blocking) else
+                                  "PENDING_REVIEW" if any(c != "jianying_import" for c in manual_checks) else "PASS"},
+                         **export_results},
         "approval_status": approval_status,
         "strict_asr": strict_asr,
         "pass_count": pass_cnt,
@@ -515,13 +619,13 @@ def inspect_video(
         "✅ **机检与人工终审全部通过 (APPROVED)**"
         if approval_status == "APPROVED"
         else (
-            "🟡 **全部必检通过，待人工终审确认 (MACHINE_PASS_PENDING_HUMAN)**"
+            f"🟡 **待人工终审确认 ({approval_status})**"
             if all_passed
             else "❌ **未通过质检 (REJECTED - 禁止交付)**"
         )
     )
     md_lines = [
-        "# 22 项硬红线与独立黑盒质检报告",
+        "# 成片与交付工程质检报告",
         "",
         f"- **成片文件**：`{video_path.name}`",
         f"- **质量状态**：{status_banner}",
@@ -531,8 +635,12 @@ def inspect_video(
         "|:-:|:---|:---:|:---|:---|",
     ]
     for i, c in enumerate(checks, start=1):
-        st_icon = "✅ PASS" if c["status"] == "PASS" else ("⚠️ SKIP" if c["status"] == "SKIPPED_UNAVAILABLE" else "❌ FAIL")
-        md_lines.append(f"| {i} | {c['name']} | {st_icon} | {c['measured']} | {c['threshold']} |")
+        measured = c["measured"].replace("|", "｜")
+        md_lines.append(f"| {i} | {c['name']} | {c['status']} | {measured} | {c['threshold']} |")
+    if manual_checks:
+        md_lines.extend(["", "需人工实查的项目 " + ", ".join(manual_checks)])
+    for target, result in export_results.items():
+        md_lines.extend(f"- {target} {error}" for error in result.get("errors", []))
 
     if "benchmark_comparison" in report:
         bc = report["benchmark_comparison"]
@@ -543,7 +651,7 @@ def inspect_video(
         ])
 
     (pipeline_dir / "10_qa_report.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
-    print(f"[qa] 22 项质检完成：{pass_cnt}/{len(checks)} PASS (fail={fail_cnt}, skip={skip_cnt}) -> 10_qa_report.md")
+    print(f"[qa] {len(checks)} 项质检：{pass_cnt} PASS / {fail_cnt} FAIL / {skip_cnt} SKIP -> 10_qa_report.md")
     return report
 
 
@@ -554,8 +662,12 @@ def main() -> None:
     parser.add_argument("--benchmark", help="可选：对标视频路径")
     parser.add_argument("--dialect", default="mandarin", help="语言模式 (mandarin / cantonese / dialect)")
     parser.add_argument("--store-anchor", help="门店名/核心听觉锚点")
-    parser.add_argument("--strict-asr", action="store_true", help="无本地 Whisper 模型时阻止通过")
+    parser.add_argument("--exports", choices=EXPORT_CHOICES, default=None)
+    parser.add_argument("--sync-window", type=float, nargs=2, metavar=("START", "END"))
+    parser.add_argument("--strict-asr", action=argparse.BooleanOptionalAction, default=None, help="要求可用的独立 ASR")
     args = parser.parse_args()
+    previous = Path(args.pipeline_dir) / "10_qa_report.json"
+    saved_report = read_json(previous) if previous.is_file() else {}
 
     res = inspect_video(
         Path(args.pipeline_dir),
@@ -563,7 +675,9 @@ def main() -> None:
         benchmark_path=Path(args.benchmark) if args.benchmark else None,
         dialect=args.dialect,
         store_anchor=args.store_anchor,
-        strict_asr=args.strict_asr,
+        strict_asr=args.strict_asr if args.strict_asr is not None else bool(saved_report.get("strict_asr")),
+        export_mode=args.exports or saved_report.get("export_mode", "auto"),
+        sync_window=args.sync_window or saved_report.get("sync_window"),
     )
     if not res["all_passed"]:
         raise SystemExit(2)

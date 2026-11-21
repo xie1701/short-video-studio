@@ -24,6 +24,10 @@ from common import (
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
     DEFAULT_FPS,
+    EDIT_PROFILES,
+    sha256_file,
+    EXPORT_CHOICES,
+    export_selection,
     SAFE_ZONE,
     detect_browser_renderer,
     ffprobe_media,
@@ -60,6 +64,7 @@ from inventory_media import (
 from qa_inspector import inspect_video
 from raw_intel_ingest import lint_script, render_lint_markdown
 from render_mp4 import render_mp4
+from source_review import import_sources, write_source_review
 from step1_normalize import run_step1
 from step2_transcribe import run_step2
 from step3_lock_audio import run_step3
@@ -69,7 +74,7 @@ from step6_packaging import run_step6
 from step7_color_grade import run_step7
 from step8_mix_audio import run_step8
 from step9_title_cover import run_step9
-from workflow_guard import audit_stops, generate_action_strips, record_stop, tidy_workspace, verify_lock
+from workflow_guard import generate_action_strips, record_milestone, tidy_workspace, verify_lock
 
 
 def _run_script_prelint(
@@ -105,11 +110,9 @@ def _generate_hook_variants(pipeline_dir: Path, count: int) -> Optional[Path]:
     final_mp4 = pipeline_dir / "output_final.mp4"
     ffmpeg = find_bin("ffmpeg")
 
-    # 自然人话创作视角标签，绝对杜绝任何方法论模板黑词
-    angles = ["利益对照", "一线数据", "实拍拆解"]
+    titles = list(dict.fromkeys(title[:18] for title in titles)) or [str(cov.get("cover_main") or "")[:18]]
     variants: List[Dict[str, Any]] = []
-    for idx in range(n_var):
-        raw_t = titles[idx] if idx < len(titles) else (titles[0] if titles else str(cov.get("cover_main", "实拍重点")))
+    for idx, raw_t in enumerate(titles[:n_var]):
         clean_headline = raw_t.replace("\n", " ").strip()[:18]
         out_img = pipeline_dir / f"09_cover_v{idx + 1}.jpg"
         out_vid = pipeline_dir / f"09_hook_v{idx + 1}.mp4"
@@ -145,7 +148,7 @@ def _generate_hook_variants(pipeline_dir: Path, count: int) -> Optional[Path]:
             ov_d.text((bx0 + 24, (by0 + by1) // 2), fitted, font=fnt, fill=(250, 204, 21, 255), anchor="lm")
             ov_im.save(ov_png)
             try:
-                run_cmd([
+                result = run_cmd([
                     ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
                     "-t", "3.0", "-i", str(final_mp4),
                     "-i", str(ov_png),
@@ -155,13 +158,13 @@ def _generate_hook_variants(pipeline_dir: Path, count: int) -> Optional[Path]:
                     "-c:a", "aac", "-b:a", "128k", "-t", "3.0",
                     str(out_vid),
                 ], check=False)
-                vid_ok = out_vid.is_file() and out_vid.stat().st_size > 4096
+                vid_ok = result.returncode == 0 and out_vid.is_file() and out_vid.stat().st_size > 0
             finally:
                 ov_png.unlink(missing_ok=True)
 
         variants.append({
             "variant_id": f"hook_v{idx + 1}",
-            "angle": angles[idx % len(angles)],
+            "changed_variable": "opening_title_overlay",
             "headline": raw_t,
             "cover_jpg": str(out_img.resolve()) if out_img.is_file() else None,
             "video_mp4": str(out_vid.resolve()) if vid_ok else None,
@@ -169,7 +172,7 @@ def _generate_hook_variants(pipeline_dir: Path, count: int) -> Optional[Path]:
         })
 
     out_json = pipeline_dir / "09_hook_variants.json"
-    write_json(out_json, {"count": len(variants), "variants": variants})
+    write_json(out_json, {"kind": "opening_title_overlay_preview", "source_video_sha256": sha256_file(final_mp4), "count": len(variants), "variants": variants})
     return out_json
 
 
@@ -184,8 +187,8 @@ def write_decisions_made(pipeline_dir: Path, track: str) -> Path:
     mix = read_json(pipeline_dir / "08_mix_metrics.json")
     cov = read_json(pipeline_dir / "09_title_cover.json") if (pipeline_dir / "09_title_cover.json").exists() else {}
     qa = read_json(pipeline_dir / "10_qa_report.json") if (pipeline_dir / "10_qa_report.json").exists() else {}
-    jy = read_json(pipeline_dir / "jianying_export_status.json") if (pipeline_dir / "jianying_export_status.json").exists() else {}
-    hf = read_json(pipeline_dir / "hyperframes_export_status.json") if (pipeline_dir / "hyperframes_export_status.json").exists() else {}
+    jy = qa.get("deliverables", {}).get("jianying", {})
+    hf = qa.get("deliverables", {}).get("hyperframes", {})
 
     hdr_cnt = int(mf.get("hdr_tonemapped_count", 0))
     rt_src = "原片实录房间底噪" if ae.get("room_tone_source") == "extracted_real" else "柔和合成空气声"
@@ -210,7 +213,7 @@ def write_decisions_made(pipeline_dir: Path, track: str) -> Path:
         f"| **广播级混音** | 广播人声链 + 250-4kHz 双频段闪避，响度 `{mix['measured_lufs']:.2f} LUFS` / LRA `{mix.get('lra_lu', 0):.1f} LU` / SNR `{mix.get('voice_bgm_snr_db', 0):.1f}dB` | “BGM 音量再小一点 / 大一点” |",
         f"| **黄金封面优选** | 综合选帧分 `{best_cov.get('score', 0)}` ({best_cov.get('detail', '自动优选')})，输出 9:16 首帧 + 3:4 主页封面 | “换一帧做封面/改封面大字” |",
         f"| **22项自动+黑盒质检** | `{qa.get('pass_count', 0)}/{qa.get('total_checks', 22)}` 项 PASS（状态：`{qa.get('approval_status', 'PENDING')}`） | 查看 `10_qa_report.md` |",
-        f"| **双端可编辑工程** | 高清成片 `output_final.mp4` + 剪映 `{jy.get('status', 'unknown')}` + HyperFrames `{hf.get('status', 'unknown')}` | “导出/修改剪映或 HyperFrames 工程” |",
+        f"| **工程验证** | 高清成片 `output_final.mp4` + 剪映 `{jy.get('status', 'unknown')}` + HyperFrames `{hf.get('status', 'unknown')}` | “导出/修改剪映或 HyperFrames 工程” |",
         "",
     ]
     out_md = pipeline_dir / "decisions_made.md"
@@ -314,7 +317,7 @@ def write_delivery_summary(
     hv_note = ""
     if hv_p.is_file():
         hv = read_json(hv_p)
-        hv_note = f"\n- **多钩子封面变体**：已生成 {hv.get('count', 0)} 套对比封面（`09_hook_variants.json` / `09_cover_v1..jpg`）"
+        hv_note = f"\n- **片头标题叠层预览**：已生成 {hv.get('count', 0)} 个标题样片（`09_hook_variants.json` / `09_cover_v1..jpg`）"
 
     lines = [
         f"# 成品交付清单 · 账号 `{ws.get('account_slug', 'default')}` · 项目 `{ws.get('project_id', pipeline_dir.parent.name)}`",
@@ -330,7 +333,11 @@ def write_delivery_summary(
         "- 动作时间条审片拼图：`out/10_action_strips.jpg`",
         "- 合规审校 & SHA-256 授权清单：`out/00_compliance_report.md` · `out/asset_license_manifest.json`",
         "- 离线打点审片器：`out/review_player.html`",
-        "- 双宿主可编辑工程：`pipeline/jianying_draft/timeline.fcpxml` / `pipeline/hyperframes_draft/index.html`",
+        *[
+            f"- {target} `{result['status']}`" +
+            (f"，实际导入状态 `{result['host_import']}`" if "host_import" in result else "")
+            for target, result in qa_report["deliverables"].items() if target != "mp4"
+        ],
         *(
             ["- 纯代码制片规约与像素核验单：`out/00_code_spec.json` · `out/SPEC.md` · `out/STRUCTURE.md` · `out/VERIFY.md`"]
             if (pipeline_dir / "00_code_spec.json").is_file()
@@ -359,6 +366,7 @@ def _ensure_reedit_dependencies(
     bgm_p: Optional[Path] = None,
     pause_sec: float = 0.20,
     account_profile: Optional[Dict[str, Any]] = None,
+    preserve_locked_audio: bool = False,
 ) -> None:
     """在 tidy 清理过临时文件后若需二次改画或重渲染，自动检查并无损重建缺失依赖。"""
     man_p = pipeline_dir / "01_manifest.json"
@@ -399,6 +407,8 @@ def _ensure_reedit_dependencies(
         lv = Path(str(ae.get("locked_voice_wav") or (pipeline_dir / "03_locked_voice.wav")))
         lb = Path(str(ae.get("locked_bgm_wav") or (pipeline_dir / "03_locked_bgm.wav")))
         if not lv.is_file() or not lb.is_file():
+            if preserve_locked_audio:
+                raise FileNotFoundError("锁定分轨缺失。请恢复锁轨文件或明确选择 relock-voice。")
             print("[pipeline] 检测到锁定音轨 WAV 缺失，正按 02_transcript 自动重建 Step 3 锁轨...")
             bgm_cand = bgm_p
             if bgm_cand is None and ae.get("bgm", {}).get("file") and Path(ae["bgm"]["file"]).is_file():
@@ -410,15 +420,6 @@ def _ensure_reedit_dependencies(
                 pause_sec=float(ae.get("pause_duration_sec", pause_sec)),
                 account_profile=account_profile,
             )
-
-
-def _ensure_stop_recorded(pipeline_dir: Path, stop_type: str, summary: str) -> None:
-    try:
-        st_info = audit_stops(pipeline_dir)
-        if stop_type not in (st_info.get("types") or []):
-            record_stop(pipeline_dir, stop_type, summary=summary)
-    except Exception:
-        pass
 
 
 def _compact_code_title(raw_t: str, limit: int = 12) -> str:
@@ -671,6 +672,7 @@ def _run_code_video_branch(
                 sections=spec.get("sections"),
                 exact_copy=spec.get("exact_copy"),
                 facts=spec.get("facts"),
+                asset_paths=[Path(a["path"]) for a in spec.get("assets", []) if a.get("path")],
                 risks=spec.get("risks"),
                 must_haves=spec.get("must_haves"),
             )
@@ -698,7 +700,7 @@ def _run_code_video_branch(
         force_tts=True,
         whitelist_path=whitelist_path,
     )
-    _ensure_stop_recorded(pipeline_dir, "stop1_script", "Code2Video 脚本转写与语音对齐完成")
+    record_milestone(pipeline_dir, "stop1_script", "Code2Video 脚本转写与语音对齐完成")
     run_step3(
         pipeline_dir,
         track=track,
@@ -706,7 +708,7 @@ def _run_code_video_branch(
         pause_sec=pause_sec,
         account_profile=account_profile,
     )
-    _ensure_stop_recorded(pipeline_dir, "stop2_blind_audio", "Code2Video 音轨节拍与边界锁定完成")
+    record_milestone(pipeline_dir, "stop2_blind_audio", "Code2Video 音轨节拍与边界锁定完成")
 
     # 3. 用真实锁定音长校正并强校验 00_code_spec.json
     ae = read_json(pipeline_dir / "03_audio_events.json")
@@ -744,6 +746,7 @@ def _run_code_video_branch(
         sections=sections,
         exact_copy=spec.get("exact_copy"),
         facts=spec.get("facts"),
+        asset_paths=[Path(a["path"]) for a in spec.get("assets", []) if a.get("path")],
         risks=spec.get("risks"),
         must_haves=spec.get("must_haves"),
     )
@@ -776,6 +779,7 @@ def _render_and_verify_only(
     strict_asr: bool,
     hook_variants: int,
     ws: Optional[Dict[str, Any]],
+    export_mode: str = "auto",
 ) -> Dict[str, Any]:
     if require_lock:
         code, msg, _ = verify_lock(pipeline_dir)
@@ -786,8 +790,11 @@ def _render_and_verify_only(
     if hook_variants > 1:
         _generate_hook_variants(pipeline_dir, hook_variants)
     generate_action_strips(final_mp4, pipeline_dir / "04_edl.json", pipeline_dir / "10_action_strips.jpg")
-    jy_status = export_jianying_draft(pipeline_dir, simulate_failure=simulate_jy_fail)
-    hf_status = export_hyperframes_draft(pipeline_dir, simulate_failure=simulate_hf_fail)
+    targets, _ = export_selection(export_mode)
+    jy_status = (export_jianying_draft(pipeline_dir, simulate_failure=simulate_jy_fail)
+                 if "jianying" in targets else {"status": "not_requested"})
+    hf_status = (export_hyperframes_draft(pipeline_dir, simulate_failure=simulate_hf_fail, prepared_segments=True)
+                 if "hyperframes" in targets else {"status": "not_requested"})
 
     qa_report = inspect_video(
         pipeline_dir,
@@ -796,6 +803,7 @@ def _render_and_verify_only(
         dialect=dialect,
         store_anchor=store_anchor,
         strict_asr=strict_asr,
+        export_mode=export_mode,
     )
     if (pipeline_dir / "00_code_spec.json").is_file():
         generate_verify_template(
@@ -837,6 +845,8 @@ def run_visual_to_delivery(
     licenses_path: Optional[Path] = None,
     hook_variants: int = 1,
     ws: Optional[Dict[str, Any]] = None,
+    export_mode: str = "auto",
+    edit_profile: str = "talking",
 ) -> Dict[str, Any]:
     run_step4(
         pipeline_dir,
@@ -845,14 +855,15 @@ def run_visual_to_delivery(
         prefer_broll_only=prefer_broll_only,
         style_id=style_id,
         account_profile=account_profile,
+        edit_profile=edit_profile,
     )
     run_step5(pipeline_dir, track=track, template_id=subtitle_template)
     run_step6(pipeline_dir, style_id=style_id)
+    write_source_review(pipeline_dir)
     run_step7(pipeline_dir, track=track, lut_name=lut_name, style_id=style_id)
     run_step8(
         pipeline_dir,
         licenses_path=licenses_path,
-        out_dir=ws["out_dir"] if ws else None,
     )
     run_step9(pipeline_dir, track=track)
 
@@ -870,6 +881,7 @@ def run_visual_to_delivery(
         store_anchor=store_anchor,
         require_lock=require_lock,
         strict_asr=strict_asr,
+        export_mode=export_mode,
         hook_variants=hook_variants,
         ws=ws,
     )
@@ -900,22 +912,26 @@ def main() -> None:
     parser.add_argument("--script-json", help="口播或配音台词 JSON 文件")
     parser.add_argument("--force-tts", action="store_true", help="强制使用文案生成 TTS 配音")
     parser.add_argument("--bgm", help="自定义 BGM 文件路径")
-    parser.add_argument("--pause-sec", type=float, default=0.20, help="基准句间停顿 (0.14-0.32s)")
+    parser.add_argument("--pause-sec", type=float, help="基准句间停顿，显式值覆盖账号配置 (0.14-0.32s)")
     parser.add_argument("--j-cut-frames", type=int, default=None, help="句间 J-cut 声先入帧数 (默认 3，或由 --style-id 决定)")
     parser.add_argument("--style-id", help="可选：套用风格谱模板 ID (style_01 ~ style_20)")
     parser.add_argument("--subtitle-template", help="字幕模板 ID")
     parser.add_argument("--lut", help="调色 LUT 文件名")
     parser.add_argument("--prefer-broll-only", action="store_true", help="改画模式：尽量切换为纯 B-roll/代码补镜")
     parser.add_argument("--benchmark", help="可选：对标视频路径")
+    parser.add_argument("--sources-json", help="主张与原始材料对应表")
+    parser.add_argument("--edit-profile", choices=["auto", *EDIT_PROFILES], default="auto")
     parser.add_argument("--raw-intel", help="可选：一手原材萃取 00_raw_intel.json 路径")
     parser.add_argument("--visual-index", help="可选：外部高精度镜头语义索引 00_visual_index.json 路径")
+    parser.add_argument("--platform", help="制作目标平台，用于选择已启用的实验参数")
     parser.add_argument("--account-profile", help="可选：账号参数基因 account_profile.json 路径")
     parser.add_argument("--whitelist", help="可选：账号合规白名单 compliance_whitelist.json 路径")
     parser.add_argument("--licenses-json", help="可选：外部资产商用授权清单 licenses.json 路径")
-    parser.add_argument("--hook-variants", type=int, default=1, help="可选：生成多套开篇钩子/封面变体对比方案 (如 2 或 3)")
+    parser.add_argument("--opening-title-previews", "--hook-variants", dest="hook_variants", type=int, default=1, help="生成片头标题条对比预览")
     parser.add_argument("--dialect", choices=["mandarin", "cantonese", "dialect"], default="mandarin", help="口播语种，用于 #21 盲听代理")
     parser.add_argument("--store-anchor", help="门店听觉锚点（如门店名），用于 #21 盲听核验")
     parser.add_argument("--require-lock", action="store_true", help="正式渲染前强制校验 approval_lock.json 指纹锁")
+    parser.add_argument("--exports", choices=EXPORT_CHOICES, help="auto 尝试两种工程并允许 MP4 降级，显式选择的工程进入必检")
     parser.add_argument("--strict-asr", action="store_true", help="无本地 Whisper 模型时阻止 #21 通过")
     parser.add_argument("--keep-temp", action="store_true", help="调试用：完工后保留大体积中间临时文件")
     parser.add_argument("--simulate-jy-fail", action="store_true", help="测试剪映草稿失效降级保护")
@@ -933,16 +949,46 @@ def main() -> None:
     raw_dir = ws["raw_dir"]
     pipeline_dir = ws["pipeline_dir"]
     pipeline_dir.mkdir(parents=True, exist_ok=True)
+    previous_qa = pipeline_dir / "10_qa_report.json"
+    previous_delivery = read_json(previous_qa) if previous_qa.is_file() else {}
+    if args.exports is None:
+        args.exports = previous_delivery.get("export_mode", "auto")
     if ws["redirected_from_raw"]:
         print(f"[workspace] 检测到加工目录与原素材目录重叠，已强制隔离至专属工作区 -> {project_dir}")
     else:
         print(f"[workspace] 账号={ws['account_slug']} | 加工目录={project_dir} | 原素材只读源={raw_dir}")
 
     account_profile: Optional[Dict[str, Any]] = None
-    prof_path = Path(args.account_profile) if args.account_profile else ws["account_profile_path"]
+    track_profile = ws["content_log_dir"] / f"account_profile_{args.track}.json"
+    prof_path = Path(args.account_profile) if args.account_profile else (
+        track_profile if track_profile.is_file() else ws["account_profile_path"]
+    )
     if prof_path.exists():
-        account_profile = read_json(prof_path)
-        print(f"[pipeline] 已载入账号参数基因 ({ws['account_slug']}) -> {prof_path.name}")
+        profile = read_json(prof_path)
+        scope_matches = not profile.get("platform") or str(profile["platform"]).casefold() == str(args.platform).casefold()
+        if args.account_profile or (profile.get("track", "store") == args.track and scope_matches):
+            account_profile = profile
+            print(f"[pipeline] 已载入账号参数 ({ws['account_slug']}/{args.track}) -> {prof_path.name}")
+    if args.pause_sec is None:
+        args.pause_sec = 0.20
+    elif account_profile:
+        account_profile = {key: value for key, value in account_profile.items() if key != "pause_sec"}
+
+    if args.sources_json:
+        import_sources(Path(args.sources_json), pipeline_dir)
+    previous_edl = pipeline_dir / "04_edl.json"
+    edit_profile = args.edit_profile
+    if edit_profile == "auto":
+        edit_profile = ("explainer" if args.mode == "code-video" else
+                        read_json(previous_edl).get("edit_profile", "talking") if
+                        args.mode in ("reedit-visuals", "relock-voice") and previous_edl.is_file() else "talking")
+    lock_files = []
+    locked_before = []
+    if args.mode == "reedit-visuals":
+        audio_events = read_json(pipeline_dir / "03_audio_events.json")
+        lock_files = [Path(audio_events[key]) if audio_events.get(key) else pipeline_dir / fallback
+                      for key, fallback in (("locked_voice_wav", "03_locked_voice.wav"), ("locked_bgm_wav", "03_locked_bgm.wav"))]
+        locked_before = [sha256_file(path) for path in lock_files]
 
     whitelist_path = Path(args.whitelist) if args.whitelist else ws["compliance_whitelist_path"]
     licenses_path = Path(args.licenses_json) if args.licenses_json else None
@@ -998,6 +1044,8 @@ def main() -> None:
         )
         if has_media:
             return raw_dir
+        if args.raw_dir:
+            raise FileNotFoundError(f"指定的原素材目录没有可用视频：{raw_dir}")
         demo_dir = project_dir / "_demo_raw_media"
         if not (demo_dir.is_dir() and any(p.is_file() and p.suffix.lower() in MEDIA_EXTS for p in demo_dir.iterdir())):
             print("[pipeline] 未检测到原始素材，正在专属工作区内生成演示素材包（零写入原目录）...")
@@ -1030,6 +1078,7 @@ def main() -> None:
             store_anchor=args.store_anchor,
             require_lock=True if not args.require_lock else args.require_lock,
             strict_asr=args.strict_asr,
+            export_mode=args.exports,
             hook_variants=args.hook_variants,
             ws=ws,
         )
@@ -1066,6 +1115,8 @@ def main() -> None:
             store_anchor=args.store_anchor,
             require_lock=args.require_lock,
             strict_asr=args.strict_asr,
+            export_mode=args.exports,
+            edit_profile=edit_profile,
             licenses_path=licenses_path,
             hook_variants=args.hook_variants,
             ws=ws,
@@ -1082,7 +1133,7 @@ def main() -> None:
                 force_tts=args.force_tts,
                 whitelist_path=whitelist_path,
             )
-            _ensure_stop_recorded(pipeline_dir, "stop1_script", "Step 2 脚本转写与合规门禁完成")
+            record_milestone(pipeline_dir, "stop1_script", "Step 2 脚本转写与合规门禁完成")
             run_step3(
                 pipeline_dir,
                 track=args.track,
@@ -1090,7 +1141,7 @@ def main() -> None:
                 pause_sec=args.pause_sec,
                 account_profile=account_profile,
             )
-            _ensure_stop_recorded(pipeline_dir, "stop2_blind_audio", "Step 3 盲听锁定音轨完成")
+            record_milestone(pipeline_dir, "stop2_blind_audio", "Step 3 盲听锁定音轨完成")
         elif args.mode == "relock-voice":
             if not (pipeline_dir / "01_manifest.json").exists():
                 eff_raw = _ensure_effective_raw_dir()
@@ -1105,7 +1156,7 @@ def main() -> None:
                 force_tts=True if script_p else args.force_tts,
                 whitelist_path=whitelist_path,
             )
-            _ensure_stop_recorded(pipeline_dir, "stop1_script", "relock-voice 脚本重建完成")
+            record_milestone(pipeline_dir, "stop1_script", "relock-voice 脚本重建完成")
             run_step3(
                 pipeline_dir,
                 track=args.track,
@@ -1113,11 +1164,11 @@ def main() -> None:
                 pause_sec=args.pause_sec,
                 account_profile=account_profile,
             )
-            _ensure_stop_recorded(pipeline_dir, "stop2_blind_audio", "relock-voice 音轨重新锁定完成")
+            record_milestone(pipeline_dir, "stop2_blind_audio", "relock-voice 音轨重新锁定完成")
         elif args.mode == "reedit-visuals":
             if not (pipeline_dir / "03_audio_events.json").exists():
                 raise FileNotFoundError("reedit-visuals 模式要求 03_audio_events.json 已锁定存在。")
-            _ensure_reedit_dependencies(pipeline_dir, track=args.track, bgm_p=bgm_p, pause_sec=args.pause_sec, account_profile=account_profile)
+            _ensure_reedit_dependencies(pipeline_dir, track=args.track, bgm_p=bgm_p, pause_sec=args.pause_sec, account_profile=account_profile, preserve_locked_audio=True)
             print("[pipeline] 只改画面模式：Step 1–3 已锁定音轨保持原封不动，仅按音轨事件重排画面。")
 
         res = run_visual_to_delivery(
@@ -1137,17 +1188,28 @@ def main() -> None:
             store_anchor=args.store_anchor,
             require_lock=args.require_lock,
             strict_asr=args.strict_asr,
+            export_mode=args.exports,
+            edit_profile=edit_profile,
             licenses_path=licenses_path,
             hook_variants=args.hook_variants,
             ws=ws,
         )
 
+    if lock_files:
+        locked_after = [sha256_file(path) for path in lock_files]
+        if locked_before != locked_after:
+            raise RuntimeError("只改画面过程中锁定分轨指纹发生变化，已阻止归档。")
+        write_json(pipeline_dir / "08_locked_audio_receipt.json", {
+            "mode": args.mode,
+            "tracks": [{"path": str(path), "before_sha256": digest, "after_sha256": digest}
+                       for path, digest in zip(lock_files, locked_after)],
+        })
     if args.mode != "lock-preview" and not res["qa_report"]["all_passed"]:
-        print("[ERROR] 成片未通过 22 项自动与黑盒质检，已阻断交付！请查看 10_qa_report.md（中间文件已保留供排错）")
+        print(f"[ERROR] 必检失败：{res['qa_report']['blocking_checks']}，详见 10_qa_report.md")
         sys.exit(2)
 
     if args.mode != "lock-preview":
-        _ensure_stop_recorded(pipeline_dir, "stop3_final", "22 项质检通过，等待三项终审或已完结交付")
+        record_milestone(pipeline_dir, "stop3_final", res["qa_report"]["approval_status"])
         tidy_workspace(pipeline_dir, out_dir=ws["out_dir"], keep_temp=args.keep_temp)
 
     print("\n[OK] 流水线执行完毕。")

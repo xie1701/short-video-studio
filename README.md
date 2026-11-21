@@ -1,6 +1,6 @@
 # short-video-studio 短视频制片工作室
 
-> **面向零拍摄与零剪辑基础用户的端到端 Agent Skill（支持 Claude Code / Gemini Antigravity）**：以 **「先音后画，以音定画」** 为核心工程铁律，打通「账号定位与 4 周 5A 日历策划 → 带简笔构图示意的拍摄任务卡 / 素材盘点反推 → 9 步确定性音视频后期流水线 → 基于 20 条标杆视频的「风格谱」一键包装（Remotion / HyperFrames / 剪映 / 3D LUT）→ 9 项客观自动质检 → 本地 1080×1920 高清成片与剪映专业版草稿双出片 → 发布后数据周复盘」全流程。
+面向门店获客和个人账号增长的短视频制片 Skill。支持从原始材料策划、按锁定音轨剪辑、代码图解、MP4 与可选编辑工程，以及按发布数据复盘。
 
 ---
 
@@ -26,64 +26,14 @@
 
 ## 二、 仓库目录结构
 
-```text
-short-video-studio/
-├── README.md                          # 本文档
-├── install.sh                         # macOS / Linux 一键安装与环境初始化脚本
-├── install.ps1                        # Windows PowerShell 一键安装与部署脚本
-├── 启动HyperFrames工程.command         # macOS 双击一键启动 HyperFrames Studio 预览（支持新建风格谱工程）
-├── 启动HyperFrames工程.bat             # Windows 双击一键启动 HyperFrames Studio 预览
-├── BRIEF.md                           # 原始需求说明文档
-├── 建立可循环的内容系统.md             # 方法论原稿留档
-└── short-video-studio/                # Agent Skill 本体目录（安装后挂载至 ~/.claude/skills/short-video-studio 等）
-    ├── SKILL.md                       # Skill 主控编排与硬性规则
-    ├── references/                    # 方法论原文、公式速查、JSON Schema、平台安全区与资产授权清单
-    ├── assets/                        # 内置 CC0 资产与 20 套「风格谱」跨平台复刻库
-    │   ├── bgm/                       # CC0 程序化背景音乐（100 / 120 BPM）
-    │   ├── sfx/                       # CC0 瞬态转场与提示音效
-    │   ├── luts/                      # 基础 3D LUT (warm_store / clean_creator / high_contrast)
-    │   ├── stickers/                  # 原创可商用 SVG 矢量贴纸
-    │   ├── subtitle_templates/        # templates.json（4 套基础模板 + style_01~style_20 共 24 套）
-    │   ├── remotion_templates/        # Remotion 根入口与代码补镜模板
-    │   └── style_spectrum/            # 20 条参考视频「风格谱」全量资产库
-    │       ├── STYLE_SPECTRUM_REPORT.md      # 20 条参考视频 9 维逐帧拆解总报告
-    │       ├── style_spectrum_library.json   # 6 大流派母版 + 20 套风格谱主数据库
-    │       ├── style_spectrum_raw.json       # 逐帧物理扫描原始统计数据
-    │       ├── luts/                         # 20 套逆向 33³ 3D .cube LUT (style_01~20.cube)
-    │       ├── keyframes/                    # 20 张 3×3 高清关键帧采样图谱 (*_contact.jpg)
-    │       ├── remotion/                     # StyleSpectrumPresets.ts + StyleSpectrumPack.tsx
-    │       ├── hyperframes/                  # style-spectrum-presets.css + style-spectrum-template.html
-    │       └── jianying/                     # jianying_style_presets.json（剪映样式/调色/节奏预设）
-    └── scripts/                       # 25 个 Python 确定性工程脚本
-        ├── common.py                  # 公共工具模块（路径、venv、FFmpeg、字体、安全区与 JSON 读写）
-        ├── check_and_setup.py         # 环境检测、隔离 venv 依赖安装与 CC0 资产生成
-        ├── generate_builtin_assets.py # 程序化生成零版权风险 CC0 BGM/SFX/LUT/贴纸
-        ├── analyze_style_spectrum.py  # 逐帧特征提取引擎（镜头/BPM/对齐率/色彩LUT/OCR字幕/图谱）
-        ├── build_style_spectrum_assets.py # 合并视觉精校并构建主库与三端预设文件
-        ├── apply_style_spectrum.py    # 风格谱一键导出 (Remotion/HyperFrames/剪映) 与流水线应用
-        ├── inventory_media.py         # 入口 2：素材盘点与选题公式反推
-        ├── generate_shot_card.py      # 入口 1：生成带 SVG 简笔构图的拍摄任务卡
-        ├── generate_code_broll.py     # 代码生成叙事补镜（动效文字 / 数据柱状图 / 流程图）
-        ├── step1_normalize.py         # Step 1：VFR 转 30fps CFR (1080x1920) 与 48kHz WAV 提取
-        ├── step2_transcribe.py        # Step 2：逐字时间戳对齐（无口播自动切换 Edge-TTS 配音）
-        ├── step3_lock_audio.py        # Step 3：去废话停顿、对齐强拍并锁定音轨事件
-        ├── step4_build_edl.py         # Step 4：以音定画生成 EDL（J-cut、前 3 秒多切点、自动补镜）
-        ├── step5_subtitles.py         # Step 5：逐字关键词高亮字幕（支持基础 4 套 + style_01~20）
-        ├── step6_packaging.py         # Step 6：SFX 先行与 ±1 帧同步花字贴纸（含预算上限控制）
-        ├── step7_color_grade.py       # Step 7：基础曝光白平衡校色 + 3D .cube LUT
-        ├── step8_mix_audio.py         # Step 8：人声降噪 + BGM 自动闪避 + -14.0 LUFS 闭环混音
-        ├── step9_title_cover.py       # Step 9：爆款标题与高密度 9:16 首帧封面生成
-        ├── render_mp4.py              # 出片 1：本地合成 MP4（支持粤语缺字回退与超宽字幕缩号防重叠）
-        ├── export_jianying.py         # 出片 2：剪映全风格可编辑工程导出（FCPXML 1.10 + Alpha MOV + SRT/LUT）
-        ├── export_hyperframes.py      # 出片 3：HyperFrames Studio 多轨可编辑工程 + 双击启动器导出
-        ├── qa_inspector.py            # 9 项强制自动质检 + 对标视频逐秒对比
-        ├── content_log_review.py      # 发布数据沉淀与每周一页结构化复盘
-        └── run_pipeline.py            # 端到端一键编排入口（full / lock-preview / reedit-visuals / relock-voice，支持 --style-id）
-```
+- `short-video-studio/SKILL.md` 是工作入口。
+- `short-video-studio/references/` 有方法论、交付契约和实验输入。
+- `short-video-studio/scripts/` 包含流水线、工程导出、验收和复盘脚本。
+- `install_skill.py` 是 macOS、Linux、Windows 安装脚本共用的部署入口。
 
 ---
 
-## 三、 30 秒跨平台一键安装
+## 三、安装与环境检查
 
 前置要求：**Python 3.10+**、**FFmpeg / FFprobe**（macOS 未安装时脚本可自动调用 Homebrew 安装）、Git。
 
@@ -101,11 +51,9 @@ cd short-video-studio
 .\install.ps1
 ```
 
-安装脚本会自动完成以下工作：
-1. 检查 `ffmpeg`、`ffprobe`、`node`、`uv` 与开源可商用字体环境；
-2. 创建独立虚拟环境 `~/.short-video-studio/venv`（安装 `pillow`、`numpy`、`soundfile`、`edge-tts` 等依赖）；
-3. 确定性生成全套 CC0 BGM、音效、3D LUT 与 SVG 贴纸；
-4. 将 `short-video-studio/` 软链/部署至 `~/.claude/skills/short-video-studio`（Windows 为 `%USERPROFILE%\.claude\skills\short-video-studio`）；macOS/Linux 若检测到 `~/.gemini/config/skills` 存在，还会同步创建软链。
+安装入口先验证 Python 3.10+、FFmpeg/FFprobe 和核心 Python 依赖，再部署 Skill。使用 `--check-only` 可只检查环境，使用 `--skills-dir` 可指定安装目录。已有 Skill 时保留回滚路径，遇到无法识别的目标目录时中止。macOS/Linux 采用软链接，Windows 采用目录副本。Node 和本机 Chrome 用于浏览器渲染核验。
+
+回滚时，将当前安装移到另一个位置，再把安装命令打印的旧版本移回原名 `short-video-studio`。
 
 ---
 
@@ -159,7 +107,7 @@ cd short-video-studio
      python3 short-video-studio/scripts/run_pipeline.py \
        --project-dir ./my_video --track creator --mode relock-voice --script-json ./new_script.json
      ```
-   - **端到端全链路出片 + 剪映草稿 + 9 项强检**（支持 `--style-id` 套用 20 套参考风格谱及 `--benchmark` 逐秒对比）：
+   - **正式出片**（支持 `--style-id` 套用 20 套参考风格谱及 `--benchmark` 逐秒对比）：
      ```bash
      python3 short-video-studio/scripts/run_pipeline.py \
        --project-dir ./my_video --track store --mode full --style-id style_02 --benchmark ./benchmark.mp4
@@ -177,8 +125,9 @@ cd short-video-studio
 
 ### 方式 3：出片后期导入剪映与 HyperFrames 双击启动指南
 
-#### 1) 怎么导入剪映专业版（兼容 6.0 ~ 11.7.0+，一键还原全风格多轨）
-由于剪映专业版 `6.0+`（含 macOS `11.7.0`）对内部草稿 `draft_info.json` 启用了私有加密，**切勿直接复制旧版明文草稿文件夹去草稿箱**。流水线出片时已在 `<项目>/pipeline/jianying_draft/` 中自动生成剪映官方原生支持的多轨工程包：
+#### 1) 在目标剪映版本验证导入
+剪映工程包使用 FCPXML 与相对媒体链接。静态检查通过后，报告仍显示待实际导入。用目标版本打开并检查分镜、透明包装、字幕和分轨音频，记录版本及结果后再确认。
+
 
 1. **开启导入开关（仅首次需要）**：打开剪映专业版 → 右上角齿轮「设置」→「全局设置」→ 确认开启「导入工程」。
 2. **一键导入全部多轨内容**：在剪映首页「本地草稿」右上角点击 `...` →「**导入工程**」（或新建空白草稿后直接把文件拖进时间线），选中目录中的 **`<project_name>.fcpxml`**。
@@ -189,34 +138,28 @@ cd short-video-studio
      - **三轨独立解耦音频 (`A1–A3`)**：`纯净人声干音`、`专属 BGM`、`切镜音效 SFX`，可任意单独静音或调音量。
 3. **仅需修改某句错别字 / 自定义全文字体时**：在时间线最顶层删掉对应那一句的双色字幕块，然后将同目录下的 `<project_name>.srt`（或 `.ass`）拖入剪映「文本 → 本地字幕」即可按纯文本自由改字；如需二次微调滤镜强度，可在「调节 → 滤镜 → 导入 LUT」加载同目录的 `*.cube` 文件。
 
-#### 2) 怎么用最简单的方式启动 HyperFrames 工程（双击直开，完整还原全部流水线工程）
-每次 `run_pipeline.py` 剪辑包装完成后，会自动在 `<项目>/pipeline/` 下同步产出 **两份可编辑工程**：`jianying_draft/`（剪映包）与 **`hyperframes_draft/`**（HyperFrames Studio 工程，含全部分镜、风格画框/卡片/花字、原生 HTML 双色高亮字幕与 3 轨独立音频，**并直接附带双击启动器**）。前置仅需 `Node.js >= 22` 与 `FFmpeg`（macOS 可运行 `brew install node ffmpeg`）。
+#### 2) 在 HyperFrames Studio 编辑流水线工程
 
-- **场景 A（直接打开已做好的成片工程，例如 `style_12`）**：
-  - 进入 `<项目>/pipeline/hyperframes_draft/`，直接双击里面的 **[启动HyperFrames工程.command](启动HyperFrames工程.command)**（macOS）或 **[启动HyperFrames工程.bat](启动HyperFrames工程.bat)**（Windows），3 秒内自动打开浏览器 HyperFrames Studio 实时时间线预览，可修改文案/图层后直接点击重新渲染。
-  - 或者双击仓库根目录的 `启动HyperFrames工程.command` → 直接点选 `<项目>`、`<项目>/pipeline` 或 `<项目>/pipeline/hyperframes_draft`（甚至 `TestinVideo`），若尚无 `hyperframes_draft/` 还会自动帮你转出后直接打开！
-- **场景 B（套用「20 套风格谱」新建示例工程或新建空白工程）**：
-  - 双击仓库根目录 `启动HyperFrames工程.command` 后，选 `[2]` 输入风格编号（回车默认 `style_14`）或选 `[3]` 新建空白竖屏工程，即可立即打开 Studio 预览。
+打开 `<项目>/pipeline/hyperframes_draft/`，双击 [macOS 启动器](启动HyperFrames工程.command) 或 [Windows 启动器](启动HyperFrames工程.bat)。也可以在该目录运行 `npx --yes hyperframes@0.9.72 preview .`。首次需要可取得 CLI，媒体和字体随工程存放。
+
+- 在 Studio 的时间线按条选择、修剪或移动分镜、字幕、人声和音效。背景音乐保留独立音轨。
+- 在画布或 Design 面板编辑生成的花字和字幕。外来图片可以作为独立图层替换。
+- `media/sources/` 存放可取得的完整分镜源，`studio_export.json` 记录它们与时间线的对应关系。调色与推近已应用到选用的画面版本，可换回完整源素材扩展裁剪范围。
+
+旧工程可用下方命令重新导出。原目录有手工编辑或属于旧版时，导出器会保留副本并返回备份路径。已清理的项目可以复用旧工程里时间范围一致的媒体。
+
+```bash
+python3 short-video-studio/scripts/export_hyperframes.py --pipeline-dir "/你的项目/pipeline"
+```
 
 ---
 
-## 五、 9 项强制自动质检红线 (`qa_inspector.py`)
+## 五、成片与工程验收
 
-每次成片交付前自动运行，**任一项不达标即阻断交付（退出码 2）**并输出 `10_qa_report.md`：
-
-| 序号 | 质检项目 | 硬性通过标准 |
-| :---: | :--- | :--- |
-| 1 | 综合响度（EBU R128） | `-14.0 ± 1.0 LUFS`（配合 `alimiter` 两步闭环稳控） |
-| 2 | 黑帧检测 | 全片检出 `0` 处黑帧（短镜自动 `tpad` 末帧定格防黑屏） |
-| 3 | 超长静音段 | 连续超过 `0.8s` 的静音段为 `0` 段 |
-| 4 | 音画同步与总时长差 | 同期声锁定且音视频流时长差 `≤ 1.0 帧`（`33.3ms` @ 30fps） |
-| 5 | 字幕与锁定语音偏差 | 字幕时间点与语音句边界最大偏差 `≤ 1.0 帧` |
-| 6 | 切点对齐音频事件 | 镜头切点对齐 `03_audio_events.json` 偏差 `≤ 1 帧`（支持 2–4 帧合法 J-cut） |
-| 7 | 平台 UI 安全区与包装对齐 | 字幕/花字/贴纸均位于安全区 `x∈[60,880], y∈[160,1480]` 内且包装对齐误差 `≤ 1 帧` |
-| 8 | 镜头时长分布 | 全片单镜时长位于 `0.30s – 8.0s` 区间，避免碎镜头或死镜头 |
-| 9 | 黄金前 3 秒画面变化 | 前 `3.0s` 内画面切换次数 `≥ 2` 次，且均对齐音频事件 |
-
-> 实战增强亮点：`render_mp4.py` 已针对方言/生僻字与高密度台词内置**单字缺字检测与系统字体自动回退**（如粤语常见字 `係/咗/嘅/冇/啲/喺/嗰` 自动回退至 `STHeiti` / `Hiragino Sans GB`）以及**超宽字幕自适应缩调字号**机制，彻底杜绝豆腐块 `▯` 与字形重叠。
+- `--exports auto` 默认尝试两个工程，工程故障时保留通过验收的 MP4。`--exports mp4` 只做成片。`--exports jianying|hyperframes|both` 将选择的工程列为必检。剪映通过静态检查后仍需真实导入回执。
+- MP4 实测覆盖响度（默认 −14 ±2 LUFS）、单帧黑画面、静音、音视频流起点与长度。同期口型由人工复核。带闪帧与测试音的验收样片可用 `qa_inspector.py --sync-window 起秒 止秒` 测实际偏移。
+- 每项状态与证据以 `10_qa_report.json` 为准。OCR 或非严格独立 ASR 不可用时，受影响项目进入人工复核。指定 `--strict-asr` 时缺少 ASR 会阻断验收。
+- 终审须基于同一版本成片。完成实际检查后，用 `workflow_guard.py approve-final --pipeline-dir <目录> --reviewed <ID> --note <复核记录>` 签字。`--reviewed` 可重复。流程进度记录在 `pipeline_progress.json`，只有真实沟通才调用 `record-stop`。
 
 ---
 
@@ -292,6 +235,5 @@ python3 short-video-studio/scripts/analyze_style_spectrum.py --input-dir /path/t
 python3 short-video-studio/scripts/build_style_spectrum_assets.py
 ```
 
-- **Remotion 组件入口**：在 [Root.tsx](short-video-studio/assets/remotion_templates/Root.tsx) 中已注册 `StyleSpectrumShowcase`，并可单独复用 [StyleSpectrumPack.tsx](short-video-studio/assets/style_spectrum/remotion/StyleSpectrumPack.tsx) 中的 `StyleCoverCard`、`StyleSubtitleBar`、`StyleChapterBar`、`StyleGraphicCard`。
-- **HyperFrames 母版入口**：打开 [style-spectrum-template.html](short-video-studio/assets/style_spectrum/hyperframes/style-spectrum-template.html)`?style=style_02` 即可按风格 ID 切换预览；使用 `--export-hyperframes <工程目录>` 会直接生成含 `index.html`、`hyperframes.json` 与 `启动HyperFrames工程.command` 的完整工程（双击即打开 Studio，也可按 `.html` 结尾仅导出单文件）。
+- **HyperFrames 母版入口**：使用 `--export-hyperframes <工程目录>` 会直接生成含 `index.html`、`hyperframes.json` 与 `启动HyperFrames工程.command` 的完整工程（双击即打开 Studio，也可按 `.html` 结尾仅导出单文件）。
 - **剪映专业版导出与预设库**：全片剪映可编辑工程优先由流水线 `export_jianying.py` 产出（`*.fcpxml` + `alpha_layers/*.mov` + `*.srt` + `*.cube`），风格参数预设位于 `short-video-studio/assets/style_spectrum/jianying/jianying_style_presets.json` 及 `short-video-studio/assets/style_spectrum/luts/style_01.cube` ~ `style_20.cube`。

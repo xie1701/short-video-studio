@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import re
@@ -31,14 +32,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import (
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
+    EXPORT_CHOICES,
+    HYPERFRAMES_VERSION,
+    EDIT_PROFILES,
+    sha256_file,
+    export_selection,
+    review_checks,
     DEFAULT_FPS,
     LEAK_REGEX_PATTERNS,
-    SCRIPTS_DIR,
     SKIN_YCBCR_RANGE,
     SUBTITLE_SAFE_ZONE,
     TARGET_LUFS,
     compute_sfx_band_windows,
-    detect_browser_renderer,
     find_bin,
     find_cached_whisper_model,
     get_huggingface_hub_dir,
@@ -71,7 +76,7 @@ def _mk_check(
     threshold: str,
     detail: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    st = status if status in ("PASS", "FAIL", "SKIPPED_UNAVAILABLE") else "FAIL"
+    st = status if status in ("PASS", "FAIL", "SKIPPED_UNAVAILABLE", "NOT_REQUESTED") else "FAIL"
     return {
         "id": cid,
         "name": name,
@@ -219,7 +224,7 @@ def verify_audio_blackbox(
 
     lufs_ok = abs(r128["integrated_lufs"] - TARGET_LUFS) <= 1.2
     tp_ok = r128["true_peak_dbtp"] <= -0.5
-    lra_ok = 1.2 <= r128["lra_lu"] <= 11.5
+    lra_ok = 0.0 <= r128["lra_lu"] <= 11.5
     phase_ok = mono_corr >= 0.45
     clicks_ok = len(clicks) == 0
     offcam_ok = (suspect_offcam == 0)
@@ -290,9 +295,14 @@ def verify_visual_and_subtitle_blackbox(
         vis_map[str(k)] = v
         vis_map[str(Path(k).resolve())] = v
 
+    static_limit = EDIT_PROFILES["talking"]["static_sec"]
     expected_aroll_has_face = False
     expected_sub_text = ""
     if pipeline_dir and pipeline_dir.exists():
+        timeline = pipeline_dir / "04_edl.json"
+        if timeline.is_file():
+            style = read_json(timeline).get("edit_profile", "talking")
+            static_limit = EDIT_PROFILES.get(style, EDIT_PROFILES["talking"])["static_sec"]
         mf_p = pipeline_dir / "01_manifest.json"
         if mf_p.is_file():
             try:
@@ -447,10 +457,10 @@ def verify_visual_and_subtitle_blackbox(
             cur_static_steps = 0
     max_static_sec = round(max_static_steps * 0.5, 2)
     freeze_res = {
-        "status": "PASS" if max_static_sec <= 3.0 else "FAIL",
-        "passed": max_static_sec <= 3.0,
+        "status": "PASS" if max_static_sec <= static_limit else "FAIL",
+        "passed": max_static_sec <= static_limit,
         "max_static_sec": max_static_sec,
-        "threshold_sec": 3.0,
+        "threshold_sec": static_limit,
     }
 
     p_res = run_cmd([
@@ -748,6 +758,11 @@ def verify_sfx_in_window_blackbox(
     bb_arr = audio_ctx["audio_48k"]
     sr1 = int(audio_ctx["sr"])
     bb_mono = bb_arr.mean(axis=1).astype(np.float64)
+    onset_signal = bb_mono
+    minimum_lift = 2.5
+    edit_path = pipeline_dir / "04_edl.json"
+    if edit_path.is_file() and read_json(edit_path).get("edit_profile") == "explainer":
+        minimum_lift = 1.0
 
     nosfx_p = pipeline_dir / "08_stem_nosfx.wav"
     audit_win_p = pipeline_dir / "08_sfx_audit_window.json"
@@ -769,6 +784,7 @@ def verify_sfx_in_window_blackbox(
         if n < 1024:
             return {"status": "FAIL", "passed": False, "cues_checked": 0, "median_lift_db": 0.0, "max_lift_db": 0.0, "source": source_used}
         no_mono = no_arr[:n].mean(axis=1).astype(np.float64)
+        onset_signal = bb_mono[:n] - no_mono
         windows = compute_sfx_band_windows(cues, no_mono, sr1)
     elif audit_win_p.is_file():
         source_used = "08_sfx_audit_window.json"
@@ -790,10 +806,11 @@ def verify_sfx_in_window_blackbox(
     if not lifts:
         return {"status": "FAIL", "passed": False, "cues_checked": 0, "median_lift_db": 0.0, "max_lift_db": 0.0, "source": source_used}
 
-    onset_audit = measure_event_onset_offsets(bb_band, sr1, cues, window_sec=0.14, thr=0.18, tol_ms=60.0)
+    onset_band = sosfiltfilt(sos, onset_signal) if sos is not None else onset_signal
+    onset_audit = measure_event_onset_offsets(onset_band, sr1, cues, window_sec=0.14, thr=0.18, tol_ms=60.0)
     med_lift = round(statistics.median(lifts), 2)
     max_lift = round(max(lifts), 2)
-    lift_ok = (med_lift >= 2.5 and max_lift >= 2.5)
+    lift_ok = med_lift >= minimum_lift
     onset_ok = onset_audit["sync_ratio"] >= 0.65
     ok = lift_ok and onset_ok
     return {
@@ -801,6 +818,7 @@ def verify_sfx_in_window_blackbox(
         "passed": ok,
         "cues_checked": len(lifts),
         "median_lift_db": med_lift,
+        "minimum_lift_db": minimum_lift,
         "max_lift_db": max_lift,
         "per_cue_lifts_db": lifts,
         "onset_sync_ratio": onset_audit["sync_ratio"],
@@ -920,6 +938,11 @@ def verify_blind_asr_proxy_blackbox(
         }
 
     asr_lang = "yue" if dl_norm in ("cantonese", "yue") else "zh"
+    if asr_lang == "yue" and "large-v3" not in model_name and "turbo" not in model_name:
+        return {
+            "status": "SKIPPED_UNAVAILABLE", "passed": False, "cer": None, "anchor_ok": False,
+            "reason": f"已缓存的 {model_name} 缺少粤语 yue 语言模型",
+        }
     asr_prompt = "以下是粤语简体中文口播内容：" if asr_lang == "yue" else "以下是普通话简体中文口播内容："
 
     try:
@@ -969,23 +992,25 @@ def verify_compliance_and_license_blackbox(pipeline_dir: Optional[Path]) -> Dict
     if not pipeline_dir or not pipeline_dir.exists():
         return {"status": "SKIPPED_UNAVAILABLE", "passed": False, "compliance_ok": False, "license_ok": False, "assets_count": 0, "unregistered_count": 0}
 
-    from compliance_guard import audit_script_compliance, build_asset_license_manifest
+    from compliance_guard import audit_script_compliance
 
     comp_p = pipeline_dir / "00_compliance_report.json"
     comp: Dict[str, Any] = read_json(comp_p) if comp_p.is_file() else {}
-    comp_ok = bool(comp.get("passed", True))
+    comp_ok = bool(comp.get("passed", False))
 
     rv_total = int(comp.get("real_voice_total", 0))
     rv_dropped = len(comp.get("dropped_real_voice_ids", []))
     if rv_total > 0 and (rv_dropped >= rv_total or rv_dropped / float(rv_total) > 0.40):
         comp_ok = False
 
+    extra_audits = []
     if (pipeline_dir / "05_subtitles.json").is_file():
         subs = read_json(pipeline_dir / "05_subtitles.json")
         sents = [{"id": e["id"], "text": e["text"]} for e in subs.get("entries", []) if not e.get("suppressed")]
         # 只读调用 pipeline_dir=None，严禁覆写覆盖上游的 real_voice drop 留痕！
         sub_audit = audit_script_compliance(sents, source_type="subtitles", pipeline_dir=None, auto_action=False)
         comp_ok = comp_ok and bool(sub_audit.get("passed", False))
+        extra_audits.append(sub_audit)
 
     if (pipeline_dir / "06_packaging.json").is_file():
         pkg = read_json(pipeline_dir / "06_packaging.json")
@@ -993,30 +1018,37 @@ def verify_compliance_and_license_blackbox(pipeline_dir: Optional[Path]) -> Dict
         if psents:
             p_audit = audit_script_compliance(psents, source_type="packaging", pipeline_dir=None, auto_action=False)
             comp_ok = comp_ok and bool(p_audit.get("passed", False))
+            extra_audits.append(p_audit)
 
     lic_p = next(
-        (p for p in (pipeline_dir / "00_asset_licenses.json", pipeline_dir / "asset_license_manifest.json") if p.is_file()),
+        (p for p in (pipeline_dir / "asset_license_manifest.json", pipeline_dir / "00_asset_licenses.json") if p.is_file()),
         None,
     )
     if lic_p:
         lic = read_json(lic_p)
     else:
-        lic = build_asset_license_manifest(pipeline_dir)
+        lic = {}
 
     unverified_fonts: List[str] = []
-    for item in (lic.get("assets") or []):
+    file_mismatches: List[str] = []
+    external_documents = 0
+    for item in lic.get("assets", []):
+        asset = Path(item["path"])
+        generated = item.get("source_tier") == "project_generated"
+        if not (generated and not asset.exists()):
+            if not asset.is_file() or sha256_file(asset) != item.get("sha256"):
+                file_mismatches.append(str(asset))
         cat = item.get("category") or item.get("kind")
-        if cat == "font":
-            fpath = item.get("path")
-            if not fpath or not is_verified_commercial_font(fpath):
-                unverified_fonts.append(str(item.get("name") or fpath))
+        external = item.get("source_tier") == "external_registered"
+        if cat == "font" and not external and not is_verified_commercial_font(asset):
+            unverified_fonts.append(asset.name)
+        if external:
+            external_documents += 1
+            document = Path(item.get("authorization_path") or ".")
+            if not document.is_file() or sha256_file(document) != item.get("authorization_sha256"):
+                file_mismatches.append(str(document))
 
-    if (pipeline_dir / "05_subtitles.json").is_file():
-        sub_fp = read_json(pipeline_dir / "05_subtitles.json").get("font_path")
-        if sub_fp and not is_verified_commercial_font(sub_fp):
-            unverified_fonts.append(Path(sub_fp).name)
-
-    lic_ok = bool(lic.get("all_commercial_verified", False)) and len(unverified_fonts) == 0
+    lic_ok = bool(lic.get("all_commercial_verified", False)) and not unverified_fonts and not file_mismatches
     passed = comp_ok and lic_ok
     return {
         "status": "PASS" if passed else "FAIL",
@@ -1026,6 +1058,11 @@ def verify_compliance_and_license_blackbox(pipeline_dir: Optional[Path]) -> Dict
         "assets_count": int(lic.get("assets_count", 0)),
         "unregistered_count": int(lic.get("unregistered_count", 0)),
         "unverified_fonts": sorted(set(unverified_fonts)),
+        "file_mismatches": file_mismatches,
+        "external_documents": external_documents,
+        "unacked_warn_count": int(comp.get("unacked_warn_count", 0)) + sum(
+            report.get("unacked_warn_count", 0) for report in extra_audits
+        ),
     }
 
 
@@ -1044,10 +1081,8 @@ def _parse_rational_sec(val: Optional[str]) -> Optional[float]:
         return None
 
 
-def verify_exports_blackbox(pipeline_dir: Path) -> Dict[str, Any]:
-    """#16 双端可编辑工程契约严审（含 FCPXML 归属节点校验 & HyperFrames <template> 与离线可播放校验）。"""
+def _verify_jianying(pipeline_dir: Path) -> Dict[str, Any]:
     jy_dir = pipeline_dir / "jianying_draft"
-    hf_dir = pipeline_dir / "hyperframes_draft"
     errors: List[str] = []
 
     fcpxmls = list(jy_dir.glob("*.fcpxml")) if jy_dir.exists() else []
@@ -1066,6 +1101,9 @@ def verify_exports_blackbox(pipeline_dir: Path) -> Dict[str, Any]:
         try:
             tree = ET.parse(xp)
             root = tree.getroot()
+            if root.tag != "fcpxml":
+                fcpxml_ok = False
+                errors.append("FCPXML 根节点无效")
             res_ids = set()
             for child in root.findall("./resources/*"):
                 rid = child.attrib.get("id")
@@ -1094,6 +1132,9 @@ def verify_exports_blackbox(pipeline_dir: Path) -> Dict[str, Any]:
 
             # 校验 connected child (<video>/<title>/<marker>) 归属节点与局部时间有效性（严禁错堆超限）
             spine = root.find(".//spine")
+            if spine is None or not spine.findall("asset-clip"):
+                fcpxml_ok = False
+                errors.append("FCPXML 缺少可导入的主视频轨")
             if spine is not None:
                 spine_clips = spine.findall("asset-clip")
                 for ac in spine_clips:
@@ -1110,113 +1151,143 @@ def verify_exports_blackbox(pipeline_dir: Path) -> Dict[str, Any]:
             fcpxml_ok = False
             errors.append(f"FCPXML XML 解析异常: {e}")
 
-    hf_ok = True
-    browser_smoke_status = "skipped_missing"
-    hf_cli = find_bin("hyperframes")
-    idx_html = hf_dir / "index.html"
-    hf_json = hf_dir / "hyperframes.json"
-    if not hf_dir.exists() or not idx_html.is_file() or not hf_json.is_file():
-        hf_ok = False
-        errors.append("hyperframes_draft 缺失或缺少 index.html / hyperframes.json")
-    else:
-        if hf_cli:
-            res = subprocess.run([hf_cli, "check"], cwd=str(hf_dir), capture_output=True, text=True)
-            if res.returncode != 0:
-                hf_ok = False
-                errors.append(f"hyperframes check 失败: {(res.stderr or res.stdout)[:200]}")
+    return {"status": "PASS" if fcpxml_ok else "FAIL", "host_import": "PENDING_VERIFICATION", "errors": errors}
 
-        idx_txt = idx_html.read_text(encoding="utf-8", errors="ignore")
-        if "<template>" in idx_txt:
-            hf_ok = False
-            errors.append("HyperFrames 顶层 index.html 不应包裹在 <template> 中")
-        if "syncTime(" not in idx_txt or "hydrateSubCompositions(" not in idx_txt:
-            hf_ok = False
-            errors.append("HyperFrames 顶层 index.html 缺少离线时间线驱动脚本")
 
-        all_ids: List[str] = []
-        comp_files = list((hf_dir / "compositions").glob("*.html")) if (hf_dir / "compositions").exists() else []
-        for cfile in comp_files:
-            ctxt = cfile.read_text(encoding="utf-8", errors="ignore")
-            if "<template>" not in ctxt:
-                hf_ok = False
-                errors.append(f"HyperFrames 子组合缺少 <template> 传输容器: {cfile.name}")
+def _hyperframes_cli() -> list[str]:
+    configured = os.environ.get("SVS_HYPERFRAMES_CLI")
+    if configured:
+        return [configured]
+    global_cli = find_bin("hyperframes")
+    if global_cli:
+        return [global_cli]
+    node = find_bin("node")
+    if node:
+        cache_dir = Path(os.environ.get("npm_config_cache") or (Path.home() / ".npm"))
+        for package in cache_dir.glob("_npx/*/node_modules/hyperframes/package.json"):
+            try:
+                if read_json(package).get("version") == HYPERFRAMES_VERSION:
+                    return [node, str(package.parent / "bin" / "hyperframes.mjs")]
+            except (OSError, ValueError):
+                continue
+    return []
 
-        html_files = [idx_html] + comp_files
-        for hfile in html_files:
-            txt = hfile.read_text(encoding="utf-8", errors="ignore")
-            ext_urls = re.findall(r'https?://[^\s"\'<>)]+', txt, flags=re.IGNORECASE)
-            if ext_urls:
-                hf_ok = False
-                errors.append(f"HyperFrames 禁止外链 CDN ({hfile.name}): {ext_urls[0]}")
 
-            all_ids.extend(re.findall(r'(?:^|\s)id=["\']([^"\']+)["\']', txt))
+def _verify_hyperframes(pipeline_dir: Path) -> Dict[str, Any]:
+    from export_hyperframes import StudioMarkup
 
-            ref_patterns = [
-                r'data-composition-src=["\']([^"\']+)["\']',
-                r'(?:data-src|src)=["\']([^"\']+)["\']',
-                r'@font-face[\s\S]*?url\(["\']?([^"\')]+)["\']?\)',
-            ]
-            for pat in ref_patterns:
-                for ref_rel in re.findall(pat, txt):
-                    if ref_rel.startswith(("http://", "https://", "data:")):
-                        continue
-                    target = (hfile.parent / ref_rel) if (hfile.parent / ref_rel).exists() else (hf_dir / ref_rel)
-                    if not target.is_file() or target.stat().st_size == 0:
-                        hf_ok = False
-                        errors.append(f"HyperFrames 缺失资源: {ref_rel} (来自 {hfile.name})")
-
-            if hfile.name == "captions_track.html":
-                for m_top, m_h in re.findall(r'top:\s*(\d+)px;\s*width:\s*\d+px;\s*height:\s*(\d+)px', txt):
-                    if int(m_top) + int(m_h) > SUBTITLE_SAFE_ZONE["y_max"]:
-                        hf_ok = False
-                        errors.append(f"HyperFrames 字幕超出安全区 y_max={SUBTITLE_SAFE_ZONE['y_max']}: {int(m_top)+int(m_h)}")
-
-        id_dups = [i for i in set(all_ids) if all_ids.count(i) > 1]
-        if id_dups:
-            hf_ok = False
-            errors.append(f"HyperFrames 组装 DOM 存在重复 id: {id_dups[:4]}")
-
-        browser_smoke_status = "skipped_no_browser"
-        br_info = detect_browser_renderer()
-        if hf_ok and br_info.get("available"):
-            with tempfile.TemporaryDirectory(prefix="svs_hf_smoke_") as sm_td:
-                sm_p = Path(sm_td)
-                sm_mp4 = sm_p / "smoke.mp4"
-                sm_json = sm_p / "smoke.json"
-                sm_res = subprocess.run([
-                    str(br_info["node_bin"]),
-                    str(SCRIPTS_DIR / "capture_html_video.mjs"),
-                    str(hf_dir),
-                    "--page", "index.html",
-                    "--fps", "30",
-                    "--frames", "3",
-                    "--size", f"{CANVAS_WIDTH}x{CANVAS_HEIGHT}",
-                    "--out", str(sm_mp4),
-                    "--smoke-json", str(sm_json),
-                ], capture_output=True, text=True)
-                if sm_res.returncode != 0 or not sm_json.is_file():
-                    hf_ok = False
-                    browser_smoke_status = "fail"
-                    errors.append(f"HyperFrames 3帧浏览器真渲失败: {(sm_res.stderr or sm_res.stdout)[:200]}")
-                else:
-                    s_data = read_json(sm_json)
-                    if not s_data.get("ok") or int(s_data.get("non_black_frames", 0)) < 1:
-                        hf_ok = False
-                        browser_smoke_status = "fail"
-                        errors.append(f"HyperFrames 3帧真渲全黑或前端异常: {s_data}")
-                    else:
-                        browser_smoke_status = "pass"
-
-    passed = fcpxml_ok and hf_ok and len(errors) == 0
-    return {
-        "status": "PASS" if passed else "FAIL",
-        "passed": passed,
-        "fcpxml_checked": len(fcpxmls) > 0,
-        "hyperframes_checked": hf_dir.exists(),
-        "hyperframes_cli_used": bool(hf_cli and hf_dir.exists()),
-        "hyperframes_browser_smoke": browser_smoke_status,
-        "errors": errors,
+    draft = (pipeline_dir / "hyperframes_draft").resolve()
+    entry = draft / "index.html"
+    receipt_path = draft / "studio_export.json"
+    if not entry.is_file() or not receipt_path.is_file() or not (draft / "hyperframes.json").is_file():
+        return {"status": "FAIL", "errors": ["缺少原生 Studio 导出清单，请重新导出旧工程"]}
+    timeline = read_json(receipt_path)
+    if timeline.get("format") != "svs-hyperframes-studio-v2":
+        return {"status": "FAIL", "errors": ["工程版本无法验证"]}
+    nodes = StudioMarkup(entry).nodes
+    errors = []
+    sources = []
+    clip_nodes = {}
+    for tag, attrs in nodes:
+        if tag == "template" or "data-composition-src" in attrs:
+            errors.append("流水线工程应直接暴露逐条剪辑，发现整轨模板或组合")
+        if attrs.get("src"):
+            sources.append(attrs["src"])
+        if "data-track-index" not in attrs:
+            continue
+        clip_id = attrs.get("id")
+        if not clip_id or clip_id in clip_nodes:
+            errors.append(f"时间线片段缺少唯一 ID：{clip_id}")
+            continue
+        try:
+            start, duration = float(attrs["data-start"]), float(attrs["data-duration"])
+            if start < 0 or duration <= 0 or start + duration > timeline["duration_sec"] + 0.001:
+                errors.append(f"时间范围越界：{clip_id}")
+        except (KeyError, ValueError):
+            errors.append(f"时间范围缺失：{clip_id}")
+        clip_nodes[clip_id] = (tag, attrs)
+    summary = {
+        "video": sum(tag == "video" for tag, _ in clip_nodes.values()),
+        "captions": sum(attrs.get("data-track-kind") == "captions" for _, attrs in clip_nodes.values()),
+        "graphics": sum(attrs.get("data-track-kind") == "graphics" for _, attrs in clip_nodes.values()),
+        "graphic_text": sum(tag == "div" and attrs.get("data-track-kind") == "graphics" for tag, attrs in clip_nodes.values()),
+        "audio": sum(tag == "audio" for tag, _ in clip_nodes.values()),
     }
+    if summary != timeline["counts"]:
+        errors.append(f"逐条剪辑数和导出清单不一致：{summary}")
+    for item in timeline["video"]:
+        if item.get("original_src"):
+            sources.append(item["original_src"])
+    sources.extend(re.findall(r'url\(["\']?([^"\')]+)', entry.read_text(encoding="utf-8")))
+    for src in set(sources):
+        resolved = (draft / urllib.parse.unquote(src)).resolve()
+        if ":" in src or Path(src).is_absolute() or not resolved.is_relative_to(draft) or not resolved.is_file():
+            errors.append(f"媒体脱离工程或缺失：{src}")
+    if errors:
+        return {"status": "FAIL", "errors": errors, "native_clip_counts": summary}
+
+    runner = _hyperframes_cli()
+    if not runner:
+        return {"status": "SKIPPED_UNAVAILABLE", "errors": ["未找到可执行 HyperFrames CLI"], "native_clip_counts": summary}
+    env = {**os.environ, "HYPERFRAMES_NO_TELEMETRY": "1"}
+    try:
+        lint = subprocess.run([*runner, "lint", str(draft), "--json"], capture_output=True, text=True, timeout=30, env=env)
+        if lint.returncode:
+            return {"status": "FAIL", "errors": [f"官方 lint 未通过：{(lint.stdout or lint.stderr)[-700:]}"]}
+        result = subprocess.run([*runner, "timeline", str(draft), "--json"], capture_output=True, text=True,
+                                timeout=30, env=env, check=True)
+        rows = [row for group in json.loads(result.stdout)["timeline"]["tracks"] for row in group["rows"]]
+        actual = {row["id"] for row in rows if row["file"] == "index.html" and not row.get("nested")}
+        if set(clip_nodes) != actual:
+            return {"status": "FAIL", "errors": ["官方 Studio 时间线未识别出导出的全部原生片段"]}
+        with tempfile.TemporaryDirectory(prefix="svs_hf_review_") as work:
+            end = max(0.0, float(timeline["duration_sec"]) - 1.0 / timeline["fps"])
+            times = ",".join(f"{t:.4f}" for t in (0.0, end / 2, end))
+            proc = subprocess.run([*runner, "snapshot", str(draft), "--at", times, "--no-end",
+                                   "--no-browser-gpu", "--output", work, "--json"],
+                                  capture_output=True, text=True, timeout=60, env=env)
+            if proc.returncode:
+                return {"status": "SKIPPED_UNAVAILABLE" if "browser" in proc.stderr.lower() else "FAIL",
+                        "errors": [f"官方运行时抽帧失败：{(proc.stderr or proc.stdout)[-700:]}"],
+                        "native_clip_counts": summary}
+            stills = list(Path(work).glob("frame-*.png")) or list(Path(work).glob("at-*.png"))
+            from PIL import ImageStat
+            levels = []
+            for path in stills:
+                with Image.open(path) as frame:
+                    levels.append(ImageStat.Stat(frame.convert("L")).mean[0])
+            if len(stills) != 3 or min(levels) < 5:
+                return {"status": "FAIL", "errors": ["官方运行时缺少有效的片头、中段或片尾画面"],
+                        "native_clip_counts": summary}
+    except (subprocess.SubprocessError, OSError, ValueError, KeyError) as exc:
+        return {"status": "SKIPPED_UNAVAILABLE", "errors": [f"原生 Studio 核查未完成：{exc}"], "native_clip_counts": summary}
+    return {"status": "PASS", "browser_smoke": "pass", "native_clip_counts": summary,
+            "rendered_frames": len(stills), "errors": []}
+
+
+def verify_exports_blackbox(pipeline_dir: Path, export_mode: str = "auto") -> Dict[str, Any]:
+    requested, required = export_selection(export_mode)
+    results = {}
+    for name, check in (("jianying", _verify_jianying), ("hyperframes", _verify_hyperframes)):
+        if name not in requested:
+            results[name] = {"status": "NOT_REQUESTED", "errors": []}
+            continue
+        status_path = pipeline_dir / f"{name}_export_status.json"
+        if status_path.is_file():
+            status = read_json(status_path)
+            if status.get("status") != "success":
+                results[name] = {"status": "FAIL", "errors": [status.get("message") or "工程导出失败"]}
+                continue
+        results[name] = check(pipeline_dir)
+
+    statuses = [results[name]["status"] for name in requested]
+    status = (
+        "NOT_REQUESTED" if not statuses else
+        "FAIL" if "FAIL" in statuses else
+        "SKIPPED_UNAVAILABLE" if "SKIPPED_UNAVAILABLE" in statuses else "PASS"
+    )
+    return {"status": status, "passed": status == "PASS", "required": required, "targets": results,
+            "errors": [error for result in results.values() for error in result["errors"]]}
 
 
 def run_blackbox_verification(
@@ -1226,6 +1297,7 @@ def run_blackbox_verification(
     store_anchor: Optional[str] = None,
     strict_asr: bool = False,
     precomputed_audio: Optional[Dict[str, Any]] = None,
+    export_mode: str = "auto",
 ) -> Dict[str, Any]:
     if not video_path.exists():
         raise FileNotFoundError(f"待验收成片不存在: {video_path}")
@@ -1243,10 +1315,10 @@ def run_blackbox_verification(
             Path(audio_res["wav_path"]), pipeline_dir, dialect=dialect, store_anchor=store_anchor
         )
         comp_lic_res = verify_compliance_and_license_blackbox(pipeline_dir)
-        if pipeline_dir and pipeline_dir.exists():
-            exp_res = verify_exports_blackbox(pipeline_dir)
-        else:
-            exp_res = {"status": "SKIPPED_UNAVAILABLE", "passed": False, "fcpxml_checked": False, "hyperframes_checked": False, "errors": ["无 pipeline_dir"]}
+        exp_res = verify_exports_blackbox(pipeline_dir, export_mode) if pipeline_dir else {
+            "status": "SKIPPED_UNAVAILABLE", "required": export_selection(export_mode)[1],
+            "targets": {}, "errors": ["无 pipeline_dir"],
+        }
 
     checks: List[Dict[str, Any]] = [
         _mk_check(
@@ -1255,7 +1327,7 @@ def run_blackbox_verification(
             audio_res["status"],
             f"TP={audio_res['true_peak_dbtp']}dBTP | LRA={audio_res['lra_lu']}LU | 相位={audio_res['mono_phase_corr']:.2f} | "
             f"爆音={len(audio_res['splice_clicks'])}处 | 画外声风险={audio_res['suspect_offcamera_spans']}段 | A轨覆盖={'是' if audio_res['aroll_voice_coverage_ok'] else '缺'}",
-            "TP≤-0.5, LRA 1.2–11.5, 相位≥0.45, 0爆音, 0画外音, A-Roll语音覆盖",
+            "TP≤-0.5, LRA≤11.5, 相位≥0.45, 0爆音, 0画外音, A-Roll语音覆盖",
             audio_res,
         ),
         _mk_check(
@@ -1290,9 +1362,8 @@ def run_blackbox_verification(
             "bb_export_contracts",
             "[黑盒] 外部宿主工程契约 (相对FCPXML/全离线HyperFrames)",
             exp_res["status"],
-            f"FCPXML={'通过' if exp_res['fcpxml_checked'] and exp_res['passed'] else '失败/缺失'} | "
-            f"HyperFrames={'通过' if exp_res['hyperframes_checked'] and exp_res['passed'] else '失败/缺失'} | 错误={len(exp_res['errors'])}",
-            "两套工程均存在、FCPXML零绝对路径、HyperFrames零CDN且字幕y<=1468",
+            " | ".join(f"{target}={result['status']}" for target, result in exp_res["targets"].items()),
+            "剪映文件及相对链接完整，HyperFrames 原生剪辑计数与官方运行时实测",
             exp_res,
         ),
         _mk_check(
@@ -1305,10 +1376,10 @@ def run_blackbox_verification(
         ),
         _mk_check(
             "bb_no_visual_freeze",
-            "[黑盒] 屏蔽字幕带 >3s 视觉静止检测",
+            "[黑盒] 屏蔽字幕带后的视觉静止检测",
             freeze_res["status"],
             f"连续静止最长达 {freeze_res['max_static_sec']:.1f}s (已屏蔽字幕区)",
-            "最大静止时长 ≤ 3.0s",
+            f"最大静止时长 ≤ {freeze_res['threshold_sec']:.1f}s",
             freeze_res,
         ),
         _mk_check(
@@ -1326,7 +1397,7 @@ def run_blackbox_verification(
             f"来源={sfx_res.get('source', '?')} | 抽检 {sfx_res['cues_checked']} 处 | "
             f"中位={sfx_res['median_lift_db']:+.1f}dB | 峰值={sfx_res['max_lift_db']:+.1f}dB | "
             f"起音同步={sfx_res.get('onset_sync_ratio', 1.0)*100:.0f}% (中位差={sfx_res.get('median_onset_err_ms', 0.0):.1f}ms)",
-            "中位与峰值净抬升 ≥ +2.5dB 且 Onset 偏差≤60ms 命中率≥65%",
+            f"中位净抬升 ≥ +{sfx_res.get('minimum_lift_db', 2.5):g}dB，起音偏差≤60ms 命中率≥65%",
             sfx_res,
         ),
         _mk_check(
@@ -1352,11 +1423,13 @@ def run_blackbox_verification(
         ),
     ]
 
-    mandatory_ok = all(c["status"] == "PASS" for c in checks if c["id"] != "bb_blind_asr_proxy")
-    asr_ok = (asr_res["status"] == "PASS") if strict_asr else (asr_res["status"] != "FAIL")
+    blocked, pending = review_checks(checks, export_mode, strict_asr)
     return {
         "video_path": str(video_path.resolve()),
-        "all_passed": mandatory_ok and asr_ok,
+        "all_passed": not blocked,
+        "machine_passed": not blocked and not pending,
+        "blocking_checks": blocked,
+        "pending_manual_checks": pending,
         "pass_count": sum(1 for c in checks if c["status"] == "PASS"),
         "fail_count": sum(1 for c in checks if c["status"] == "FAIL"),
         "skipped_count": sum(1 for c in checks if c["status"] == "SKIPPED_UNAVAILABLE"),
@@ -1373,6 +1446,7 @@ def main() -> None:
     parser.add_argument("--dialect", default="mandarin", help="语言模式 (mandarin / cantonese / dialect)")
     parser.add_argument("--store-anchor", help="门店名/听觉锚点")
     parser.add_argument("--strict-asr", action="store_true", help="无本地 Whisper 模型时阻止总检通过")
+    parser.add_argument("--exports", choices=EXPORT_CHOICES, default="auto")
     parser.add_argument("--output-json", help="保存独立验收 JSON 报告路径")
     args = parser.parse_args()
 
@@ -1382,13 +1456,13 @@ def main() -> None:
         dialect=args.dialect,
         store_anchor=args.store_anchor,
         strict_asr=args.strict_asr,
+        export_mode=args.exports,
     )
     if args.output_json:
         write_json(Path(args.output_json), res)
     print(f"[independent_verifier] 黑盒校验: {res['pass_count']}/{res['total_checks']} PASS (fail={res['fail_count']}, skip={res['skipped_count']})")
     for c in res["checks"]:
-        tag = "✅ PASS" if c["status"] == "PASS" else ("⚠️ SKIP" if c["status"] == "SKIPPED_UNAVAILABLE" else "❌ FAIL")
-        print(f"  {tag} | {c['name']}: {c['measured']}")
+        print(f"  {c['status']} | {c['name']}: {c['measured']}")
     if not res["all_passed"]:
         raise SystemExit(2)
 

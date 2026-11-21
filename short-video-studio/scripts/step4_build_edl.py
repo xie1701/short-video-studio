@@ -25,6 +25,7 @@ from common import (
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
     DEFAULT_FPS,
+    EDIT_PROFILES,
     frames_to_sec,
     load_style_applied,
     load_style_spectrum_entry,
@@ -40,8 +41,10 @@ POSITIVE_PRAISE_CUES = ("招牌", "正宗", "干净", "舒服", "鲜嫩", "多�
 HARD_TABOO_ALWAYS = {"crew_leak", "kitchen_trash", "construction_trash"}
 
 
-def pick_first_3s_events(events: List[Dict[str, Any]], fps: int) -> List[Dict[str, Any]]:
+def pick_first_3s_events(events: List[Dict[str, Any]], fps: int, count: int = 2) -> List[Dict[str, Any]]:
     """在前 3.0 秒内筛选至少 2 个间距 >= 0.55s 的切点音频事件，优先 sentence_start。"""
+    if count == 0:
+        return []
     candidates = [
         e for e in events
         if 0.50 <= e["time_sec"] <= 2.75
@@ -54,16 +57,16 @@ def pick_first_3s_events(events: List[Dict[str, Any]], fps: int) -> List[Dict[st
     for cand in candidates:
         if all(abs(cand["time_sec"] - p["time_sec"]) >= 0.55 for p in picked):
             picked.append(cand)
-        if len(picked) >= 2:
+        if len(picked) >= count:
             break
 
-    if len(picked) < 2:
+    if len(picked) < count:
         fallback = [e for e in events if 0.40 <= e["time_sec"] <= 2.85]
         fallback.sort(key=lambda e: e["time_sec"])
         for cand in fallback:
             if all(abs(cand["time_sec"] - p["time_sec"]) >= 0.45 for p in picked):
                 picked.append(cand)
-            if len(picked) >= 2:
+            if len(picked) >= count:
                 break
 
     picked.sort(key=lambda e: e["frame"])
@@ -159,6 +162,7 @@ def run_step4(
     prefer_broll_only: bool = False,
     style_id: Optional[str] = None,
     account_profile: Optional[Dict[str, Any]] = None,
+    edit_profile: str = "talking",
 ) -> Dict[str, Any]:
     raw_jc = int(j_cut_frames)
     j_cut_frames = 0 if raw_jc <= 0 else max(2, min(4, raw_jc))
@@ -214,11 +218,13 @@ def run_step4(
 
     eff_prof = account_profile if (account_profile and account_profile.get("sample_sufficient") is True) else {}
     min_shot_gap = max(0.95, min(2.4, float(eff_prof.get("target_median_shot_sec", 1.55)) * 0.85))
-    micro_hook_max_sec = float(eff_prof.get("micro_hook_max_sec", 6.2))
+    pacing = EDIT_PROFILES[edit_profile]
+    max_shot = float(pacing["max_shot_sec"])
+    micro_hook_max_sec = min(max_shot, float(eff_prof.get("micro_hook_max_sec", max_shot - 1.8)))
     default_aroll_r = max(0.25, min(0.65, 1.0 - broll_target_ratio))
     target_aroll_ratio = max(0.20, min(0.85, float(eff_prof.get("target_aroll_ratio", default_aroll_r))))
 
-    first_3s_evts = pick_first_3s_events(events, fps)
+    first_3s_evts = pick_first_3s_events(events, fps, int(pacing["opening_cuts"]))
     sent_by_id = {s["id"]: s for s in sentences}
     prop_sent_ids = {s["id"] for s in sentences if any(cue in s.get("text", "") for cue in PROP_SHOW_CUES)}
 
@@ -263,7 +269,7 @@ def run_step4(
                 skip_until_idx = best_idx + 1
 
         is_sent_start = eff_cand.get("type") == "sentence_start"
-        gap_needed = 0.85 if is_sent_start else min_shot_gap
+        gap_needed = pacing["sentence_cut_gap"] if is_sent_start else max(min_shot_gap, pacing["sentence_cut_gap"])
         if eff_cand["time_sec"] - last_cut_sec >= gap_needed:
             prev_ev = chosen_cuts[-1] if chosen_cuts else None
             if prev_ev and prev_ev.get("sentence_id") in prop_sent_ids and eff_cand.get("sentence_id") == prev_ev.get("sentence_id"):
@@ -640,7 +646,7 @@ def run_step4(
             last_group = str(br.get("scene_group", last_group))
             need_freeze = src_in + seg_dur > avail + 0.01
             eff_role = str(br["role"])  # 统一保留 b_roll/code_broll，不写入悬空 "freeze"
-            kb_cfg = {"zoom_start": 1.0, "zoom_end": 1.06, "reason": "防>3s静止微缓推"} if (seg_dur > 3.0 and eff_role == "b_roll") else None
+            kb_cfg = {"zoom_start": 1.0, "zoom_end": 1.06, "reason": "长镜头微推"} if (seg_dur > pacing["static_sec"] and eff_role == "b_roll") else None
 
             if j_leads[idx] < 0:
                 lcut_real_count += 1
@@ -716,6 +722,7 @@ def run_step4(
         "fps": fps,
         "tight": True,
         "style_id": style_id,
+        "edit_profile": edit_profile,
         "canvas": {"width": CANVAS_WIDTH, "height": CANVAS_HEIGHT},
         "total_duration_sec": total_dur,
         "total_frames": total_frames,
@@ -769,6 +776,7 @@ def main() -> None:
     parser.add_argument("--track", choices=["store", "creator"], default="store")
     parser.add_argument("--j-cut-frames", type=int, default=3)
     parser.add_argument("--style-id", help="风格谱ID")
+    parser.add_argument("--edit-profile", choices=EDIT_PROFILES, default="talking")
     parser.add_argument("--account-profile", help="account_profile.json 路径")
     parser.add_argument("--prefer-broll-only", action="store_true", help="打断#3只改画面时可选切换纯B-roll混剪")
     args = parser.parse_args()
@@ -780,6 +788,7 @@ def main() -> None:
         prefer_broll_only=args.prefer_broll_only,
         style_id=args.style_id,
         account_profile=prof,
+        edit_profile=args.edit_profile,
     )
 
 

@@ -25,6 +25,7 @@ from common import (
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
     DEFAULT_FPS,
+    EDIT_PROFILES,
     SAFE_ZONE,
     SUBTITLE_SAFE_ZONE,
     ffprobe_media,
@@ -150,19 +151,16 @@ def init_code_spec(
             },
             {
                 "id": "sec_02",
-                "name": "核心机制与数据图解拆解",
+                "name": "核心机制拆解",
                 "start_sec": t1,
                 "end_sec": round(t1 + t2, 2),
                 "duration_sec": t2,
-                "mode": "data_chart",
-                "visual_state": "核心图解占幅 ≥60%，数值条按真实比例交错弹升",
+                "mode": "kinetic_text",
+                "visual_state": "核心命题逐层展开",
                 "on_screen_text": one_idea[:18],
-                "items": [
-                    {"label": "核心指标对比", "value": 72},
-                    {"label": "常规均值对照", "value": 28},
-                ],
+                "items": [{"label": one_idea[:18]}],
                 "is_title": False,
-                "transition_to_next": "数据主条延展为步骤流程图连线",
+                "transition_to_next": "切入结论卡",
             },
             {
                 "id": "sec_03",
@@ -175,7 +173,6 @@ def init_code_spec(
                 "on_screen_text": "核心结论一目了然",
                 "items": [
                     {"label": "真实结论", "subtitle": one_idea[:22]},
-                    {"label": "透明核验", "subtitle": "全部数据有据可查"},
                 ],
                 "is_title": False,
                 "transition_to_next": "尾帧平稳定格",
@@ -394,10 +391,10 @@ def _measure_frame_pixel_geometry(img_path: Path) -> Dict[str, Any]:
         hero_h_ratio = round(hero_h_px / float(CANVAS_HEIGHT), 3)
         coverage_ratio = round(float(np.mean(fg_mask)), 3)
     else:
-        box_x_min, box_y_min, box_x_max, box_y_max = 88, 220, 900, 1080
-        hero_h_px = 860
-        hero_h_ratio = 0.448
-        coverage_ratio = 0.25
+        box_x_min = box_y_min = box_x_max = box_y_max = 0
+        hero_h_px = 0
+        hero_h_ratio = 0.0
+        coverage_ratio = 0.0
 
     luma = 0.2126 * (roi[:, :, 0] / 255.0) + 0.7152 * (roi[:, :, 1] / 255.0) + 0.0722 * (roi[:, :, 2] / 255.0)
     p98 = float(np.percentile(luma, 98))
@@ -457,60 +454,56 @@ def verify_code_video_evidence(
                 if proc.returncode == 0 and fp.is_file() and fp.stat().st_size > 0:
                     extracted_files.append((tag_id, t_sec, exp_txt, fp))
 
-            ocr_by_path: Dict[str, List[str]] = {}
+            vision_results: Dict[str, Any] = {}
             if extracted_files:
                 try:
                     from vision_inspector import inspect_images
-                    v_res = inspect_images([x[3] for x in extracted_files])
-                    for item in (v_res.get("results") or []):
-                        p_key = str(Path(item.get("image_path", "")).resolve())
-                        txts = [str(tb.get("text") or "").strip() for tb in (item.get("text_boxes") or []) if str(tb.get("text") or "").strip()]
-                        ocr_by_path[p_key] = txts
-                        all_ocr_texts.extend(txts)
+                    vision_results = inspect_images([x[3] for x in extracted_files])
                 except Exception:
                     pass
 
             for tag_id, t_sec, exp_txt, fp in extracted_files:
                 geom = _measure_frame_pixel_geometry(fp)
-                txts = ocr_by_path.get(str(fp.resolve()), [])
+                vision = vision_results.get(str(fp), {})
+                ocr_available = vision.get("backend") == "apple_vision" and not vision.get("error")
+                txts = [box["text"].strip() for box in vision.get("texts", []) if box.get("text")] if ocr_available else []
+                all_ocr_texts.extend(txts)
                 frame_evidences.append({
                     "id": tag_id,
                     "timestamp_sec": t_sec,
                     "expected_text": exp_txt,
                     "ocr_texts": txts,
+                    "ocr_available": ocr_available,
                     **geom,
                 })
 
-    # 补充字幕与转录文本协助核对 exact_copy / facts
-    sub_texts: List[str] = []
-    if (pipeline_dir / "05_subtitles.json").is_file():
-        try:
-            subs = read_json(pipeline_dir / "05_subtitles.json")
-            sub_texts = [str(e.get("text") or "") for e in (subs.get("entries") or []) if not e.get("suppressed")]
-        except Exception:
-            pass
-    combined_screen_corpus = " | ".join(all_ocr_texts + sub_texts)
-    clean_corpus = re.sub(r"\s+", "", combined_screen_corpus).lower()
-
-    exact_copy = [str(x).strip() for x in (spec.get("exact_copy") or []) if str(x).strip()]
-    matched_copy = [
-        c for c in exact_copy
-        if re.sub(r"\s+", "", c).lower() in clean_corpus
-        or any(tok in clean_corpus for tok in re.findall(r"[\u4e00-\u9fff]{2,}|[0-9]+(?:\.[0-9]+)?%?", c.lower()))
+    screen_texts = [
+        re.sub(r"\s+", "", " ".join(frame["ocr_texts"])).casefold()
+        for frame in frame_evidences if frame["ocr_available"]
     ]
 
-    facts = spec.get("facts") or []
-    matched_facts: List[str] = []
-    for f_obj in facts:
-        val_s = str(f_obj.get("value") or "").strip()
-        clm_s = str(f_obj.get("claim") or "").strip()
-        if (val_s and val_s.lower() in clean_corpus) or (clm_s and clm_s[:2].lower() in clean_corpus):
-            matched_facts.append(f"{clm_s}={val_s}")
+    exact_copy = [str(x).strip() for x in (spec.get("exact_copy") or []) if str(x).strip()]
+    matched_copy = []
+    for copy in exact_copy:
+        normalized = re.sub(r"\s+", "", copy).casefold()
+        prefix = r"(?<![\d.])" if normalized[0].isdigit() else ""
+        suffix = r"(?!\d|\.\d|[%％])" if normalized[-1].isdigit() else ""
+        pattern = re.compile(prefix + re.escape(normalized) + suffix)
+        if any(pattern.search(text) for text in screen_texts):
+            matched_copy.append(copy)
 
-    min_req_ratio = float((spec.get("layout") or {}).get("hero_min_height_ratio", 0.33))
-    max_hero_ratio = max([fe["hero_height_ratio"] for fe in frame_evidences] or [0.45])
-    min_hero_ratio = min([fe["hero_height_ratio"] for fe in frame_evidences] or [0.42])
-    hero_ok = max_hero_ratio >= min_req_ratio
+    facts = spec.get("facts") or []
+    edit = pipeline_dir / "04_edl.json"
+    profile = read_json(edit).get("edit_profile", "explainer") if edit.is_file() else "explainer"
+    default_hero_ratio = EDIT_PROFILES.get(profile, EDIT_PROFILES["explainer"])["hero_height_ratio"]
+    min_req_ratio = float((spec.get("layout") or {}).get("hero_min_height_ratio") or default_hero_ratio)
+    max_hero_ratio = max((frame["hero_height_ratio"] for frame in frame_evidences), default=None)
+    min_hero_ratio = min((frame["hero_height_ratio"] for frame in frame_evidences), default=None)
+    open_frame = next((frame for frame in frame_evidences if frame["id"] == "open_hook"), None)
+    hero_ok = open_frame is not None and open_frame["hero_height_ratio"] >= min_req_ratio
+    sampling_complete = bool(sample_points) and len(frame_evidences) == len(sample_points)
+    ocr_complete = sampling_complete and len(screen_texts) == len(frame_evidences)
+    copy_ok = not exact_copy or (ocr_complete and len(matched_copy) == len(exact_copy))
 
     strips_p = pipeline_dir / "10_action_strips.jpg"
     strips_meta = "未生成"
@@ -525,18 +518,21 @@ def verify_code_video_evidence(
     ev_report = {
         "video_path": str(video_path),
         "duration_sec": round(dur, 3),
+        "frames_requested": len(sample_points),
         "frames_sampled": len(frame_evidences),
+        "sampling_complete": sampling_complete,
+        "ocr_frames": len(screen_texts),
         "frame_evidences": frame_evidences,
         "max_hero_height_ratio": max_hero_ratio,
         "min_hero_height_ratio": min_hero_ratio,
         "hero_ratio_passed": hero_ok,
-        "all_passed": bool(hero_ok),
+        "hero_height_threshold": min_req_ratio,
+        "sample_checks_passed": sampling_complete and hero_ok and copy_ok,
         "exact_copy_total": len(exact_copy),
         "exact_copy_matched": len(matched_copy),
         "matched_copy_samples": matched_copy[:6],
         "facts_total": len(facts),
-        "facts_matched": len(matched_facts),
-        "matched_facts": matched_facts[:6],
+        "facts_status": "PENDING_HUMAN" if facts else "NOT_APPLICABLE",
         "ocr_sample_texts": all_ocr_texts[:10],
         "action_strips_meta": strips_meta,
     }
@@ -581,98 +577,53 @@ def generate_verify_template(
         except Exception:
             pass
 
+
     ev = verify_code_video_evidence(pipeline_dir, spec, v_cand)
-    fe_list = ev.get("frame_evidences") or []
-    open_fe = fe_list[0] if fe_list else {
-        "timestamp_sec": 0.5,
-        "bbox_1080p": {"x_min": 88, "y_min": 220, "x_max": 900, "y_max": 1080},
-        "hero_height_px": 860,
-        "hero_height_ratio": 0.448,
-        "peak_contrast": 13.0,
-        "ocr_texts": [str(spec.get("title") or "主标题")],
-    }
-    ob = open_fe["bbox_1080p"]
-    open_ocr_str = " / ".join(open_fe.get("ocr_texts")[:3]) or str(spec.get("title") or "核心主视觉")
+    frames = ev["frame_evidences"]
+    opening = next((frame for frame in frames if frame["id"] == "open_hook"), None)
+    opening_summary = "未取得开篇画面，几何检查不可用。"
+    if opening is not None:
+        geometry_status = "通过" if ev["hero_ratio_passed"] else "未通过"
+        opening_summary = (
+            f"{opening['timestamp_sec']:.2f}s 的前景高 {opening['hero_height_px']}px，"
+            f"占画幅 {opening['hero_height_ratio'] * 100:.1f}%，几何阈值{geometry_status}。"
+        )
 
-    contact_exists = (pipeline_dir / "00_contact_sheet.jpg").is_file()
-    evidence_imgs = [
-        *(["`00_contact_sheet.jpg`"] if contact_exists else []),
-        "`10_action_strips.jpg`",
-        "`09_ui_safe_preview.jpg`",
-    ]
-
+    fact_count = ev["facts_total"]
+    fact_summary = f"{fact_count} 条待人工回查原始来源。" if fact_count else "事实台账为空。"
     lines = [
-        f"# 像素级冷读与交付验收核对表 VERIFY · {spec.get('title', pipeline_dir.parent.name)}",
+        f"# 成片抽样与复核记录 · {spec.get('title', pipeline_dir.parent.name)}",
         "",
-        f"- **实测成片流信息**：{v_meta_str}",
-        f"- **22 项自动+黑盒裁判**：{qa_summary}",
-        f"- **关联取证图**：{' / '.join(evidence_imgs)}",
+        f"- **成片流信息**：{v_meta_str}",
+        f"- **通用机检**：{qa_summary}",
+        f"- **采样覆盖**：取得 {ev['frames_sampled']}/{ev['frames_requested']} 个检查点，OCR 可用 {ev['ocr_frames']} 帧。检查点覆盖片头和最多前六幕的中点。",
+        f"- **开篇画面**：{opening_summary}",
+        f"- **上屏文案**：OCR 检出 {ev['exact_copy_matched']}/{ev['exact_copy_total']} 条规定文案。",
+        f"- **事实台账**：{fact_summary}",
+        f"- **动作连拍条**：{ev['action_strips_meta']}。",
         "",
-        "> **铁律**：证据栏均为**在真实成片解码帧像素与声学频谱上实测得到的客观事实**（同步归档于 `10_code_verify_evidence.json`）。",
+        "## 人工复核",
         "",
-        "## 一、 Cold Read 盲读记录（成片抽帧像素实测）",
-        (
-            f"- **开篇 0.0–1.0s 第一眼印象**：`t={open_fe['timestamp_sec']:.2f}s` 实测主视觉活跃包围盒 "
-            f"`x∈[{ob['x_min']},{ob['x_max']}], y∈[{ob['y_min']},{ob['y_max']}]`（高度 `{open_fe['hero_height_px']}px`，"
-            f"占画幅 `{open_fe['hero_height_ratio']*100:.1f}% >= 33%`），局部峰值对比度 `{open_fe['peak_contrast']}:1`，"
-            f"Apple Vision 首屏识别文本：`{open_ocr_str}`。"
-        ),
-        (
-            f"- **动作连拍条 (`10_action_strips.jpg`) 审查**：已生成 {ev['action_strips_meta']}；"
-            f"全片共抽检 `{len(fe_list)}` 幕关键帧，主视觉高度占比范围 `{ev['min_hero_height_ratio']*100:.1f}%–{ev['max_hero_height_ratio']*100:.1f}%`，"
-            "底部字幕保留带 `y∈[1180, 1468]` 无代码卡片压字或闪烁。"
-        ),
+        "核对事实来源、遮挡、阅读时间、跨帧闪烁与观众能否理解。",
         "",
-        "## 二、 SPEC 必检项逐条像素取证",
-        "| # | Must-Have 要求 | 核查时间戳 / 抽帧图 | 像素级观感与尺寸实测证据 | 结论 |",
-        "| :---: | :--- | :--- | :--- | :---: |",
+        *[f"- 待复核：{requirement}" for requirement in musts],
     ]
 
-    for i, m in enumerate(musts, start=1):
-        fe_pick = fe_list[min(i - 1, len(fe_list) - 1)] if fe_list else open_fe
-        tb = fe_pick["bbox_1080p"]
-        t_str = f"`t={fe_pick['timestamp_sec']:.2f}s` / `10_action_strips.jpg`"
-        if i == 1:
-            ev_desc = (
-                f"主视觉区 `y∈[{tb['y_min']},{tb['y_max']}]` 高 `{fe_pick['hero_height_px']}px` "
-                f"({fe_pick['hero_height_ratio']*100:.1f}% 画幅)，对比度 `{fe_pick['peak_contrast']}:1`"
-            )
-            ok_row = ev["hero_ratio_passed"]
-        elif i == 2:
-            ev_desc = (
-                f"Exact Copy 命中 `{ev['exact_copy_matched']}/{max(1, ev['exact_copy_total'])}`"
-                + (f"，Facts 命中 `{ev['facts_matched']}/{ev['facts_total']}`" if ev["facts_total"] else "")
-                + f"，屏显识别：`{' / '.join((fe_pick.get('ocr_texts') or ev.get('matched_copy_samples') or [spec.get('title', '')])[:2])}`"
-            )
-            ok_row = ev["exact_copy_matched"] >= max(1, min(2, ev["exact_copy_total"]))
-        elif i == 3:
-            ev_desc = (
-                f"代码画布严格锁在 `y∈[180, 1148]`，字幕框落于 `y∈[{SUBTITLE_SAFE_ZONE['y_min']}, {SUBTITLE_SAFE_ZONE['y_max']}]`，"
-                f"重叠碰撞 `0` 处"
-            )
-            ok_row = True
-        else:
-            ev_desc = (
-                f"帧序列采样 `{len(fe_list)}` 幕 (`t={fe_pick['timestamp_sec']:.2f}s` 前景占空比 `{fe_pick.get('fg_coverage_ratio', 0.25)*100:.1f}%`)，"
-                f"音画与 Spectral Flux 起音同步校验通过"
-            )
-            ok_row = bool(qa_obj.get("all_passed", True))
-        status_cell = "✅ PASS" if ok_row else "❌ FAIL"
-        lines.append(f"| {i} | {m} | {t_str} | {ev_desc} | {status_cell} |")
-
-    if len(fe_list) > 1:
+    if frames:
         lines.extend([
             "",
-            "## 三、 分幕抽帧几何与 OCR 实测明细",
-            "| 分幕 ID | 抽帧时刻 | 主视觉包围盒 (1080x1920) | 主体高度占比 | 峰值对比度 | 画面 OCR 识别文本 |",
-            "| :--- | :---: | :---: | :---: | :---: | :--- |",
+            "## 分幕抽帧与文字识别",
+            "",
+            "| 检查点 | 时间 | 前景高度占比 | 峰值对比度估计 | 画面 OCR |",
+            "| :--- | ---: | ---: | ---: | :--- |",
         ])
-        for fe in fe_list:
-            b = fe["bbox_1080p"]
-            ocr_s = " · ".join(fe.get("ocr_texts")[:3]) or fe.get("expected_text") or "-"
+        for frame in frames:
+            recognized = " · ".join(frame["ocr_texts"][:3])
+            ocr = recognized or ("未检出文字" if frame["ocr_available"] else "不可用")
+            ocr = ocr.replace("|", "｜").replace("\n", " ")
             lines.append(
-                f"| `{fe['id']}` | `{fe['timestamp_sec']:.2f}s` | `({b['x_min']},{b['y_min']})–({b['x_max']},{b['y_max']})` "
-                f"| `{fe['hero_height_ratio']*100:.1f}%` | `{fe['peak_contrast']}:1` | {ocr_s} |"
+                f"| {frame['id']} | {frame['timestamp_sec']:.2f}s | "
+                f"{frame['hero_height_ratio'] * 100:.1f}% | {frame['peak_contrast']}:1 | {ocr} |"
             )
 
     lines.append("")

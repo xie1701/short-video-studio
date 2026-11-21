@@ -25,7 +25,7 @@ SCRIPTS_ROOT = Path(__file__).resolve().parent
 if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
-from common import read_json, write_json
+from common import read_json, sha256_file, write_json
 
 PAIN_TRIGGERS = [
     "怕", "坑", "贵", "假", "拼接", "预制", "冻肉", "冷冻", "添加剂", "多久",
@@ -84,12 +84,38 @@ def _is_url_or_num_token(val: str) -> bool:
     return not s or s.isdigit() or s.startswith(("http://", "https://", "www."))
 
 
-def parse_comments_sources(files: List[Path]) -> List[str]:
-    utterances: List[str] = []
+def read_source_utterances(files: List[Path]) -> List[Dict[str, Any]]:
+    utterances: List[Dict[str, Any]] = []
+
+    def add(raw: str, file: Path, digest: str, locator: str, metadata: Dict[str, Any]) -> None:
+        clean = _clean_utterance(raw)
+        if len(clean) < 3 or _is_url_or_num_token(clean) or clean.startswith(("#", "---")):
+            return
+        role = str(metadata.get("role") or metadata.get("speaker_role") or "").lower()
+        role_map = {"客服": "support", "agent": "support", "客户": "customer", "用户": "customer", "viewer": "customer"}
+        roles = {"support", "customer"}
+        role = role_map.get(role, role)
+        if role not in roles:
+            prefix = raw[_TS_PREFIX_RE.match(raw).end():] if _TS_PREFIX_RE.match(raw) else raw
+            if re.match(r"^\s*客服[^：:]{0,16}[：:]", prefix):
+                role = "support"
+            elif re.match(r"^\s*(?:用户|客户|顾客|买家|网友)[^：:]{0,16}[：:]", prefix):
+                role = "customer"
+            else:
+                role = "unknown"
+        utterances.append({
+            "id": f"{digest[:16]}:{locator}",
+            "source_path": str(file.resolve()), "source_sha256": digest, "locator": locator,
+            "quote": clean, "role": role,
+            "timestamp": metadata.get("timestamp") or metadata.get("created_at"),
+            "participant_id": metadata.get("participant_id") or metadata.get("author_id") or metadata.get("user_id"),
+            "record_id": metadata.get("id") or metadata.get("message_id"),
+        })
     for fp in files:
         if not fp.exists():
             continue
         suf = fp.suffix.lower()
+        digest = sha256_file(fp)
         if suf == ".csv":
             with fp.open("r", encoding="utf-8", errors="ignore") as f:
                 rows = list(csv.reader(f))
@@ -112,47 +138,46 @@ def parse_comments_sources(files: List[Path]) -> List[str]:
                         zh_bonus = 1.5 if any(re.search(r"[\u4e00-\u9fff]", v) for v in valid) else 0.3
                         col_scores.append((avg_l * zh_bonus, ci))
                     text_col = max(col_scores)[1] if col_scores else 0
-                for row in data_rows:
+                first_record = 2 if len(data_rows) < len(rows) else 1
+                for record_number, row in enumerate(data_rows, first_record):
                     if text_col is not None and text_col < len(row):
-                        c = _clean_utterance(row[text_col])
-                        if len(c) >= 3 and not _is_url_or_num_token(c):
-                            utterances.append(c)
+                        add(row[text_col], fp, digest, f"csv:{record_number}", dict(zip(header, row)) if first_record == 2 else {})
         elif suf == ".json":
             raw = read_json(fp)
             if isinstance(raw, dict):
-                cand_list = raw.get("comments") or raw.get("messages") or raw.get("items") or raw.get("utterances") or raw.get("sentences") or []
-                for v in raw.values():
-                    if not cand_list and isinstance(v, list):
-                        cand_list = v
-            elif isinstance(raw, list):
-                cand_list = raw
+                preferred = ("comments", "messages", "items", "utterances", "sentences")
+                key = next((k for k in (*preferred, *raw) if isinstance(raw.get(k), list) and raw[k]), None)
+                cand_list = raw[key] if key else []
+                root = "/" + key.replace("~", "~0").replace("/", "~1") if key else ""
             else:
-                cand_list = []
-            for item in cand_list:
-                txt = item.get("text") or item.get("content") or item.get("comment") or "" if isinstance(item, dict) else str(item)
-                c = _clean_utterance(str(txt))
-                if len(c) >= 3:
-                    utterances.append(c)
+                root = ""
+                cand_list = raw if isinstance(raw, list) else []
+            for index, item in enumerate(cand_list):
+                fields = item if isinstance(item, dict) else {}
+                txt = fields.get("text") or fields.get("content") or fields.get("comment") or (item if isinstance(item, str) else "")
+                add(str(txt), fp, digest, f"json:{root}/{index}", fields)
         else:
-            for raw in fp.read_text(encoding="utf-8", errors="ignore").splitlines():
-                c = _clean_utterance(raw)
-                if len(c) >= 3 and not c.startswith("#") and not c.startswith("---"):
-                    utterances.append(c)
-    seen = set()
-    uniq: List[str] = []
-    for u in utterances:
-        if u not in seen:
-            seen.add(u)
-            uniq.append(u)
-    return uniq
+            for line_no, raw in enumerate(fp.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+                add(raw, fp, digest, f"line:{line_no}", {})
+    return list({row["id"]: row for row in utterances}.values())
+
+
+def parse_comments_sources(files: List[Path]) -> List[str]:
+    return list(dict.fromkeys(row["quote"] for row in read_source_utterances(files)))
 
 
 def extract_raw_intel(
     comments_files: List[Path],
     proof_dir: Optional[Path] = None,
     track: str = "store",
+    verified_customer_export: bool = False,
 ) -> Dict[str, Any]:
-    utterances = parse_comments_sources(comments_files)
+    source_rows = read_source_utterances(comments_files)
+    usable_rows = [row for row in source_rows if row["role"] != "support"]
+    by_quote: Dict[str, List[str]] = {}
+    for row in usable_rows:
+        by_quote.setdefault(row["quote"], []).append(row["id"])
+    utterances = list(by_quote)
     trigger_counts: Counter[str] = Counter()
     pain_phrases: List[Dict[str, Any]] = []
     customer_questions: List[str] = []
@@ -168,6 +193,7 @@ def extract_raw_intel(
         if hits or is_q:
             pain_phrases.append({
                 "quote": u,
+                "source_ids": by_quote[u],
                 "triggers": hits,
                 "is_question": is_q,
                 "score": len(hits) * 2 + (1 if is_q else 0),
@@ -177,7 +203,7 @@ def extract_raw_intel(
 
     proof_assets: List[Dict[str, Any]] = []
     if proof_dir and proof_dir.exists():
-        exts = {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".pdf"}
+        exts = {".jpg", ".jpeg", ".png", ".webp", ".mp4", ".mov", ".pdf", ".csv", ".xlsx", ".txt", ".json"}
         for f in sorted(proof_dir.iterdir()):
             if not f.is_file() or f.suffix.lower() not in exts:
                 continue
@@ -186,7 +212,10 @@ def extract_raw_intel(
                 if k in f.name:
                     label = v
                     break
+            digest = sha256_file(f)
             proof_assets.append({
+                "id": f"proof:{digest[:16]}",
+                "sha256": digest,
                 "filename": f.name,
                 "path": str(f.resolve()),
                 "ext": f.suffix.lower(),
@@ -197,7 +226,9 @@ def extract_raw_intel(
     return {
         "step": "00_raw_intel",
         "track": track,
-        "verified_by_real_users": len(utterances) > 0,
+        "verified_by_real_users": bool(verified_customer_export and usable_rows),
+        "source_utterances": source_rows,
+        "identified_participant_count": len({str(row["participant_id"]) for row in usable_rows if row["participant_id"]}),
         "utterance_count": len(utterances),
         "top_pain_triggers": [{"word": k, "count": c} for k, c in trigger_counts.most_common(12)],
         "pain_keywords": top_keywords,
@@ -340,6 +371,7 @@ def render_lint_markdown(lint_res: Dict[str, Any], raw_intel: Dict[str, Any]) ->
 def main() -> None:
     parser = argparse.ArgumentParser(description="一手原始材料接入与口语去AI味剧本检查器")
     parser.add_argument("--comments-file", nargs="*", default=[], help="同行评论区/客服聊天导出文件(.txt/.md/.csv)")
+    parser.add_argument("--verified-customer-export", action="store_true", help="确认导出文件来自真实客户互动")
     parser.add_argument("--proof-dir", help="门店原始物证材料目录")
     parser.add_argument("--script-json", help="待体检口播文案 JSON")
     parser.add_argument("--track", choices=["store", "creator"], default="store")
@@ -348,7 +380,8 @@ def main() -> None:
 
     comment_paths = [Path(p) for p in args.comments_file]
     proof_p = Path(args.proof_dir) if args.proof_dir else None
-    intel = extract_raw_intel(comment_paths, proof_dir=proof_p, track=args.track)
+    intel = extract_raw_intel(comment_paths, proof_dir=proof_p, track=args.track,
+                              verified_customer_export=args.verified_customer_export)
 
     if args.script_json and Path(args.script_json).exists():
         raw_script = read_json(Path(args.script_json))
