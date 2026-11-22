@@ -90,13 +90,20 @@ def resolve_style_runtime_config(style_id: str) -> Dict[str, Any]:
 def list_styles(lib: Dict[str, Any]) -> None:
     print(f"{'ID':<10} {'名称':<26} {'轨道':<8} {'中位镜长':<9} {'BPM':<7} {'字幕模板'}")
     print("-" * 76)
+    def _num(v: Any, fmt: str) -> str:
+        """v4 里有些推演值被作废置空（如 estimated_bpm），显示为 —，绝不假装有值。"""
+        try:
+            return format(float(v), fmt) if v is not None else "—"
+        except (TypeError, ValueError):
+            return "—"
+
     for s in lib.get("styles", []):
         sid = s["style_id"]
         name = str(s.get("style_name_cn", ""))[:24]
         track = s.get("recommended_track", "creator")
-        med = s.get("shot_distribution", {}).get("median_sec", 0.0)
-        bpm = s.get("beat_alignment", {}).get("estimated_bpm", 0.0)
-        print(f"{sid:<10} {name:<26} {track:<8} {med:<9.2f} {bpm:<7.1f} {sid}")
+        med = s.get("shot_distribution", {}).get("median_sec")
+        bpm = s.get("beat_alignment", {}).get("estimated_bpm")
+        print(f"{sid:<10} {name:<26} {track:<8} {_num(med, '.2f'):<9} {_num(bpm, '.1f'):<7} {sid}")
 
 
 def bg_slab_hex(bp: Dict[str, Any]) -> str:

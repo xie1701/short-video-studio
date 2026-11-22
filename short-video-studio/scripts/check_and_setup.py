@@ -212,7 +212,8 @@ def main() -> None:
     if sys_name == "Windows":
         non_c = list_non_system_drives_windows()
         if non_c and str(resolve_default_workspace_root()).upper().startswith("C:"):
-            print(f"[提示] 检测到可用非 C 盘: {', '.join(d['drive'] + f'({d[\"free_gb\"]}GB)' for d in non_c)}，建议将工作区设在非 C 盘（如 {non_c[0]['recommended_workspace']}）。")
+            _drives_txt = ", ".join(f"{d['drive']}({d['free_gb']}GB)" for d in non_c)
+            print(f"[提示] 检测到可用非 C 盘: {_drives_txt}，建议将工作区设在非 C 盘（如 {non_c[0]['recommended_workspace']}）。")
 
     if not args.check_only and args.install_deps:
         try_install_ffmpeg(sys_name)

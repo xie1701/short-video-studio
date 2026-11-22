@@ -2427,6 +2427,39 @@ class WindowFaceFramingRenderTests(unittest.TestCase):
             self.assertGreater(float(outs["face"]), 0.055, f"人脸取景没保住人：{outs}")
 
 
+class PackagingSmokeTests(unittest.TestCase):
+    """打包前必须能 import：任何一个脚本的语法错误都会让 install_skill.py 直接失败。"""
+
+    def test_every_script_compiles(self):
+        import py_compile
+
+        scripts = sorted((ROOT / "short-video-studio" / "scripts").glob("*.py"))
+        scripts += sorted((ROOT / "dev_tools").glob("*.py"))
+        scripts.append(ROOT / "install_skill.py")
+        self.assertGreater(len(scripts), 30)
+        bad = []
+        for f in scripts:
+            try:
+                py_compile.compile(str(f), doraise=True, cfile=str(Path(tempfile.gettempdir()) / "svs_compile.pyc"))
+            except Exception as exc:
+                bad.append(f"{f.name}: {exc}")
+        self.assertEqual(bad, [], f"以下脚本无法编译：{bad}")
+
+    def test_style_list_command_runs_on_v4_library(self):
+        """README 让用户第一条就跑的命令，不许因为 v4 里作废的推演值崩掉。"""
+        r = subprocess.run([sys.executable, str(ROOT / "short-video-studio" / "scripts" / "apply_style_spectrum.py"),
+                            "--list"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
+        self.assertIn("style_01", r.stdout)
+        self.assertIn("style_24", r.stdout)
+
+    def test_install_targets_are_recognizable_skills(self):
+        import install_skill
+
+        self.assertTrue(install_skill.recognized_skill(ROOT / "short-video-studio"))
+        self.assertIn("version:", (ROOT / "short-video-studio" / "SKILL.md").read_text(encoding="utf-8")[:400])
+
+
 class BrollSemanticsTests(unittest.TestCase):
     """外来画面必须能与它压着的那句台词对上；对不上要照实标记，不能靠字面 tag 蒙。"""
 
