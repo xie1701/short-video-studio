@@ -6,14 +6,14 @@
 
 ## 一、 可商用字体 (Fonts)
 
-流水线与 24 套字幕模板优先加载以下开源免费可商用字体（全部采用 **SIL Open Font License 1.1**、**Apache 2.0** 或官方全平台免费商用授权）：
+流水线与 28 套字幕模板优先加载以下开源免费可商用字体（全部采用 **SIL Open Font License 1.1**、**Apache 2.0** 或官方全平台免费商用授权）：
 
 | 字体名称 | 授权协议 | 来源项目 |
 | :--- | :--- | :--- |
 | **阿里妈妈数黑体 (Alimama ShuHeiTi)** | 阿里巴巴免费可商用授权 | 阿里妈妈智造字官网授权全平台免费商用（随仓内置 `assets/fonts/AlimamaShuHeiTi-Bold.otf`，约 1.0 MB） |
+| **得意黑 (Smiley Sans)** | SIL OFL 1.1 | atelier-anchor 开源发布（随仓内置 `assets/fonts/SmileySans-Oblique.ttf`，约 2.5 MB） |
+| **思源宋体 Bold & Heavy (Source Han Serif CN)** | SIL OFL 1.1 | Adobe & Google 开源发布（随仓内置 `assets/fonts/SourceHanSerifCN-Bold.otf` 与 `SourceHanSerifCN-Heavy.otf`，各约 11 MB） |
 | **思源黑体 (Source Han Sans CN / Noto Sans CJK SC)** | SIL OFL 1.1 | Adobe & Google 开源发布 (`github.com/adobe-fonts/source-han-sans`) |
-| **思源宋体 (Source Han Serif CN)** | SIL OFL 1.1 | Adobe & Google 开源发布 (`github.com/adobe-fonts/source-han-serif`) |
-| **得意黑 (Smiley Sans)** | SIL OFL 1.1 | atelier-anchor 开源发布 (`github.com/atelier-anchor/smiley-sans`) |
 
 > 注：所有导出与 `#22` 质检均通过 `common.is_verified_commercial_font()` **严格拦截无商用授权的系统私有字体（如苹方/华文黑体/微软雅黑）**，防止商业发布版权风险。本机合法安装上述免费商用开源字体时同样会被识别放行。
 
@@ -21,7 +21,7 @@
 
 ## 二、 CC0 真实录制背景音乐与物理材质音效 (`assets/sound_vibe/`)
 
-全仓已完全淘汰低质电子合成音频，统一采用由 [scripts/vibe_sound.py](../scripts/vibe_sound.py) 基于 [vibe-motion/sound](https://github.com/vibe-motion/sound) 筛选的 **Creative Commons 0 (CC0 1.0 公共领域)** 免版税真实录音素材（BGM 统一转为 48kHz AAC `.m4a` 并经真实波形起拍校准 `onset_offset_sec` / `beat_times_sec` / `downbeat_times_sec`；物理音效为 48kHz 16-bit PCM WAV，支持全部 20 套 `style_01`–`style_20` 映射与门店/博主双轨默认配置）：
+全仓已完全淘汰低质电子合成音频，统一采用由 [scripts/vibe_sound.py](../scripts/vibe_sound.py) 基于 [vibe-motion/sound](https://github.com/vibe-motion/sound) 筛选的 **Creative Commons 0 (CC0 1.0 公共领域)** 免版税真实录音素材（BGM 统一转为 48kHz AAC `.m4a` 并经真实波形起拍校准 `onset_offset_sec` / `beat_times_sec` / `downbeat_times_sec`；物理音效为 48kHz 16-bit PCM WAV，支持全部 24 套 `style_01`–`style_24` 映射与门店/博主双轨默认配置）：
 
 | 代表流派样式 | 真实 BGM 来源 (Freesound ID · CC0) | 物理材质 SFX 来源 (Freesound ID · CC0) |
 | :--- | :--- | :--- |
@@ -43,7 +43,8 @@
 | :--- | :--- | :--- | :--- |
 | `assets/luts/warm_store.cube` | 门店暖调提亮 LUT (`17³`) | 仓库离线构建脚本 `dev_tools/generate_builtin_assets.py` 生成 | **CC0 1.0 可商用** |
 | `assets/luts/clean_creator.cube` | 博主清透自然 LUT (`17³`) | 仓库离线构建脚本 `dev_tools/generate_builtin_assets.py` 生成 | **CC0 1.0 可商用** |
-| `assets/style_spectrum/luts/style_01.cube` ~ `style_20.cube` | 20 套风格谱色彩映射矩阵 (`17³`) | 仓库离线分析脚本 `dev_tools/analyze_style_spectrum.py` 生成 | **CC0 1.0 可商用** |
-| `assets/style_spectrum/style_spectrum_library.json`、`assets/subtitle_templates/templates.json` | 风格谱配置与 24 套模板 | 本项目原创结构化配置（零私有字体） | **MIT / CC0 可商用** |
+| `assets/style_spectrum/luts/style_01.cube` ~ `style_24.cube` | 24 套风格谱色彩映射矩阵 (`17³`) | 基于白盒色彩锚点由 `write_cube_lut` 生成 | **CC0 1.0 可商用** |
+| `assets/style_spectrum/style_spectrum_library.json`、`assets/subtitle_templates/templates.json` | 24 套 v2.1 量化风格谱与 28 套字幕模板 | 本项目原创结构化配置（100% 绑定随仓开源商用字体，零私有字体） | **MIT / CC0 可商用** |
+| `assets/style_spectrum/animation_sfx_pairs.json`、`sfx_intent_taxonomy.json`、`typography_cover_rules.json` | 83 组动画×音效配对、29 类语义音效表、四色排版与 3:4 封面四构图规则 | 公共领域剪辑排版数学与 CC0 音效角色映射 | **MIT / CC0 可商用** |
 
 - 信息图表与 7 种修辞补镜（`kinetic_text / data_chart / flow_diagram / proportion / day_night / chips / versus`）均由 `scripts/generate_code_broll.py`（无头 Chrome HTML + Pillow 兜底）现场原创绘制，无第三方 UI 素材版权负担。

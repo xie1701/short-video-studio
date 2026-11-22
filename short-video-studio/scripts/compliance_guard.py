@@ -54,7 +54,7 @@ MUST_RULES: List[Tuple[str, str, str, str]] = [
     ),
     (
         "百分百绝对承诺",
-        r"100%|100%好评|百分之百|百分百|零风险|0风险|零副作用|无任何副作用|绝对(?:有效|安全|正品|不踩坑|好吃)|稳赚不赔|包赚|必赚|躺赚|永久有效|绝不反弹",
+        r"100%好评|100%|百分之百|百分百|零风险|0风险|零副作用|无任何副作用|绝对(?:有效|安全|正品|不踩坑|好吃)|稳赚不赔|包赚|必赚|躺赚|永久有效|绝不反弹",
         "尽量把控品质、减少踩坑",
         "涉嫌绝对承诺与效果/收益担保风险",
     ),
@@ -81,7 +81,7 @@ WARN_RULES: List[Tuple[str, str, str, str]] = [
     ),
     (
         "站外导流暗语与谐音",
-        r"加[Vv微]|威信|[Vv]信|微[♥❤➕+]|私信发微信|私聊[领发加]|微信号|vx[:：\s]?|扫码进群|扫[一 ]?码[领加]|加群领|二维码找我|主页领优惠券|扣我\d*",
+        r"加[Vv微]|威信|[Vv]信|微[♥❤➕+]|私信发微信|私聊[领发加]|微信号|(?<![a-z0-9])vx[:：\s]?|扫码进群|扫[一 ]?码[领加]|加群领|二维码找我|主页领优惠券|扣我\d*",
         "评论区扣 1 或主页看门店详情",
         "平台高风险站外导流及谐音暗语触发限流预警",
     ),
@@ -265,10 +265,10 @@ def audit_script_compliance(
     if pipeline_dir is not None:
         write_json(pipeline_dir / "00_compliance_report.json", report)
         md_lines = [
-            "# 广告法与平台合规双级审校报告",
+            "# 广告法与平台合规审校报告",
             "",
             f"- **音源性质**：{'实拍真人口播（违规原声只能整句弃用或重拍，严禁靠改字幕遮掩）' if is_real_voice else '文本/配音脚本'}",
-            f"- **判定结论**：{'✅ 合规通过' if passed else '❌ 存在未处置 must 级硬性违规'}（must={must_count} 句，warn={warn_count} 处，未凭证确认 warn={unacked_warn_count} 处）",
+            f"- **判定结论**：{'✅ 合规通过' if passed else '❌ 存在未处置的禁止红线表达'}（禁止红线={must_count} 句，需凭证提醒={warn_count} 处，待补充凭证={unacked_warn_count} 处）",
             "",
         ]
         if findings:
@@ -277,13 +277,13 @@ def audit_script_compliance(
                 "| :--- | :---: | :--- | :--- | :--- | :--- |",
             ]
             for f in findings:
-                sev = "MUST" if any(h["severity"] == "must" for h in f["hits"]) else "WARN"
+                sev = "禁止红线" if any(h["severity"] == "must" for h in f["hits"]) else "需凭证提醒"
                 terms = "、".join(h["matched_term"] for h in f["hits"])
                 reasons = "；".join(h["reason"] for h in f["hits"])
                 act = f"【已弃用原声句】建议重拍：{f['suggested_text']}" if f["action"] == "drop_sentence_or_reshoot" else f['suggested_text']
                 md_lines.append(f"| `{f['sentence_id']}` | {sev} | `{terms}` | {f['original_text']} | {act} | {reasons} |")
         else:
-            md_lines.append("- 全文未检出 `must` 或 `warn` 级违禁/高风险表达。")
+            md_lines.append("- 全文未检出违禁或高风险表达。")
         (pipeline_dir / "00_compliance_report.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
 
     return report
@@ -438,9 +438,14 @@ def build_asset_license_manifest(
         source_entry = next((item for item in entries if item["path"] == str(master)), None)
         if derived.is_file() and source_entry and source_entry.get("commercial_ok"):
             entries.append({
-                "category": "lut", "path": str(derived.resolve()), "sha256": sha256_file(derived),
+                "kind": "lut", "category": "lut",
+                "filename": derived.name, "name": derived.name,
+                "exists": True, "size_bytes": derived.stat().st_size,
+                "path": str(derived.resolve()), "sha256": sha256_file(derived),
                 "source_tier": "project_derived_lut", "source_path": str(master),
-                "source_sha256": source_entry["sha256"], "commercial_ok": True,
+                "source_sha256": source_entry["sha256"],
+                "license": str(source_entry.get("license") or "CC0 1.0 (Derived)"),
+                "commercial_ok": True,
                 "commercial_verified": True,
             })
         else:
@@ -489,9 +494,9 @@ def main() -> None:
     if args.cmd == "audit-script":
         raw = read_json(Path(args.input_json))
         if isinstance(raw, dict):
-            sents = raw.get("sentences") or raw.get("segments") or []
+            sents = list(raw.get("sentences") or raw.get("segments") or [])
         else:
-            sents = raw
+            sents = list(raw or [])
         if args.pipeline_dir:
             pdir = Path(args.pipeline_dir)
             pkg_p = pdir / "06_packaging.json"

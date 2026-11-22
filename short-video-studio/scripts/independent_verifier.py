@@ -62,7 +62,8 @@ from common import (
     write_json,
 )
 
-maybe_reexec_in_venv()
+if __name__ == "__main__":
+    maybe_reexec_in_venv()
 
 import numpy as np
 from PIL import Image
@@ -204,8 +205,23 @@ def verify_audio_blackbox(
     except Exception:
         y16_vocal = y16
 
+    speech_windows: List[Tuple[float, float]] = []
+    if pipeline_dir and (pipeline_dir / "03_audio_events.json").is_file():
+        try:
+            ae_a = read_json(pipeline_dir / "03_audio_events.json")
+            speech_windows = [
+                (float(s.get("start_sec", 0.0)), float(s.get("end_sec", 0.0)))
+                for s in (ae_a.get("sentences") or [])
+                if float(s.get("end_sec", 0.0)) > float(s.get("start_sec", 0.0))
+            ]
+        except Exception:
+            speech_windows = []
+
     span_rms_dbs: List[float] = []
     for s, e in spans:
+        # 仅核查真实口播时段（避免纯 BGM / 空镜停顿被误判成画外音电平跌落）
+        if speech_windows and not any(min(e, we) - max(s, ws) >= 0.12 for ws, we in speech_windows):
+            continue
         seg = y16_vocal[int(s * 16000): int(e * 16000)]
         if len(seg) > 160:
             r = float(np.sqrt(np.mean(seg ** 2) + 1e-12))
@@ -308,35 +324,77 @@ def verify_visual_and_subtitle_blackbox(
     static_limit = EDIT_PROFILES["talking"]["static_sec"]
     expected_aroll_has_face = False
     expected_sub_text = ""
+    expected_sub_entries: List[Tuple[float, float, str]] = []
+    suppressed_spans: List[Tuple[float, float]] = []
+    code_broll_spans: List[Tuple[float, float]] = []
+    cut_times_sec: List[float] = []
+    pkg_texts: List[str] = []
+    sent_speech_spans: List[Tuple[float, float]] = []
     if pipeline_dir and pipeline_dir.exists():
+        edl_cuts_clips: List[Dict[str, Any]] = []
         timeline = pipeline_dir / "04_edl.json"
         if timeline.is_file():
-            style = read_json(timeline).get("edit_profile", "talking")
+            edl_obj = read_json(timeline)
+            style = edl_obj.get("edit_profile", "talking")
             static_limit = EDIT_PROFILES.get(style, EDIT_PROFILES["talking"])["static_sec"]
+            edl_cuts_clips = list(edl_obj.get("clips") or [])
+            code_broll_spans = [
+                (float(c.get("timeline_in_sec", 0.0)), float(c.get("timeline_out_sec", 0.0)))
+                for c in edl_cuts_clips
+                if c.get("track_role") == "code_broll"
+            ]
+            cut_times_sec = [float(c.get("timeline_in_sec", 0.0)) for c in edl_cuts_clips[1:]]
         mf_p = pipeline_dir / "01_manifest.json"
         if mf_p.is_file():
             try:
                 mf = read_json(mf_p)
-                expected_aroll_has_face = any(
-                    it.get("role") == "a_roll" and bool(it.get("faces"))
+                face_mps = {
+                    str(it.get("normalized_mp4") or "")
                     for it in (mf.get("items") or [])
-                )
+                    if it.get("role") == "a_roll" and bool(it.get("faces"))
+                }
+                if edl_cuts_clips:
+                    expected_aroll_has_face = any(
+                        str(c.get("media_path") or "") in face_mps and float(c.get("duration_sec", 0.0)) >= 1.0
+                        for c in edl_cuts_clips
+                        if c.get("track_role") == "a_roll"
+                    )
+                else:
+                    expected_aroll_has_face = bool(face_mps)
+            except Exception:
+                pass
+        ae_p = pipeline_dir / "03_audio_events.json"
+        if ae_p.is_file():
+            try:
+                for s in (read_json(ae_p).get("sentences") or []):
+                    if float(s.get("end_sec", 0.0)) > float(s.get("start_sec", 0.0)):
+                        sent_speech_spans.append((float(s["start_sec"]), float(s["end_sec"])))
+            except Exception:
+                pass
+        pkg_p2 = pipeline_dir / "06_packaging.json"
+        if pkg_p2.is_file():
+            try:
+                for el in (read_json(pkg_p2).get("visual_elements") or []):
+                    t_el = _clean_zh_text(str(el.get("text_or_asset") or ""))
+                    if t_el:
+                        pkg_texts.append(t_el)
             except Exception:
                 pass
         sub_p = pipeline_dir / "05_subtitles.json"
-        expected_sub_entries: List[Tuple[float, float, str]] = []
         if sub_p.is_file():
             try:
                 subs_j = read_json(sub_p)
                 for e in (subs_j.get("entries") or []):
-                    if not e.get("suppressed"):
+                    st_e = float(e.get("start_sec", 0.0))
+                    en_e = float(e.get("end_sec", 0.0))
+                    if e.get("suppressed"):
+                        suppressed_spans.append((st_e, en_e))
+                    else:
                         et = str(e.get("text") or "")
-                        expected_sub_entries.append((float(e.get("start_sec", 0.0)), float(e.get("end_sec", 0.0)), _clean_zh_text(et)))
+                        expected_sub_entries.append((st_e, en_e, _clean_zh_text(et)))
                 expected_sub_text = "".join(t for _, _, t in expected_sub_entries)
             except Exception:
                 pass
-    else:
-        expected_sub_entries = []
 
     safe_violations: List[str] = []
     center_violations: List[str] = []
@@ -370,7 +428,13 @@ def verify_visual_and_subtitle_blackbox(
         frame_backends.append(b_name)
         if vr.get("read_error") or b_name == "apple_vision_read_error":
             read_error_frames += 1
-        faces = vr.get("faces") or []
+        faces_raw = vr.get("faces") or []
+        # 过滤背景极小路人人脸 (< 0.8% 画幅面积) 防误算肤色或误报字幕遮挡
+        faces = [
+            f for f in faces_raw
+            if isinstance(f.get("bbox"), dict)
+            and (float(f["bbox"].get("w", 0.0)) * float(f["bbox"].get("h", 0.0))) >= 0.008
+        ]
         texts = [t for t in (vr.get("texts") or []) if float(t.get("conf", 0.0)) >= 0.32 and len(str(t.get("text", "")).strip()) >= 2]
 
         with Image.open(fp) as im:
@@ -378,7 +442,8 @@ def verify_visual_and_subtitle_blackbox(
             thumb = np.asarray(im.convert("RGB").resize((270, 480)), dtype=np.float32)
 
         thumb_masked = thumb.copy()
-        thumb_masked[260:370, :, :] = 0.0
+        thumb_masked[285:380, :, :] = 0.0
+        thumb_masked[46:88, :, :] = 0.0
         masked_thumbs.append(thumb_masked)
 
         luma = compute_bt709_luma(rgb)
@@ -412,14 +477,22 @@ def verify_visual_and_subtitle_blackbox(
                 if not (cb_min <= cb_med <= cb_max and cr_min <= cr_med <= cr_max):
                     skin_violations += 1
 
-        in_speech = any((s + 0.15) <= t_sec <= (e - 0.15) for s, e in speech_spans)
-        if in_speech:
+        eff_spans = sent_speech_spans or speech_spans
+        in_speech = any((s + 0.15) <= t_sec <= (e - 0.15) for s, e in eff_spans)
+        is_suppressed_now = (
+            any(s <= t_sec <= e for s, e in suppressed_spans)
+            or any(cs <= t_sec <= ce for cs, ce in code_broll_spans)
+        )
+        if in_speech and not is_suppressed_now:
             speech_frames_checked += 1
             if any(float(t["y"]) >= 0.55 for t in texts):
                 speech_frames_with_sub_ocr += 1
 
         rel_lum = _relative_luminance(rgb)
         sub_band_boxes: List[Tuple[int, int, int, int, str]] = []
+        active_overlay_corpus = "".join(
+            [et for st_s, en_s, et in expected_sub_entries if (st_s - 0.45) <= t_sec <= (en_s + 0.45)] + pkg_texts
+        )
         for t in texts:
             txt_raw = str(t.get("text", "")).strip()
             m_leak = META_LEAK_RE.search(txt_raw)
@@ -432,13 +505,18 @@ def verify_visual_and_subtitle_blackbox(
             ph = max(4, int(round(float(t["h"]) * CANVAS_HEIGHT)))
             px2, py2 = px1 + pw, py1 + ph
 
+            txt_c = _clean_zh_text(txt_raw)
+            matches_overlay = (
+                not active_overlay_corpus
+                or (len(txt_c) >= 2 and sum(1 for ch in set(txt_c) if ch in active_overlay_corpus) >= min(2, len(txt_c)))
+            )
+
             if py1 >= SUBTITLE_SAFE_ZONE["y_min"] - 40 and py2 <= SUBTITLE_SAFE_ZONE["y_max"] + 25:
                 sub_band_boxes.append((px1, py1, px2, py2, txt_raw))
-                cleaned_o = _clean_zh_text(txt_raw)
-                if cleaned_o and (not sub_ocr_segments or cleaned_o != sub_ocr_segments[-1]):
-                    sub_ocr_segments.append(cleaned_o)
+                if txt_c and (not sub_ocr_segments or txt_c != sub_ocr_segments[-1]):
+                    sub_ocr_segments.append(txt_c)
 
-            if (
+            if matches_overlay and (
                 py1 < SAFE_ZONE["y_min"] - 10
                 or py2 > SAFE_ZONE["y_max"] + 15
                 or px1 < SAFE_ZONE["x_min"] - 5
@@ -446,18 +524,24 @@ def verify_visual_and_subtitle_blackbox(
             ):
                 safe_violations.append(f"t={t_sec:.1f}s '{txt_raw[:10]}' ({px1},{py1})-({px2},{py2})")
 
-            t_norm = {"x": float(t["x"]), "y": float(t["y"]), "w": float(t["w"]), "h": float(t["h"])}
+            t_px_box = {"x": px1, "y": py1, "w": pw, "h": ph}
             for f in faces:
                 fb = f.get("bbox")
                 if not fb:
                     continue
-                iou = bbox_iou(t_norm, fb)
+                fb_px = {
+                    "x": float(fb["x"]) * CANVAS_WIDTH,
+                    "y": float(fb["y"]) * CANVAS_HEIGHT,
+                    "w": float(fb["w"]) * CANVAS_WIDTH,
+                    "h": float(fb["h"]) * CANVAS_HEIGHT,
+                }
+                iou = bbox_iou(t_px_box, fb_px)
                 if iou > 0.02:
                     face_occlusions.append(f"t={t_sec:.1f}s '{txt_raw[:8]}' IoU={iou:.3f}")
                 max_face_text_iou = max(max_face_text_iou, iou)
 
             in_sub_or_pkg = py1 >= 150 and py2 <= SUBTITLE_SAFE_ZONE["y_max"] + 25
-            if in_sub_or_pkg and ph >= 24:
+            if in_sub_or_pkg and ph >= 24 and matches_overlay:
                 # 纳入文字外圈 6px Halo/描边带联合采样前后景极端相对亮度比
                 bx0 = max(0, px1 - 6)
                 by0 = max(0, py1 - 6)
@@ -588,8 +672,8 @@ def verify_visual_and_subtitle_blackbox(
             "sub_ocr_content_recall": sub_content_recall,
         }
 
-        # 绝不在零对比样本时硬写 8.0 伪通过；无期望文本时仅检查零人脸遮挡
-        expect_text_on_screen = bool(exp_clean or speech_frames_checked > 0)
+        # 绝不在零对比样本时硬写 8.0 伪通过；无非抑制字幕文本时不因空采样误判 FAIL
+        expect_text_on_screen = bool(exp_clean)
         if wcag_ratios:
             mean_wcag = round(float(np.mean(wcag_ratios)), 2)
             wcag_ok = (len(low_contrast_hits) == 0) and (mean_wcag >= 4.5)
@@ -616,7 +700,11 @@ def verify_visual_and_subtitle_blackbox(
 
     max_white = round(max(clipped_white_pcts or [0.0]), 1)
     max_black = round(max(clipped_black_pcts or [0.0]), 1)
-    luma_jumps = [abs(mean_lumas[i] - mean_lumas[i - 1]) for i in range(1, len(mean_lumas))]
+    luma_jumps = [
+        abs(mean_lumas[i] - mean_lumas[i - 1])
+        for i in range(1, len(mean_lumas))
+        if not any(abs(ct - (i - 0.5) * 0.5) <= 0.55 for ct in cut_times_sec)
+    ]
     max_luma_jump = round(max(luma_jumps or [0.0]), 1)
     skin_missing_fail = bool(expected_aroll_has_face and skin_checked == 0)
     luma_jump_ok = (max_luma_jump <= 90.0)
@@ -655,35 +743,38 @@ def verify_cut_spot_blackbox(video_path: Path, pipeline_dir: Optional[Path], tmp
     req_frames = sorted({max(0, cf - 2) for cf in cuts} | {cf + 2 for cf in cuts})
     spot_dir = tmp_dir / "spot_cuts"
     spot_dir.mkdir(parents=True, exist_ok=True)
-    sel_expr = "+".join(f"eq(n\\,{fn})" for fn in req_frames)
-    res = run_cmd([
-        ffmpeg, "-y", "-hide_banner", "-loglevel", "info",
-        "-i", str(video_path),
-        "-vf", f"select={sel_expr},showinfo,scale=270:480",
-        "-fps_mode", "passthrough", "-q:v", "3",
-        str(spot_dir / "sp_%04d.jpg"),
-    ], check=False)
-
-    # 通过 showinfo 中的 pts_time 反算原视频帧号（比 zip(req_frames, files) 绝对防错位）
-    emitted_frames: List[int] = []
-    for m in re.finditer(r"n:\s*\d+.*?pts_time:([0-9.]+)", res.stderr or ""):
-        pts_t = float(m.group(1))
-        emitted_frames.append(int(round(pts_t * fps)))
-
-    files = sorted(spot_dir.glob("sp_*.jpg"))
     frame_by_n: Dict[int, np.ndarray] = {}
-    for idx_f, fp in enumerate(files):
-        in_fn = emitted_frames[idx_f] if idx_f < len(emitted_frames) else (req_frames[idx_f] if idx_f < len(req_frames) else -1)
-        if in_fn < 0:
-            continue
-        with Image.open(fp) as im:
-            arr = np.asarray(im.convert("RGB"), dtype=np.float32)
-        # 双带掩膜：同时屏蔽底部字幕区 [285:380] 与顶部花字包装区 [46:88]，防包装切换冒充切镜
-        arr[285:380, :, :] = 0.0
-        arr[46:88, :, :] = 0.0
-        matched_req = min(req_frames, key=lambda rf: abs(rf - in_fn))
-        if abs(matched_req - in_fn) <= 1:
-            frame_by_n[matched_req] = arr
+    for batch_idx in range(0, len(req_frames), 24):
+        batch_req = req_frames[batch_idx : batch_idx + 24]
+        batch_dir = spot_dir / f"b_{batch_idx:03d}"
+        batch_dir.mkdir(parents=True, exist_ok=True)
+        sel_expr = "+".join(f"eq(n\\,{fn})" for fn in batch_req)
+        res = run_cmd([
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "info",
+            "-i", str(video_path),
+            "-vf", f"select={sel_expr},showinfo,scale=270:480",
+            "-fps_mode", "passthrough", "-q:v", "3",
+            str(batch_dir / "sp_%04d.jpg"),
+        ], check=False)
+
+        emitted_frames: List[int] = []
+        for m in re.finditer(r"n:\s*\d+.*?pts_time:([0-9.]+)", res.stderr or ""):
+            pts_t = float(m.group(1))
+            emitted_frames.append(int(round(pts_t * fps)))
+
+        files = sorted(batch_dir.glob("sp_*.jpg"))
+        for idx_f, fp in enumerate(files):
+            in_fn = emitted_frames[idx_f] if idx_f < len(emitted_frames) else (batch_req[idx_f] if idx_f < len(batch_req) else -1)
+            if in_fn < 0:
+                continue
+            with Image.open(fp) as im:
+                arr = np.asarray(im.convert("RGB"), dtype=np.float32)
+            # 双带掩膜：同时屏蔽底部字幕区 [285:380] 与顶部花字包装区 [46:88]，防包装切换冒充切镜
+            arr[285:380, :, :] = 0.0
+            arr[46:88, :, :] = 0.0
+            matched_req = min(batch_req, key=lambda rf: abs(rf - in_fn))
+            if abs(matched_req - in_fn) <= 1:
+                frame_by_n[matched_req] = arr
 
     verified = 0
     unverified_cuts: List[float] = []
@@ -827,15 +918,20 @@ def verify_sfx_in_window_blackbox(
     onset_signal = bb_mono
     minimum_lift = 2.5
     edit_path = pipeline_dir / "04_edl.json"
-    if edit_path.is_file() and read_json(edit_path).get("edit_profile") == "explainer":
+    edit_prof_v = str(read_json(edit_path).get("edit_profile", "")) if edit_path.is_file() else ""
+    if edit_prof_v == "explainer":
         minimum_lift = 1.0
+    elif edit_prof_v == "documentary":
+        minimum_lift = 1.5
 
     nosfx_p = pipeline_dir / "08_stem_nosfx.wav"
     audit_win_p = pipeline_dir / "08_sfx_audit_window.json"
 
     try:
         from scipy.signal import butter, sosfiltfilt
-        sos = butter(4, [2000.0, 8000.0], btype="bandpass", fs=sr1, output="sos")
+        hi_hz = min(8000.0, float(sr1) * 0.48)
+        lo_hz = min(2000.0, hi_hz * 0.5)
+        sos = butter(4, [lo_hz, hi_hz], btype="bandpass", fs=sr1, output="sos")
         bb_band = sosfiltfilt(sos, bb_mono)
     except Exception:
         bb_band = bb_mono
@@ -1344,8 +1440,9 @@ def _verify_hyperframes(pipeline_dir: Path) -> Dict[str, Any]:
             continue
         sources.append(css_src)
     for src in set(sources):
-        resolved = (draft / urllib.parse.unquote(src)).resolve()
-        if ":" in src or Path(src).is_absolute() or not resolved.is_relative_to(draft) or not resolved.is_file():
+        clean_src = urllib.parse.unquote(str(src).split("?")[0].split("#")[0])
+        resolved = (draft / clean_src).resolve()
+        if ":" in clean_src or Path(clean_src).is_absolute() or not resolved.is_relative_to(draft) or not resolved.is_file():
             errors.append(f"媒体脱离工程或缺失：{src}")
     if errors:
         return {"status": "FAIL", "errors": errors, "native_clip_counts": summary}

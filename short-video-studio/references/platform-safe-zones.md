@@ -23,12 +23,12 @@
 
 ---
 
-## 二、 24 套内置可商用字幕样式模板
+## 二、 28 套内置可商用字幕样式模板
 
-配置定义于 `assets/subtitle_templates/templates.json`（含 **4 套基础轨道模板** + **20 套风格谱模板 `style_01` ~ `style_20`**，全库 100% 绑定免费可商用开源字体，零私有系统字体）：
+配置定义于 `assets/subtitle_templates/templates.json`（含 **4 套基础轨道模板** + **24 套风格谱模板 `style_01` ~ `style_24`**，全库 100% 绑定免费可商用开源字体，零私有系统字体）：
 
 1. **`store_bold_yellow` / `style_14`（默认门店原生爆款风 · 居中双字号暖黄高亮）**：
-   - 源自剪映实操标杆《11月14日延期》，默认用于**门店轨**。
+   - 门店实景高转化旗舰模板，默认用于**门店轨**。
    - **无底框** 62px 粗黑体白字 + 4px 粗黑描边；关键词放大 `1.133x`（70px）并高亮为暖金 `#FFE28A`，绝对正中于 `X=540, Y=1310`。
 2. **`creator_clean_white` / `style_11`（博主质感极简白）**：
    - 默认用于**博主轨**（知识干货/口播观点/Vlog）。
@@ -37,7 +37,7 @@
    - 用于颠覆认知、内幕揭秘、对比警示等强冲击视频；高饱和红底标签高亮 `#FF3B30`。
 4. **`warm_persona_cream`（温情故事暖米色）**：
    - 用于创业经历、做事底线、真实故事类表达；暖米白 `#FFF8E7` + 柔和棕黑描边 + 暖橙高亮 `#FF8A65`。
-5. **`style_01` ~ `style_20`**：完整映射 6 大视觉流派，详见 [STYLE_SPECTRUM_REPORT.md](../assets/style_spectrum/STYLE_SPECTRUM_REPORT.md)。
+5. **`style_01` ~ `style_24`**：完整映射 6 大视觉流派与 4 套高空镜形态（85%–100% 特写/实景/图解），详见 [STYLE_SPECTRUM_REPORT.md](../assets/style_spectrum/STYLE_SPECTRUM_REPORT.md)。
 
 ---
 

@@ -98,7 +98,7 @@ def fmt_ass_time(sec: float) -> str:
 
 
 def _escape_ass_text(txt: str) -> str:
-    return txt.replace("{", r"\{").replace("}", r"\}")
+    return str(txt or "").replace("\r\n", r"\N").replace("\n", r"\N").replace("{", r"\{").replace("}", r"\}")
 
 
 def _measure_text_px(text: str, font_path: Optional[str], font_size: int) -> Tuple[int, int]:
@@ -133,7 +133,7 @@ def _compute_authoritative_subtitle_bbox(
     # 水平中心 100% 锁定画布正中央 540px，且 box_w <= 640 保证永不触发右侧 860px 单侧推偏
     box_x = center_x - box_w // 2
 
-    # 钳位 safe_y_center，默认对齐《11月14日延期》黄金水位 1310px
+    # 钳位 safe_y_center，默认对齐黄金水位 1310px
     safe_yc = int(tpl.get("safe_y_center", 1310))
     box_y = max(SUBTITLE_SAFE_ZONE["y_min"], min(SUBTITLE_SAFE_ZONE["y_max"] - box_h, safe_yc - box_h // 2))
     cand = {"x": int(box_x), "y": int(box_y), "w": int(box_w), "h": int(box_h)}
@@ -277,13 +277,22 @@ def _build_safe_ass_style(raw_ass_style: str, font_path: Optional[str]) -> str:
         return str(raw_ass_style or "")
     if font_path:
         stem = Path(font_path).stem
-        if "Alimama" in stem:
+        low_stem = stem.lower()
+        if "alimama" in low_stem:
             parts[1] = "Alimama ShuHeiTi"
-        elif "NotoSerifSC" in stem:
+        elif "smileysans" in low_stem:
+            parts[1] = "Smiley Sans"
+        elif "sourcehanserifcn-heavy" in low_stem:
+            parts[1] = "Source Han Serif CN Heavy"
+        elif "sourcehanserif" in low_stem:
+            parts[1] = "Source Han Serif CN"
+        elif "sourcehansans" in low_stem:
+            parts[1] = "Source Han Sans CN"
+        elif "notoserifsc" in low_stem:
             parts[1] = "Noto Serif CJK SC"
-        elif "NotoSans" in stem:
+        elif "notosans" in low_stem:
             parts[1] = "Noto Sans CJK SC"
-        elif "PingFang" not in stem and "STHeiti" not in stem:
+        elif "pingfang" not in low_stem and "stheiti" not in low_stem:
             parts[1] = stem
     sym_margin_x = str(CANVAS_WIDTH - SUBTITLE_SAFE_ZONE["x_max"])  # 220 -> [220, 860] 轴心 540px
     parts[19] = sym_margin_x
@@ -326,13 +335,7 @@ def run_step5(
     if not template_id or template_id not in templates:
         template_id = "store_bold_yellow" if track == "store" else "creator_clean_white"
     tpl = templates[template_id]
-    from common import ASSETS_DIR
-    bundled = ASSETS_DIR / "fonts"
-    font_path = next((str(bundled / name) for name in (tpl.get("font_candidates") or [])
-                      if (bundled / name).is_file()), None)
-    fallback = bundled / "AlimamaShuHeiTi-Bold.otf"
-    if font_path is None:
-        font_path = str(fallback) if fallback.is_file() else find_commercial_font(tpl.get("font_candidates"))
+    font_path = find_commercial_font(tpl.get("font_candidates"), verified_only=True) or find_commercial_font()
     strip_punct = bool(tpl.get("punct_stripped", True))
 
     entries: List[Dict[str, Any]] = []
@@ -360,13 +363,37 @@ def run_step5(
                     s_kws.append(pk)
             sent_eff["keywords"] = s_kws
             if sent_eff.get("words"):
-                new_ws = []
-                for w in sent_eff["words"]:
-                    w2 = dict(w)
-                    if any(str(w2.get("word", "")) in pk or pk in str(w2.get("word", "")) for pk in raw_pain_kws if pk in s_txt_full):
-                        w2["is_keyword"] = True
-                    new_ws.append(w2)
-                sent_eff["words"] = new_ws
+                matched_pks = [pk for pk in raw_pain_kws if pk and pk in s_txt_full]
+                if matched_pks:
+                    words_src = sent_eff["words"]
+                    new_ws = [dict(w) for w in words_src]
+                    # 精确拼接连续字词定位完整关键短语区间，杜绝单字包含误染
+                    buf_tokens: List[Tuple[int, int, int]] = []
+                    cur_pos = 0
+                    joined_w = []
+                    for wi, w_item in enumerate(new_ws):
+                        wt = re.sub(r"\s+", "", str(w_item.get("word") or ""))
+                        if not wt:
+                            continue
+                        joined_w.append(wt)
+                        buf_tokens.append((cur_pos, cur_pos + len(wt), wi))
+                        cur_pos += len(wt)
+                    joined_str = "".join(joined_w)
+                    for pk in matched_pks:
+                        pk_clean = re.sub(r"\s+", "", pk)
+                        if not pk_clean:
+                            continue
+                        search_i = 0
+                        while True:
+                            hit_at = joined_str.find(pk_clean, search_i)
+                            if hit_at < 0:
+                                break
+                            hit_end = hit_at + len(pk_clean)
+                            for cs, ce, wi in buf_tokens:
+                                if cs < hit_end and ce > hit_at:
+                                    new_ws[wi]["is_keyword"] = True
+                            search_i = hit_end
+                    sent_eff["words"] = new_ws
         for ch in split_sentence_into_chunks(
             sent_eff,
             max_chars=tpl_max_chars,

@@ -26,9 +26,11 @@ from common import (
     resolve_lut_path,
     write_json,
 )
-from export_hyperframes import attach_hyperframes_launchers
 
-maybe_reexec_in_venv()
+if __name__ == "__main__":
+    maybe_reexec_in_venv()
+
+from export_hyperframes import attach_hyperframes_launchers
 
 STYLE_DIR = ASSETS_DIR / "style_spectrum"
 LIB_PATH = STYLE_DIR / "style_spectrum_library.json"
@@ -72,6 +74,11 @@ def resolve_style_runtime_config(style_id: str) -> Dict[str, Any]:
         "opening_structure": entry.get("opening_structure") or {},
         "title_cover_layout": entry.get("title_cover_layout") or {},
         "transition_and_packaging": entry.get("transition_and_packaging") or {},
+        "packaging_techniques": entry.get("packaging_techniques") or {},
+        "commercial_safe_font": entry.get("commercial_safe_font") or "AlimamaShuHeiTi-Bold.otf",
+        "source_jianying_font": entry.get("source_jianying_font") or "",
+        "plain_cn_pitch": entry.get("plain_cn_pitch") or "",
+        "whitebox_source": entry.get("whitebox_source") or {},
     }
 
 
@@ -125,7 +132,7 @@ def export_hyperframes_html(
         "  <style>",
         f"    html, body {{ margin:0; padding:0; width:{CANVAS_WIDTH}px; height:{CANVAS_HEIGHT}px; overflow:hidden; background:{bg_hex}; }}",
         f"    #main {{ position:relative; width:{CANVAS_WIDTH}px; height:{CANVAS_HEIGHT}px; font-family:sans-serif; }}",
-        f"    .headline {{ position:absolute; left:96px; right:160px; top:220px; font-size:68px; font-weight:800; color:{pri_col}; line-height:1.2; }}",
+        f"    .headline {{ position:absolute; left:96px; right:200px; top:220px; font-size:68px; font-weight:800; color:{pri_col}; line-height:1.2; }}",
         f"    .accent-bar {{ display:block; width:88px; height:10px; border-radius:5px; background:{accent_hex}; margin-bottom:24px; }}",
         f"    .sub-line {{ position:absolute; left:220px; right:220px; top:{y_px}px; text-align:center; font-size:{font_sz}px; font-weight:800; color:{pri_col}; -webkit-text-stroke:{stroke_css}; paint-order:stroke fill; }}",
         f"    .kw {{ color:{kw_col}; }}",
@@ -173,17 +180,24 @@ def apply_to_pipeline(lib: Dict[str, Any], style_id: str, pipeline_dir: Path) ->
         "subtitle_spec": entry.get("subtitle_spec"),
         "transition_and_packaging": entry.get("transition_and_packaging"),
         "opening_structure": entry.get("opening_structure"),
+        "title_cover_layout": rt["title_cover_layout"],
         "subtitle_symmetry_lock": entry.get("subtitle_symmetry_lock"),
         "broll_overlay_ratio_target": entry.get("broll_overlay_ratio_target"),
         "broll_ambient_sound_policy": entry.get("broll_ambient_sound_policy"),
         "dual_bgm_structure": entry.get("dual_bgm_structure"),
         "multi_zone_flower_spec": entry.get("multi_zone_flower_spec"),
+        "packaging_techniques": entry.get("packaging_techniques"),
+        "commercial_safe_font": entry.get("commercial_safe_font"),
+        "source_jianying_font": entry.get("source_jianying_font"),
+        "plain_cn_pitch": entry.get("plain_cn_pitch"),
+        "whitebox_source": entry.get("whitebox_source"),
     })
     print(f"[apply-style] 已应用 {style_id} ({entry.get('style_name_cn')}) -> {out}")
     return out
 
 
 def main() -> None:
+    maybe_reexec_in_venv()
     parser = argparse.ArgumentParser(description="应用「风格谱」至流水线或导出 HyperFrames 样板")
     parser.add_argument("--list", action="store_true", help="列出全部风格谱")
     parser.add_argument("--style-id", help="风格 ID（如 style_02）")

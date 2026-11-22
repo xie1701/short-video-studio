@@ -25,10 +25,13 @@ from common import (
     SUBTITLE_CENTER_X,
     SUBTITLE_SAFE_ZONE,
     SUBTITLE_SYMMETRIC_MAX_W,
+    compute_segment_cache_key,
+    contrast_ratio,
     find_bin,
     find_commercial_font,
     frames_to_sec,
     get_wav_duration_sec,
+    hex_to_rgba,
     is_verified_commercial_font,
     link_or_copy,
     load_style_applied,
@@ -41,10 +44,11 @@ from common import (
     write_json,
 )
 
-maybe_reexec_in_venv()
+if __name__ == "__main__":
+    maybe_reexec_in_venv()
 
 from export_jianying import _export_graded_segment
-from render_mp4 import compute_subtitle_place_xy, _resolve_packaging_palette
+from render_mp4 import build_graded_segment_cmd, compute_subtitle_place_xy, _resolve_packaging_palette
 
 
 def _clamp_window(start_sec: float, end_sec: float, max_sec: float) -> Tuple[float, float]:
@@ -226,7 +230,20 @@ def _build_video_clips(pipeline: Path, draft: Path, edl: dict, fps: int, total: 
             destination = draft / "media" / "segments" / f"edit_{index:03d}.mp4"
             destination.parent.mkdir(parents=True, exist_ok=True)
             prepared = pipeline / "_render_final" / f"seg_{index - 1:03d}_f.mp4"
-            if prepared_segments and prepared.is_file() and prepared.with_suffix(".sha256").is_file():
+            lut_p = str(color.get("lut_path") or "")
+            seg_flag = prepared.with_suffix(".sha256")
+            cache_valid = False
+            if prepared_segments and ffmpeg and prepared.is_file() and seg_flag.is_file():
+                expected_cmd = build_graded_segment_cmd(ffmpeg, shot, vf, eyes, prepared, fps)
+                expected_key = compute_segment_cache_key({
+                    "cmd": expected_cmd[:-1],
+                    "source_hash": sha256_file(source),
+                    "lut_hash": sha256_file(Path(lut_p)) if lut_p and Path(lut_p).is_file() else None,
+                    "fps": fps,
+                    "preview": False,
+                })
+                cache_valid = seg_flag.read_text(encoding="utf-8").strip() == expected_key
+            if cache_valid:
                 link_or_copy(prepared, destination)
             elif ffmpeg:
                 _export_graded_segment(ffmpeg, shot, vf, eyes, destination, fps)
@@ -267,7 +284,8 @@ def _build_graphics(draft: Path, package: dict, fps: int, total: float, style_id
         if end <= start:
             continue
         text = str(elem.get("text_or_asset") or elem.get("text") or "").strip()
-        image = Path(str(elem.get("custom_png") or text))
+        raw_img_ref = elem.get("custom_png")
+        image = Path(str(raw_img_ref)) if raw_img_ref else Path(text)
         bbox = elem.get("final_bbox") or elem.get("bbox") or {}
         width = max(1, min(SAFE_ZONE["x_max"] - SAFE_ZONE["x_min"], int(bbox.get("w") or 400)))
         height = max(1, min(SAFE_ZONE["y_max"] - SAFE_ZONE["y_min"], int(bbox.get("h") or 100)))
@@ -275,7 +293,11 @@ def _build_graphics(draft: Path, package: dict, fps: int, total: float, style_id
         cid = f"graphics-{index:03d}-{_safe_id(str(elem.get('id') or 'item'))}"
         attrs = _attrs(id=cid, data_start=f"{start:.4f}", data_duration=f"{end-start:.4f}",
                        data_track_index=1, data_track_kind="graphics", data_label=f"包装 {index:02d}")
-        if elem.get("custom_png") or image.suffix.lower() in {".svg", ".png", ".jpg", ".jpeg", ".webp"}:
+        is_image_asset = bool(
+            raw_img_ref
+            or (image.suffix.lower() in {".svg", ".png", ".jpg", ".jpeg", ".webp"} and image.is_file())
+        )
+        if is_image_asset:
             if not image.is_file():
                 raise FileNotFoundError(f"缺少包装素材 {image}")
             out = draft / "media" / "overlays" / f"graphic_{index:03d}{image.suffix.lower()}"
@@ -285,11 +307,32 @@ def _build_graphics(draft: Path, package: dict, fps: int, total: float, style_id
         if not text:
             continue
         kind = elem.get("kind") or elem.get("type")
-        bare = kind in ("center_burst_title", "stamp_tag", "end_card_cta") or elem.get("overlay_mode") == "borderless"
-        word_size = 66 if kind == "center_burst_title" else 50 if bare else 40
-        word_size = max(24, min(word_size, int((width - 20) / max(1, len(text)))))
-        paint = (f"font-size:{word_size}px;color:{elem.get('fg_hex') or color('text')};"
-                 f"paint-order:stroke fill;-webkit-text-stroke:{6 if bare else 0}px {elem.get('stroke_hex') or '#000'};"
+        if kind == "persistent_top_bar":
+            fg_col = str(elem.get("fg_hex") or "#FFF589")
+            pill_bg = (18, 22, 28)
+            if contrast_ratio(hex_to_rgba(fg_col, 255)[:3], pill_bg) < 4.5:
+                fg_col = "#FFF589"
+            word_size = max(24, min(36, int((width - 36) / max(1, len(text)))))
+            paint = (
+                f"font-size:{word_size}px;color:{fg_col};"
+                f"background:rgba(18,22,28,0.86);border:2px solid {fg_col};border-radius:999px;"
+                "padding:8px 24px;"
+            )
+            built.append(f'    <div {attrs} class="clip graphic-text" style="{html.escape(pos + paint, quote=True)}">'
+                         f'<span id="{cid}-text">{html.escape(text)}</span></div>')
+            native_text += 1
+            continue
+        bare = kind in ("center_burst_title", "stamp_tag", "end_card_cta", "quote_citation_card") or elem.get("overlay_mode") == "borderless"
+        target_sz = 66 if kind == "center_burst_title" else (58 if kind in ("end_card_cta", "quote_citation_card") else (50 if bare else 40))
+        word_size = max(24, min(target_sz, int((width - 20) / max(1, len(text)))))
+        raw_fg = str(elem.get("fg_hex") or color("text"))
+        if not bare and contrast_ratio(hex_to_rgba(raw_fg, 255)[:3], pal["bg"][:3]) < 4.5:
+            raw_fg = color("text")
+        elif bare and contrast_ratio(hex_to_rgba(raw_fg, 255)[:3], (16, 20, 28)) < 4.5:
+            raw_fg = "#FFE28A"
+        stroke_css_w = 12 if bare else 0
+        paint = (f"font-size:{word_size}px;color:{raw_fg};"
+                 f"paint-order:stroke fill;-webkit-text-stroke:{stroke_css_w}px {elem.get('stroke_hex') or '#000'};"
                  + ("text-shadow:3px 4px 8px rgba(0,0,0,0.82);" if bare else ""))
         fill = ""
         if not bare:
@@ -320,7 +363,8 @@ def _build_captions_track_html(
     total_dur: float,
 ) -> Tuple[str, List[str]]:
     tpl_id = subs.get("template_id") or "style_01"
-    tpl = templates.get(tpl_id) or next(iter(templates.values()))
+    base_tpl = templates.get(tpl_id) or next(iter(templates.values()))
+    tpl = {**base_tpl, **subs["template_config"]} if isinstance(subs.get("template_config"), dict) else dict(base_tpl)
 
     c_primary = str(tpl.get("primary_color", "#FFFFFF"))
     c_kw = str(tpl.get("keyword_color", "#FFE066"))
@@ -350,7 +394,7 @@ def _build_captions_track_html(
 
     css = "\n".join([
         font_css,
-        "      .cap-clip { position: absolute; display: flex; align-items: center; justify-content: center; text-align: center; }",
+        "      .cap-clip { position: absolute; display: flex; align-items: center; justify-content: center; text-align: center; overflow: visible; }",
         f"      .cap-box {{ display: inline-flex; flex-wrap: wrap; align-items: baseline; justify-content: center; max-width: {SUBTITLE_SYMMETRIC_MAX_W}px; "
         f"font-family: {font_stack}; font-size: {font_sz}px; font-weight: 800; line-height: 1.18; "
         f"color: {c_primary}; paint-order: stroke fill; -webkit-text-stroke: {stroke_css}; {shadow_css} {bg_css} }}",
@@ -378,21 +422,34 @@ def _build_captions_track_html(
             by = max(SUBTITLE_SAFE_ZONE["y_min"], min(by, SUBTITLE_SAFE_ZONE["y_max"] - bh))
 
         text = str(sub.get("text") or "")
-        keywords = {str(value) for value in sub.get("keywords") or [] if value}
-        keywords.update(str(word["word"]) for word in sub.get("words") or [] if word.get("is_keyword") and word.get("word"))
-        if keywords:
-            pattern = "(" + "|".join(re.escape(k) for k in sorted(keywords, key=lambda k: (-len(k), k))) + ")"
-            spans = "".join(
-                f'<span class="cap-kw">{html.escape(part)}</span>' if part in keywords else html.escape(part)
-                for part in re.split(pattern, text)
-            )
+        sub_words = sub.get("words") or []
+        words_joined = "".join(str(w.get("word") or "") for w in sub_words)
+        if sub_words and re.sub(r"\s+", "", words_joined) == re.sub(r"\s+", "", text):
+            span_parts: List[str] = []
+            for w in sub_words:
+                wt = str(w.get("word") or "")
+                if not wt:
+                    continue
+                if w.get("is_keyword"):
+                    span_parts.append(f'<span class="cap-kw">{html.escape(wt)}</span>')
+                else:
+                    span_parts.append(html.escape(wt))
+            spans = "".join(span_parts)
         else:
-            spans = html.escape(text)
+            multi_kws = {str(v) for v in sub.get("keywords") or [] if v and (len(str(v)) >= 2 or str(v).isdigit())}
+            if multi_kws:
+                pattern = "(" + "|".join(re.escape(k) for k in sorted(multi_kws, key=lambda k: (-len(k), k))) + ")"
+                spans = "".join(
+                    f'<span class="cap-kw">{html.escape(part)}</span>' if part in multi_kws else html.escape(part)
+                    for part in re.split(pattern, text)
+                )
+            else:
+                spans = html.escape(text)
 
         sid = _safe_id(str(sub.get("id") or f"sub_{idx:03d}"), "sub")
         body_lines.append(
             f'      <div class="clip cap-clip" id="track-captions-{sid}" data-track-kind="captions" data-label="字幕 {idx:02d}" '
-            f'style="left:{bx}px;top:{by}px;width:{bw}px;height:{bh}px;" '
+            f'style="left:{bx}px;top:{by}px;width:{bw}px;min-height:{bh}px;height:auto;" '
             f'data-start="{st_s:.4f}" data-duration="{dur_s:.4f}" data-track-index="{track_index}">'
             f'<span class="cap-box">{spans}</span></div>'
         )
@@ -586,6 +643,7 @@ def export_hyperframes_draft(pipeline_dir: Path, simulate_failure: bool = False,
 
 
 def main() -> None:
+    maybe_reexec_in_venv()
     parser = argparse.ArgumentParser(description="导出原生 HyperFrames Studio 工程")
     parser.add_argument("--pipeline-dir", required=True, type=Path)
     parser.add_argument("--simulate-failure", action="store_true")

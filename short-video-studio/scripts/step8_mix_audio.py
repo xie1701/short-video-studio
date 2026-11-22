@@ -33,7 +33,8 @@ from common import (
     write_json,
 )
 
-maybe_reexec_in_venv()
+if __name__ == "__main__":
+    maybe_reexec_in_venv()
 
 import numpy as np
 from step3_lock_audio import SR, load_stereo_wav_np, save_stereo_wav_np
@@ -55,8 +56,11 @@ def _estimate_raw_noise_floor_db(pipeline_dir: Path, fallback_voice: np.ndarray)
             pass
 
     hop = int(0.02 * SR)
-    n_hops = max(1, len(sample_arr) // hop)
-    mono = sample_arr[: n_hops * hop].mean(axis=1).reshape(n_hops, hop)
+    usable_len = (len(sample_arr) // hop) * hop
+    if usable_len < hop:
+        return -70.0
+    n_hops = usable_len // hop
+    mono = sample_arr[:usable_len].mean(axis=1).reshape(n_hops, hop)
     rms = np.sqrt(np.mean(mono ** 2, axis=1) + 1e-12)
     nonzero = rms[rms > 2e-6]
     if len(nonzero) == 0:
@@ -225,12 +229,15 @@ def run_step8(
     edl_p = pipeline_dir / "04_edl.json"
     man_p2 = pipeline_dir / "01_manifest.json"
     wav_by_mp4: Dict[str, str] = {}
+    dur_by_mp4: Dict[str, float] = {}
     if man_p2.is_file():
         for mit in read_json(man_p2).get("items") or []:
             mp_k = str(mit.get("normalized_mp4") or "")
             w_cand = mit.get("normalized_wav") or (mit.get("source_path") if mit.get("has_audio") else None)
             if mp_k and w_cand:
                 wav_by_mp4[mp_k] = str(w_cand)
+            if mp_k and mit.get("duration_sec"):
+                dur_by_mp4[mp_k] = float(mit["duration_sec"])
     if edl_p.is_file():
         try:
             import tempfile
@@ -239,15 +246,19 @@ def run_step8(
             if amb_clips:
                 with tempfile.TemporaryDirectory(prefix="svs_amb_") as amb_td:
                     for ai, ac in enumerate(amb_clips):
-                        aud_src = str(ac.get("ambient_audio_path") or wav_by_mp4.get(str(ac.get("media_path") or "")) or "")
+                        mp_path_str = str(ac.get("media_path") or "")
+                        aud_src = str(ac.get("ambient_audio_path") or wav_by_mp4.get(mp_path_str) or "")
                         if not aud_src or not Path(aud_src).is_file():
                             continue
                         t0 = max(0.0, float(ac.get("timeline_in_sec", 0.0)))
                         t1 = min(n_samples / float(SR), float(ac.get("timeline_out_sec", t0)))
                         dur_a = t1 - t0
+                        src_in = max(0.0, float(ac.get("source_in_sec", 0.0)))
+                        src_cap = float(ac.get("source_out_sec") or dur_by_mp4.get(mp_path_str) or 0.0)
+                        if src_cap > src_in:
+                            dur_a = min(dur_a, src_cap - src_in)
                         if dur_a < 0.25:
                             continue
-                        src_in = max(0.0, float(ac.get("source_in_sec", 0.0)))
                         amb_wav = Path(amb_td) / f"amb_{ai:02d}.wav"
                         res_a = run_cmd([
                             ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
@@ -373,19 +384,41 @@ def run_step8(
             cur_gain_db = max(-24.0, min(24.0, cur_gain_db))
             metrics = _render_master_pair(cur_gain_db)
 
-    # 同步导出四端同源分离分轨 (人声规范母带 + 已闪避定电平 BGM含现场动作声 + 定电平 SFX)，并按总线安全峰值等比限幅防叠加削波
+    # 同步导出四端同源分离分轨 (人声规范母带 + 已闪避定电平 BGM含现场动作声 + 定电平 SFX)
+    # 使用 20ms 平滑包络软限幅增益曲线 g[t] 代替全片单点最小值，保留正常说话段与母带一致的响度
     final_scale = 10.0 ** (cur_gain_db / 20.0)
     v_stem_raw = voice_arr * 0.95 * final_scale
     b_stem_raw = (ducked_bgm + broll_ambient_arr) * final_scale
     s_stem_raw = sfx_arr * 0.95 * final_scale
-    sum_peak = float(np.max(np.abs(v_stem_raw + b_stem_raw + s_stem_raw))) if n_samples else 0.0
-    bus_safe_scale = min(1.0, 0.89 / max(1e-5, sum_peak))
+    bus_raw = v_stem_raw + b_stem_raw + s_stem_raw
+    if n_samples > 0:
+        win_n = max(64, int(0.020 * SR))
+        n_blocks = max(1, (n_samples + win_n - 1) // win_n)
+        pad_n = n_blocks * win_n - n_samples
+        abs_bus = np.max(np.abs(bus_raw), axis=1)
+        if pad_n > 0:
+            abs_bus = np.pad(abs_bus, (0, pad_n), mode="constant")
+        blk_peaks = np.max(abs_bus.reshape(n_blocks, win_n), axis=1)
+        blk_gains = np.minimum(1.0, 0.794 / np.maximum(1e-5, blk_peaks)).astype(np.float32)
+        if n_blocks >= 3:
+            # 前看后看平滑避免瞬态陡变
+            blk_gains = np.minimum(blk_gains, np.roll(blk_gains, -1))
+            blk_gains = np.convolve(np.pad(blk_gains, (1, 1), mode="edge"), np.array([0.25, 0.5, 0.25], dtype=np.float32), mode="valid")
+        centers = (np.arange(n_blocks, dtype=np.float64) + 0.5) * win_n
+        env_gain = np.interp(np.arange(n_samples, dtype=np.float64), centers, blk_gains).astype(np.float32)[:, None]
+        post_peak = float(np.max(np.abs(bus_raw * env_gain)))
+        hard_cap = min(1.0, 0.89 / max(1e-5, post_peak))
+        stem_gain_curve = env_gain * hard_cap
+        bus_safe_scale = float(np.mean(stem_gain_curve))
+    else:
+        stem_gain_curve = np.ones((0, 1), dtype=np.float32)
+        bus_safe_scale = 1.0
     voice_master_path = pipeline_dir / "08_voice_master.wav"
     bgm_ducked_path = pipeline_dir / "08_bgm_ducked.wav"
     sfx_master_path = pipeline_dir / "08_sfx_master.wav"
-    save_stereo_wav_np(voice_master_path, v_stem_raw * bus_safe_scale, SR)
-    save_stereo_wav_np(bgm_ducked_path, b_stem_raw * bus_safe_scale, SR)
-    save_stereo_wav_np(sfx_master_path, s_stem_raw * bus_safe_scale, SR)
+    save_stereo_wav_np(voice_master_path, v_stem_raw * stem_gain_curve, SR)
+    save_stereo_wav_np(bgm_ducked_path, b_stem_raw * stem_gain_curve, SR)
+    save_stereo_wav_np(sfx_master_path, s_stem_raw * stem_gain_curve, SR)
 
     # 使用 common 唯一权威函数 compute_sfx_band_windows 持久化全量 SFX 基准，供 #20 复验
     pkg_p = pipeline_dir / "06_packaging.json"

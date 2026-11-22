@@ -138,7 +138,7 @@ def init_code_spec(
         sections = [
             {
                 "id": "sec_01",
-                "name": "开篇定锚与痛点设问",
+                "name": "开篇抓眼设问",
                 "start_sec": 0.0,
                 "end_sec": t1,
                 "duration_sec": t1,
@@ -240,7 +240,7 @@ def init_code_spec(
         f"# Code2Video 生产规约 SPEC · {title}",
         "",
         f"- **一句话命题 (One Idea)**：{one_idea}",
-        f"- **画幅格式**：`{width}x{height}` @ `{fps_i}fps` | 目标时长 `{target_dur}s`（总帧数 `{total_frames}`，允许误差 `±10%`） | 风格谱 `{style_id}`（`{track}` 轨）",
+        f"- **画幅格式**：`{width}x{height}` @ `{fps_i}fps` | 目标时长 `{target_dur}s`（总帧数 `{total_frames}`，允许误差 `±10%`） | 视觉风格 `{style_id}`（`{track}` 轨）",
         f"- **主字体**：`{Path(font_path).name if font_path else '系统商业回退字体'}` | 字号下限：标题 `≥64px` / 字幕 `≥36px` / 标签 `≥28px`",
         f"- **安全区与字幕预留带**：主文字安全区 `SAFE_ZONE={SAFE_ZONE}`；字幕保留带 `y∈[{SUBTITLE_SAFE_ZONE['y_min']}, {SUBTITLE_SAFE_ZONE['y_max']}]`（代码画面信息避让该带）",
         "",

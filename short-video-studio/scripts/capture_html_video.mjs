@@ -109,8 +109,9 @@ async function loadBrowserLib(seedDir) {
 }
 
 function measureSmokePixels(mp4File, frameCount) {
+  const ffmpegBin = process.env.FFMPEG_BIN || "ffmpeg";
   const probe = spawnSync(
-    "ffmpeg",
+    ffmpegBin,
     ["-v", "error", "-i", mp4File, "-vf", "scale=64:64,format=gray", "-f", "rawvideo", "-"],
     { maxBuffer: 64 * 1024 * 1024 }
   );
@@ -161,7 +162,14 @@ function normalizeTask(raw) {
 async function captureSingleTask(browser, task, chromeBin) {
   const { projectDir, pageName, fps, W, H, outPath, durOpt, startFrame, framesOpt, useJpeg, smokePath, smokeCheckpoints } = task;
   const server = http.createServer((req, res) => {
-    const rawUrl = decodeURIComponent((req.url || "/").split("?")[0]);
+    let rawUrl = "/";
+    try {
+      rawUrl = decodeURIComponent((req.url || "/").split("?")[0]);
+    } catch {
+      res.writeHead(400);
+      res.end("Bad Request");
+      return;
+    }
     if (rawUrl === "/favicon.ico") {
       res.writeHead(204);
       res.end();
@@ -189,6 +197,7 @@ async function captureSingleTask(browser, task, chromeBin) {
 
   const errors = [];
   let ff = null;
+  let ffClosed = false;
   let context = null;
   let framesRendered = 0;
   let totalFrames = 0;
@@ -253,12 +262,28 @@ async function captureSingleTask(browser, task, chromeBin) {
     );
 
     let ffStderr = "";
+    const ffClosePromise = new Promise((res) => {
+      ff.on("close", (code) => {
+        ffClosed = true;
+        res(code);
+      });
+    });
+    ff.on("error", (err) => {
+      ffClosed = true;
+      errors.push(`ffmpeg_spawn_error: ${String(err)}`);
+    });
+    ff.stdin.on("error", (err) => {
+      if (err && err.code !== "EPIPE") {
+        errors.push(`ffmpeg_stdin_error: ${String(err)}`);
+      }
+    });
     ff.stderr.on("data", (d) => {
       ffStderr += d.toString();
     });
 
     const shotOpts = useJpeg ? { type: "jpeg", quality: 96 } : { type: "png" };
     for (let idx = 0; idx < totalFrames; idx++) {
+      if (ffClosed || errors.length > 0) break;
       const t = checkpoints ? checkpoints[idx] : (startFrame + idx) / fps;
       await page.evaluate(async (curT) => {
         if (typeof window.seek === "function") {
@@ -271,22 +296,35 @@ async function captureSingleTask(browser, task, chromeBin) {
         await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
       }, t);
 
+      if (ffClosed) break;
       const buf = await page.screenshot(shotOpts);
+      if (ffClosed) break;
       if (!ff.stdin.write(buf)) {
-        await new Promise((res) => ff.stdin.once("drain", res));
+        await new Promise((res) => {
+          const onDrain = () => { ff.off("close", onClose); res(); };
+          const onClose = () => { ff.stdin.off("drain", onDrain); res(); };
+          ff.stdin.once("drain", onDrain);
+          ff.once("close", onClose);
+        });
       }
       framesRendered += 1;
-      if (errors.length > 0) break;
+      if (errors.length > 0 || ffClosed) break;
     }
 
-    ff.stdin.end();
-    const ffExit = await new Promise((res) => ff.on("close", res));
+    if (!ffClosed && ff.stdin.writable) {
+      ff.stdin.end();
+    }
+    const ffExit = await ffClosePromise;
     if (ffExit !== 0) {
       errors.push(`ffmpeg exit=${ffExit}: ${ffStderr.slice(-400)}`);
     }
   } catch (exc) {
     errors.push(`capture_exception: ${String(exc)}`);
   } finally {
+    if (ff && !ffClosed) {
+      try { ff.stdin.destroy(); } catch {}
+      try { ff.kill("SIGKILL"); } catch {}
+    }
     if (context) await context.close().catch(() => {});
     server.close();
   }
@@ -311,7 +349,7 @@ async function captureSingleTask(browser, task, chromeBin) {
     fs.writeFileSync(smokePath, JSON.stringify(smokeReport, null, 2), "utf-8");
   }
 
-  return { ok: errors.length === 0 && framesRendered > 0, framesRendered, totalFrames, avgMsPerFrame, outPath, errors };
+  return { ok: errors.length === 0 && framesRendered === totalFrames && totalFrames > 0, framesRendered, totalFrames, avgMsPerFrame, outPath, errors };
 }
 
 let tasks = [];

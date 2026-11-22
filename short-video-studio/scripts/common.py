@@ -143,8 +143,7 @@ LEAK_REGEX_PATTERNS = [
     r"第\d+遍",
     r"口述稿?",
     r"提词器?",
-    r"STYLE[_-]?\d+",
-    r"style_[012]\d",
+    r"(?:STYLE|style)[_-]?\d+",
     r"暗黑科技",
     r"强反差财经",
     r"高级感杂志",
@@ -273,14 +272,18 @@ def _probe_media_json(path: str, inode: int, size: int, modified_ns: int, change
 
 
 def parse_fps(rate_str: str) -> float:
-    """把 '30000/1001' 或 '30/1' 转换为浮点数帧率。"""
-    if not rate_str or rate_str == "0/0":
+    """把 '30000/1001' 或 '30/1' 转换为浮点数帧率，非法字符串安全返回 0.0。"""
+    s = str(rate_str or "").strip()
+    if not s or s == "0/0":
         return 0.0
-    if "/" in rate_str:
-        num, den = rate_str.split("/", 1)
-        den_f = float(den)
-        return float(num) / den_f if den_f else 0.0
-    return float(rate_str)
+    try:
+        if "/" in s:
+            num, den = s.split("/", 1)
+            den_f = float(den)
+            return float(num) / den_f if den_f else 0.0
+        return float(s)
+    except ValueError:
+        return 0.0
 
 
 def detect_vfr_hdr(probe_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -491,8 +494,13 @@ def parse_manifest_faces(
             rh = int(round(abs(y2 - y1)))
         else:
             continue
-        if rw > 4 and rh > 4:
-            out.append({"x": max(0, rx), "y": max(0, ry), "w": rw, "h": rh})
+        x1 = max(0, min(int(canvas_w), rx))
+        y1 = max(0, min(int(canvas_h), ry))
+        x2 = max(0, min(int(canvas_w), rx + rw))
+        y2 = max(0, min(int(canvas_h), ry + rh))
+        nw, nh = x2 - x1, y2 - y1
+        if nw > 4 and nh > 4:
+            out.append({"x": x1, "y": y1, "w": nw, "h": nh})
     return out
 
 
@@ -507,9 +515,9 @@ def bbox_iou(b1: Dict[str, Any], b2: Dict[str, Any]) -> float:
     inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
     if inter <= 0.0:
         return 0.0
-    area1 = max(1.0, float(b1["w"]) * float(b1["h"]))
-    area2 = max(1.0, float(b2["w"]) * float(b2["h"]))
-    return inter / (area1 + area2 - inter)
+    area1 = max(1e-9, float(b1["w"]) * float(b1["h"]))
+    area2 = max(1e-9, float(b2["w"]) * float(b2["h"]))
+    return inter / max(1e-9, area1 + area2 - inter)
 
 
 def place_bbox_in_zone(
@@ -540,10 +548,16 @@ def hex_to_rgba(
     """统一解析 #RGB / #RRGGBB / #RRGGBBAA 为 RGBA 元组（兼容传入 alpha int 或 default RGBA tuple）。"""
     if isinstance(default, int):
         eff_alpha = max(0, min(255, default))
-        fallback = (255, 255, 255, eff_alpha)
+        fallback: Tuple[int, int, int, int] = (255, 255, 255, eff_alpha)
     else:
-        fallback = tuple(default)  # type: ignore[assignment]
-        eff_alpha = max(0, min(255, int(default_alpha))) if default_alpha is not None else 255
+        fb_raw = tuple(int(v) for v in default)
+        eff_alpha = max(0, min(255, int(default_alpha))) if default_alpha is not None else (fb_raw[3] if len(fb_raw) >= 4 else 255)
+        fallback = (
+            fb_raw[0] if len(fb_raw) >= 1 else 255,
+            fb_raw[1] if len(fb_raw) >= 2 else 255,
+            fb_raw[2] if len(fb_raw) >= 3 else 255,
+            eff_alpha,
+        )
     if not hex_str:
         return fallback
     h = str(hex_str).strip().lstrip("#")
@@ -603,16 +617,19 @@ def fit_text_line(
 ) -> Tuple[Any, str]:
     """统一下采样自适应单行文字宽度；极窄时智能加省略号，绝不溢出安全框。"""
     txt = str(text or "")
-    for sz in range(int(max_size), int(min_size) - 1, -2):
+    eff_max_w = max(16, int(max_width))
+    eff_min = max(8, int(min_size))
+    eff_max = max(eff_min, int(max_size))
+    for sz in range(eff_max, eff_min - 1, -2):
         fnt = get_cached_font(font_path, sz)
         w = draw.textlength(txt, font=fnt) if hasattr(draw, "textlength") else (draw.textbbox((0, 0), txt, font=fnt)[2] - draw.textbbox((0, 0), txt, font=fnt)[0])
-        if w <= max_width:
+        if w <= eff_max_w:
             return fnt, txt
-    fnt = get_cached_font(font_path, min_size)
+    fnt = get_cached_font(font_path, eff_min)
     while len(txt) > 2:
         cand = txt[:-1] + "…"
         w = draw.textlength(cand, font=fnt) if hasattr(draw, "textlength") else (draw.textbbox((0, 0), cand, font=fnt)[2] - draw.textbbox((0, 0), cand, font=fnt)[0])
-        if w <= max_width:
+        if w <= eff_max_w:
             return fnt, cand
         txt = txt[:-1]
     return fnt, txt
@@ -659,11 +676,12 @@ def find_commercial_font(candidates: Optional[List[str]] = None, verified_only: 
     """
     default_verified = [
         "AlimamaShuHeiTi-Bold.otf",
+        "SmileySans-Oblique.ttf",
+        "SourceHanSerifCN-Heavy.otf",
+        "SourceHanSerifCN-Bold.otf",
         "SourceHanSansCN-Bold.otf",
         "SourceHanSansCN-Medium.otf",
         "SourceHanSansCN-Regular.otf",
-        "SourceHanSerifCN-Bold.otf",
-        "SmileySans-Oblique.ttf",
         "QingSongShouXieTi1.ttf",
         "QingSongShouXieTi2.ttf",
         "NotoSansCJKsc-Bold.otf",
@@ -692,6 +710,10 @@ def find_commercial_font(candidates: Optional[List[str]] = None, verified_only: 
 
     search_dirs = _font_search_dirs()
     for font_name in names:
+        cand_path = Path(str(font_name)).expanduser()
+        if cand_path.is_file() and (not verified_only or is_verified_commercial_font(cand_path)):
+            _FONT_CACHE[cache_key] = str(cand_path)
+            return _FONT_CACHE[cache_key]
         for d in search_dirs:
             if not d.exists():
                 continue
@@ -703,7 +725,6 @@ def find_commercial_font(candidates: Optional[List[str]] = None, verified_only: 
                 if sub.is_file():
                     _FONT_CACHE[cache_key] = str(sub)
                     return _FONT_CACHE[cache_key]
-    _FONT_CACHE[cache_key] = None
     return None
 
 
@@ -732,7 +753,8 @@ def write_json(path: Path, data: Any) -> Path:
 
 def load_subtitle_templates() -> Dict[str, Any]:
     tpl_path = ASSETS_DIR / "subtitle_templates" / "templates.json"
-    return read_json(tpl_path)["templates"]
+    raw = read_json(tpl_path).get("templates", {})
+    return {k: v for k, v in raw.items() if isinstance(v, dict)}
 
 
 def load_style_applied(pipeline_dir: Path) -> Optional[str]:
@@ -762,12 +784,31 @@ def load_style_spectrum_entry(style_id: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def load_animation_sfx_pairs() -> Dict[str, Any]:
+    """读取内置 83 组 0ms 动画×音效配对字典。"""
+    p = ASSETS_DIR / "style_spectrum" / "animation_sfx_pairs.json"
+    return read_json(p) if p.is_file() else {"animation_lookup": {}, "pairs": []}
+
+
+def load_sfx_intent_taxonomy() -> Dict[str, Any]:
+    """读取内置 29 场景×92 音效叙事意图分类表。"""
+    p = ASSETS_DIR / "style_spectrum" / "sfx_intent_taxonomy.json"
+    return read_json(p) if p.is_file() else {"pipeline_emotion_routing": {}, "scene_taxonomy": {}}
+
+
+def load_typography_cover_rules() -> Dict[str, Any]:
+    """读取内置四色高亮与 3:4 封面四构图排版规则。"""
+    p = ASSETS_DIR / "style_spectrum" / "typography_cover_rules.json"
+    return read_json(p) if p.is_file() else {"golden_highlight_palette": {}, "cover_3x4_layouts": {}}
+
+
 def resolve_lut_path(lut_name: Optional[str], style_id: Optional[str] = None) -> Path:
-    """单源 LUT 解析：优先从 style_spectrum/luts 解析 20 套风格 LUT，次选内置通用 LUT。"""
+    """单源 LUT 解析：优先从 style_spectrum/luts 解析 24 套风格 LUT，次选内置通用 LUT。"""
     if style_id:
         sp = ASSETS_DIR / "style_spectrum" / "luts" / f"{style_id}.cube"
         if sp.exists():
             return sp
+        print(f"[WARN] 未找到风格 LUT {sp}，尝试回退通用 LUT", file=sys.stderr)
     if lut_name:
         cand1 = ASSETS_DIR / "style_spectrum" / "luts" / lut_name
         if cand1.exists():
@@ -775,6 +816,7 @@ def resolve_lut_path(lut_name: Optional[str], style_id: Optional[str] = None) ->
         cand2 = ASSETS_DIR / "luts" / lut_name
         if cand2.exists():
             return cand2
+        print(f"[WARN] 未找到指定 LUT {lut_name}，回退 clean_creator.cube", file=sys.stderr)
     return ASSETS_DIR / "luts" / "clean_creator.cube"
 
 
@@ -853,7 +895,9 @@ def compute_sfx_band_windows(
         return []
     try:
         from scipy.signal import butter, sosfiltfilt
-        sos = butter(4, [2000.0, 8000.0], btype="bandpass", fs=sr, output="sos")
+        hi_hz = min(8000.0, float(sr) * 0.48)
+        lo_hz = min(2000.0, hi_hz * 0.5)
+        sos = butter(4, [lo_hz, hi_hz], btype="bandpass", fs=sr, output="sos")
         hb_base = sosfiltfilt(sos, np.asarray(nosfx_mono, dtype=np.float64))
     except Exception:
         return []
@@ -955,6 +999,16 @@ def read_wav_as_48k_stereo(audio_path: Path, target_sr: int = 48000) -> Tuple[An
         except Exception:
             arr = None
 
+    if arr is not None and src_sr != target_sr and len(arr) > 0:
+        g = math.gcd(int(src_sr), int(target_sr))
+        up = int(target_sr) // g
+        down = int(src_sr) // g
+        if importlib.util.find_spec("scipy") is None or max(up, down) > 200:
+            arr = None
+        else:
+            from scipy.signal import resample_poly
+            arr = resample_poly(arr, up, down, axis=0).astype(np.float32)
+
     if arr is None:
         ffmpeg = find_bin("ffmpeg")
         if not ffmpeg:
@@ -970,15 +1024,9 @@ def read_wav_as_48k_stereo(audio_path: Path, target_sr: int = 48000) -> Tuple[An
             stderr=subprocess.PIPE,
             check=True,
         )
-        pcm = np.frombuffer(res.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+        usable = (len(res.stdout) // 4) * 4
+        pcm = np.frombuffer(res.stdout[:usable], dtype=np.int16).astype(np.float32) / 32768.0
         return pcm.reshape(-1, 2), target_sr
-
-    if src_sr != target_sr and len(arr) > 0:
-        from scipy.signal import resample_poly
-        g = math.gcd(int(src_sr), int(target_sr))
-        up = int(target_sr) // g
-        down = int(src_sr) // g
-        arr = resample_poly(arr, up, down, axis=0).astype(np.float32)
 
     return np.ascontiguousarray(arr, dtype=np.float32), int(target_sr)
 
@@ -992,7 +1040,7 @@ def measure_lufs_ebur128(media_path: Path, raise_on_error: bool = True) -> Dict[
         return {"integrated_lufs": -99.0, "lra_lu": 0.0, "true_peak_dbtp": -99.0, "valid": False}
 
     res = subprocess.run(
-        [ffmpeg, "-hide_banner", "-nostats", "-i", str(media_path), "-af", "ebur128=peak=true", "-f", "null", "-"],
+        [ffmpeg, "-hide_banner", "-nostats", "-vn", "-i", str(media_path), "-af", "ebur128=peak=true", "-f", "null", "-"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -1002,17 +1050,22 @@ def measure_lufs_ebur128(media_path: Path, raise_on_error: bool = True) -> Dict[
     txt = res.stderr or ""
     summary_idx = txt.rfind("Summary:")
     scope = txt[summary_idx:] if summary_idx >= 0 else txt
-    m_i = re.findall(r"I:\s*(-?[\d.]+)\s*LUFS", scope)
-    m_lra = re.findall(r"LRA:\s*([\d.]+)\s*LU", scope)
-    m_tp = re.findall(r"Peak:\s*(-?[\d.]+)\s*dBFS", scope)
+    m_i = re.findall(r"I:\s*(-?[\d.]+|-inf)\s*LUFS", scope)
+    m_lra = re.findall(r"LRA:\s*([\d.]+|-inf)\s*LU", scope)
+    m_tp = re.findall(r"Peak:\s*(-?[\d.]+|-inf)\s*dBFS", scope)
     if not m_i:
         if raise_on_error:
             raise RuntimeError(f"ebur128 响度解析失败: {media_path}\n{txt[-400:]}")
         return {"integrated_lufs": -99.0, "lra_lu": 0.0, "true_peak_dbtp": -99.0, "valid": False}
+
+    def _to_db(token: str, default_val: float) -> float:
+        t = token.strip().lower()
+        return -99.0 if t == "-inf" else float(t)
+
     return {
-        "integrated_lufs": float(m_i[-1]),
-        "lra_lu": float(m_lra[-1]) if m_lra else 0.0,
-        "true_peak_dbtp": float(m_tp[-1]) if m_tp else -1.5,
+        "integrated_lufs": _to_db(m_i[-1], -99.0),
+        "lra_lu": 0.0 if (not m_lra or m_lra[-1].strip().lower() == "-inf") else float(m_lra[-1]),
+        "true_peak_dbtp": _to_db(m_tp[-1], -99.0) if m_tp else -1.5,
         "valid": True,
     }
 
@@ -1072,7 +1125,7 @@ def resolve_workspace_paths(
     if project_id:
         proj_slug = sanitize_slug(project_id, default="project")
     elif project_dir:
-        proj_slug = sanitize_slug(project_dir.name, default="project")
+        proj_slug = sanitize_slug(project_dir.expanduser().resolve().name, default="project")
     elif raw_res:
         proj_slug = sanitize_slug(raw_res.name, default="project")
     else:
@@ -1226,3 +1279,9 @@ def find_cached_whisper_model(hf_hub: Optional[Path] = None) -> Optional[str]:
         if (d / "snapshots").is_dir() and any((d / "snapshots").iterdir()):
             return cand
     return None
+
+
+def compute_segment_cache_key(payload: Dict[str, Any]) -> str:
+    """全仓共享的渲染与贴片缓存 SHA256 指纹生成器，杜绝参数变更后误复用过期缓存。"""
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:24]

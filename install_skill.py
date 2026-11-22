@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shutil
 import subprocess
@@ -28,7 +29,8 @@ def deploy(source: Path, skills_dir: Path, copy: bool = False) -> Path | None:
     if target.is_symlink() and target.resolve() == source.resolve():
         return None
     previous = target.exists() or target.is_symlink()
-    if previous and not recognized_skill(target):
+    broken_symlink = target.is_symlink() and not target.exists()
+    if previous and not broken_symlink and not recognized_skill(target):
         raise ValueError(f"安装目标不是可识别的 {NAME}，请检查 {target}")
 
     skills_dir.mkdir(parents=True, exist_ok=True)
@@ -41,8 +43,11 @@ def deploy(source: Path, skills_dir: Path, copy: bool = False) -> Path | None:
         if not recognized_skill(staged):
             raise ValueError(f"待安装 Skill 校验失败：{staged}")
         backup = None
-        if previous:
-            backup_dir = Path(tempfile.mkdtemp(prefix=f".{NAME}-rollback-", dir=skills_dir.parent))
+        if broken_symlink:
+            target.unlink(missing_ok=True)
+        elif previous:
+            rollback_parent = skills_dir.parent if os.access(skills_dir.parent, os.W_OK) else skills_dir
+            backup_dir = Path(tempfile.mkdtemp(prefix=f".{NAME}-rollback-", dir=rollback_parent))
             backup = backup_dir / NAME
             target.rename(backup)
         try:
@@ -69,12 +74,14 @@ def main() -> None:
         raise SystemExit(subprocess.run([*doctor, "--check-only"]).returncode)
 
     gemini = Path.home() / ".gemini" / "config" / "skills"
-    destinations = args.skills_dir or [Path.home() / ".claude" / "skills"]
+    raw_destinations = list(args.skills_dir or [Path.home() / ".claude" / "skills"])
     if not args.skills_dir and sys.platform != "win32" and gemini.is_dir():
-        destinations.append(gemini)
+        raw_destinations.append(gemini)
+    destinations = list(dict.fromkeys(d.expanduser().resolve() for d in raw_destinations))
     for directory in destinations:
         target = directory / NAME
-        if (target.exists() or target.is_symlink()) and not recognized_skill(target):
+        broken = target.is_symlink() and not target.exists()
+        if (target.exists() or target.is_symlink()) and not broken and not recognized_skill(target):
             parser.error(f"安装目标无法识别：{target}")
 
     result = subprocess.run([*doctor, "--check-only"])

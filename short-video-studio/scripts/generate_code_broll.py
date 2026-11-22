@@ -35,11 +35,13 @@ from common import (
     DEFAULT_FPS,
     SAFE_ZONE,
     SCRIPTS_DIR,
+    contrast_ratio,
     detect_browser_renderer,
     find_bin,
     find_commercial_font,
     fit_text_line,
     get_cached_font,
+    hex_to_rgba,
     load_style_spectrum_entry,
     maybe_reexec_in_venv,
     write_json,
@@ -191,25 +193,31 @@ def resolve_style_palette(
         return base
 
     arch = str(entry.get("archetype_id", ""))
-    sb = entry.get("subtitle_spec", {})
+    sb = entry.get("subtitle_spec", {}) or {}
+    cl = entry.get("color_and_lut", {}) or {}
+    top5 = [str(x) for x in (cl.get("top5_palette_hex") or []) if isinstance(x, str) and x.strip()]
     kw_col = str(sb.get("keyword_color") or default_acc)
     f_cands = sb.get("font_candidates")
 
-    if arch == "arch_03_editorial_matte_depth" and style_id in ("style_12", "style_18"):
-        return {
-            "archetype_id": arch,
-            "bg_hex": "#F6F5F0",
-            "card_bg_hex": "#FFFFFF",
-            "grid_hex": "#E7E5DF",
-            "title_hex": "#111827",
-            "sub_hex": "#4B5563",
-            "accent_hex": "#111827",
-            "badge_text_hex": "#FFFFFF",
-            "border_hex": "#D1D5DB",
-            "font_candidates": f_cands,
-            "is_light": True,
-        }
+    def _luma_255(hex_c: str) -> float:
+        r, g, b, _ = hex_to_rgba(hex_c, (24, 24, 28, 255))
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    def _pick_badge_fg(acc_h: str) -> str:
+        rgb = hex_to_rgba(acc_h, (255, 213, 79, 255))[:3]
+        return "#FFFFFF" if contrast_ratio((255, 255, 255), rgb) >= contrast_ratio((15, 23, 42), rgb) else "#0F172A"
+
+    # 数据驱动判定亮底/暗底：优先读色板测量均值 y_mean_255 或主背景亮度 (>= 165)，并结合流派兜底
+    bg_y_meas = cl.get("bg_y_mean_255")
+    if bg_y_meas is not None:
+        is_light_style = float(bg_y_meas) >= 165.0
+    elif top5:
+        is_light_style = _luma_255(top5[0]) >= 165.0
+    else:
+        is_light_style = (arch == "arch_06_paper_stopmotion") or (style_id in ("style_05", "style_12", "style_18"))
+
     if arch == "arch_06_paper_stopmotion" or style_id == "style_05":
+        acc_h = "#B91C1C" if contrast_ratio((185, 28, 28), (244, 239, 230)) >= 4.5 else "#DC2626"
         return {
             "archetype_id": arch,
             "bg_hex": "#F4EFE6",
@@ -217,13 +225,29 @@ def resolve_style_palette(
             "grid_hex": "#E6DEC8",
             "title_hex": "#1C1917",
             "sub_hex": "#57534E",
-            "accent_hex": "#DC2626",
-            "badge_text_hex": "#FFFFFF",
+            "accent_hex": acc_h,
+            "badge_text_hex": _pick_badge_fg(acc_h),
             "border_hex": "#D6CFC2",
             "font_candidates": f_cands,
             "is_light": True,
         }
+    if is_light_style:
+        cand_acc = kw_col if contrast_ratio(hex_to_rgba(kw_col, 255)[:3], (246, 245, 240)) >= 3.2 else "#111827"
+        return {
+            "archetype_id": arch,
+            "bg_hex": "#F6F5F0",
+            "card_bg_hex": "#FFFFFF",
+            "grid_hex": "#E7E5DF",
+            "title_hex": "#111827",
+            "sub_hex": "#4B5563",
+            "accent_hex": cand_acc,
+            "badge_text_hex": _pick_badge_fg(cand_acc),
+            "border_hex": "#D1D5DB",
+            "font_candidates": f_cands,
+            "is_light": True,
+        }
     if arch == "arch_05_cinema_slow_space":
+        acc_h = kw_col if (kw_col.upper() != "#FFFFFF" and contrast_ratio(hex_to_rgba(kw_col, 255)[:3], (17, 17, 19)) >= 4.5) else "#E6C67A"
         return {
             "archetype_id": arch,
             "bg_hex": "#111113",
@@ -231,13 +255,16 @@ def resolve_style_palette(
             "grid_hex": "#222228",
             "title_hex": "#FAF4E4",
             "sub_hex": "#A8A29E",
-            "accent_hex": "#E6C67A",
-            "badge_text_hex": "#111113",
+            "accent_hex": acc_h,
+            "badge_text_hex": _pick_badge_fg(acc_h),
             "border_hex": "#343028",
             "font_candidates": f_cands or ["SourceHanSerifCN-Bold.otf"],
             "is_light": False,
         }
     if arch == "arch_01_tech_ui_console":
+        acc_h = "#38BDF8" if kw_col.upper() == "#FFFFFF" else kw_col
+        if contrast_ratio(hex_to_rgba(acc_h, 255)[:3], (11, 15, 23)) < 4.0:
+            acc_h = "#38BDF8"
         return {
             "archetype_id": arch,
             "bg_hex": "#0B0F17",
@@ -245,21 +272,25 @@ def resolve_style_palette(
             "grid_hex": "#1A2333",
             "title_hex": "#F8FAFC",
             "sub_hex": "#94A3B8",
-            "accent_hex": "#38BDF8" if kw_col.upper() == "#FFFFFF" else kw_col,
-            "badge_text_hex": "#0B0F17",
+            "accent_hex": acc_h,
+            "badge_text_hex": _pick_badge_fg(acc_h),
             "border_hex": "#25344D",
             "font_candidates": f_cands,
             "is_light": False,
         }
+    bg_h = "#141210" if track == "store" else "#12151E"
+    acc_h = kw_col if kw_col.upper() != "#FFFFFF" else default_acc
+    if contrast_ratio(hex_to_rgba(acc_h, 255)[:3], hex_to_rgba(bg_h, 255)[:3]) < 4.0:
+        acc_h = default_acc
     return {
         "archetype_id": arch,
-        "bg_hex": "#141210" if track == "store" else "#12151E",
+        "bg_hex": bg_h,
         "card_bg_hex": "#1E1B18" if track == "store" else "#1B2030",
         "grid_hex": "#28231E" if track == "store" else "#1F2638",
         "title_hex": "#FAF8F5",
         "sub_hex": "#A8A29E",
-        "accent_hex": kw_col if kw_col.upper() != "#FFFFFF" else default_acc,
-        "badge_text_hex": "#0F172A",
+        "accent_hex": acc_h,
+        "badge_text_hex": _pick_badge_fg(acc_h),
         "border_hex": "#3A332C",
         "font_candidates": f_cands,
         "is_light": False,
@@ -1436,7 +1467,7 @@ def main() -> None:
     parser.add_argument("--title", default="核心重点")
     parser.add_argument("--items-json", help="JSON 字符串形式的条目列表")
     parser.add_argument("--duration", type=float, default=3.0)
-    parser.add_argument("--style-id", help="绑定风格谱 ID (style_01 ~ style_20)")
+    parser.add_argument("--style-id", help="绑定风格谱 ID (style_01 ~ style_24)")
     parser.add_argument("--track", choices=["store", "creator"], default="store")
     parser.add_argument("--register", choices=["warm_food", "craft_paper", "dark_tech"], help="视觉语域保护 (B6)")
     parser.add_argument("--backend", choices=["auto", "pillow", "html"], default="auto", help="渲染引擎")

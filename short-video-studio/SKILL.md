@@ -144,13 +144,16 @@ python3 scripts/content_log_review.py --account <账号> --track <store|creator>
 
 ## 六、 风格谱参考包装库与环境初始化
 
-- 已内置 6 大流派母版 + 20 套量化「风格谱」（`style_01` ~ `style_20`），其中 **`style_14`** 融合实操标杆《11月14日延期》作为默认门店旗舰风格谱；详情见 [assets/style_spectrum/STYLE_SPECTRUM_REPORT.md](assets/style_spectrum/STYLE_SPECTRUM_REPORT.md)。
+- 已内置 **24 套 v2.1 量化风格谱**（`style_01` ~ `style_24`，涵盖 20 套主流商业短视频形态 + **4 套高空镜实拍/图解风格 `style_21`–`style_24`（空镜占比 85%–100%）**，100% 原生 `1080×1920` 竖屏安全区锁定）与 **3 大共享剪辑规则字典**（83 组 0ms 文字动画×音效配对、29 类口播语义音效分类、黄金四色排版与 3:4 封面四构图法则）：
+  - **门店获客默认（`style_14`）**：门店实景出镜、双段音乐情绪反转、过半店内实拍叠层、居中暖黄重点大字；另含全屋定制白边抠像（`style_07`）、清冷奶油美业（`style_04`）、二手车暖金强切（`style_17`）、户外探盘立体大字（`style_18`）、中医国风暖木（`style_20`）、牛皮纸工艺拆解（`style_05`）、慢调空间漫游（`style_13`）、**85% 门店工艺特写快切（`style_21`）**、**95% 品牌微纪录慢调空镜（`style_23`）**。
+  - **个人账号默认（`style_11`）**：清亮通透圆角底框配圆窗例证与双段音乐；另含极速跳剪荧光高亮（`style_02`）、10 轨顶栏长口播（`style_03`）、黑底竖相框治愈金句（`style_06`）、专家稳镜长谈（`style_08`）、暗黑双格圆窗普法（`style_09`）、高频推拉种草（`style_10`）、极简白底卡片（`style_12`）、全屏高密动效大字访谈（`style_15`）、暗黑书摘数字（`style_16`）、冷峻数据背景抠像（`style_19`）、暗黑控制台演示（`style_01`）、**90% 例证图解拆解（`style_22`）**、**100% 全画面无出镜卡点混剪（`style_24`）**。
+  - 完整大白话选用指南见 [assets/style_spectrum/STYLE_SPECTRUM_REPORT.md](assets/style_spectrum/STYLE_SPECTRUM_REPORT.md)。
   ```bash
   python3 scripts/apply_style_spectrum.py --list
   python3 scripts/apply_style_spectrum.py --style-id style_14 --apply-pipeline <项目目录>/pipeline
   python3 scripts/apply_style_spectrum.py --style-id style_14 --export-hyperframes <out_dir>
   ```
-- 所有随仓字体、CC0 真实录制 BGM、物理 SFX 与 `17³` LUT 授权清单见 [references/assets-attribution.md](references/assets-attribution.md)。
+- 所有随仓内置的 4 款开源商用字体（阿里妈妈数黑体、得意黑、思源宋体 Bold & Heavy）、CC0 真实录制 BGM、物理 SFX 与 `17³` LUT 授权清单见 [references/assets-attribution.md](references/assets-attribution.md)。
 - 首次部署或排查依赖/字体/无头浏览器桥时运行：
   ```bash
   python3 scripts/check_and_setup.py --init-fonts --init-assets --install-deps --init-browser

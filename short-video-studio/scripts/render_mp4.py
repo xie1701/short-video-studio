@@ -32,7 +32,9 @@ from common import (
     SUBTITLE_CENTER_X,
     SUBTITLE_SAFE_ZONE,
     SUBTITLE_SYMMETRIC_MAX_W,
+    compute_centered_crop_frac,
     compute_crop_transform,
+    compute_segment_cache_key,
     contrast_ratio,
     ffprobe_media,
     find_bin,
@@ -53,9 +55,11 @@ from common import (
     sha256_file,
     write_json,
 )
-from generate_code_broll import resolve_style_palette
 
-maybe_reexec_in_venv()
+if __name__ == "__main__":
+    maybe_reexec_in_venv()
+
+from generate_code_broll import resolve_style_palette
 
 from PIL import Image, ImageDraw
 
@@ -323,16 +327,36 @@ def render_packaging_png(
     main_text = str(elem.get("text_or_asset") or elem.get("text") or "").strip()
     max_safe_w = SAFE_ZONE["x_max"] - SAFE_ZONE["x_min"]
 
-    if elem_kind in ("center_burst_title", "stamp_tag", "end_card_cta"):
-        # 复刻《11月14日延期》剪映原生无底框高冲击描边花字（头顶巨字/印章字/片尾互动大字）
+    if elem_kind == "persistent_top_bar":
+        # 顶部常驻主题标语栏（强对比保护 >= 4.5）
+        text = main_text or "核心重点"
+        fg_rgba = parse_hex_rgba(elem.get("fg_hex") or "#FFF589")
+        pill_bg = (18, 22, 28)
+        if contrast_ratio(fg_rgba[:3], pill_bg) < 4.5:
+            fg_rgba = (255, 245, 137, 255)
+        probe = Image.new("RGBA", (8, 8), (0, 0, 0, 0))
+        pdraw = ImageDraw.Draw(probe)
+        fnt, fitted = _fit_line(pdraw, text, font_path, SUBTITLE_SYMMETRIC_MAX_W - 48, 36, 22)
+        bb = pdraw.textbbox((0, 0), fitted, font=fnt)
+        tw, th = max(40, bb[2] - bb[0]), max(24, bb[3] - bb[1])
+        w = min(SUBTITLE_SYMMETRIC_MAX_W, tw + 56)
+        h = max(62, th + 26)
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        draw.rounded_rectangle([(0, 0), (w - 1, h - 1)], radius=h // 2, fill=(18, 22, 28, 218), outline=fg_rgba, width=2)
+        draw.text((w // 2, h // 2), fitted, font=fnt, fill=fg_rgba, anchor="mm")
+        return img
+
+    if elem_kind in ("center_burst_title", "stamp_tag", "end_card_cta", "quote_citation_card"):
+        # 原生无底框高冲击描边花字与双引号金句卡
         fg_rgba = parse_hex_rgba(elem.get("fg_hex") or ("#FF4C2C" if elem_kind == "center_burst_title" else "#FFE28A"))
         st_rgba = parse_hex_rgba(elem.get("stroke_hex") or "#000000")
         sh_rgba = (0, 0, 0, 210)
         max_w_cap = SUBTITLE_SYMMETRIC_MAX_W
-        target_fs = 74 if elem_kind == "center_burst_title" else (58 if elem_kind == "end_card_cta" else 56)
+        target_fs = 74 if elem_kind == "center_burst_title" else (58 if elem_kind in ("end_card_cta", "quote_citation_card") else 56)
         sw_draw = 6 if elem_kind == "center_burst_title" else 5
         text = main_text or "核心重点"
-        sub_txt = str(elem.get("subtext") or "").strip() if elem_kind == "end_card_cta" else ""
+        sub_txt = str(elem.get("subtext") or "").strip() if elem_kind in ("end_card_cta", "quote_citation_card") else ""
 
         tmp = Image.new("RGBA", (max_w_cap + 120, 260), (0, 0, 0, 0))
         td = ImageDraw.Draw(tmp)
@@ -542,9 +566,13 @@ def build_graded_segment_cmd(
             geom_cache[media_path] = (sw, sh)
 
     eye = clip.get("eye_anchor") or eye_by_mp4.get(media_path) or eye_by_mp4.get(str(Path(media_path).resolve())) or {}
-    fx = float(eye.get("cx", eye.get("eye_cx", 0.50)))
-    fy = float(eye.get("cy", eye.get("eye_cy", 0.36)))
-    tx = compute_crop_transform(sw, sh, tw, th, fx, fy)
+    fx_raw = float(eye.get("cx", eye.get("eye_cx", 0.50)))
+    fy_raw = float(eye.get("cy", eye.get("eye_cy", 0.36)))
+    base_tx = compute_crop_transform(sw, sh, tw, th, 0.5, 0.5)
+    cx_frac = compute_centered_crop_frac(fx_raw, base_tx["scaled_w"], tw, target_norm_pos=0.5)
+    cy_frac = compute_centered_crop_frac(fy_raw, base_tx["scaled_h"], th, target_norm_pos=0.38)
+    tx = compute_crop_transform(sw, sh, tw, th, cx_frac, cy_frac)
+    fx, fy = fx_raw, fy_raw
 
     trim_dur = min(src_avail, clip_dur) if src_avail >= clip_dur - 0.01 else src_avail
     vf_parts: List[str] = [f"fps=fps={fps}", f"trim=duration={trim_dur:.4f},setpts=PTS-STARTPTS"]
@@ -617,6 +645,8 @@ def build_base_video_track(
     """按 EDL 分镜精确裁切、单次高质量 Ken Burns / 锁眼推拉 + 调色 + 严防尾帧泄漏地拼接底轨。"""
     started = perf_counter()
     ffmpeg_bin = find_bin("ffmpeg")
+    if not ffmpeg_bin:
+        raise RuntimeError("未找到 ffmpeg，无法渲染底轨视频。")
     work_dir = pipeline_dir / "_render_final"
     work_dir.mkdir(parents=True, exist_ok=True)
     base_mp4 = work_dir / ("base_preview.mp4" if preview else "base_video.mp4")
@@ -665,9 +695,13 @@ def build_base_video_track(
             ffmpeg_bin, clip, cf, eye_by_mp4, staged_seg, fps,
             tw=tw, th=th, preview=preview, geom_cache=geom_cache,
         )
-        seg_key = hashlib.sha256(json.dumps(
-            [cmd[:-1], source_hashes[media_path], source_hashes.get(lut_path)]
-        ).encode("utf-8")).hexdigest()
+        seg_key = compute_segment_cache_key({
+            "cmd": cmd[:-1],
+            "source_hash": source_hashes[media_path],
+            "lut_hash": source_hashes.get(lut_path),
+            "fps": fps,
+            "preview": preview,
+        })
         seg_flag = seg_out.with_suffix(".sha256")
         if seg_out.is_file() and seg_flag.is_file() and seg_flag.read_text(encoding="utf-8") == seg_key:
             reused += 1
@@ -681,8 +715,11 @@ def build_base_video_track(
         seg_files.append(seg_out)
 
     concat_txt = work_dir / f"concat_{'p' if preview else 'f'}.txt"
+    def _ff_concat_line(p: Path) -> str:
+        escaped = p.resolve().as_posix().replace("'", r"'\''")
+        return f"file '{escaped}'"
     concat_txt.write_text(
-        "\n".join(f"file '{p.resolve().as_posix()}'" for p in seg_files) + "\n",
+        "\n".join(_ff_concat_line(p) for p in seg_files) + "\n",
         encoding="utf-8",
     )
     exact_dur = frames_to_sec(target_frames, fps)
@@ -700,6 +737,8 @@ def build_base_video_track(
 
 def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
     ffmpeg_bin = find_bin("ffmpeg")
+    if not ffmpeg_bin:
+        raise RuntimeError("未找到 ffmpeg，无法合成成片 MP4。")
     edl = read_json(pipeline_dir / "04_edl.json")
     subs_data = read_json(pipeline_dir / "05_subtitles.json")
     pkg_data = read_json(pipeline_dir / "06_packaging.json")
@@ -745,7 +784,8 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
 
     templates = load_subtitle_templates()
     tpl_id = subs_data.get("template_id") or "style_01"
-    tpl = templates.get(tpl_id) or next(iter(templates.values()))
+    base_tpl = templates.get(tpl_id) or next(iter(templates.values()))
+    tpl = {**base_tpl, **subs_data["template_config"]} if isinstance(subs_data.get("template_config"), dict) else dict(base_tpl)
     font_path = subs_data.get("font_path") or find_commercial_font(tpl.get("font_candidates"))
     style_id = pkg_data.get("style_id") or load_style_applied(pipeline_dir) or "style_01"
 
@@ -780,6 +820,8 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
         sw_px, sh_px = render_subtitle_png(sub, tpl, font_path, sub_png)
         def_x, def_y = compute_subtitle_place_xy(sw_px, sh_px, tpl)
         px, py = _place_from_final_bbox(sub, sw_px, sh_px, SUBTITLE_SAFE_ZONE, (def_x, def_y), _faces_at_time(s_t))
+        if sw_px <= SUBTITLE_SYMMETRIC_MAX_W:
+            px = SUBTITLE_CENTER_X - sw_px // 2
         overlays.append((sub_png, px, py, s_t, e_t, None, False))
 
     if not overlays:
@@ -810,16 +852,17 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
         in_idx = i + 2
         if blur_rect is not None:
             bx, by, bw, bh = blur_rect
-            bx = max(0, min(CANVAS_WIDTH - 16, int(bx)))
-            by = max(0, min(CANVAS_HEIGHT - 16, int(by)))
-            bw = max(16, min(CANVAS_WIDTH - bx, int(bw)))
-            bh = max(16, min(CANVAS_HEIGHT - by, int(bh)))
+            bw = max(40, min(CANVAS_WIDTH, int(bw)))
+            bh = max(40, min(CANVAS_HEIGHT, int(bh)))
+            bx = max(0, min(CANVAS_WIDTH - bw, int(bx)))
+            by = max(0, min(CANVAS_HEIGHT - bh, int(by)))
+            blur_rad = max(2, min(10, min(bw, bh) // 4 - 1))
             base_copy = f"[bc_{step_idx}]"
             blur_crop_in = f"[bi_{step_idx}]"
             blur_crop_out = f"[bo_{step_idx}]"
             blur_merged = f"[bm_{step_idx}]"
             filter_chains.append(f"{cur_label}split=2{base_copy}{blur_crop_in}")
-            filter_chains.append(f"{blur_crop_in}crop={bw}:{bh}:{bx}:{by},boxblur=10:2:enable='between(t,{s_t:.4f},{e_t:.4f})'{blur_crop_out}")
+            filter_chains.append(f"{blur_crop_in}crop={bw}:{bh}:{bx}:{by},boxblur={blur_rad}:2:enable='between(t,{s_t:.4f},{e_t:.4f})'{blur_crop_out}")
             filter_chains.append(
                 f"{base_copy}{blur_crop_out}overlay=x={bx}:y={by}:enable='between(t,{s_t:.4f},{e_t:.4f})'{blur_merged}"
             )
@@ -870,6 +913,7 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
 
 
 def main() -> None:
+    maybe_reexec_in_venv()
     parser = argparse.ArgumentParser(description="成片渲染器（支持粗剪预览与终稿 BT.709 导出）")
     parser.add_argument("--pipeline-dir", required=True)
     parser.add_argument("--preview", action="store_true", help="输出低清快速粗剪预览 (540x960)")

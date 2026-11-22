@@ -195,7 +195,7 @@ create_style_spectrum_project() {
   fi
 
   echo ""
-  echo "常用风格推荐：style_14 (毛玻璃创始人风) / style_12 (Apple白底卡) / style_15 (暗黑极客) / style_02 (极简硬核)"
+  echo "常用风格推荐：style_14 (门店实景默认) / style_11 (个人知识默认) / style_21 (85%门店特写) / style_24 (100%纯画面无出镜)"
   read -r -p "请输入风格编号 [直接回车默认 style_14]: " style_id
   style_id="${style_id:-style_14}"
 
@@ -252,7 +252,7 @@ main() {
   echo "请选择启动方式（直接回车默认为 1）："
   echo "  [1] 打开已有 HyperFrames 工程（系统弹窗选文件夹 / 拖入目录）"
   if resolve_apply_script >/dev/null 2>&1; then
-    echo "  [2] 一键用内置「20套风格谱」新建示例 HyperFrames 工程并启动"
+    echo "  [2] 一键用内置「24套风格」新建示例 HyperFrames 工程并启动"
   fi
   echo "  [3] 新建空白竖屏 (1080x1920) HyperFrames 工程并启动"
   echo ""

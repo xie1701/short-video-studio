@@ -19,7 +19,7 @@ PARAMETER_LIMITS = {
     "twist_pause_sec": (0.20, 0.36),
     "narrative_pause_sec": (0.16, 0.30),
     "target_median_shot_sec": (1.12, 2.82),
-    "target_aroll_ratio": (0.25, 0.70),
+    "target_aroll_ratio": (0.0, 0.75),
     "micro_hook_max_sec": (3.0, 20.0),
 }
 METRICS = {
@@ -69,7 +69,7 @@ def validate_plan(plan: dict[str, Any]) -> None:
     if parameter and parameter != plan["variable"]:
         raise ValueError("可启用的参数必须与唯一实验变量一致")
     if parameter == "preferred_style_id":
-        if not all(re.fullmatch(r"style_(0[1-9]|1\d|20)", str(plan[key])) for key in ("control_value", "variant_value")):
+        if not all(re.fullmatch(r"style_(0[1-9]|1\d|2[0-4])", str(plan[key])) for key in ("control_value", "variant_value")):
             raise ValueError("风格编号无效")
     elif parameter:
         if parameter not in PARAMETER_LIMITS:

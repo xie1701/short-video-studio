@@ -140,6 +140,43 @@ def ensure_code_broll_pool(
             "semantic_tags": ["流程", "拆解", "细节"],
             "scene_group": "code_gfx",
         })
+        deficit = (total_dur * 1.15 - (net_avail + 6.5)) if total_dur > 0.0 else 0.0
+        extra_modes = ("chips", "versus", "kinetic_text", "flow_diagram")
+        extra_idx = 0
+        while deficit > 1.5 and extra_idx < 4 and len(sentences) > 0:
+            s_pick = sentences[min(len(sentences) - 1, (extra_idx * 2 + 1) % len(sentences))]
+            e_dur = 4.0
+            e_path = gen_dir / f"auto_code_ext_{extra_idx + 1:02d}.mp4"
+            e_mode = extra_modes[extra_idx % len(extra_modes)]
+            e_kw = (s_pick.get("keywords") or [None])[0] or str(s_pick.get("text", "核心要点"))[:8]
+            e_items = [
+                {"label": str(s.get("keywords", [None])[0] or s["text"][:10]), "subtitle": s["text"][:18]}
+                for s in sentences[extra_idx % len(sentences) : (extra_idx % len(sentences)) + 2]
+            ] or [{"label": e_kw, "subtitle": str(s_pick.get("text", ""))[:18]}]
+            render_broll_clip_pillow(
+                e_path,
+                mode=e_mode,
+                title=str(e_kw)[:12],
+                items=e_items,
+                duration_sec=e_dur,
+                accent_hex=pal["accent_hex"],
+                bg_hex=pal["bg_hex"],
+                style_id=style_id,
+                track=track,
+            )
+            pool.append({
+                "id": f"code_auto_ext_{extra_idx + 1:02d}",
+                "normalized_mp4": str(e_path.resolve()),
+                "role": "code_broll",
+                "duration_sec": e_dur,
+                "best_in_sec": 0.0,
+                "sharpness_score": 80.0,
+                "stability_score": 1.0,
+                "semantic_tags": ["要点", "对比", *(s_pick.get("keywords") or [])],
+                "scene_group": "code_gfx",
+            })
+            deficit -= e_dur
+            extra_idx += 1
     return pool
 
 
@@ -226,8 +263,9 @@ def run_step4(
     pacing = EDIT_PROFILES[edit_profile]
     max_shot = float(pacing["max_shot_sec"])
     micro_hook_max_sec = min(max_shot, float(eff_prof.get("micro_hook_max_sec", max_shot - 1.8)))
-    default_aroll_r = max(0.25, min(0.65, 1.0 - broll_target_ratio))
-    target_aroll_ratio = max(0.20, min(0.85, float(eff_prof.get("target_aroll_ratio", default_aroll_r))))
+    default_aroll_r = max(0.0, min(0.80, 1.0 - broll_target_ratio))
+    target_aroll_ratio = max(0.0, min(0.85, float(eff_prof.get("target_aroll_ratio", default_aroll_r))))
+    broll_only_mode = bool(prefer_broll_only or (broll_target_ratio >= 0.995) or (target_aroll_ratio <= 0.005))
 
     first_3s_evts = pick_first_3s_events(events, fps, int(pacing["opening_cuts"]))
     sent_by_id = {s["id"]: s for s in sentences}
@@ -340,11 +378,11 @@ def run_step4(
         sent_vgrade = str(sent.get("source_video_grade") or vgrade_by_mp4.get(sm_p, "usable"))
         forced_mask = sent_vgrade in ("audio_only", "ng")
         audio_only_flags.append(forced_mask)
-        # 严格校验本句原声是否真正对应可用的实拍 A-roll，绝不拿别人的嘴型硬配！
-        source_aroll_valid.append((not sm_p) or (sm_p in usable_aroll_paths))
+        # 严格校验本句原声是否真正对应可用的实拍 A-roll，绝不把无源配音硬配给无关真人口型！
+        source_aroll_valid.append(bool(sm_p and sm_p in usable_aroll_paths))
 
     def _can_be_safe_aroll(seg_idx: int) -> bool:
-        if audio_only_flags[seg_idx] or not usable_arolls or prefer_broll_only or not source_aroll_valid[seg_idx]:
+        if audio_only_flags[seg_idx] or not usable_arolls or broll_only_mode or not source_aroll_valid[seg_idx]:
             return False
         t_in = frames_to_sec(cut_points[seg_idx]["raw_frame"], fps)
         t_out = frames_to_sec(cut_points[seg_idx + 1]["raw_frame"] if seg_idx + 1 < n_segs else total_frames, fps)
@@ -362,7 +400,7 @@ def run_step4(
         return True
 
     roles: List[str] = []
-    aroll_step = max(2, int(round(1.0 / max(0.15, target_aroll_ratio))))
+    aroll_step = max(2, int(round(1.0 / max(0.04, target_aroll_ratio))))
     for idx, cp in enumerate(cut_points):
         ev = cp["event"]
         t_start = frames_to_sec(cp["cut_frame"], fps)
@@ -373,18 +411,20 @@ def run_step4(
         tail_start_sec = max(0.0, total_dur - min(8.5, max(2.2, total_dur * 0.28)))
         is_tail = (idx == n_segs - 1 and near_sent_start) or (t_start >= tail_start_sec and near_sent_start)
 
-        if audio_only_flags[idx] or not usable_arolls or prefer_broll_only or not source_aroll_valid[idx]:
+        if audio_only_flags[idx] or not usable_arolls or broll_only_mode or not source_aroll_valid[idx]:
             roles.append("b_roll")
-        elif idx == 0 and (_can_be_safe_aroll(0) or n_segs == 1):
+        elif idx == 0 and target_aroll_ratio >= 0.25 and (_can_be_safe_aroll(0) or n_segs == 1):
             roles.append("a_roll")
         elif _can_be_safe_aroll(idx) and near_sent_start and (
-            has_prop_show or is_tail or (idx % aroll_step == 1 if aroll_step > 2 else idx % 2 == 1)
+            has_prop_show
+            or (is_tail and target_aroll_ratio >= 0.18)
+            or (idx % aroll_step == 1 if aroll_step > 2 else idx % 2 == 1)
         ):
             roles.append("a_roll")
         else:
             roles.append("b_roll")
 
-    if usable_arolls and not prefer_broll_only:
+    if usable_arolls and not broll_only_mode:
         seg_ends_est = [
             frames_to_sec(cut_points[i + 1]["raw_frame"] if i + 1 < n_segs else total_frames, fps)
             for i in range(n_segs)
@@ -396,7 +436,7 @@ def run_step4(
         cur_aroll_sec = sum(d for r, d in zip(roles, seg_durs_est) if r == "a_roll")
         tail_floor = total_dur - max(3.5, min(10.0, total_dur * 0.45))
         has_tail_aroll = any(roles[i] == "a_roll" and seg_ends_est[i] >= tail_floor for i in range(n_segs))
-        if not has_tail_aroll:
+        if not has_tail_aroll and target_aroll_ratio >= 0.18:
             tail_cands = []
             for i in range(n_segs):
                 if roles[i] != "b_roll" or not _can_be_safe_aroll(i) or seg_ends_est[i] < tail_floor:
@@ -409,8 +449,8 @@ def run_step4(
                 roles[best_tail_i] = "a_roll"
                 cur_aroll_sec += seg_durs_est[best_tail_i]
 
-        min_aroll_sec = total_dur * max(0.24, min(0.35, target_aroll_ratio * 0.78))
-        max_aroll_sec = total_dur * min(0.85, max(0.55, target_aroll_ratio + 0.10))
+        min_aroll_sec = total_dur * max(0.0, min(0.35, target_aroll_ratio * 0.75))
+        max_aroll_sec = total_dur * min(0.85, max(0.02, target_aroll_ratio + 0.05))
         if cur_aroll_sec < min_aroll_sec:
             cands = []
             for i in range(n_segs):
@@ -425,30 +465,35 @@ def run_step4(
                 if cur_aroll_sec >= min_aroll_sec:
                     break
         elif cur_aroll_sec > max_aroll_sec and len(broll_pool) > 0:
-            # 精准控制目标 B-roll 覆盖率（如 style_14 的 ~53%）：优先把有语义特写匹配且保持 A/B 交替的中段 A-roll 转为 B-roll
-            drop_cands = []
-            for i in range(1, n_segs - 1):
-                if roles[i] != "a_roll":
-                    continue
-                t_s = frames_to_sec(cut_points[i]["raw_frame"], fps)
-                s_obj = find_sentence_for_time(t_s, cut_points[i]["event"])
-                s_txt_c = str(s_obj.get("text", ""))
-                if any(cue in s_txt_c for cue in PROP_SHOW_CUES):
-                    continue
-                sem_hit = any(
-                    tg and (tg in s_txt_c)
-                    for m in broll_pool if m.get("role") == "b_roll"
-                    for tg in (m.get("semantic_tags", []) + m.get("manual_tags", []))
-                )
-                adj_broll = int((i + 1 < n_segs and roles[i + 1] != "a_roll") or (roles[i - 1] != "a_roll"))
-                drop_cands.append((-int(sem_hit), adj_broll, -seg_durs_est[i], i))
-            for _, _, _, i_drop in sorted(drop_cands):
-                if cur_aroll_sec - seg_durs_est[i_drop] < min_aroll_sec:
-                    continue
-                roles[i_drop] = "b_roll"
-                cur_aroll_sec -= seg_durs_est[i_drop]
-                if cur_aroll_sec <= max_aroll_sec:
+            # 精准控制目标 B-roll 覆盖率（覆盖 10%~95% 全风格区间）
+            mid_indices = list(range(1, n_segs - 1)) if n_segs > 2 else []
+            edge_indices = ([0, n_segs - 1] if n_segs > 1 else [0]) if target_aroll_ratio < 0.25 else []
+            for idx_pool in (mid_indices, edge_indices):
+                if cur_aroll_sec <= max_aroll_sec or not idx_pool:
                     break
+                drop_cands = []
+                for i in idx_pool:
+                    if roles[i] != "a_roll":
+                        continue
+                    t_s = frames_to_sec(cut_points[i]["raw_frame"], fps)
+                    s_obj = find_sentence_for_time(t_s, cut_points[i]["event"])
+                    s_txt_c = str(s_obj.get("text", ""))
+                    if any(cue in s_txt_c for cue in PROP_SHOW_CUES):
+                        continue
+                    sem_hit = any(
+                        tg and (tg in s_txt_c)
+                        for m in broll_pool if m.get("role") == "b_roll"
+                        for tg in (m.get("semantic_tags", []) + m.get("manual_tags", []))
+                    )
+                    adj_broll = int((i + 1 < n_segs and roles[i + 1] != "a_roll") or (i > 0 and roles[i - 1] != "a_roll"))
+                    drop_cands.append((-int(sem_hit), adj_broll, -seg_durs_est[i], i))
+                for _, _, _, i_drop in sorted(drop_cands):
+                    if cur_aroll_sec - seg_durs_est[i_drop] < min_aroll_sec and target_aroll_ratio >= 0.20:
+                        continue
+                    roles[i_drop] = "b_roll"
+                    cur_aroll_sec -= seg_durs_est[i_drop]
+                    if cur_aroll_sec <= max_aroll_sec:
+                        break
 
     # 真·J-cut (正帧移：声先画后) 与 真·L-cut (负帧移：高语义物证画面先入)
     first_3s_cutoff_f = 3 * fps
@@ -569,6 +614,8 @@ def run_step4(
                     same_media_pen = 18.0
             rem = (avail - h_m) - eff_cur
             exhausted_pen = 500.0 if (m.get("role") != "code_broll" and (avail - eff_cur) < seg_dur) else 0.0
+            if m.get("role") != "code_broll" and (avail - eff_cur) < min(0.5, seg_dur * 0.5):
+                exhausted_pen += 1500.0
             dur_bonus = 2.0 if rem >= seg_dur else (0.5 if avail >= seg_dur else -2.0)
             live_bonus = 3.5 if (t_start < 3.0 and m.get("role") == "b_roll") else 0.0
             sc = (
@@ -666,9 +713,19 @@ def run_step4(
                 "purpose": purpose,
             })
         else:
-            has_live_broll = any(m.get("role") == "b_roll" for m in broll_pool)
+            has_fresh_live = any(
+                m.get("role") == "b_roll"
+                and (
+                    float(m.get("duration_sec", 0.0))
+                    - max(
+                        float(used_cursors.get(m["id"], 0.0)),
+                        float(max_out_by_mp.get(str(m.get("normalized_mp4") or ""), 0.0)),
+                    )
+                ) >= min(0.6, seg_dur * 0.5)
+                for m in broll_pool
+            )
             cur_code_dur = sum(float(c["duration_sec"]) for c in clips if c.get("track_role") == "code_broll")
-            forbid_code = has_live_broll and ((cur_code_dur + seg_dur) / max(0.1, total_dur) > 0.45)
+            forbid_code = has_fresh_live and ((cur_code_dur + seg_dur) / max(0.1, total_dur) > 0.45)
             prev_mp = str(clips[-1]["media_path"]) if clips else ""
             prev_so = float(clips[-1]["source_out_sec"]) if clips else 0.0
 
@@ -770,6 +827,8 @@ def run_step4(
     shot_cv = round(statistics.stdev(durs) / max(1e-5, statistics.mean(durs)), 3) if len(durs) >= 2 else 0.0
     code_dur = sum(float(c["duration_sec"]) for c in clips if c.get("track_role") == "code_broll")
     code_ratio = round(code_dur / max(0.1, total_dur), 3)
+    broll_actual_dur = sum(float(c["duration_sec"]) for c in clips if c.get("track_role") != "a_roll")
+    broll_ratio_actual = round(broll_actual_dur / max(0.1, total_dur), 3)
 
     # 真实测算首帧视觉密度：文件存在且非废画、且非低对比死黑
     first_c = clips[0] if clips else {}
@@ -796,6 +855,8 @@ def run_step4(
         "punch_in_count": punch_in_count,
         "shot_duration_cv": shot_cv,
         "code_broll_ratio": code_ratio,
+        "broll_ratio_target": round(broll_target_ratio, 3),
+        "broll_ratio_actual": broll_ratio_actual,
         "ppt_warning": code_ratio > 0.30,
         "audio_only_masked_count": sum(1 for c in clips if c.get("audio_only_masked")),
         "taboo_blocked_count": taboo_blocked_count,

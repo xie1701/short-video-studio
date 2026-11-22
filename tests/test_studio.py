@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "short-video-studio" / "scripts"))
 
-from common import read_json, review_checks, sha256_file, write_json
+from common import ASSETS_DIR, load_subtitle_templates, read_json, review_checks, sha256_file, write_json
 from independent_verifier import verify_exports_blackbox
 from compliance_guard import audit_text_line, build_asset_license_manifest
 from content_experiment import activate_candidate, evaluate_plan, register_plan
@@ -368,6 +368,304 @@ class StudioTests(unittest.TestCase):
         lint = lint_script([{"show": "我们坚持手工现切不隔夜", "say": "我们坚持手工现切不隔夜"}])
         lint_md = render_lint_markdown(lint, {"utterance_count": 0, "verified_by_real_users": False, "pain_keywords": [], "proof_assets": []})
         self.assertNotIn("Micro-Hook", lint_md)
+
+    def test_v2_whitebox_style_spectrum_and_rulebooks_contract(self):
+        import re
+        from common import (
+            ASSETS_DIR,
+            LEAK_REGEX_PATTERNS,
+            find_commercial_font,
+            is_verified_commercial_font,
+            load_animation_sfx_pairs,
+            load_sfx_intent_taxonomy,
+            load_typography_cover_rules,
+            resolve_lut_path,
+        )
+
+        # 1. Verify 4 bundled open commercial fonts exist and pass license guard
+        expected_fonts = (
+            "AlimamaShuHeiTi-Bold.otf",
+            "SmileySans-Oblique.ttf",
+            "SourceHanSerifCN-Bold.otf",
+            "SourceHanSerifCN-Heavy.otf",
+        )
+        for fn in expected_fonts:
+            fp = ASSETS_DIR / "fonts" / fn
+            self.assertTrue(fp.is_file(), f"Missing bundled font: {fp}")
+            self.assertTrue(is_verified_commercial_font(fp), f"Font failed commercial verification: {fn}")
+            resolved = find_commercial_font([fn], verified_only=True)
+            self.assertTrue(resolved and Path(resolved).name == fn)
+
+        # 2. Verify 3 shared rulebooks extracted from the 7 teaching drafts
+        pairs_doc = load_animation_sfx_pairs()
+        self.assertEqual(pairs_doc.get("total_verified_pairs"), 83)
+        self.assertGreaterEqual(len(pairs_doc.get("animation_lookup") or {}), 35)
+        for p in pairs_doc.get("pairs", []):
+            self.assertTrue((ASSETS_DIR / p["cc0_vibe_sfx"]).is_file(), f"Missing CC0 SFX: {p['cc0_vibe_sfx']}")
+
+        tax_doc = load_sfx_intent_taxonomy()
+        self.assertEqual(tax_doc.get("total_scene_labels"), 29)
+        self.assertEqual(tax_doc.get("total_sfx_samples"), 92)
+        for emo, files in (tax_doc.get("pipeline_emotion_routing") or {}).items():
+            for rel in files:
+                self.assertTrue((ASSETS_DIR / rel).is_file(), f"Missing routed CC0 SFX for {emo}: {rel}")
+
+        typo_doc = load_typography_cover_rules()
+        self.assertEqual(len(typo_doc.get("golden_highlight_palette") or {}), 4)
+        self.assertEqual(len(typo_doc.get("cover_3x4_layouts") or {}), 4)
+
+        # 3. Verify v2.1.0 24 styles & 28 subtitle templates contract (100% 1080x1920 9:16 portrait, 540px symmetry, 0 private path leak, zero jargon)
+        lib_path = ASSETS_DIR / "style_spectrum" / "style_spectrum_library.json"
+        raw_lib_text = lib_path.read_text(encoding="utf-8")
+        self.assertIsNone(re.search(r"/(?:Users|home)/[A-Za-z0-9._-]+", raw_lib_text))
+        self.assertNotIn("com." + "lveditor.draft", raw_lib_text)
+        lib = read_json(lib_path)
+        self.assertEqual(lib.get("version"), "2.1.0")
+        styles = lib.get("styles") or []
+        self.assertEqual(len(styles), 24)
+
+        tpl_doc = load_subtitle_templates()
+        self.assertEqual(len(tpl_doc), 28)
+        for tkey, tval in tpl_doc.items():
+            self.assertIsInstance(tval, dict, f"Non-dict template entry in templates.json: {tkey}")
+        for expected_tid in ("store_bold_yellow", "creator_clean_white", "contrast_red_punch", "warm_persona_cream"):
+            self.assertIn(expected_tid, tpl_doc)
+
+        jargon_re = re.compile(r"水桶流|漏斗流|痛点|人设|A-roll|B-roll|LUFS|LUT|OCR|Micro-Hook", re.IGNORECASE)
+        report_md = (ASSETS_DIR / "style_spectrum" / "STYLE_SPECTRUM_REPORT.md").read_text(encoding="utf-8")
+        self.assertIsNone(jargon_re.search(report_md), "Jargon found in STYLE_SPECTRUM_REPORT.md")
+
+        whitebox_cnt = 0
+        high_broll_targets = {}
+        for s in styles:
+            sid = s["style_id"]
+            self.assertIn(sid, tpl_doc)
+            meta = s["meta"]
+            self.assertEqual((meta["width"], meta["height"], meta["aspect"]), (1080, 1920, "9:16"), f"{sid} not 9:16")
+            sub = s["subtitle_spec"]
+            self.assertGreaterEqual(float(sub["safe_y_ratio"]), 0.63)
+            self.assertLessEqual(float(sub["safe_y_ratio"]), 0.78)
+            self.assertEqual(sub.get("symmetry_center_x"), 540)
+            self.assertEqual(sub.get("symmetry_max_width_px"), 640)
+            self.assertTrue(is_verified_commercial_font(s.get("commercial_safe_font")))
+            lut_p = resolve_lut_path(s["color_and_lut"]["lut_file"], style_id=sid)
+            self.assertTrue(lut_p.is_file() and lut_p.stat().st_size > 1000, f"Invalid LUT for {sid}")
+            pitch = str(s.get("plain_cn_pitch") or "")
+            self.assertGreater(len(pitch), 12)
+            for pat in LEAK_REGEX_PATTERNS:
+                self.assertIsNone(re.search(pat, pitch), f"Leak pattern {pat} in pitch of {sid}: {pitch}")
+            self.assertIsNone(jargon_re.search(pitch), f"Jargon found in plain_cn_pitch of {sid}: {pitch}")
+            if (s.get("whitebox_source") or {}).get("is_whitebox_jianying"):
+                whitebox_cnt += 1
+            if sid in ("style_21", "style_22", "style_23", "style_24"):
+                high_broll_targets[sid] = round(float(s.get("broll_overlay_ratio_target", -1.0)), 2)
+        self.assertEqual(whitebox_cnt, 20)
+        self.assertEqual(
+            high_broll_targets,
+            {"style_21": 0.85, "style_22": 0.90, "style_23": 0.95, "style_24": 1.00},
+        )
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg required")
+    def test_high_broll_edl_and_qa_styles_21_to_24(self):
+        from qa_inspector import inspect_video
+        from step4_build_edl import run_step4
+
+        ar_mp4 = self.root / "aroll.mp4"
+        br1_mp4 = self.root / "broll_1.mp4"
+        br2_mp4 = self.root / "broll_2.mp4"
+        out_mp4 = self.root / "out_24.mp4"
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=gray:s=1080x1920:r=30:d=10",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p", str(ar_mp4)], check=True)
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=navy:s=1080x1920:r=30:d=6",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p", str(br1_mp4)], check=True)
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=teal:s=1080x1920:r=30:d=6",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p", str(br2_mp4)], check=True)
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=gray:s=1080x1920:r=30:d=9.6",
+                        "-f", "lavfi", "-i", "sine=f=330:d=9.6:r=48000",
+                        "-af", "volume=-14dB", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(out_mp4)], check=True)
+
+        sents = [
+            {"id": "s1", "text": "门店现场现切准备开始", "keywords": ["现切"], "start_sec": 0.0, "end_sec": 1.6, "source_media": str(ar_mp4), "source_in_sec": 0.0, "source_out_sec": 1.6},
+            {"id": "s2", "text": "看清每道工序时间差", "keywords": ["工序"], "start_sec": 1.6, "end_sec": 3.4, "source_media": str(ar_mp4), "source_in_sec": 1.6, "source_out_sec": 3.4},
+            {"id": "s3", "text": "实拍火候和手工步骤", "keywords": ["手工"], "start_sec": 3.4, "end_sec": 5.6, "source_media": str(ar_mp4), "source_in_sec": 3.4, "source_out_sec": 5.6},
+            {"id": "s4", "text": "全程细节看得见才放心", "keywords": ["细节"], "start_sec": 5.6, "end_sec": 7.6, "source_media": str(ar_mp4), "source_in_sec": 5.6, "source_out_sec": 7.6},
+            {"id": "s5", "text": "记得来看看现场做法", "keywords": ["现场"], "start_sec": 7.6, "end_sec": 9.6, "source_media": str(ar_mp4), "source_in_sec": 7.6, "source_out_sec": 9.6},
+        ]
+        evts = [
+            {"id": f"evt_{i:03d}", "type": "sentence_start", "sentence_id": s["id"],
+             "time_sec": s["start_sec"], "frame": int(round(s["start_sec"] * 30))}
+            for i, s in enumerate(sents, start=1)
+        ] + [
+            {"id": "evt_099", "type": "keyword_accent", "sentence_id": "s1", "time_sec": 0.8, "frame": 24},
+            {"id": "evt_100", "type": "keyword_accent", "sentence_id": "s2", "time_sec": 2.4, "frame": 72},
+        ]
+        evts.sort(key=lambda e: e["frame"])
+
+        manifest_items = [
+            {"id": "ar1", "role": "a_roll", "normalized_mp4": str(ar_mp4), "duration_sec": 10.0, "video_grade": "usable", "sharpness_score": 45.0, "stability_score": 0.9},
+            {"id": "br1", "role": "b_roll", "normalized_mp4": str(br1_mp4), "duration_sec": 6.0, "video_grade": "usable", "semantic_tags": ["现切", "手工"], "sharpness_score": 48.0, "stability_score": 0.9, "best_in_sec": 0.4},
+            {"id": "br2", "role": "b_roll", "normalized_mp4": str(br2_mp4), "duration_sec": 6.0, "video_grade": "usable", "semantic_tags": ["细节", "现场"], "sharpness_score": 48.0, "stability_score": 0.9, "best_in_sec": 0.4},
+        ]
+
+        # style_21 (85% B-roll)
+        p21 = self.root / "p21"
+        p21.mkdir()
+        write_json(p21 / "01_manifest.json", {"items": manifest_items})
+        write_json(p21 / "03_audio_events.json", {"locked_duration_sec": 9.6, "locked_duration_frames": 288, "sentences": sents, "events": evts})
+        edl21 = run_step4(p21, track="store", style_id="style_21", edit_profile="documentary")
+        self.assertGreaterEqual(edl21["broll_ratio_target"], 0.85)
+        self.assertGreaterEqual(edl21["broll_ratio_actual"], 0.70)
+        self.assertTrue(all(float(c["duration_sec"]) >= 0.30 for c in edl21["clips"]))
+
+        # style_24 (100% B-roll, zero A-roll) + TTS source mismatch must block a_roll binding
+        p24 = self.root / "p24"
+        p24.mkdir()
+        tts_sents = [{**s, "source_media": str(self.root / "tts_fake.wav")} for s in sents]
+        write_json(p24 / "01_manifest.json", {"items": manifest_items})
+        write_json(p24 / "03_audio_events.json", {"locked_duration_sec": 9.6, "locked_duration_frames": 288, "sentences": tts_sents, "events": evts})
+        edl24 = run_step4(p24, track="creator", style_id="style_24", edit_profile="documentary")
+        self.assertEqual(edl24["broll_ratio_actual"], 1.0)
+        self.assertFalse(any(c["track_role"] == "a_roll" for c in edl24["clips"]))
+        self.assertTrue(all(float(c["duration_sec"]) >= 0.30 for c in edl24["clips"]))
+
+        # QA #8 must pass on 100% high-broll style_24
+        write_json(p24 / "05_subtitles.json", {"template_id": "style_24", "font_path": str(ASSETS_DIR / "fonts" / "SourceHanSerifCN-Heavy.otf"), "entries": []})
+        write_json(p24 / "06_packaging.json", {"visual_elements": []})
+        qa_rep = inspect_video(p24, out_mp4, export_mode="mp4")
+        c8 = next(c for c in qa_rep["checks"] if c["id"] == "shot_duration_dist")
+        self.assertEqual(c8["status"], "PASS", f"QA #8 failed on style_24: {c8}")
+
+    def test_bbox_iou_normalized_and_archive_approve_order(self):
+        from common import bbox_iou
+
+        iou = bbox_iou({"x": 0.1, "y": 0.1, "w": 0.4, "h": 0.4}, {"x": 0.2, "y": 0.2, "w": 0.4, "h": 0.4})
+        self.assertAlmostEqual(iou, 0.09 / 0.23, places=4)
+
+        final_mp4 = self.pipeline / "output_final.mp4"
+        final_mp4.write_bytes(b"fixture-video")
+        write_json(self.pipeline / "04_edl.json", {"clips": [{"clip_id": "c1", "duration_sec": 3.0}], "total_duration_sec": 3.0})
+        write_json(self.pipeline / "10_qa_report.json", {
+            "all_passed": True, "machine_passed": True, "required_manual_checks": [],
+            "plan_sha256": compute_plan_digest(self.pipeline),
+            "output_final_sha256": sha256_file(final_mp4),
+            "export_mode": "mp4", "deliverables": {"mp4": {"status": "PENDING_REVIEW"}},
+        })
+        (self.pipeline / "10_qa_report.md").write_text("🟡 **自动检查已过，待您最后看一眼确认**\n", encoding="utf-8")
+        (self.pipeline / "11_delivery_summary.md").write_text("状态：待人工终审确认\n", encoding="utf-8")
+        (self.pipeline / "decisions_made.md").write_text("状态：自动检查全过，等你确认一眼\n", encoding="utf-8")
+
+        out_dir = self.root / "out"
+        tidy_workspace(self.pipeline, out_dir=out_dir)
+        approve_final(self.pipeline, note="已看成片确认可发", out_dir=out_dir)
+        self.assertTrue(verify_archive(out_dir)["passed"])
+        for doc_name in ("10_qa_report.md", "11_delivery_summary.md", "decisions_made.md"):
+            txt = (out_dir / doc_name).read_text(encoding="utf-8")
+            self.assertNotIn("APPROVED", txt)
+            self.assertNotIn("MACHINE_PASS_PENDING_HUMAN", txt)
+            self.assertNotIn("REVIEW_REQUIRED", txt)
+
+    def test_experiment_24_styles_and_hyperframes_regressions(self):
+        from compliance_guard import audit_text_line
+        from content_experiment import validate_plan
+
+        for val_a, val_b in (("style_21", "style_24"),):
+            validate_plan({
+                "id": "exp_style24", "track": "creator", "design": "matched", "platform": "fixture",
+                "traffic_source": "organic", "observation_hours": 48, "duration_band_sec": [20, 40],
+                "variable": "preferred_style_id", "parameter": "preferred_style_id",
+                "control_value": val_a, "variant_value": val_b,
+                "primary_metric": "completion_rate", "min_units_per_arm": 5, "min_effect": 0.04,
+            })
+        validate_plan({
+            "id": "exp_broll_only", "track": "creator", "design": "matched", "platform": "fixture",
+            "traffic_source": "organic", "observation_hours": 48, "duration_band_sec": [20, 40],
+            "variable": "target_aroll_ratio", "parameter": "target_aroll_ratio",
+            "control_value": 0.15, "variant_value": 0.0,
+            "primary_metric": "retention_3s", "min_units_per_arm": 5, "min_effect": 0.04,
+        })
+
+        hit = audit_text_line("他们说100%好评才靠谱")["hits"][0]
+        self.assertEqual(hit["matched_term"], "100%好评")
+        self.assertEqual(audit_text_line("兼容 nvx 显卡驱动接口")["hits"], [])
+
+        video = self.root / "norm2.mp4"
+        video.write_bytes(b"fixture")
+        for name in ("08_voice_master.wav", "08_bgm_ducked.wav", "08_sfx_master.wav"):
+            with wave.open(str(self.pipeline / name), "wb") as track:
+                track.setparams((1, 2, 8000, 0, "NONE", "not compressed"))
+                track.writeframes(b"\0\0" * 8000)
+        write_json(self.pipeline / "04_edl.json", {"fps": 30, "total_frames": 60, "clips": [
+            {"clip_id": "a", "media_path": str(video), "timeline_in_sec": 0, "timeline_out_sec": 2.0,
+             "source_in_sec": 0, "source_out_sec": 2.0}
+        ]})
+        write_json(self.pipeline / "03_audio_events.json", {"sentences": [{"start_sec": 0, "end_sec": 1.8}]})
+        write_json(self.pipeline / "05_subtitles.json", {"entries": [
+            {"id": "s1", "text": "记住标准再签合同", "keywords": ["标准"], "start_sec": 0.1, "end_sec": 1.8}
+        ]})
+        write_json(self.pipeline / "06_packaging.json", {"visual_elements": [
+            {"id": "bar1", "kind": "persistent_top_bar", "text_or_asset": "装修避坑指南", "start_frame": 0, "end_frame": 45},
+            {"id": "q1", "kind": "quote_citation_card", "text_or_asset": "“看清合同.png”", "start_frame": 10, "end_frame": 55},
+        ]})
+        res = export_hyperframes_draft(self.pipeline)
+        self.assertEqual(res["status"], "success")
+        html_txt = (Path(res["draft_dir"]) / "index.html").read_text(encoding="utf-8")
+        self.assertIn("装修避坑指南", html_txt)
+        self.assertIn("看清合同.png", html_txt)
+
+    def test_repo_privacy_and_zero_local_project_implants(self):
+        import re
+
+        # Construct forbidden local/third-party tokens cleanly so test source stays scrubbed too
+        priv_path_re = re.compile(r"/(?:Users|home)/[A-Za-z0-9._-]+|C:\\\\Users\\\\[A-Za-z0-9._-]+")
+        forbidden_tokens = [
+            "com." + "lveditor.draft",
+            "Jianying" + "Pro",
+            "11月" + "14日",
+            "jianying_project_" + "1114",
+            "39-" + "知识付费",
+            "45-" + "知识付费",
+            "33-" + "全屋定制",
+            "24-" + "美业",
+            "58-" + "汽车销售",
+            "1-1-" + "文字",
+            "2-1-" + "文字",
+            "3-1-" + "封面",
+            "RA" + "RA",
+            "孙建" + "亚",
+            "汪先" + "生",
+            "三毛" + "算力",
+            "work" + "buddy",
+            "Motion" + "Git",
+            "chat" + "cut",
+            "加密" + "鞋柜",
+            "买鞋" + "自由",
+            "欧" + "阳",
+            "飞" + "书",
+        ]
+        scan_roots = [
+            ROOT / "short-video-studio",
+            ROOT / "dev_tools",
+            ROOT / "README.md",
+            ROOT / "BRIEF.md",
+            ROOT / "tests" / "test_studio.py",
+        ]
+        text_exts = {".py", ".md", ".json", ".cube", ".mjs", ".command", ".bat", ".sh", ".ps1"}
+        for sr in scan_roots:
+            files = [sr] if sr.is_file() else sorted(sr.rglob("*"))
+            for p in files:
+                if not p.is_file() or "__pycache__" in p.parts:
+                    continue
+                if p.parent.parent.name == "short-video-studio" and p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mov"}:
+                    self.fail(f"Unexpected media asset in skill package: {p}")
+                if p.suffix.lower() not in text_exts:
+                    continue
+                txt = p.read_text(encoding="utf-8", errors="ignore")
+                self.assertIsNone(priv_path_re.search(txt), f"User home path leaked in {p}")
+                for tok in forbidden_tokens:
+                    self.assertNotIn(tok, txt, f"Forbidden local/third-party implant {tok!r} in {p}")
+        for media_p in (ROOT / "short-video-studio").rglob("*"):
+            if media_p.is_file() and media_p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mov"}:
+                self.fail(f"Forbidden visual media leak inside skill dir: {media_p}")
 
 
 if __name__ == "__main__":

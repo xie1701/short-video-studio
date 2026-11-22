@@ -2,7 +2,7 @@
 """
 [Vibe Sound CC0 声学资产集成与清洗工具]
 基于 vibe-motion/sound 规范集成 Freesound CC0 检索与清洗，
-全面使用基于 ASSETS_DIR 的相对路径（跨机零失效），并按六大流派母版覆盖全部 20 套风格。
+全面使用基于 ASSETS_DIR 的相对路径（跨机零失效），并按六大流派母版覆盖全部 24 套风格。
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ FS_SORT = {
     "short": "Duration (shortest first)",
 }
 
-# 六大流派母版到 7 套内置 CC0 真实物理音库的兜底映射，覆盖全库 style_01 ~ style_20
+# 六大流派母版到 7 套内置 CC0 真实物理音库的兜底映射，覆盖全库 style_01 ~ style_24
 ARCHETYPE_TO_VIBE_STYLE: Dict[str, str] = {
     "arch_01_tech_ui_console": "style_15",
     "arch_02_high_contrast_story": "style_03",
@@ -223,9 +223,9 @@ def search_freesound(query: str, license_mode: str = "cc0", limit: int = 8, page
         })
     rows.sort(key=lambda r: -r["downloads"])
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    idx = json.loads(INDEX_PATH.read_text()) if INDEX_PATH.exists() else {}
+    idx = json.loads(INDEX_PATH.read_text(encoding="utf-8")) if INDEX_PATH.exists() else {}
     idx.update({r["key"]: r for r in rows})
-    INDEX_PATH.write_text(json.dumps(idx, ensure_ascii=False))
+    INDEX_PATH.write_text(json.dumps(idx, ensure_ascii=False), encoding="utf-8")
     return rows[:limit]
 
 
@@ -352,7 +352,7 @@ def clean_all_vibe_assets(raw_dir: Path | None = None, out_dir: Path | None = No
 
 def get_style_sound_profile(style_id: str) -> Optional[Dict[str, Any]]:
     """
-    获取任意 style_01 ~ style_20 对应的真实 CC0 音色包：
+    获取任意 style_01 ~ style_24 对应的真实 CC0 音色包：
     1. 精确命中 STYLE_SOUND_MAP / manifest；
     2. 未单独建包者按其 archetype_id 自动映射至同流派真实 CC0 音色包；
     3. 全部路径基于当前主机 ASSETS_DIR 动态拼装，彻底杜绝绝对路径失效。
@@ -366,7 +366,7 @@ def get_style_sound_profile(style_id: str) -> Optional[Dict[str, Any]]:
     if target_sid not in styles:
         entry = load_style_spectrum_entry(style_id)
         arch_id = entry.get("archetype_id") if entry else None
-        fb_map = mf.get("archetype_fallback") or ARCHETYPE_TO_VIBE_STYLE
+        fb_map = {**(mf.get("archetype_fallback") or {}), **ARCHETYPE_TO_VIBE_STYLE}
         if arch_id and arch_id in fb_map and fb_map[arch_id] in styles:
             target_sid = fb_map[arch_id]
         else:

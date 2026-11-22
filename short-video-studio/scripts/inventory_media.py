@@ -38,7 +38,8 @@ from common import (
     write_json,
 )
 
-maybe_reexec_in_venv()
+if __name__ == "__main__":
+    maybe_reexec_in_venv()
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageOps
@@ -101,7 +102,10 @@ def _analyze_audio_raw(ffmpeg: str, path: Path, has_audio: bool, duration: float
             stderr=subprocess.DEVNULL,
             check=False,
         )
-        pcm = np.frombuffer(res.stdout, dtype=np.int16).astype(np.float32) / 32768.0
+        aligned_n = (len(res.stdout) // 4) * 4
+        if aligned_n < 4:
+            return {"silence_ratio": 1.0, "dyn_range_db": 0.0, "clipping_ratio": 0.0, "stereo_diag": "silent"}
+        pcm = np.frombuffer(res.stdout[:aligned_n], dtype=np.int16).astype(np.float32) / 32768.0
         if len(pcm) < 3200:
             return {"silence_ratio": 1.0, "dyn_range_db": 0.0, "clipping_ratio": 0.0, "stereo_diag": "silent"}
         arr = pcm.reshape(-1, 2)

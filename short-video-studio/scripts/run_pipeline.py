@@ -33,6 +33,7 @@ from common import (
     find_bin,
     fit_text_line,
     load_style_applied,
+    load_style_spectrum_entry,
     maybe_reexec_in_venv,
     read_json,
     resolve_workspace_paths,
@@ -40,10 +41,11 @@ from common import (
     write_json,
 )
 
-maybe_reexec_in_venv()
+if __name__ == "__main__":
+    maybe_reexec_in_venv()
 
 from PIL import Image, ImageDraw
-from apply_style_spectrum import resolve_style_runtime_config
+from apply_style_spectrum import apply_to_pipeline, load_library, resolve_style_runtime_config
 from code_video_spec import generate_verify_template, init_code_spec, validate_code_spec
 from export_hyperframes import export_hyperframes_draft
 from export_jianying import export_jianying_draft
@@ -108,8 +110,9 @@ def _generate_hook_variants(pipeline_dir: Path, count: int) -> Optional[Path]:
     ffmpeg = find_bin("ffmpeg")
 
     titles = list(dict.fromkeys(title[:18] for title in titles)) or [str(cov.get("cover_main") or "")[:18]]
-    sub_tpl_style = (subs.get("template") or {}) if isinstance(subs, dict) else {}
-    use_borderless = bool(sub_tpl_style.get("bg_box") is False)
+    sub_tpl_style = (subs.get("template_config") or subs.get("template") or {}) if isinstance(subs, dict) else {}
+    bg_val = str(sub_tpl_style.get("bg_box_color") or sub_tpl_style.get("bg_box") or "").strip().lower()
+    use_borderless = bg_val in ("", "none", "false", "transparent") or bg_val.endswith("00")
     variants: List[Dict[str, Any]] = []
     for idx, raw_t in enumerate(titles[:n_var]):
         clean_headline = raw_t.replace("\n", " ").strip()[:18]
@@ -123,7 +126,7 @@ def _generate_hook_variants(pipeline_dir: Path, count: int) -> Optional[Path]:
                 card_y = int(cov.get("card_y", 260))
                 badge_y0 = max(SAFE_ZONE["y_min"] + 16, card_y - 72 if card_y > 320 else card_y + 348)
                 badge_y1 = min(1140, badge_y0 + 62)
-                max_w = SAFE_ZONE["x_max"] - SAFE_ZONE["x_min"] - 40
+                max_w = min(640, SAFE_ZONE["x_max"] - SAFE_ZONE["x_min"] - 40)
                 fnt, fitted = fit_text_line(draw, clean_headline, font_path, max_width=max_w - 40, max_size=34 if use_borderless else 30, min_size=22)
                 if use_borderless:
                     cy_t = (badge_y0 + badge_y1) // 2
@@ -142,7 +145,7 @@ def _generate_hook_variants(pipeline_dir: Path, count: int) -> Optional[Path]:
             ov_png = pipeline_dir / f"_tmp_hook_v{idx + 1}.png"
             ov_im = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
             ov_d = ImageDraw.Draw(ov_im)
-            max_w = SAFE_ZONE["x_max"] - SAFE_ZONE["x_min"] - 40
+            max_w = min(640, SAFE_ZONE["x_max"] - SAFE_ZONE["x_min"] - 40)
             fnt, fitted = fit_text_line(ov_d, clean_headline, font_path, max_width=max_w - 40, max_size=42 if use_borderless else 34, min_size=22)
             by0, by1 = SAFE_ZONE["y_min"] + 20, SAFE_ZONE["y_min"] + 96
             if use_borderless:
@@ -497,6 +500,11 @@ def _render_code_scenes_from_spec(
     scene_meta: Dict[str, Any] = {}
     modes_cycle = ["kinetic_text", "data_chart", "flow_diagram", "versus", "proportion", "day_night", "chips"]
 
+    if not code_html_p and spec.get("code_html_path"):
+        cand_ch = Path(str(spec["code_html_path"]))
+        if cand_ch.exists():
+            code_html_p = cand_ch
+
     if code_html_p and code_html_p.exists():
         html_dir = code_html_p.parent if code_html_p.is_file() else code_html_p
         entry_page = code_html_p.name if code_html_p.is_file() else "index.html"
@@ -637,7 +645,10 @@ def _render_code_scenes_from_spec(
             out_mp4 = scenes_dir / fn
             scene_cfg = dict(u)
             if u.get("bg_shift") and not scene_cfg.get("bg_hex"):
-                scene_cfg["bg_hex"] = "#162032" if str(pal_base.get("bg_hex", "")).lower().startswith("#0") else "#1E293B"
+                if pal_base.get("is_light"):
+                    scene_cfg["bg_hex"] = str(pal_base.get("grid_hex") or "#ECE6DC")
+                else:
+                    scene_cfg["bg_hex"] = "#162032" if str(pal_base.get("bg_hex", "")).lower().startswith("#0") else "#1E293B"
             batch_tasks.append((scene_cfg, out_mp4))
             scene_meta[fn] = {
                 "role": "b_roll",
@@ -798,11 +809,13 @@ def _run_code_video_branch(
         must_haves=spec.get("must_haves"),
     )
     spec = read_json(spec_out)
-    if user_extra_fields or user_custom_sections:
+    if user_extra_fields or user_custom_sections or (code_html_p and code_html_p.exists()):
         for k_ex, v_ex in user_extra_fields.items():
             spec.setdefault(k_ex, v_ex)
         if user_custom_sections:
             spec["_user_custom_sections"] = True
+        if code_html_p and code_html_p.exists():
+            spec["code_html_path"] = str(code_html_p.resolve())
         write_json(spec_out, spec)
     val = validate_code_spec(spec)
     if not val.get("passed"):
@@ -969,7 +982,7 @@ def main() -> None:
     parser.add_argument("--bgm", help="自定义 BGM 文件路径")
     parser.add_argument("--pause-sec", type=float, help="基准句间停顿，显式值覆盖账号配置 (0.14-0.32s)")
     parser.add_argument("--j-cut-frames", type=int, default=None, help="句间 J-cut 声先入帧数 (默认 3，或由 --style-id 决定)")
-    parser.add_argument("--style-id", help="可选：套用风格谱模板 ID (style_01 ~ style_20)")
+    parser.add_argument("--style-id", help="可选：套用风格谱模板 ID (style_01 ~ style_24)")
     parser.add_argument("--subtitle-template", help="字幕模板 ID")
     parser.add_argument("--lut", help="调色 LUT 文件名")
     parser.add_argument("--prefer-broll-only", action="store_true", help="改画模式：尽量切换为纯 B-roll/代码补镜")
@@ -1076,34 +1089,33 @@ def main() -> None:
     )
     active_style_id = (
         args.style_id
-        or prof_pref_style
         or load_style_applied(pipeline_dir)
+        or prof_pref_style
         or ("style_14" if args.track == "store" else "style_11")
     )
     j_cut_frames = 3 if args.j_cut_frames is None else int(args.j_cut_frames)
     subtitle_template = args.subtitle_template
     lut_name = args.lut
     bgm_p = Path(args.bgm) if args.bgm else None
+    active_style_entry: Optional[Dict[str, Any]] = None
 
     if active_style_id:
         rt_cfg = resolve_style_runtime_config(active_style_id)
+        active_style_entry = load_style_spectrum_entry(active_style_id)
         if not subtitle_template:
             subtitle_template = rt_cfg["subtitle_template"]
         if not lut_name:
             lut_name = rt_cfg["lut_file"]
         if args.j_cut_frames is None:
             j_cut_frames = int(rt_cfg["j_cut_frames"])  # 严格保留 0 帧直切，禁止 `or 3` 吞掉
-        write_json(pipeline_dir / "style_spectrum_applied.json", {
-            "style_id": active_style_id,
-            "style_name_cn": rt_cfg["style_name_cn"],
-            "archetype_id": rt_cfg["archetype_id"],
-            "subtitle_template": subtitle_template,
-            "lut_file": lut_name,
-            "j_cut_frames": j_cut_frames,
-            "opening_structure": rt_cfg.get("opening_structure") or {},
-            "title_cover_layout": rt_cfg.get("title_cover_layout") or {},
-            "transition_and_packaging": rt_cfg.get("transition_and_packaging") or {},
-        })
+        if args.mode != "render-locked":
+            applied_p = apply_to_pipeline(load_library(), active_style_id, pipeline_dir)
+            if args.j_cut_frames is not None or args.subtitle_template or args.lut:
+                applied_obj = read_json(applied_p)
+                applied_obj["subtitle_template"] = subtitle_template
+                applied_obj["lut_file"] = lut_name
+                applied_obj["j_cut_frames"] = j_cut_frames
+                write_json(applied_p, applied_obj)
         if bgm_p is None:
             try:
                 from vibe_sound import get_style_sound_profile
@@ -1113,9 +1125,19 @@ def main() -> None:
             except Exception:
                 pass
         print(
-            f"[pipeline] 已挂载风格谱 {active_style_id} ({rt_cfg['style_name_cn']}) -> "
-            f"字幕={subtitle_template}, LUT={lut_name}, J-cut={j_cut_frames}帧"
+            f"[pipeline] 已挂载风格 {active_style_id} ({rt_cfg['style_name_cn']}) -> "
+            f"字幕={subtitle_template}, 调色={lut_name}, 声画错切={j_cut_frames}帧"
         )
+
+    if args.edit_profile == "auto" and args.mode in ("full", "lock-preview") and active_style_entry:
+        med_sec = float((active_style_entry.get("shot_distribution") or {}).get("median_sec") or 1.5)
+        b_tgt = float(active_style_entry.get("broll_overlay_ratio_target") or 0.5)
+        if med_sec >= 2.2 or b_tgt >= 0.90:
+            edit_profile = "documentary"
+    eff_prefer_broll_only = bool(
+        args.prefer_broll_only
+        or float((active_style_entry or {}).get("broll_overlay_ratio_target") or 0.5) >= 0.995
+    )
 
     script_p = Path(args.script_json) if args.script_json else None
     if script_p and script_p.exists():
@@ -1276,7 +1298,7 @@ def main() -> None:
             j_cut_frames=j_cut_frames,
             subtitle_template=subtitle_template,
             lut_name=lut_name,
-            prefer_broll_only=args.prefer_broll_only,
+            prefer_broll_only=eff_prefer_broll_only,
             benchmark=bench_p,
             simulate_jy_fail=args.simulate_jy_fail,
             simulate_hf_fail=args.simulate_hf_fail,

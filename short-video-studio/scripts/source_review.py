@@ -125,7 +125,7 @@ def write_source_review(pipeline_dir: Path) -> dict[str, Any]:
     } for index, fact in enumerate(spec.get("facts", []), 1))
     subs_data = read("05_subtitles.json")
     pkg_data = read("06_packaging.json")
-    fps = int(timeline.get("fps") or 30)
+    fps = float(timeline.get("fps") or 30.0)
     on_screen_timed: list[tuple[str, list[float] | None]] = [
         (str(line), None) for line in spec.get("exact_copy", [])
     ]
@@ -197,7 +197,7 @@ def source_review_status(report: dict[str, Any]) -> str:
         return "NOT_REQUESTED"
     hash_cache: dict[str, str | None] = {}
     for claim in claims:
-        if claim["status"] == "UNRESOLVED":
+        if claim["status"] == "UNRESOLVED" or not claim.get("source_refs"):
             return "FAIL"
         for ref in claim["source_refs"]:
             p_str = str(ref["path"])

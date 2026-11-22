@@ -30,7 +30,7 @@
 - `short-video-studio/SKILL.md`：Agent Skill 入口与工作流规范。
 - `short-video-studio/references/`：编导方法论、中间文件契约、安全区规范、代码制片工艺与商用授权清单。
 - `short-video-studio/scripts/`：全套端到端制片、导出、质检与复盘脚本。
-- `short-video-studio/assets/`：可商用字体、CC0 真实录制 BGM & 物理 SFX（`sound_vibe/`）、24 套字幕模板与 20 套风格谱 `17³` LUT。
+- `short-video-studio/assets/`：可商用字体、CC0 真实录制 BGM & 物理 SFX（`sound_vibe/`）、28 套字幕模板与 24 套风格谱 `17³` LUT。
 - `dev_tools/`：离线风格谱分析与资产重建脚本（开发维护用，不随 Skill 分发包打包）。
 - `tests/`：核心流水线契约单元测试。
 - `install_skill.py` / `install.sh` / `install.ps1`：跨平台一键环境检查与安装脚本。
@@ -146,10 +146,10 @@ cd short-video-studio
 详尽授权溯源见 [assets-attribution.md](short-video-studio/references/assets-attribution.md)：
 - **背景音乐 & 物理音效**：全部采用 `short-video-studio/assets/sound_vibe/` 下的 **CC0 1.0 真实录制 Freesound 音频**（均已完成波形起拍校准与 48kHz 统一处理），零低质电子合成音。
 - **字幕字体**：优先加载 **思源黑体 / 思源宋体 / 得意黑（SIL OFL 1.1）** 及 **阿里妈妈数黑体（免费可商用）**，系统私有字体（如苹方/华文黑体/微软雅黑）全程拦截。
-- **风格谱资产库**：基于 20 条标杆视频 + 剪映实操标杆《11月14日延期》提炼的 **6 大包装流派母版**与 **20 套量化「风格谱 (`style_01` ~ `style_20`)」**（配套 20 套 `17³` CC0 `.cube` 3D LUT），详见 [STYLE_SPECTRUM_REPORT.md](short-video-studio/assets/style_spectrum/STYLE_SPECTRUM_REPORT.md)。
+- **风格谱资产库**：内置 **6 大包装流派母版**与 **24 套量化「风格谱 (`style_01` ~ `style_24`)」**（含 `style_21` ~ `style_24` 四套 85%–100% 高空镜纯画面/少出镜风格，配套 24 套 `17³` CC0 `.cube` 3D LUT 与 28 套可商用字幕模板），详见 [STYLE_SPECTRUM_REPORT.md](short-video-studio/assets/style_spectrum/STYLE_SPECTRUM_REPORT.md)。
 
 ```bash
-# 查看全库 20 套风格谱摘要
+# 查看全库 24 套风格谱摘要
 python3 short-video-studio/scripts/apply_style_spectrum.py --list
 
 # 套用指定风格谱出片（门店默认 style_14，博主默认 style_11）
@@ -158,7 +158,6 @@ python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./ra
 # 导出某套风格谱的离线 HyperFrames 样板工程
 python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_16 --export-hyperframes ./out_style_16_hyperframes
 
-# （开发维护）基于新参考视频目录重新提取风格谱并重建资产
+# （开发维护）基于外部视频样本提取风格特征预设
 python3 dev_tools/analyze_style_spectrum.py --input-dir /path/to/reference_videos --workers 6
-python3 dev_tools/build_style_spectrum_assets.py
 ```

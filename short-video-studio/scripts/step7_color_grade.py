@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-[Step 7: 真实肤色矢量掩膜校色 + 切段中点测光 + 20 风格动态适配 + LUT 肤色回测闭环]
+[Step 7: 真实肤色矢量掩膜校色 + 切段中点测光 + 24 风格动态适配 + LUT 肤色回测闭环]
 1. 按 EDL 实际切片区间 [source_in_sec, source_out_sec] 中点测光（不拿片头 3s 乱调第 20s 画面）。
 2. 利用 Step 1 映射后的裁切人脸 ROI + BT.709 肤色像素掩膜剔除背景/眼镜/眉毛后测定真实 Cb/Cr。
 3. 肤色矫正作用于中间调 Midtones (rm/bm)，彻底告别用暗部 rs/bs 调肤色；
-   从 style_spectrum_library.json 动态派生全部 20 套风格参数。
+   从 style_spectrum_library.json 动态派生全部 24 套风格参数。
 4. 闭环回测：生成 blended LUT 后对 Hero 帧抽样复核套色后肤色是否偏移 common.SKIN_YCBCR_RANGE，若偏移则自动降强度重编。
 输出：pipeline/07_color_plan.json (+ pipeline/07_blended_lut.cube)
 """
@@ -36,24 +36,42 @@ from common import (
     write_json,
 )
 
-maybe_reexec_in_venv()
+if __name__ == "__main__":
+    maybe_reexec_in_venv()
 
 import numpy as np
 
 
 STYLE_GRADE_PROFILES: Dict[str, Dict[str, float]] = {
+    "style_01": {"b_off": -0.026, "contrast": 1.15, "sat": 0.94, "rm_off": -0.018, "bm_off": 0.028},
+    "style_02": {"b_off": -0.012, "contrast": 1.12, "sat": 1.04, "rm_off": 0.010, "bm_off": -0.008},
+    "style_03": {"b_off": -0.028, "contrast": 1.14, "sat": 1.08, "rm_off": 0.022, "bm_off": -0.020},
+    "style_04": {"b_off": 0.032, "contrast": 1.04, "sat": 0.88, "rm_off": -0.014, "bm_off": 0.018},
+    "style_05": {"b_off": 0.024, "contrast": 1.04, "sat": 0.80, "rm_off": 0.018, "bm_off": -0.018},
+    "style_06": {"b_off": -0.032, "contrast": 1.14, "sat": 0.84, "rm_off": 0.006, "bm_off": -0.004},
+    "style_07": {"b_off": 0.008, "contrast": 1.08, "sat": 1.02, "rm_off": 0.014, "bm_off": -0.012},
+    "style_08": {"b_off": 0.014, "contrast": 1.06, "sat": 1.02, "rm_off": 0.018, "bm_off": -0.016},
+    "style_09": {"b_off": -0.035, "contrast": 1.16, "sat": 0.90, "rm_off": 0.004, "bm_off": 0.006},
+    "style_10": {"b_off": 0.020, "contrast": 1.08, "sat": 0.94, "rm_off": -0.004, "bm_off": 0.006},
+    "style_11": {"b_off": 0.026, "contrast": 1.06, "sat": 0.95, "rm_off": 0.006, "bm_off": -0.004},
+    "style_12": {"b_off": 0.030, "contrast": 1.05, "sat": 0.90, "rm_off": -0.006, "bm_off": 0.010},
+    "style_13": {"b_off": 0.018, "contrast": 1.06, "sat": 0.88, "rm_off": 0.010, "bm_off": -0.008},
     "style_14": {"b_off": 0.012, "contrast": 1.05, "sat": 1.06, "rm_off": 0.016, "bm_off": -0.014},
-    "style_02": {"b_off": -0.008, "contrast": 1.12, "sat": 0.96, "rm_off": 0.004, "bm_off": 0.004},
-    "style_03": {"b_off": 0.008, "contrast": 1.08, "sat": 1.12, "rm_off": 0.028, "bm_off": -0.026},
-    "style_12": {"b_off": 0.032, "contrast": 1.05, "sat": 0.90, "rm_off": -0.008, "bm_off": 0.012},
-    "style_06": {"b_off": -0.040, "contrast": 1.16, "sat": 0.82, "rm_off": -0.020, "bm_off": 0.032},
-    "style_05": {"b_off": 0.028, "contrast": 1.04, "sat": 0.76, "rm_off": 0.020, "bm_off": -0.020},
-    "style_15": {"b_off": -0.042, "contrast": 1.18, "sat": 0.92, "rm_off": -0.024, "bm_off": 0.038},
+    "style_15": {"b_off": -0.014, "contrast": 1.12, "sat": 1.04, "rm_off": 0.016, "bm_off": -0.014},
+    "style_16": {"b_off": -0.036, "contrast": 1.16, "sat": 0.92, "rm_off": 0.008, "bm_off": -0.004},
+    "style_17": {"b_off": -0.006, "contrast": 1.12, "sat": 1.12, "rm_off": 0.026, "bm_off": -0.024},
+    "style_18": {"b_off": 0.012, "contrast": 1.08, "sat": 0.94, "rm_off": 0.006, "bm_off": -0.004},
+    "style_19": {"b_off": 0.006, "contrast": 1.10, "sat": 0.96, "rm_off": -0.014, "bm_off": 0.018},
+    "style_20": {"b_off": -0.008, "contrast": 1.10, "sat": 1.14, "rm_off": 0.028, "bm_off": -0.026},
+    "style_21": {"b_off": 0.010, "contrast": 1.09, "sat": 1.07, "rm_off": 0.018, "bm_off": -0.014},
+    "style_22": {"b_off": 0.024, "contrast": 1.05, "sat": 0.94, "rm_off": -0.004, "bm_off": 0.008},
+    "style_23": {"b_off": -0.020, "contrast": 1.12, "sat": 0.88, "rm_off": 0.008, "bm_off": 0.010},
+    "style_24": {"b_off": -0.016, "contrast": 1.14, "sat": 1.08, "rm_off": 0.018, "bm_off": -0.016},
 }
 
 
 def _resolve_style_grade_profile(style_id: Optional[str]) -> Dict[str, float]:
-    """覆盖全 20 套风格：先查调优表，否则从 style_spectrum_library.json 的 color_and_lut & archetype 动态派生。"""
+    """覆盖全 24 套风格：先查调优表，否则从 style_spectrum_library.json 的 color_and_lut & archetype 动态派生。"""
     if not style_id:
         return {}
     if style_id in STYLE_GRADE_PROFILES:
@@ -283,11 +301,16 @@ def build_blended_cube_lut(lut_path: Path, strength: float, out_path: Path) -> t
     return out_path, strength
 
 
-def _build_vf_for_corr(corr: Dict[str, Any], lut_path: Path) -> str:
-    lut_escaped = _escape_lut_filter_path(lut_path)
-    return (
+def _build_vf_for_corr(corr: Dict[str, Any], lut_path: Optional[Path], lut_strength: float = 1.0) -> str:
+    base = (
         f"eq=brightness={corr['brightness']}:contrast={corr['contrast']}:saturation={corr['saturation']},"
-        f"colorbalance=rm={corr['rm']}:bm={corr['bm']},"
+        f"colorbalance=rm={corr['rm']}:bm={corr['bm']}"
+    )
+    if float(lut_strength) <= 0.01 or lut_path is None or not Path(lut_path).is_file():
+        return base
+    lut_escaped = _escape_lut_filter_path(Path(lut_path))
+    return (
+        f"{base},"
         f"scale=in_color_matrix=bt709:out_color_matrix=bt709,format=rgb24,"
         f"lut3d='{lut_escaped}',"
         f"scale=in_color_matrix=bt709:out_color_matrix=bt709,format=yuv420p"
@@ -310,13 +333,33 @@ def run_step7(
         lut_name = f"{style_id}.cube" if style_id else ("warm_store.cube" if track == "store" else "clean_creator.cube")
     lut_path = resolve_lut_path(lut_name, style_id=style_id)
 
+    style_entry = load_style_spectrum_entry(style_id) if style_id else None
     if lut_strength is None:
-        lut_strength = 0.72 if style_id in ("style_06", "style_08", "style_13") else 0.60
+        cfg_str = (style_entry or {}).get("color_and_lut", {}).get("lut_strength")
+        if cfg_str is not None:
+            lut_strength = max(0.0, min(1.0, float(cfg_str)))
+        else:
+            lut_strength = 0.72 if style_id in ("style_06", "style_08", "style_13") else 0.60
 
     blended_out_path = pipeline_dir / "07_blended_lut.cube"
     blended_lut, eff_strength = build_blended_cube_lut(lut_path, lut_strength, blended_out_path)
 
     manifest_by_mp4 = {it.get("normalized_mp4"): it for it in manifest.get("items", [])}
+    clip_stats_cache: Dict[str, Dict[str, float]] = {}
+    clip_skin_cache: Dict[str, Optional[Dict[str, float]]] = {}
+
+    def _get_clip_stats(mp_s: str, s_in: float, s_dur: float) -> Dict[str, float]:
+        ck = f"{mp_s}@{s_in:.2f}@{s_dur:.2f}"
+        if ck not in clip_stats_cache:
+            clip_stats_cache[ck] = probe_clip_color_stats(Path(mp_s), s_in, s_dur)
+        return clip_stats_cache[ck]
+
+    def _get_clip_skin(mp_s: str, fb_dict: Dict[str, float], at_s: float) -> Optional[Dict[str, float]]:
+        sk = f"{mp_s}@{at_s:.2f}"
+        if sk not in clip_skin_cache:
+            clip_skin_cache[sk] = probe_face_skin_ycbcr(Path(mp_s), fb_dict, at_sec=at_s)
+        return clip_skin_cache[sk]
+
     hero_clip = next((c for c in edl["clips"] if c["track_role"] == "a_roll"), None)
     if not hero_clip:
         hero_clip = next(
@@ -331,7 +374,7 @@ def run_step7(
     hero_mp = hero_clip["media_path"] if hero_clip else ""
     hero_in = float(hero_clip.get("source_in_sec", 0.0)) if hero_clip else 0.0
     hero_dur = float(hero_clip.get("duration_sec", 2.0)) if hero_clip else 2.0
-    hero_stats = probe_clip_color_stats(Path(hero_mp), hero_in, hero_dur) if hero_mp else {"yavg": 125.0, "uavg": 128.0, "vavg": 128.0}
+    hero_stats = _get_clip_stats(hero_mp, hero_in, hero_dur) if hero_mp else {"yavg": 125.0, "uavg": 128.0, "vavg": 128.0}
 
     skin_ycbcr: Optional[Dict[str, float]] = None
     hero_face_bbox: Optional[Dict[str, float]] = None
@@ -340,7 +383,7 @@ def run_step7(
         faces_px = parse_manifest_faces(manifest_by_mp4[hero_mp])
         if faces_px:
             hero_face_bbox = faces_px[0]
-            skin_ycbcr = probe_face_skin_ycbcr(Path(hero_mp), hero_face_bbox, at_sec=hero_at_sec)
+            skin_ycbcr = _get_clip_skin(hero_mp, hero_face_bbox, hero_at_sec)
 
     # 收集所有含人脸镜头的抽样检验点（不仅 Hero 1 帧，副镜头人脸一并纳入 LUT 肤色保护回测）
     face_verify_targets: List[Tuple[Path, Dict[str, float], float, Dict[str, float], bool]] = []
@@ -355,15 +398,17 @@ def run_step7(
         if not f_list:
             continue
         seen_verify_mps.add(mp_t)
-        at_t = round(float(c_tmp.get("source_in_sec", 0.0)) + min(1.5, float(c_tmp.get("duration_sec", 2.0)) * 0.5), 2)
-        st_t = probe_clip_color_stats(Path(mp_t), float(c_tmp.get("source_in_sec", 0.0)), float(c_tmp.get("duration_sec", 2.0)))
+        c_in_t = float(c_tmp.get("source_in_sec", 0.0))
+        c_dur_t = float(c_tmp.get("duration_sec", 2.0))
+        at_t = round(c_in_t + min(1.5, c_dur_t * 0.5), 2)
+        st_t = _get_clip_stats(mp_t, c_in_t, c_dur_t)
         face_verify_targets.append((Path(mp_t), f_list[0], at_t, st_t, False))
         if len(face_verify_targets) >= 4:
             break
 
     # 闭环 LUT 肤色保护验证：套用建议滤镜回测 Hero 及副镜头人脸肤色是否跌出健康扇区，仅沿严格不增强度阶梯下探
     skin_post_grade: Optional[Dict[str, float]] = None
-    if face_verify_targets:
+    if face_verify_targets and eff_strength > 0.01:
         raw_cands = [eff_strength, min(eff_strength, 0.45), min(eff_strength, 0.30), 0.15]
         cand_strengths: List[float] = []
         for cs in raw_cands:
@@ -376,9 +421,9 @@ def run_step7(
             blended_lut, eff_strength = cand_lut, cand_eff
             all_in_sector = True
             for vp, v_fb, v_at, v_st, v_is_hero in face_verify_targets:
-                v_skin = skin_ycbcr if v_is_hero else probe_face_skin_ycbcr(vp, v_fb, at_sec=v_at)
+                v_skin = skin_ycbcr if v_is_hero else _get_clip_skin(str(vp), v_fb, v_at)
                 v_corr = compute_hero_and_shot_correction(v_st, hero_stats, v_is_hero, v_skin, style_id=style_id)
-                test_vf = _build_vf_for_corr(v_corr, cand_lut)
+                test_vf = _build_vf_for_corr(v_corr, cand_lut, lut_strength=cand_eff)
                 pg = probe_face_skin_ycbcr(vp, v_fb, at_sec=v_at, extra_vf=test_vf)
                 if v_is_hero:
                     skin_post_grade = pg
@@ -391,8 +436,6 @@ def run_step7(
             if all_in_sector or cand_str <= min_cand:
                 break
 
-    clip_stats_cache: Dict[str, Dict[str, float]] = {}
-    clip_skin_cache: Dict[str, Optional[Dict[str, float]]] = {}
     clip_plans: List[Dict[str, Any]] = []
 
     for clip in edl["clips"]:
@@ -410,20 +453,15 @@ def run_step7(
 
         c_in = float(clip.get("source_in_sec", 0.0))
         c_dur = float(clip.get("duration_sec", 2.0))
-        cache_key = f"{mp}@{c_in:.2f}@{c_dur:.2f}"
-        if cache_key not in clip_stats_cache:
-            clip_stats_cache[cache_key] = probe_clip_color_stats(Path(mp), c_in, c_dur)
-        stats = clip_stats_cache[cache_key]
+        stats = _get_clip_stats(mp, c_in, c_dur)
         is_hero = (mp == hero_mp and abs(c_in - hero_in) < 0.5)
 
         shot_skin: Optional[Dict[str, float]] = skin_ycbcr if is_hero else None
         if not is_hero and mp in manifest_by_mp4:
             clip_faces = parse_manifest_faces(manifest_by_mp4[mp])
             if clip_faces:
-                if cache_key not in clip_skin_cache:
-                    c_at = round(c_in + min(1.5, c_dur * 0.5), 2)
-                    clip_skin_cache[cache_key] = probe_face_skin_ycbcr(Path(mp), clip_faces[0], at_sec=c_at)
-                shot_skin = clip_skin_cache[cache_key]
+                c_at = round(c_in + min(1.5, c_dur * 0.5), 2)
+                shot_skin = _get_clip_skin(mp, clip_faces[0], c_at)
 
         corr = compute_hero_and_shot_correction(
             stats,
@@ -432,7 +470,7 @@ def run_step7(
             skin_ycbcr=shot_skin,
             style_id=style_id,
         )
-        vf_str = _build_vf_for_corr(corr, blended_lut)
+        vf_str = _build_vf_for_corr(corr, blended_lut, lut_strength=eff_strength)
         clip_plans.append({
             "clip_id": clip["clip_id"],
             "track_role": clip["track_role"],
@@ -440,7 +478,7 @@ def run_step7(
             "apply_color_grade": True,
             "measured_stats": stats,
             "base_correction": corr,
-            "lut_file": str(blended_lut.resolve()),
+            "lut_file": str(blended_lut.resolve()) if eff_strength > 0.01 else None,
             "vf_filter": vf_str,
         })
 

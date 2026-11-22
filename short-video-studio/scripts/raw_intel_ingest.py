@@ -125,7 +125,7 @@ def read_source_utterances(files: List[Path]) -> List[Dict[str, Any]]:
         suf = fp.suffix.lower()
         digest = sha256_file(fp)
         if suf == ".csv":
-            with fp.open("r", encoding="utf-8", errors="ignore") as f:
+            with fp.open("r", encoding="utf-8-sig", errors="ignore") as f:
                 rows = list(csv.reader(f))
                 if not rows:
                     continue

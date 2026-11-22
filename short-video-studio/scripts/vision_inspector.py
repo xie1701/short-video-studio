@@ -29,7 +29,8 @@ from common import bbox_iou, compute_bt709_luma, maybe_reexec_in_venv
 
 check_bbox_iou = bbox_iou
 
-maybe_reexec_in_venv()
+if __name__ == "__main__":
+    maybe_reexec_in_venv()
 
 import numpy as np
 from PIL import Image, ImageOps
@@ -133,12 +134,16 @@ DispatchQueue.concurrentPerform(iterations: args.count) { idx in
     do {
         try handler.perform(requests)
     } catch {
-        lock.lock()
-        errCount += 1
+        let errItem: [String: Any] = ["file": path, "width": dispWidth, "height": dispHeight, "faces": [], "saliency": NSNull(), "texts": [], "read_error": true, "error": "\(error)"]
+        if let d = try? JSONSerialization.data(withJSONObject: errItem),
+           let s = String(data: d, encoding: .utf8) {
+            lock.lock(); outputs[idx] = s; errCount += 1; lock.unlock()
+        } else {
+            lock.lock(); errCount += 1; lock.unlock()
+        }
         if let msgData = "Vision perform error on \(path): \(error)\n".data(using: .utf8) {
             FileHandle.standardError.write(msgData)
         }
-        lock.unlock()
         return
     }
 
@@ -303,19 +308,29 @@ guard #available(macOS 12.0, *),
       let cgImg = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
     exit(1)
 }
+var cgOrientation = CGImagePropertyOrientation.up
+if let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+   let rawOri = props[kCGImagePropertyOrientation] as? UInt32,
+   let parsedOri = CGImagePropertyOrientation(rawValue: rawOri) {
+    cgOrientation = parsedOri
+}
+let swapped = (cgOrientation == .left || cgOrientation == .right || cgOrientation == .leftMirrored || cgOrientation == .rightMirrored)
+let dispW = swapped ? cgImg.height : cgImg.width
+let dispH = swapped ? cgImg.width : cgImg.height
+
 let req = VNGeneratePersonSegmentationRequest()
 req.qualityLevel = .balanced
 req.outputPixelFormat = kCVPixelFormatType_OneComponent8
-let handler = VNImageRequestHandler(cgImage: cgImg, options: [:])
+let handler = VNImageRequestHandler(cgImage: cgImg, orientation: cgOrientation, options: [:])
 do {
     try handler.perform([req])
     guard let obs = req.results?.first as? VNPixelBufferObservation else { exit(1) }
     let ciMask = CIImage(cvPixelBuffer: obs.pixelBuffer)
-    let sx = CGFloat(cgImg.width) / max(1.0, ciMask.extent.width)
-    let sy = CGFloat(cgImg.height) / max(1.0, ciMask.extent.height)
+    let sx = CGFloat(dispW) / max(1.0, ciMask.extent.width)
+    let sy = CGFloat(dispH) / max(1.0, ciMask.extent.height)
     let scaled = ciMask.transformed(by: CGAffineTransform(scaleX: sx, y: sy))
     let ctx = CIContext()
-    guard let outCg = ctx.createCGImage(scaled, from: CGRect(x: 0, y: 0, width: cgImg.width, height: cgImg.height)),
+    guard let outCg = ctx.createCGImage(scaled, from: CGRect(x: 0, y: 0, width: dispW, height: dispH)),
           let dest = CGImageDestinationCreateWithURL(outUrl as CFURL, "public.png" as CFString, 1, nil) else {
         exit(1)
     }

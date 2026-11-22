@@ -2,7 +2,7 @@
 """
 出片2: 剪映专业版可编辑全风格多轨工程包 (FCPXML 1.10 + 静态全画布透明 PNG + 三轨独立 WAV + SRT)
 P0/P1/P2 优化项：
-1. 全部 <media-rep src="..."> 严格使用相对 jianying_draft/ 目录的路径，绝不出现 file:// 或 /Users/... 绝对路径。
+1. 全部 <media-rep src="..."> 严格使用相对 jianying_draft/ 目录的路径，绝不出现 file:// 或本机用户目录绝对路径。
 2. 彻底停用缓慢的 30fps Alpha MOV 编码，改用按权威 final_bbox 贴合的 1080x1920 静态透明 PNG（速度 >20x，体积降 >90%）。
 3. 删除 legacy_v5_json/ 与 stage_overlays 死代码，清理旧 alpha_layers/。
 4. 三轨独立音频复用同源定电平分轨 (08_voice_master.wav / 08_bgm_ducked.wav / 06_sfx_track.wav)，FCPXML 设 0dB 不重复衰减。
@@ -29,6 +29,7 @@ from common import (
     SUBTITLE_CENTER_X,
     SUBTITLE_SAFE_ZONE,
     SUBTITLE_SYMMETRIC_MAX_W,
+    compute_segment_cache_key,
     ffprobe_media,
     find_bin,
     find_commercial_font,
@@ -36,6 +37,7 @@ from common import (
     get_wav_duration_sec,
     link_or_copy,
     load_style_applied,
+    load_style_spectrum_entry,
     load_subtitle_templates,
     maybe_reexec_in_venv,
     parse_video_stream_geometry,
@@ -48,7 +50,8 @@ from common import (
     write_json,
 )
 
-maybe_reexec_in_venv()
+if __name__ == "__main__":
+    maybe_reexec_in_venv()
 
 from PIL import Image
 from render_mp4 import build_graded_segment_cmd, compute_subtitle_place_xy, render_subtitle_png, resolve_packaging_source
@@ -137,7 +140,8 @@ def _prepare_static_overlay_layers(
 
     templates = load_subtitle_templates()
     tpl_id = subs.get("template_id") or "style_01"
-    tpl = templates.get(tpl_id) or next(iter(templates.values()))
+    base_tpl = templates.get(tpl_id) or next(iter(templates.values()))
+    tpl = {**base_tpl, **subs["template_config"]} if isinstance(subs.get("template_config"), dict) else dict(base_tpl)
     font_path = subs.get("font_path") or find_commercial_font(tpl.get("font_candidates"))
     style_id = pkg.get("style_id") or load_style_applied(pipeline_dir) or "style_01"
 
@@ -173,7 +177,7 @@ def _prepare_static_overlay_layers(
             "file_path": full_png,
         })
 
-    # 2. 双色字幕层（跳过被抑制条，按 0-based idx-1 精准复用 render_mp4 已渲染的 sub_XXX.png）
+    # 2. 双色字幕层（始终按当前 sub+tpl+font 配置指纹渲染或严格命中缓存，绝不盲用过期 PNG）
     work_tmp = pipeline_dir / "_render_final"
     work_tmp.mkdir(parents=True, exist_ok=True)
     for idx, sub in enumerate(subs.get("entries") or [], start=1):
@@ -183,8 +187,16 @@ def _prepare_static_overlay_layers(
         ef = min(total_frames, sec_to_frames(float(sub.get("end_sec", 0.0)), fps))
         if ef <= sf:
             continue
+        sub_cache_key = compute_segment_cache_key({
+            "text": sub.get("text"),
+            "words": sub.get("words"),
+            "tpl": tpl,
+            "font_path": font_path,
+        })
         pre_sub_png = work_tmp / f"sub_{idx - 1:03d}.png"
-        if pre_sub_png.is_file() and pre_sub_png.stat().st_size > 64:
+        pre_sub_flag = work_tmp / f"sub_{idx - 1:03d}.key"
+        if (pre_sub_png.is_file() and pre_sub_flag.is_file()
+                and pre_sub_flag.read_text(encoding="utf-8").strip() == sub_cache_key):
             with Image.open(pre_sub_png) as im_s:
                 sw_px, sh_px = im_s.size
             use_png = pre_sub_png
@@ -312,11 +324,25 @@ def _stage_media_assets(
             seg_name = f"seg_{c_idx:03d}.mp4"
             dst_seg = seg_dir / seg_name
             seg_sha = prebaked_seg.with_suffix(".sha256")
-            if not (prebaked_seg.is_file() and seg_sha.is_file() and prebaked_seg.stat().st_size > 1024):
+            lut_p = str(color_plan.get("lut_path") or "")
+            expected_cmd = build_graded_segment_cmd(ffmpeg_bin, clip, color_vf, eye_by_mp4, prebaked_seg, fps)
+            expected_seg_key = compute_segment_cache_key({
+                "cmd": expected_cmd[:-1],
+                "source_hash": sha256_file(src_p),
+                "lut_hash": sha256_file(Path(lut_p)) if lut_p and Path(lut_p).is_file() else None,
+                "fps": fps,
+                "preview": False,
+            })
+            if not (
+                prebaked_seg.is_file()
+                and seg_sha.is_file()
+                and seg_sha.read_text(encoding="utf-8").strip() == expected_seg_key
+                and prebaked_seg.stat().st_size > 1024
+            ):
                 render_work_dir.mkdir(parents=True, exist_ok=True)
                 _export_graded_segment(ffmpeg_bin, clip, color_vf, eye_by_mp4, prebaked_seg, fps)
                 if prebaked_seg.is_file():
-                    seg_sha.write_text(sha256_file(prebaked_seg), encoding="utf-8")
+                    seg_sha.write_text(expected_seg_key, encoding="utf-8")
             link_or_copy(prebaked_seg, dst_seg)
             real_frames = _probe_video_duration_frames(dst_seg, fps) or clip_frames
             keep_seg_names.add(seg_name)
@@ -576,6 +602,17 @@ def build_fcpxml_tree(
 
         # 追加可编辑字幕 <title> 备用轨（放在最高 lane，导入 NLE 后可直接双击微调文本）
         title_lane = max([int(l["lane"]) for l in overlay_layers] or [0]) + 1
+        tpl_cfg = subs.get("template_config") or {}
+        dyn_font = Path(str(subs.get("font_path") or "AlimamaShuHeiTi-Bold.otf")).stem
+        dyn_fs = str(max(24, int(tpl_cfg.get("font_size") or 54)))
+        pri_hex = str(tpl_cfg.get("primary_color") or "#FFFFFF").strip().lstrip("#")
+        if len(pri_hex) >= 6:
+            try:
+                fc_str = f"{int(pri_hex[0:2], 16) / 255.0:.3f} {int(pri_hex[2:4], 16) / 255.0:.3f} {int(pri_hex[4:6], 16) / 255.0:.3f} 1"
+            except ValueError:
+                fc_str = "1 1 1 1"
+        else:
+            fc_str = "1 1 1 1"
         for s_idx, sub in enumerate(subs.get("entries") or [], start=1):
             if sub.get("suppressed"):
                 continue
@@ -603,7 +640,7 @@ def build_fcpxml_tree(
             text_el = ET.SubElement(t_elem, "text")
             ET.SubElement(text_el, "text-style", ref=ts_id).text = sub_txt
             tsd = ET.SubElement(t_elem, "text-style-def", id=ts_id)
-            ET.SubElement(tsd, "text-style", font="AlimamaShuHeiTi-Bold", fontSize="54", fontColor="1 1 1 1", alignment="center")
+            ET.SubElement(tsd, "text-style", font=dyn_font, fontSize=dyn_fs, fontColor=fc_str, alignment="center")
 
         # 按所属镜头区间精准挂载切点/语义 <marker>
         for ev in (audio_events.get("events") or []):
@@ -687,7 +724,7 @@ def export_jianying_draft(pipeline_dir: Path, simulate_failure: bool = False) ->
             f"   - 主视频轨 V1：{len(edl.get('clips') or [])} 段分镜（相对路径 media/segments/）",
             f"   - 上层透明图层：{n_pkg} 个视觉包装 PNG + {n_sub} 条双色字幕 PNG（overlays/，零额外转码损失）",
             f"   - 三轨独立音频：{len(audio_map)} 轨（media/audio/voice_master.wav / bgm_ducked.wav / sfx_master.wav）",
-            "   - 备选外挂字幕：subtitles.srt / subtitles.ass",
+            "   - 备选外挂字幕与风格配方：subtitles.srt / subtitles.ass / whitebox_style_recipe.json",
         ]) + "\n"
         (draft_dir / "README_剪映导入使用指南.txt").write_text(readme, encoding="utf-8")
 
@@ -697,8 +734,31 @@ def export_jianying_draft(pipeline_dir: Path, simulate_failure: bool = False) ->
             "relative_paths_only": True,
             "fcpxml": "timeline.fcpxml",
             "subtitles_srt": "subtitles.srt",
+            "whitebox_style_recipe": "whitebox_style_recipe.json",
             "audio_tracks": {k: v["rel_src"] for k, v in audio_map.items()},
             "overlays_count": len(overlay_layers),
+        })
+
+        active_sid = pkg.get("style_id") or load_style_applied(pipeline_dir) or "style_14"
+        s_entry = load_style_spectrum_entry(active_sid) or {}
+        write_json(draft_dir / "whitebox_style_recipe.json", {
+            "style_id": active_sid,
+            "style_name_cn": s_entry.get("style_name_cn", active_sid),
+            "whitebox_source": s_entry.get("whitebox_source") or {},
+            "commercial_safe_font": s_entry.get("commercial_safe_font", "AlimamaShuHeiTi-Bold.otf"),
+            "source_jianying_font": s_entry.get("source_jianying_font", ""),
+            "packaging_techniques": s_entry.get("packaging_techniques") or {},
+            "visual_elements_animations": [
+                {
+                    "id": el.get("id"),
+                    "kind": el.get("kind"),
+                    "text": el.get("text_or_asset"),
+                    "jianying_anim_name": el.get("jianying_anim_name", "渐显"),
+                    "anim_duration_ms": el.get("anim_duration_ms", 400),
+                    "paired_jianying_sfx": el.get("paired_jianying_sfx", ""),
+                }
+                for el in (pkg.get("visual_elements") or [])
+            ],
         })
 
         status = {
@@ -731,6 +791,7 @@ def export_jianying_draft(pipeline_dir: Path, simulate_failure: bool = False) ->
 
 
 def main() -> None:
+    maybe_reexec_in_venv()
     parser = argparse.ArgumentParser(description="出片2: 剪映全相对路径可编辑工程包 (FCPXML + PNG Overlays + SRT)")
     parser.add_argument("--pipeline-dir", required=True)
     parser.add_argument("--simulate-failure", action="store_true", help="模拟导出失败验证降级逻辑")

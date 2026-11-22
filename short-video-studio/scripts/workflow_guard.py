@@ -47,7 +47,8 @@ from common import (
     write_json,
 )
 
-maybe_reexec_in_venv()
+if __name__ == "__main__":
+    maybe_reexec_in_venv()
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
@@ -327,32 +328,57 @@ def approve_final(
     if md_p.is_file():
         txt = md_p.read_text(encoding="utf-8")
         for state in ("MACHINE_PASS_PENDING_HUMAN", "REVIEW_REQUIRED"):
-            txt = txt.replace(f"🟡 **待人工终审确认 ({state})**", "✅ **机检与人工终审完成 (APPROVED)**")
-        txt = txt.replace("MACHINE_PASS_PENDING_HUMAN", "APPROVED")
+            txt = txt.replace(f"🟡 **待人工终审确认 ({state})**", "✅ **全部自动检查与人工终审已通过**")
+        txt = txt.replace("MACHINE_PASS_PENDING_HUMAN", "已通过全部检查")
+        txt = txt.replace("REVIEW_REQUIRED", "已人工复核")
         for pend_banner in (
             "🟡 **全部必检通过，待人工终审确认 (APPROVED)**",
             "🟡 **全部必检通过，待人工终审确认**",
             "🟡 **全部机检通过，待人工三项终审签字 (APPROVED)**",
             "🟡 **全部机检通过，待人工三项终审签字**",
+            "🟡 **自动检查已过，待您最后看一眼确认**",
+            "✅ **机检与人工终审全部通过 (APPROVED)**",
+            "✅ **机检与人工终审完成 (APPROVED)**",
         ):
-            txt = txt.replace(pend_banner, "✅ **机检与人工终审全部通过 (APPROVED)**")
+            txt = txt.replace(pend_banner, "✅ **全部自动检查与人工终审已通过**")
         md_p.write_text(txt, encoding="utf-8")
 
-    # 同步最新 APPROVED 报告至 out/ 目录，确保外部交付口径完全一致
+    # 同步最新审批结果至 out/ 目录，并在 tidy 已先执行时同步刷新归档清单哈希
     target_out = out_dir or (pipeline_dir.parent / "out")
     archived_mp4 = target_out / final_mp4.name
     if archived_mp4.is_file() and sha256_file(archived_mp4) == cur_mp4_sha:
         shutil.copy2(qa_p, target_out / "10_qa_report.json")
         if md_p.is_file():
             shutil.copy2(md_p, target_out / "10_qa_report.md")
+        updated_out_docs: List[str] = []
+        pending_phrases = (
+            "待人工终审确认",
+            "自动检查全过，等你确认一眼",
+            "自动检查全过，等你核对人工项",
+            "自动检查全部通过，等你确认一眼即可发布",
+            "自动检查通过，请核对人工复查项后确认",
+        )
         for doc_name in ("11_delivery_summary.md", "decisions_made.md"):
             for doc_p in (pipeline_dir / doc_name, target_out / doc_name):
                 if doc_p.is_file():
                     dtxt = doc_p.read_text(encoding="utf-8")
-                    dtxt = dtxt.replace("待人工终审确认", "已通过全部检查并人工确认")
-                    dtxt = dtxt.replace("MACHINE_PASS_PENDING_HUMAN", "APPROVED")
-                    dtxt = dtxt.replace("REVIEW_REQUIRED", "APPROVED")
+                    for phrase in pending_phrases:
+                        dtxt = dtxt.replace(phrase, "已通过全部检查并人工确认")
+                    dtxt = dtxt.replace("MACHINE_PASS_PENDING_HUMAN", "已通过全部检查")
+                    dtxt = dtxt.replace("REVIEW_REQUIRED", "已人工复核")
+                    dtxt = dtxt.replace("APPROVED", "已通过全部检查并人工确认")
                     doc_p.write_text(dtxt, encoding="utf-8")
+                    if doc_p.parent == target_out:
+                        updated_out_docs.append(doc_name)
+        receipt_p = target_out / "archive_receipt.json"
+        if receipt_p.is_file():
+            receipt = read_json(receipt_p)
+            files_map = receipt.setdefault("files", {})
+            for doc_name in updated_out_docs:
+                out_doc_p = target_out / doc_name
+                if out_doc_p.is_file() and doc_name in files_map:
+                    files_map[doc_name] = sha256_file(out_doc_p)
+            write_json(receipt_p, receipt)
     return st
 
 
@@ -558,23 +584,23 @@ def run_replication_diff(
     ocr_block = len(ocr_12_hits) > 0
     clean_room_block = phash_block or ocr_block
 
-    # 2. 7 维客观复刻偏差表
+    # 2. 7 维客观复刻偏差表（JSON 保持兼容字段，Markdown 报告用大白话表达）
     de = math.sqrt(sum((a - b) ** 2 for a, b in zip(ref["sub_lab"], out["sub_lab"])))
     dims = [
-        {"dim": "中位镜长 (s)", "ref": ref["median_shot_sec"], "out": out["median_shot_sec"],
+        {"dim": "中位镜长 (s)", "display_dim": "单个画面平均停留秒数", "ref": ref["median_shot_sec"], "out": out["median_shot_sec"],
          "ok": abs(out["median_shot_sec"] - ref["median_shot_sec"]) <= max(0.5, ref["median_shot_sec"] * 0.20), "tol": "±20%"},
-        {"dim": "前 3s 切镜次数", "ref": ref["first_3s_cuts"], "out": out["first_3s_cuts"],
+        {"dim": "前 3s 切镜次数", "display_dim": "前 3 秒换画面次数", "ref": ref["first_3s_cuts"], "out": out["first_3s_cuts"],
          "ok": abs(out["first_3s_cuts"] - ref["first_3s_cuts"]) <= 1, "tol": "±1 次"},
-        {"dim": "字幕重心 Y (px)", "ref": ref["sub_y_px"], "out": out["sub_y_px"],
-         "ok": abs(out["sub_y_px"] - ref["sub_y_px"]) <= 40.0, "tol": "±40px"},
-        {"dim": "音频节奏 BPM", "ref": ref["bpm"], "out": out["bpm"],
+        {"dim": "字幕重心 Y (px)", "display_dim": "字幕上下高度位置", "ref": ref["sub_y_px"], "out": out["sub_y_px"],
+         "ok": abs(out["sub_y_px"] - ref["sub_y_px"]) <= 40.0, "tol": "±40 像素"},
+        {"dim": "音频节奏 BPM", "display_dim": "背景音乐节拍速度", "ref": ref["bpm"], "out": out["bpm"],
          "ok": abs(out["bpm"] - ref["bpm"]) <= max(8.0, ref["bpm"] * 0.10), "tol": "±10%"},
-        {"dim": "画面平均亮度", "ref": ref["mean_luma"], "out": out["mean_luma"],
+        {"dim": "画面平均亮度", "display_dim": "画面整体明暗度", "ref": ref["mean_luma"], "out": out["mean_luma"],
          "ok": abs(out["mean_luma"] - ref["mean_luma"]) <= 18.0, "tol": "±18"},
-        {"dim": "画面饱和度均值", "ref": ref["mean_sat"], "out": out["mean_sat"],
+        {"dim": "画面饱和度均值", "display_dim": "画面色彩鲜艳度", "ref": ref["mean_sat"], "out": out["mean_sat"],
          "ok": abs(out["mean_sat"] - ref["mean_sat"]) <= 24.0, "tol": "±24"},
-        {"dim": "字幕字色 ΔE", "ref": str(ref["sub_lab"]), "out": f"ΔE={de:.1f}",
-         "ok": de <= 15.0, "tol": "ΔE ≤ 15"},
+        {"dim": "字幕字色 ΔE", "display_dim": "字幕颜色接近度", "ref": str(ref["sub_lab"]), "out": f"颜色偏差={de:.1f}",
+         "ok": de <= 15.0, "tol": "偏差 ≤ 15"},
     ]
 
     report = {
@@ -592,16 +618,16 @@ def run_replication_diff(
     write_json(out_dir / "replication_diff.json", report)
 
     md_lines = [
-        "# 风格复刻洁净室与 7 维客观偏差报告",
+        "# 风格参考防抄袭与 7 项视觉节奏对照报告",
         "",
-        f"- **Clean-Room 洁净室防抄袭判定**：{'❌ BLOCK（存在像素复用或12字连抄风险）' if clean_room_block else '✅ PASS（原创画面与文案）'}（最小帧 pHash 汉明距=`{min_hamming}`，连续12字OCR重合=`{len(ocr_12_hits)}`处）",
-        f"- **客观偏差匹配度**：{report['dimensions_matched']}/{report['dimensions_total']} 项落在容差带内",
+        f"- **原创防抄袭检查**：{'❌ 未通过（存在画面雷同或连续 12 字台词重合风险）' if clean_room_block else '✅ 通过（原创画面与文案）'}（最小画面差异值=`{min_hamming}`，连续 12 字重合处=`{len(ocr_12_hits)}`处）",
+        f"- **风格接近度**：7 项关键指标里有 {report['dimensions_matched']}/{report['dimensions_total']} 项落在合理接近范围内",
         "",
-        "| 维度 | 参考原片 | 我方成片 | 容差阈值 | 是否达标 |",
+        "| 对比项目 | 参考原片 | 我方成片 | 允许误差范围 | 是否达标 |",
         "| :--- | :---: | :---: | :---: | :---: |",
     ]
     for d in dims:
-        md_lines.append(f"| {d['dim']} | {d['ref']} | {d['out']} | {d['tol']} | {'✅' if d['ok'] else '⚠️'} |")
+        md_lines.append(f"| {d['display_dim']} | {d['ref']} | {d['out']} | {d['tol']} | {'✅' if d['ok'] else '⚠️'} |")
     (out_dir / "replication_diff.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
 
     # 3. 乱序 A/B/C 风格盲测 HTML 页（使用真随机洗牌并将答案分离存至独立 answer_key JSON，绝不内嵌剧透）

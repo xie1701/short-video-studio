@@ -37,7 +37,8 @@ from common import (
     write_json,
 )
 
-maybe_reexec_in_venv()
+if __name__ == "__main__":
+    maybe_reexec_in_venv()
 
 import numpy as np
 
@@ -536,16 +537,18 @@ def run_step3(
         new_start_sec = round(chunk_start_samples / float(SR), 4)
         new_end_sec = round(cursor_samples / float(SR), 4)
 
-        orig_span = max(0.05, orig_end - orig_start)
+        cut_s0 = s0 / float(SR)
+        cut_s1 = s1 / float(SR)
+        cut_span = max(0.05, cut_s1 - cut_s0)
         new_words: List[Dict[str, Any]] = []
         keyword_anchors: List[float] = []
         accent_anchors: List[float] = []
         word_energy_peaks: List[Tuple[float, float, str]] = []
         for w in seg.get("words", []):
-            rel_s = (float(w["start_sec"]) - orig_start) / orig_span
-            rel_e = (float(w["end_sec"]) - orig_start) / orig_span
-            ws = round(new_start_sec + max(0.0, rel_s) * chunk_dur, 4)
-            we = round(new_start_sec + min(1.0, rel_e) * chunk_dur, 4)
+            rel_s = (float(w["start_sec"]) - cut_s0) / cut_span
+            rel_e = (float(w["end_sec"]) - cut_s0) / cut_span
+            ws = round(new_start_sec + max(0.0, min(1.0, rel_s)) * chunk_dur, 4)
+            we = round(max(ws + 0.02, new_start_sec + max(0.0, min(1.0, rel_e)) * chunk_dur), 4)
             is_kw = bool(w.get("is_keyword", False))
             is_acc = bool(w.get("is_accent", False))
             en = float(w.get("energy", 0.75))
@@ -621,7 +624,8 @@ def run_step3(
             add_event("pause_start", new_end_sec, f"动态呼吸停顿({cur_pause_sec}s: {pause_reason})", sid)
             _, ov_p = _equal_power_append(voice_chunks, p_buf, xf_joint)
             cursor_samples = cursor_samples - ov_p + len(p_buf)
-            pause_end_sec = round(max(new_end_sec, (cursor_samples - xf_joint) / float(SR)), 4)
+            eff_xf_next = min(xf_joint, len(p_buf) // 4)
+            pause_end_sec = round(max(new_end_sec, (cursor_samples - eff_xf_next) / float(SR)), 4)
             add_event("pause_end", pause_end_sec, "句间停顿结束", sid)
 
     tail_samples = int(0.24 * SR)
@@ -655,15 +659,16 @@ def run_step3(
 
     locked_bgm = aligned_bgm[:total_samples].copy()
 
-    # 消费风格谱 dual_bgm_structure：开篇引子段切换至正文主 BGM（复刻《11月14日延期》0~2.83s 引子切主曲）
+    # 消费风格谱 dual_bgm_structure：开篇引子段切换至正文主 BGM（默认 0~2.83s 引子切主曲）
     dual_bgm_applied = False
     dual_bgm_switch_sec: Optional[float] = None
-    active_sid = load_style_applied(pipeline_dir) or ("style_14" if track == "store" else None)
+    intro_beats: List[float] = []
+    intro_downs: List[float] = []
+    active_sid = load_style_applied(pipeline_dir) or ("style_14" if track == "store" else "style_11")
     style_entry = load_style_spectrum_entry(active_sid) if active_sid else None
     dual_cfg = (style_entry or {}).get("dual_bgm_structure") or {}
     if bool(dual_cfg.get("enabled")) and total_dur >= 6.0:
         intro_sec = max(1.8, min(3.8, float(dual_cfg.get("intro_duration_sec") or 2.83)))
-        # 优先吸附到最接近 intro_sec 的句界或强拍
         snap_cands = [s["end_sec"] for s in locked_sentences if 1.6 <= s["end_sec"] <= 3.8]
         if snap_cands:
             intro_sec = min(snap_cands, key=lambda t: abs(t - intro_sec))
@@ -674,7 +679,6 @@ def run_step3(
                 sw_i = min(total_samples - int(1.0 * SR), max(int(1.2 * SR), int(round(intro_sec * SR))))
                 xf_b = min(int(0.22 * SR), sw_i // 3, (total_samples - sw_i) // 3)
                 if len(intro_arr) >= sw_i + xf_b and xf_b >= 16:
-                    # 引子轨略柔和过渡到主曲，交叉淡化保证节拍连续不突兀
                     i_seg = intro_arr[: sw_i + xf_b].copy()
                     i_rms = float(np.sqrt(np.mean(i_seg ** 2) + 1e-10))
                     m_rms = float(np.sqrt(np.mean(locked_bgm[: sw_i + xf_b] ** 2) + 1e-10))
@@ -684,6 +688,12 @@ def run_step3(
                     locked_bgm[sw_i : sw_i + xf_b] = i_seg[sw_i : sw_i + xf_b] * np.cos(th) + locked_bgm[sw_i : sw_i + xf_b] * np.sin(th)
                     dual_bgm_applied = True
                     dual_bgm_switch_sec = round(sw_i / float(SR), 4)
+                    intro_meta_p = ASSETS_DIR / "sound_vibe" / "bgm" / "style_06_bgm.json"
+                    intro_meta = read_json(intro_meta_p) if intro_meta_p.is_file() else {}
+                    i_beats_raw = intro_meta.get("beat_times_sec") or []
+                    i_downs_raw = intro_meta.get("downbeat_times_sec") or []
+                    intro_beats = [round(float(t), 4) for t in i_beats_raw if float(t) < dual_bgm_switch_sec - 0.05]
+                    intro_downs = [round(float(t), 4) for t in i_downs_raw if float(t) < dual_bgm_switch_sec - 0.05]
                     add_event("bgm_section", dual_bgm_switch_sec, "双段BGM切换：引子转入正文主曲")
             except Exception:
                 pass
@@ -692,17 +702,22 @@ def run_step3(
     if fade_out_n > 2:
         locked_bgm[-fade_out_n:] *= np.linspace(1.0, 0.15, fade_out_n, dtype=np.float32)[:, None]
 
-    downbeat_set = set(shifted_downbeats)
-    for b_idx, b_t in enumerate(shifted_beats):
+    main_beat_floor = (dual_bgm_switch_sec - 0.05) if (dual_bgm_applied and dual_bgm_switch_sec is not None) else 0.0
+    eff_beats = (intro_beats + [b for b in shifted_beats if b >= main_beat_floor]) if dual_bgm_applied else shifted_beats
+    eff_downs = (intro_downs + [d for d in shifted_downbeats if d >= main_beat_floor]) if dual_bgm_applied else shifted_downbeats
+    downbeat_set = set(eff_downs)
+    for b_idx, b_t in enumerate(eff_beats):
         if b_t <= min(4.0, total_dur - 0.1) and b_t not in downbeat_set:
             add_event("bgm_beat", b_t, f"BGM开篇第{b_idx+1}拍")
-    for db_idx, db_t in enumerate(shifted_downbeats):
+    for db_idx, db_t in enumerate(eff_downs):
         if db_t <= total_dur - 0.1:
             add_event("bgm_downbeat", db_t, f"BGM第{db_idx+1}小节强拍")
             if db_idx > 0 and db_idx % 4 == 0:
                 add_event("bgm_section", db_t, f"BGM第{db_idx//4 + 1}乐段切换")
 
-    events.sort(key=lambda e: (e["frame"], e["id"]))
+    events.sort(key=lambda e: (e["frame"], e["time_sec"], e["id"]))
+    for ei, e in enumerate(events, start=1):
+        e["id"] = f"evt_{ei:03d}"
 
     locked_voice_path = pipeline_dir / "03_locked_voice.wav"
     locked_bgm_path = pipeline_dir / "03_locked_bgm.wav"

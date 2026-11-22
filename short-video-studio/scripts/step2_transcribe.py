@@ -16,9 +16,11 @@ import difflib
 import hashlib
 import json
 import math
+import os
 import re
 import shutil
 import sys
+import tempfile
 import wave
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -41,7 +43,8 @@ from common import (
     write_json,
 )
 
-maybe_reexec_in_venv(("faster_whisper",))
+if __name__ == "__main__":
+    maybe_reexec_in_venv(("faster_whisper",))
 
 import numpy as np
 
@@ -303,7 +306,7 @@ def compute_prosody_for_segments(
                 seg_f0_arr = None
 
         for w in words:
-            w0 = max(0, int(round(float(w["start_sec"]) * 100)))
+            w0 = min(len(rms_10ms) - 1, max(0, int(round(float(w["start_sec"]) * 100))))
             w1 = min(len(rms_10ms), max(w0 + 1, int(round(float(w["end_sec"]) * 100))))
             w_rms = float(np.percentile(rms_10ms[w0:w1], 80))
             rms_ratio_db = 20.0 * math.log10(max(1e-5, w_rms) / max(1e-5, med_rms))
@@ -326,6 +329,10 @@ def compute_prosody_for_segments(
             if w_f0 > 0:
                 w["f0_hz"] = round(w_f0, 1)
             w["is_accent"] = bool(prosody_e >= 0.78 or w.get("is_keyword", False))
+        seg["energy_score"] = round(
+            sum(float(w.get("energy", 0.5)) for w in words) / float(max(1, len(words))),
+            3,
+        )
 
 
 def vad_speech_intervals(y16: np.ndarray, sr: int = 16000) -> List[Tuple[float, float]]:
@@ -954,16 +961,17 @@ def synthesize_tts_segment_detailed(
 
     if c_wav.is_file() and c_meta.is_file() and c_wav.stat().st_size > 1000:
         try:
-            meta = read_json(c_meta)
-            out_wav.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(c_wav, out_wav)
-            return (
-                True,
-                float(meta.get("duration", get_wav_duration_sec(out_wav))),
-                list(meta.get("words") or []),
-                float(meta.get("onset_sec", 0.0)),
-                float(meta.get("offset_sec", get_wav_duration_sec(out_wav))),
-            )
+            if get_wav_duration_sec(c_wav) > 0.1:
+                meta = read_json(c_meta)
+                out_wav.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(c_wav, out_wav)
+                return (
+                    True,
+                    float(meta.get("duration", get_wav_duration_sec(out_wav))),
+                    list(meta.get("words") or []),
+                    float(meta.get("onset_sec", 0.0)),
+                    float(meta.get("offset_sec", get_wav_duration_sec(out_wav))),
+                )
         except Exception:
             pass
 
@@ -1021,7 +1029,10 @@ def synthesize_tts_segment_detailed(
                     raw_words = shifted
                 try:
                     eff_cache.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(out_wav, c_wav)
+                    with tempfile.NamedTemporaryFile(dir=eff_cache, suffix=".wav", delete=False) as tf:
+                        pending_wav = Path(tf.name)
+                    shutil.copy2(out_wav, pending_wav)
+                    os.replace(pending_wav, c_wav)
                     write_json(c_meta, {
                         "speak_text": speak_text, "voice": voice, "rate": rate,
                         "duration": dur, "onset_sec": onset_sec, "offset_sec": offset_sec, "words": raw_words,
@@ -1034,6 +1045,7 @@ def synthesize_tts_segment_detailed(
 
     say_bin = find_bin("say")
     if say_bin:
+        print(f"[step2] [WARN] edge-tts 不可用，降级使用系统 say 合成：{speak_text[:20]}")
         tmp_aiff = out_wav.with_suffix(".aiff")
         try:
             run_cmd([say_bin, "-r", "215", "-o", str(tmp_aiff), speak_text])
@@ -1122,7 +1134,7 @@ def _expand_word_boundaries_for_subtitles(
             pt1 = max(pt0 + 0.02, t0 + (k + 1) * dt)
             e_val = 0.72
             if rms_10ms is not None and len(rms_10ms) >= 4:
-                i0 = max(0, int(round(pt0 * 100)))
+                i0 = min(len(rms_10ms) - 1, max(0, int(round(pt0 * 100))))
                 i1 = min(len(rms_10ms), max(i0 + 1, int(round(pt1 * 100))))
                 e_val = float(np.mean(rms_10ms[i0:i1]))
             expanded.append({
@@ -1430,13 +1442,21 @@ def run_step2(
                     whitelist_path=whitelist_path,
                     auto_action=True,
                 )
+                say_findings = list(say_comp.get("findings") or [])
+                if say_findings:
+                    for sf in say_findings:
+                        sf["field"] = "say"
+                    pre_comp.setdefault("findings", []).extend(say_findings)
+                    pre_comp["finding_count"] = len(pre_comp["findings"])
                 rw_say = next(
-                    (f.get("suggested_text") for f in say_comp.get("findings", []) if f.get("action") == "auto_rewrite_or_block" and f.get("suggested_text")),
+                    (f.get("suggested_text") for f in say_findings if f.get("action") == "auto_rewrite_or_block" and f.get("suggested_text")),
                     None,
                 )
                 if rw_say:
                     speak_str = str(rw_say)
                     item["say"] = speak_str
+                elif not say_comp.get("passed", True):
+                    pre_comp["passed"] = False
             v_name = str(item.get("voice") or "zh-CN-YunxiNeural")
             v_rate = str(item.get("rate") or "+8%")
             if item.get("voice_file"):
@@ -1444,7 +1464,8 @@ def run_step2(
                     raise ValueError(f"{item['id']} 指定了 voice_file 但未传入 script_json_path。")
                 original = script_items[idx - 1]
                 original_text = str(original.get("show") or original.get("text") or "")
-                if speak_str != str(original.get("say") or original_text) or item["text"] != original_text:
+                orig_shown_before = item.get("original_text_before_compliance")
+                if speak_str != str(original.get("say") or original_text) or (item["text"] != original_text or orig_shown_before is not None):
                     raise ValueError(f"{item['id']} 的台词已调整，需提供匹配的新录音。")
                 voice_source = (script_json_path.resolve().parent / item["voice_file"]).resolve()
                 ffmpeg = find_bin("ffmpeg")
@@ -1521,6 +1542,7 @@ def run_step2(
         primary_audio = str(master_tts_wav.resolve())
         filter_stats = {"offcamera_dropped": 0, "retake_dropped": 0, "stumbles_dropped": 0, "silence_retimed": 0}
         compliance_report = pre_comp
+        write_json(pipeline_dir / "00_compliance_report.json", compliance_report)
     else:
         segments = []
         source_types: List[str] = []
@@ -1545,7 +1567,7 @@ def run_step2(
                     wav_path, model_name=whisper_model, y16_cached=y16_ar,
                     dialect=dialect, store_anchor=store_anchor,
                 )
-                if asr_segs:
+                if asr_segs is not None and len(asr_segs) > 0:
                     for seg in asr_segs:
                         seg["source_media"] = ar["normalized_mp4"]
                         seg["source_audio"] = wav_key
@@ -1553,11 +1575,11 @@ def run_step2(
                     stype = "asr_whisper"
                 elif has_user_script:
                     raise RuntimeError(
-                        f"存在 {len(arolls)} 段实拍口播且 faster-whisper 转写失败，无法安全分配单份脚本至多段原声。"
+                        f"存在 {len(arolls)} 段实拍口播且 faster-whisper 转写{'为空' if asr_segs is not None else '失败'}，无法安全分配单份脚本至多段原声。"
                     )
                 else:
                     raise RuntimeError(
-                        f"检测到实拍口播原声 ({Path(ar['normalized_mp4']).name})，但 faster-whisper 不可用且未传 --script-json。"
+                        f"检测到实拍口播原声 ({Path(ar['normalized_mp4']).name})，但 faster-whisper {'未识别到有效语音' if asr_segs is not None else '不可用'}且未传 --script-json。"
                         "已拒绝静默套用内置示范台词，请补充 --script-json 或运行 check_and_setup.py --install-ml。"
                     )
 

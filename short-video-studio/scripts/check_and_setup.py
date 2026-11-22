@@ -26,12 +26,12 @@ from common import (
     ASSETS_DIR,
     HYPERFRAMES_VERSION,
     NODE_TOOLS_DIR,
-    SCRIPTS_DIR,
     VENV_DIR,
     detect_browser_renderer,
     find_bin,
     find_commercial_font,
     is_verified_commercial_font,
+    read_json,
 )
 
 CORE_PIP_PKGS = ["pillow", "numpy", "scipy", "edge-tts"]
@@ -94,7 +94,7 @@ def ensure_venv_and_deps(install_deps: bool, install_heavy_ml: bool) -> tuple[st
         if install_heavy_ml:
             print(f"[setup] 安装语音转写与节拍分析扩展包: {', '.join(HEAVY_ML_PKGS)} ...")
             if not pip_install(HEAVY_ML_PKGS, required=False):
-                install_ok = False
+                print("[WARN] 语音转写/节拍扩展包安装失败，将由内置静音切分与 energy heuristic 兜底，不影响核心导出。")
 
     active_py = str(py_in_venv) if py_in_venv.exists() else sys.executable
     return active_py, install_ok
@@ -103,21 +103,27 @@ def ensure_venv_and_deps(install_deps: bool, install_heavy_ml: bool) -> tuple[st
 def check_and_sync_commercial_fonts(stage_into_assets: bool = False) -> tuple[Optional[str], bool]:
     """
     严格校验已核验的开源商用中文字体；
-    当 stage_into_assets=True 时仅将最轻量的阿里妈妈数黑体 (1.0MB) 同步进 assets/fonts/ 作为跨平台随身商用兜底。
+    当 stage_into_assets=True 时把本机可用的已核验商用中文字体补齐到 assets/fonts/（优先保留仓库内已随附字体）。
     """
     verified = find_commercial_font(verified_only=True)
     if verified and stage_into_assets:
         import shutil
         fonts_dir = ASSETS_DIR / "fonts"
         fonts_dir.mkdir(parents=True, exist_ok=True)
-        light_cand = find_commercial_font(["AlimamaShuHeiTi-Bold.otf"], verified_only=True)
-        if light_cand:
-            dst = fonts_dir / Path(light_cand).name
-            if not dst.exists():
-                try:
-                    shutil.copy2(light_cand, dst)
-                except Exception:
-                    pass
+        for cand_name in (
+            "AlimamaShuHeiTi-Bold.otf",
+            "SmileySans-Oblique.ttf",
+            "SourceHanSerifCN-Bold.otf",
+            "SourceHanSerifCN-Heavy.otf",
+        ):
+            cand = find_commercial_font([cand_name], verified_only=True)
+            if cand:
+                dst = fonts_dir / Path(cand).name
+                if not dst.exists():
+                    try:
+                        shutil.copy2(cand, dst)
+                    except Exception:
+                        pass
     return verified, bool(verified and is_verified_commercial_font(verified))
 
 
@@ -221,8 +227,23 @@ def main() -> None:
         if not vibe_mf.is_file():
             print(f"[ERROR] 缺少 CC0 真录音库清单: {vibe_mf}")
             sys.exit(1)
+        lib_path = ASSETS_DIR / "style_spectrum" / "style_spectrum_library.json"
+        tpl_path = ASSETS_DIR / "subtitle_templates" / "templates.json"
+        if not lib_path.is_file() or not tpl_path.is_file():
+            print(f"[ERROR] 缺少核心样式库或字幕模板: {lib_path} / {tpl_path}")
+            sys.exit(1)
+        lib_data = read_json(lib_path)
+        styles = lib_data.get("styles") or []
+        missing_luts = [
+            f"{s['style_id']}.cube"
+            for s in styles
+            if not (ASSETS_DIR / "style_spectrum" / "luts" / f"{s['style_id']}.cube").is_file()
+        ]
+        if missing_luts:
+            print(f"[ERROR] 缺少风格 LUT 文件: {missing_luts}")
+            sys.exit(1)
         lut_cnt = len(list((ASSETS_DIR / "style_spectrum" / "luts").glob("*.cube")))
-        print(f"[setup] 已校验 CC0 真录音库 ({vibe_mf.name}) 与 {lut_cnt} 套 3D LUT 资产完整可用。")
+        print(f"[setup] 已校验 CC0 真录音库 ({vibe_mf.name})、{len(styles)} 套风格配置与 {lut_cnt} 套 3D LUT 资产完整可用。")
 
     if ffmpeg_path == "MISSING" or ffprobe_path == "MISSING":
         print("\n[ERROR] 缺少 ffmpeg/ffprobe，请手动安装后重试。")

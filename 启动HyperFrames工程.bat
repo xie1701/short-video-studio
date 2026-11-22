@@ -46,7 +46,7 @@ if exist "%SCRIPT_DIR%\index.html" (
 echo.
 echo 请选择启动方式（直接回车默认为 1）：
 echo   [1] 打开已有 HyperFrames 工程（直接输入或把文件夹拖进本窗口）
-echo   [2] 一键用内置「20套风格谱」新建示例 HyperFrames 工程并启动
+echo   [2] 一键用内置「24套风格」新建示例 HyperFrames 工程并启动
 echo   [3] 新建空白竖屏 (1080x1920) HyperFrames 工程并启动
 echo.
 set "CHOICE="
@@ -61,6 +61,8 @@ if "%CHOICE%"=="1" (
 )
 
 if "%CHOICE%"=="2" (
+  echo.
+  echo 常用风格推荐：style_14 ^(门店实景默认^) / style_11 ^(个人知识默认^) / style_21 ^(85%%门店特写^) / style_24 ^(100%%纯画面无出镜^)
   set "STYLE_ID="
   set /p "STYLE_ID=请输入风格编号 [直接回车默认 style_14]: "
   if "!STYLE_ID!"=="" set "STYLE_ID=style_14"

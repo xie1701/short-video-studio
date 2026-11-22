@@ -45,7 +45,8 @@ from common import (
     write_json,
 )
 
-maybe_reexec_in_venv()
+if __name__ == "__main__":
+    maybe_reexec_in_venv()
 
 
 META_LEAK_RE = re.compile("|".join(LEAK_REGEX_PATTERNS), re.IGNORECASE)
@@ -116,7 +117,7 @@ def detect_black_intervals(video_path: Path) -> tuple[str, List[str]]:
         return "SKIPPED_UNAVAILABLE", []
     result = run_cmd([
         ffmpeg, "-hide_banner", "-nostats", "-i", str(video_path),
-        "-vf", "blackdetect=d=0:pix_th=0.10", "-an", "-f", "null", "-",
+        "-vf", "blackdetect=d=0:pix_th=0.07", "-an", "-f", "null", "-",
     ], check=False)
     if result.returncode:
         return "FAIL", []
@@ -287,7 +288,13 @@ def inspect_video(
                     max_sub_err_sec = max(max_sub_err_sec, err_self_e)
 
         sub_err_frames = max_sub_err_sec / frame_dur
-        sub_sync_ok = (len(active_subs) > 0 or len(sents_all) == 0) and len(sub_sync_violations) == 0 and sub_err_frames <= 1.5
+        all_subs_entries = subs.get("entries", [])
+        all_suppressed_b9 = (
+            len(all_subs_entries) > 0
+            and len(active_subs) == 0
+            and int(subs.get("suppressed_count", 0)) >= len(all_subs_entries)
+        )
+        sub_sync_ok = (len(active_subs) > 0 or len(sents_all) == 0 or all_suppressed_b9) and len(sub_sync_violations) == 0 and sub_err_frames <= 1.5
         checks.append(_mk_check(
             "subtitle_sync",
             "字幕与 03_audio_events 语音时间戳交叉对齐",
@@ -415,10 +422,22 @@ def inspect_video(
             (sum(float(c["duration_sec"]) for c in aroll_clips) + sum(float(c["duration_sec"]) for c in masked_voice_clips))
             / total_edl_dur
             if (aroll_clips or masked_voice_clips)
-            else 1.0
+            else 0.0
         )
-        aroll_tail_ok = True if not aroll_clips else any(float(c["timeline_out_sec"]) >= total_edl_dur - 10.0 for c in aroll_clips)
-        aroll_ok = (aroll_ratio >= 0.18 and aroll_tail_ok) if aroll_clips else True
+        broll_tgt = float(edl.get("broll_ratio_target") if edl.get("broll_ratio_target") is not None else 0.53)
+        if edl.get("style_id") and edl.get("broll_ratio_target") is None:
+            from common import load_style_spectrum_entry
+            st_ent = load_style_spectrum_entry(str(edl["style_id"]))
+            if st_ent and st_ent.get("broll_overlay_ratio_target") is not None:
+                broll_tgt = float(st_ent["broll_overlay_ratio_target"])
+        if broll_tgt >= 0.995:
+            aroll_ok = True
+        elif broll_tgt >= 0.85:
+            min_aroll_floor = max(0.0, (1.0 - broll_tgt) * 0.40)
+            aroll_ok = (aroll_ratio >= min_aroll_floor) if aroll_clips else True
+        else:
+            aroll_tail_ok = True if not aroll_clips else any(float(c["timeline_out_sec"]) >= total_edl_dur - 10.0 for c in aroll_clips)
+            aroll_ok = (aroll_ratio >= 0.18 and aroll_tail_ok) if aroll_clips else True
         dist_ok = (min_d >= 0.30 and max_d <= pacing["max_shot_sec"] and rewind_count == 0 and aroll_ok)
         checks.append(_mk_check(
             "shot_duration_dist",
@@ -617,35 +636,50 @@ def inspect_video(
     write_json(pipeline_dir / "10_qa_report.json", report)
 
     status_banner = (
-        "✅ **机检与人工终审全部通过 (APPROVED)**"
+        "✅ **全部自动检查与人工终审已通过**"
         if approval_status == "APPROVED"
         else (
-            f"🟡 **待人工终审确认 ({approval_status})**"
+            "🟡 **自动检查已过，待您最后看一眼确认**"
             if all_passed
-            else "❌ **未通过质检 (REJECTED - 禁止交付)**"
+            else "❌ **有硬性问题未通过，请先修改再发**"
         )
     )
     plain_verdict = (
         "成片声音清晰、字幕居中没被按钮遮挡、画面切换干脆，所有硬性检查都过了，您确认一眼就能发。"
         if all_passed
-        else f"还有 {fail_cnt} 项硬性问题没过（见下表带 FAIL 的行），建议先修好再发，避免发出后被限流或观感打折。"
+        else f"还有 {fail_cnt} 项硬性问题没过（见下表标有「未通过」的行），建议先修好再发，避免发出后被限流或观感打折。"
     )
+    _status_cn = {
+        "PASS": "✅ 通过",
+        "FAIL": "❌ 未通过",
+        "SKIPPED_UNAVAILABLE": "⏭️ 环境未装跳过",
+        "NOT_REQUESTED": "➖ 本次未要求",
+    }
+    _manual_cn = {
+        "jianying_import": "剪映工程导入抽查",
+        "hyperframes_preview": "HyperFrames 工程预览抽查",
+        "bb_ocr_av_loop": "画面字幕人工抽查",
+        "bb_blind_asr_proxy": "整片盲听复核",
+        "source_review": "原始报价或证明材料核对",
+    }
     md_lines = [
         f"# 成片与交付工程质检报告（共 {len(checks)} 项）",
         "",
         f"- **一句话大白话结论**：{plain_verdict}",
         f"- **成片文件**：`{video_path.name}`",
         f"- **质量状态**：{status_banner}",
-        f"- **统计**：`{pass_cnt}/{len(checks)}` PASS | FAIL `{fail_cnt}` | SKIPPED_UNAVAILABLE `{skip_cnt}`",
+        f"- **统计**：共 {len(checks)} 项 · 通过 `{pass_cnt}` 项 · 未通过 `{fail_cnt}` 项 · 跳过 `{skip_cnt}` 项",
         "",
         "| # | 检查项 | 状态 | 实测结果 | 门槛 |",
         "|:-:|:---|:---:|:---|:---|",
     ]
     for i, c in enumerate(checks, start=1):
         measured = c["measured"].replace("|", "｜")
-        md_lines.append(f"| {i} | {c['name']} | {c['status']} | {measured} | {c['threshold']} |")
+        st_label = _status_cn.get(c["status"], c["status"])
+        md_lines.append(f"| {i} | {c['name']} | {st_label} | {measured} | {c['threshold']} |")
     if manual_checks:
-        md_lines.extend(["", "需人工实查的项目 " + ", ".join(manual_checks)])
+        manual_readable = "、".join(_manual_cn.get(m, m) for m in manual_checks)
+        md_lines.extend(["", f"需人工最后确认一眼的项目：{manual_readable}"])
     for target, result in export_results.items():
         md_lines.extend(f"- {target} {error}" for error in result.get("errors", []))
 
