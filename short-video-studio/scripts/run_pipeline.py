@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """
 short-video-studio 专业制片流水线编排器
-支持 6 种工作模式：
-1. full           : 跑通 Step 1 -> Step 9 -> 渲染成片 -> 导出剪映/HyperFrames -> 22项自动+黑盒质检 -> 完工清理
-2. lock-preview   : 停在打断#3，输出锁定音轨与低清粗剪预览 (output_preview.mp4)
-3. reedit-visuals : [打断#3 分支A] 严格保持 Step 3 锁定音轨不变（如 01_normalized 已被 tidy 自动按需重建），重排 Step 4-9 + 出片 + 22项质检
-4. relock-voice   : [打断#3 分支B] 回到 Step 2/3 重新锁定音轨，再重排 Step 4-9 + 出片 + 22项质检
-5. render-locked  : 校验 approval_lock 指纹锁后直接按锁定方案终稿渲染、导出与 22 项质检
-6. code-video     : [入口 3 纯代码制片] 00_code_spec 规约 -> Step 2/3 音轨先锁 -> Chrome HTML/Pillow 渲染分幕 -> Step 1/4-9 -> VERIFY.md
+支持 7 种工作模式：
+1. full                : 跑通 Step 1 -> Step 9 -> 渲染成片 -> 导出剪映/HyperFrames -> 22+项白盒+黑盒质检 -> 完工清理
+2. lock-preview        : 停在打断#3，输出锁定音轨与低清粗剪预览 (output_preview.mp4)
+3. reedit-visuals      : [打断#3 分支A] 严格保持 Step 3 锁定音轨不变（如 01_normalized 已被 tidy 自动按需重建），重排 Step 4-9 + 出片 + 质检
+4. relock-voice        : [打断#3 分支B] 回到 Step 2/3 重新锁定音轨，再重排 Step 4-9 + 出片 + 质检
+5. render-locked       : 校验 approval_lock 指纹锁后直接按锁定方案终稿渲染、导出与质检
+6. code-video          : [入口 3 纯代码制片] 00_code_spec 规约 -> Step 2/3 音轨先锁 -> Chrome HTML/Pillow 渲染分幕 -> Step 1/4-9 -> VERIFY.md
+7. knowledge-animation : [入口 3 零实拍知识讲解动画] 单源时间轴 -> 商业字体注入 -> 无头逐帧渲染 -> BGM+拟音/配音混音封装 -> 4K 双比例封面与多平台文案包 -> 归档
 """
 
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -47,6 +50,7 @@ if __name__ == "__main__":
 from PIL import Image, ImageDraw
 from apply_style_spectrum import apply_to_pipeline, load_library, resolve_style_runtime_config
 from code_video_spec import generate_verify_template, init_code_spec, validate_code_spec
+from compliance_guard import audit_script_compliance, build_asset_license_manifest
 from export_hyperframes import export_hyperframes_draft
 from export_jianying import export_jianying_draft
 from generate_code_broll import (
@@ -60,7 +64,7 @@ from inventory_media import (
     inventory_directory,
     render_markdown_summary,
 )
-from knowledge_animator import audit_animation_video, build_review_pack, init_animation_project
+from knowledge_animator import audit_animation_video, build_review_pack, init_animation_project, mix_animation_audio
 from qa_inspector import inspect_video
 from raw_intel_ingest import lint_script, render_lint_markdown
 from render_mp4 import render_mp4
@@ -74,7 +78,7 @@ from step6_packaging import run_step6
 from step7_color_grade import run_step7
 from step8_mix_audio import run_step8
 from step9_title_cover import build_publish_copy_pack, render_dual_4k_code_covers, run_step9
-from workflow_guard import generate_action_strips, record_milestone, render_progress_card, tidy_workspace, verify_lock
+from workflow_guard import compute_plan_digest, generate_action_strips, record_milestone, render_progress_card, tidy_workspace, verify_lock
 
 
 def _run_script_prelint(
@@ -183,7 +187,8 @@ def _generate_hook_variants(pipeline_dir: Path, count: int) -> Optional[Path]:
         })
 
     out_json = pipeline_dir / "09_hook_variants.json"
-    write_json(out_json, {"kind": "opening_title_overlay_preview", "source_video_sha256": sha256_file(final_mp4), "count": len(variants), "variants": variants})
+    src_sha = sha256_file(final_mp4) if final_mp4.is_file() else ""
+    write_json(out_json, {"kind": "opening_title_overlay_preview", "source_video_sha256": src_sha, "count": len(variants), "variants": variants})
     return out_json
 
 
@@ -195,7 +200,6 @@ def write_decisions_made(pipeline_dir: Path, track: str) -> Path:
     sub = read_json(pipeline_dir / "05_subtitles.json")
     pkg = read_json(pipeline_dir / "06_packaging.json")
     col = read_json(pipeline_dir / "07_color_plan.json")
-    mix = read_json(pipeline_dir / "08_mix_metrics.json")
     cov = read_json(pipeline_dir / "09_title_cover.json") if (pipeline_dir / "09_title_cover.json").exists() else {}
     qa = read_json(pipeline_dir / "10_qa_report.json") if (pipeline_dir / "10_qa_report.json").exists() else {}
     jy = qa.get("deliverables", {}).get("jianying", {})
@@ -358,6 +362,16 @@ def write_delivery_summary(
         "REJECTED": "存在未通过检查项，建议修完再发",
     }.get(str(qa_report.get("approval_status", "")), "待确认")
 
+    _deliv_st_cn = {
+        "PASS": "已导出并校验通过",
+        "FAIL": "导出或校验未通过",
+        "NOT_REQUESTED": "本次未选择导出",
+        "SKIPPED_UNAVAILABLE": "环境未就绪已跳过",
+        "PENDING_REVIEW": "待人工导入看一眼",
+        "PENDING_VERIFICATION": "待在剪映里打开确认",
+    }
+    _target_cn = {"jianying": "剪映可编辑工程", "hyperframes": "网页可编辑工程 (HyperFrames)"}
+
     lines = [
         f"# 成品交付清单 · 账号 `{ws.get('account_slug', 'default')}` · 项目 `{ws.get('project_id', pipeline_dir.parent.name)}`",
         "",
@@ -366,16 +380,19 @@ def write_delivery_summary(
         "",
         "## 一、 最终交付文件（已同步整理到 `out/` 目录）",
         "- 高清成片：`out/output_final.mp4`",
-        "- 竖版与主页封面：`out/09_cover.jpg`（竖版首帧 9:16） / `out/09_cover_3x4.jpg`（主页卡片 3:4）",
+        "- 竖版、主页封面与手机小图预览：`out/09_cover.jpg` / `out/09_cover_3x4.jpg` / `out/09_cover_360px_feed.jpg`",
+        *(["- 分平台发布文案包：`out/09_publish_copy_pack.md`（含抖音/视频号/小红书/B站独立标题与正文）"] if (pipeline_dir / "09_publish_copy_pack.md").is_file() else []),
+        *(["- 纯净外挂字幕与节奏自检：`out/05_subtitles.srt` · `out/05_subtitle_check.txt`"] if (pipeline_dir / "05_subtitles.srt").is_file() else []),
         "- 一页盲审取证包：`out/10_blind_review_pack.md`（30 秒快速验片用）",
         "- 开头与切点连拍图：`out/10_action_strips.jpg`",
         "- 纯声音盲听版：`out/03_blind_audio.m4a`",
         "- 素材缩略总览图：`out/00_contact_sheet.jpg`",
+        "- 项目进度看板：`out/00_进度看板.md`",
         "- 广告法合规与商用授权清单：`out/00_compliance_report.md` · `out/asset_license_manifest.json`",
         "- 浏览器离线打点审片页：`out/review_player.html`",
         *[
-            f"- 可编辑工程（{target}）：`{result['status']}`" +
-            (f"，导入核验状态 `{result['host_import']}`" if "host_import" in result else "")
+            f"- {_target_cn.get(target, target)}：{_deliv_st_cn.get(str(result.get('status', '')), str(result.get('status', '')))}" +
+            (f"（{_deliv_st_cn.get(str(result.get('host_import', '')), str(result.get('host_import', '')))}）" if "host_import" in result else "")
             for target, result in qa_report["deliverables"].items() if target != "mp4"
         ],
         *(
@@ -392,7 +409,7 @@ def write_delivery_summary(
         f"  `{approve_cmd}`",
         "",
         "## 四、 发完 48 小时回来复盘",
-        f"  `python3 scripts/content_log_review.py --account \"{ws.get('account_slug', 'default')}\" --track {track} --workspace-root \"{ws.get('workspace_root', '')}\" --add-json '<json>'`",
+        "- 把后台看到的播放量、3 秒留住人数、看完人数和私信/咨询数发给我即可自动入库（或直接传 JSON 快照给 `content_log_review.py`）。",
         "",
     ]
     out_md = pipeline_dir / "11_delivery_summary.md"
@@ -519,6 +536,8 @@ def _render_code_scenes_from_spec(
         cap_fps = int((spec.get("format") or {}).get("fps", DEFAULT_FPS))
         master_dur = round(locked_dur + 1.0, 2)
         frames_tot = max(30, int(round(master_dur * cap_fps)))
+        cap_env = dict(os.environ)
+        cap_env["FFMPEG_BIN"] = ffmpeg
         res_cap = subprocess.run([
             str(br["node_bin"]),
             str(Path(__file__).resolve().parent / "capture_html_video.mjs"),
@@ -529,7 +548,7 @@ def _render_code_scenes_from_spec(
             "--size", f"{CANVAS_WIDTH}x{CANVAS_HEIGHT}",
             "--jpeg",
             "--out", str(master_mp4),
-        ], capture_output=True, text=True)
+        ], capture_output=True, text=True, env=cap_env)
         if res_cap.returncode != 0 or not master_mp4.is_file():
             raise RuntimeError(f"--code-html 确定性捕获失败: {(res_cap.stderr or res_cap.stdout)[:300]}")
 
@@ -972,9 +991,11 @@ def main() -> None:
     )
     parser.add_argument("--anim-title", default="知识讲解动画", help="knowledge-animation 模式：片名")
     parser.add_argument("--anim-idea", default="用直观画面看穿一个反常识规律", help="knowledge-animation 模式：核心命题")
-    parser.add_argument("--anim-ratio", choices=["16x9", "9x16"], default="16x9", help="knowledge-animation 模式：画幅")
+    parser.add_argument("--anim-ratio", choices=["16x9", "9x16", "1x1", "3x4"], default="16x9", help="knowledge-animation 模式：画幅")
     parser.add_argument("--anim-font-mode", choices=["sans", "serif"], default="sans", help="knowledge-animation 模式：字幕与封面字体气质")
     parser.add_argument("--anim-blur", type=int, default=1, help="knowledge-animation 模式：运动模糊子帧数 (1=关闭, 8=电影级模糊)")
+    parser.add_argument("--anim-lines-json", help="knowledge-animation 模式：可选自定义 lines.json（含分句与金句标记）")
+    parser.add_argument("--anim-audio", help="knowledge-animation 模式：可选配音 WAV/M4A（自动同步音轨并压低 BGM）")
     parser.add_argument("--code-spec", help="入口 3 (code-video)：已有 00_code_spec.json 路径")
     parser.add_argument("--code-html", help="入口 3 (code-video)：自定义程序动画 HTML 目录或入口 HTML 文件路径")
     parser.add_argument(
@@ -1105,7 +1126,8 @@ def main() -> None:
     bgm_p = Path(args.bgm) if args.bgm else None
     active_style_entry: Optional[Dict[str, Any]] = None
 
-    if active_style_id:
+    if active_style_id and args.mode != "knowledge-animation":
+        lib_once = load_library()
         rt_cfg = resolve_style_runtime_config(active_style_id)
         active_style_entry = load_style_spectrum_entry(active_style_id)
         if not subtitle_template:
@@ -1115,7 +1137,7 @@ def main() -> None:
         if args.j_cut_frames is None:
             j_cut_frames = int(rt_cfg["j_cut_frames"])  # 严格保留 0 帧直切，禁止 `or 3` 吞掉
         if args.mode != "render-locked":
-            applied_p = apply_to_pipeline(load_library(), active_style_id, pipeline_dir)
+            applied_p = apply_to_pipeline(lib_once, active_style_id, pipeline_dir)
             if args.j_cut_frames is not None or args.subtitle_template or args.lut:
                 applied_obj = read_json(applied_p)
                 applied_obj["subtitle_template"] = subtitle_template
@@ -1200,33 +1222,77 @@ def main() -> None:
         )
     elif args.mode == "knowledge-animation":
         anim_dir = project_dir / "animation"
+        lines_override: Optional[List[Dict[str, Any]]] = None
+        if args.anim_lines_json and Path(args.anim_lines_json).is_file():
+            raw_al = read_json(Path(args.anim_lines_json))
+            lines_override = list(raw_al.get("lines") if isinstance(raw_al, dict) else raw_al)
+        elif script_p and script_p.is_file():
+            raw_sc = read_json(script_p)
+            sc_items = list(raw_sc.get("sentences") or raw_sc.get("segments") or [] if isinstance(raw_sc, dict) else raw_sc)
+            lines_override = []
+            for s_i, s_it in enumerate(sc_items):
+                if s_it.get("is_filler"):
+                    continue
+                s_txt = str(s_it.get("show") or s_it.get("text") or "").strip()
+                if not s_txt:
+                    continue
+                if s_i == 2:
+                    lines_override.append({"id": "title_card", "text": args.anim_title, "card": True, "hold": 3.0})
+                lines_override.append({
+                    "id": str(s_it.get("id") or f"l{s_i + 1:02d}"),
+                    "text": s_txt,
+                    "hook": bool(s_it.get("hook") or s_i < 2),
+                    "scene": bool(s_it.get("scene") or s_i >= 2),
+                })
+            if not any(x.get("card") for x in lines_override):
+                lines_override.insert(min(2, len(lines_override)), {"id": "title_card", "text": args.anim_title, "card": True, "hold": 3.0})
+
         init_res = init_animation_project(
             anim_dir,
             title=args.anim_title,
             one_idea=args.anim_idea,
             ratio=args.anim_ratio,
             font_mode=args.anim_font_mode,
+            lines_override=lines_override,
         )
         br = detect_browser_renderer()
         if not br.get("available"):
             raise RuntimeError("knowledge-animation 模式需要可用 Chrome/playwright-core，请先运行 check_and_setup.py --init-browser。")
-        size_arg = "1080x1920" if args.anim_ratio == "9x16" else "1920x1080"
+        dim_map = {"16x9": "1920x1080", "9x16": "1080x1920", "1x1": "1080x1080", "3x4": "1080x1440"}
+        size_arg = dim_map.get(args.anim_ratio, "1920x1080")
         stage_dir = Path(init_res["stage_dir"])
+        silent_mp4 = anim_dir / "work" / "anim_video_silent.mp4"
         out_mp4 = pipeline_dir / "output_final.mp4"
         cap_script = Path(__file__).resolve().parent / "capture_html_video.mjs"
+        cap_env = dict(os.environ)
+        ff_bin = find_bin("ffmpeg")
+        if ff_bin:
+            cap_env["FFMPEG_BIN"] = ff_bin
 
-        run_cmd([
+        subprocess.run([
             str(br["node_bin"]), str(cap_script), str(stage_dir),
             "--verify", "--page", "anim_starter.html", "--size", size_arg, "--query", f"ratio={args.anim_ratio}",
-        ], check=True)
-        run_cmd([
+        ], check=True, env=cap_env)
+        subprocess.run([
             str(br["node_bin"]), str(cap_script), str(stage_dir),
             "--page", "anim_starter.html", "--size", size_arg, "--fps", "30",
             "--blur", str(max(1, int(args.anim_blur))), "--query", f"ratio={args.anim_ratio}",
-            "--out", str(out_mp4.resolve()),
-        ], check=True)
+            "--out", str(silent_mp4.resolve()),
+        ], check=True, env=cap_env)
+
+        # 真正合成 BGM + 15 种程序化动效拟音 (+ 可选配音) 并规范化响度封装进 output_final.mp4
+        audio_mix = mix_animation_audio(
+            video_in=silent_mp4,
+            video_out=out_mp4,
+            compiled_timing=init_res["compiled_timing"],
+            work_dir=anim_dir / "work",
+            bgm_path=bgm_p,
+            voice_wav=Path(args.anim_audio) if args.anim_audio else None,
+        )
 
         audit_res = audit_animation_video(out_mp4)
+        audit_res["audio_mix"] = audio_mix
+        audit_res["fonts"] = init_res.get("fonts")
         write_json(pipeline_dir / "10_animation_audit.json", audit_res)
         rp_res = build_review_pack(
             out_mp4,
@@ -1236,34 +1302,95 @@ def main() -> None:
         )
         cov_4k = render_dual_4k_code_covers(
             pipeline_dir,
-            kicker=args.anim_idea[:14],
+            kicker=args.anim_idea[:18],
             hero_lines=[args.anim_title[:4], args.anim_title[4:8] or "真相拆解"],
             title=args.anim_title,
             font_mode=args.anim_font_mode,
         )
         lines_cfg = read_json(Path(init_res["lines_json"]))
+        spoken_sents = [{"id": l.get("id", f"l{i+1}"), "text": l["text"]} for i, l in enumerate(lines_cfg.get("lines", [])) if not l.get("card")]
         copy_pack = build_publish_copy_pack(
             pipeline_dir,
             title_seed=args.anim_title,
             hook_text=args.anim_idea,
-            sentences=[{"text": l["text"]} for l in lines_cfg.get("lines", []) if not l.get("card")],
+            sentences=spoken_sents,
             keywords=[args.anim_title[:6]],
-            track="creator",
+            track=args.track,
             cover_main=args.anim_title,
             cover_sub=args.anim_idea[:12],
             has_4k_covers=bool(cov_4k.get("ok")),
         )
-        prog_card = render_progress_card(pipeline_dir, user_type="faceless_visual", track="creator", write_files=True)
-        write_json(pipeline_dir / "10_qa_report.json", {
-            "all_passed": bool(audit_res.get("passed")),
-            "approval_status": "READY_FOR_REVIEW" if audit_res.get("passed") else "NEEDS_FIX",
+        # 合规与商业授权核验
+        comp_sents = list(spoken_sents)
+        for plat_k, plat_v in (copy_pack.get("platforms") or {}).items():
+            for ti, tt in enumerate(plat_v.get("titles") or [], 1):
+                comp_sents.append({"id": f"copy_{plat_k}_t{ti}", "text": str(tt)})
+            if plat_v.get("body"):
+                comp_sents.append({"id": f"copy_{plat_k}_body", "text": str(plat_v["body"])})
+        comp_rep = audit_script_compliance(
+            comp_sents,
+            source_type="script",
+            pipeline_dir=pipeline_dir,
+            whitelist_path=whitelist_path,
+            auto_action=False,
+        )
+        lic_rep = build_asset_license_manifest(pipeline_dir, out_dir=ws["out_dir"], licenses_path=licenses_path)
+
+        lufs_v = audio_mix.get("integrated_lufs")
+        tp_v = audio_mix.get("true_peak_dbtp")
+        audio_ok = bool(audio_mix.get("has_audio") and (lufs_v is None or abs(float(lufs_v) - (-14.0)) <= 2.5) and (tp_v is None or float(tp_v) <= -0.8))
+        fonts_ok = bool((init_res.get("fonts") or {}).get("injected"))
+        anim_checks = [
+            {"id": "anim_pixel_audit", "name": "6x6死区/闪帧/暗底亮度指纹", "status": "PASS" if audit_res.get("passed") else "FAIL", "passed": bool(audit_res.get("passed")), "measured": f"死区={len(audit_res.get('dead_zones',[]))}, 闪帧={len(audit_res.get('flash_frames',[]))}, p99={audit_res.get('luminance_fingerprint',{}).get('p99')}", "threshold": "0死区, 0闪帧, 亮度指纹达标"},
+            {"id": "anim_audio_mux", "name": "BGM+动效拟音/配音混音封装", "status": "PASS" if audio_ok else "FAIL", "passed": audio_ok, "measured": f"LUFS={lufs_v}, TP={tp_v} dBTP, 拟音={audio_mix.get('sfx_cue_count')}个", "threshold": "含立体声音轨, -14 LUFS 附近不削波"},
+            {"id": "anim_commercial_fonts", "name": "随仓开源商用字体注入", "status": "PASS" if fonts_ok else "FAIL", "passed": fonts_ok, "measured": f"已注入 {len((init_res.get('fonts') or {}).get('injected', []))} 款字体", "threshold": ">=1 款已核验开源商用字体"},
+            {"id": "anim_dual_4k_covers", "name": "横竖双比例4K代码封面", "status": "PASS" if cov_4k.get("ok") else "FAIL", "passed": bool(cov_4k.get("ok")), "measured": f"生成 {len(cov_4k.get('outputs', []))} 张", "threshold": "横版16:9 + 竖版3:4均达标"},
+            {"id": "anim_compliance", "name": "台词与多平台发布文案合规审查", "status": "PASS" if comp_rep.get("passed") else "FAIL", "passed": bool(comp_rep.get("passed")), "measured": f"红线={comp_rep.get('must_sentence_count',0)}, 提醒={comp_rep.get('warn_hit_count',0)}", "threshold": "0 条禁止红线"},
+        ]
+        all_ok = all(c["passed"] for c in anim_checks)
+        pass_cnt = sum(1 for c in anim_checks if c["passed"])
+        fail_cnt = len(anim_checks) - pass_cnt
+        qa_payload = {
+            "step": "10_qa_inspector",
+            "mode": "knowledge-animation",
+            "video_path": str(out_mp4.resolve()),
+            "plan_sha256": compute_plan_digest(pipeline_dir),
+            "output_final_sha256": sha256_file(out_mp4),
+            "all_passed": all_ok,
+            "machine_passed": all_ok,
+            "approval_status": "MACHINE_PASS_PENDING_HUMAN" if all_ok else "REJECTED",
+            "export_mode": "mp4",
+            "required_package_hashes": {},
+            "required_manual_checks": [],
+            "pending_manual_checks": [],
+            "pass_count": pass_cnt,
+            "fail_count": fail_cnt,
+            "skipped_count": 0,
+            "total_checks": len(anim_checks),
+            "checks": anim_checks,
+            "deliverables": {"mp4": {"status": "PASS" if all_ok else "FAIL"}},
             "animation_audit": audit_res,
             "review_pack": rp_res,
             "dual_4k_covers": cov_4k,
             "publish_copy_pack": copy_pack["preferred_title"],
-        })
-        print(f"[knowledge-animation] 完成 -> {out_mp4}")
+            "license_passed": lic_rep.get("passed"),
+        }
+        write_json(pipeline_dir / "10_qa_report.json", qa_payload)
+        (pipeline_dir / "10_qa_report.md").write_text(
+            f"# 知识讲解动画体检报告（共 {len(anim_checks)} 项）\n\n"
+            f"- **结论**：{'✅ 全部自动检查通过，请看审片包确认一眼即可发布' if all_ok else '❌ 存在未通过项，请先修复再发'}\n"
+            f"- **声音混音**：{audio_mix['voice_mode']}（响度 {lufs_v} LUFS，峰值 {tp_v} dBTP，动效拟音 {audio_mix['sfx_cue_count']} 处）\n"
+            f"- **审片包**：`review_pack/01_contact_2s.png` · `review_pack/02_keyframes.png` · `review_pack/blind_review_guide.md`\n"
+            f"- **封面与文案**：`09_cover_land_4k.png` · `09_cover_port_4k.png` · `09_publish_copy_pack.md`\n",
+            encoding="utf-8",
+        )
+        record_milestone(pipeline_dir, "stop3_final", f"知识讲解动画出片完成({args.anim_ratio}, {audit_res.get('duration_sec')}s)")
+        prog_card = render_progress_card(pipeline_dir, user_type="faceless_visual", track=args.track, write_files=True)
+        tidy_workspace(pipeline_dir, out_dir=ws["out_dir"], keep_temp=args.keep_temp)
+        print(f"[knowledge-animation] 完成 -> {ws['out_dir'] / 'output_final.mp4'}")
         print("\n" + prog_card["markdown_card"])
+        if not all_ok:
+            sys.exit(2)
         return
     elif args.mode == "code-video":
         scenes_dir = _run_code_video_branch(

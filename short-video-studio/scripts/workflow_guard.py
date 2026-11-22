@@ -41,6 +41,7 @@ from common import (
     find_bin,
     find_commercial_font,
     maybe_reexec_in_venv,
+    parse_fps,
     read_json,
     run_cmd,
     sha256_file,
@@ -102,6 +103,9 @@ DELIVERABLE_SYNC_FILES = (
     "09_cover.jpg",
     "09_cover_3x4.jpg",
     "09_ui_safe_preview.jpg",
+    "09_cover_360px_feed.jpg",
+    "09_cover_land_4k.png",
+    "09_cover_port_4k.png",
     "09_cover_v1.jpg",
     "09_cover_v2.jpg",
     "09_cover_v3.jpg",
@@ -110,9 +114,16 @@ DELIVERABLE_SYNC_FILES = (
     "09_hook_v3.mp4",
     "09_title_cover.md",
     "09_title_cover.json",
+    "09_publish_copy_pack.md",
+    "09_publish_copy_pack.json",
     "09_hook_variants.json",
+    "05_subtitles.srt",
+    "05_subtitle_check.txt",
     "03_blind_audio.m4a",
     "00_contact_sheet.jpg",
+    "00_script_lint.md",
+    "00_口播纯享稿.txt",
+    "00_拍摄执行方案.md",
     "00_compliance_report.md",
     "00_compliance_report.json",
     "asset_license_manifest.json",
@@ -122,6 +133,7 @@ DELIVERABLE_SYNC_FILES = (
     "render_profile.json",
     "10_qa_report.md",
     "10_qa_report.json",
+    "10_animation_audit.json",
     "10_blind_review_pack.md",
     "10_action_strips.jpg",
     "10_code_verify_evidence.json",
@@ -382,9 +394,9 @@ def approve_final(
                     dtxt = doc_p.read_text(encoding="utf-8")
                     for phrase in pending_phrases:
                         dtxt = dtxt.replace(phrase, "已通过全部检查并人工确认")
-                    dtxt = dtxt.replace("MACHINE_PASS_PENDING_HUMAN", "已通过全部检查")
-                    dtxt = dtxt.replace("REVIEW_REQUIRED", "已人工复核")
-                    dtxt = dtxt.replace("APPROVED", "已通过全部检查并人工确认")
+                    dtxt = re.sub(r"\bMACHINE_PASS_PENDING_HUMAN\b", "已通过全部检查", dtxt)
+                    dtxt = re.sub(r"\bREVIEW_REQUIRED\b", "已人工复核", dtxt)
+                    dtxt = re.sub(r"\bAPPROVED\b", "已通过全部检查并人工确认", dtxt)
                     doc_p.write_text(dtxt, encoding="utf-8")
                     if doc_p.parent == target_out:
                         updated_out_docs.append(doc_name)
@@ -617,7 +629,7 @@ def run_replication_diff(
          "ok": abs(out["mean_luma"] - ref["mean_luma"]) <= 18.0, "tol": "±18"},
         {"dim": "画面饱和度均值", "display_dim": "画面色彩鲜艳度", "ref": ref["mean_sat"], "out": out["mean_sat"],
          "ok": abs(out["mean_sat"] - ref["mean_sat"]) <= 24.0, "tol": "±24"},
-        {"dim": "字幕字色 ΔE", "display_dim": "字幕颜色接近度", "ref": str(ref["sub_lab"]), "out": f"颜色偏差={de:.1f}",
+        {"dim": "字幕字色 ΔE", "display_dim": "字幕颜色接近度", "ref": "参考字幕主色", "out": f"色差={de:.1f}",
          "ok": de <= 15.0, "tol": "偏差 ≤ 15"},
     ]
 
@@ -766,17 +778,8 @@ def generate_action_strips(
         return None
 
     # 计算实际帧率以支持单遍 FFmpeg select='eq(n,...)' 极速抽帧（40 进程 -> 1 进程）
-    fps_val = float(DEFAULT_FPS)
-    try:
-        r_str = str((vs or {}).get("avg_frame_rate") or (vs or {}).get("r_frame_rate") or f"{DEFAULT_FPS}/1")
-        if "/" in r_str:
-            num, den = r_str.split("/", 1)
-            if float(den) > 0:
-                fps_val = max(1.0, float(num) / float(den))
-        else:
-            fps_val = max(1.0, float(r_str))
-    except Exception:
-        fps_val = float(DEFAULT_FPS)
+    r_str = str((vs or {}).get("avg_frame_rate") or (vs or {}).get("r_frame_rate") or f"{DEFAULT_FPS}/1")
+    fps_val = max(1.0, float(parse_fps(r_str) or DEFAULT_FPS))
 
     max_frame_idx = max(0, int(dur * fps_val) - 1)
     dedup_targets: List[Tuple[int, float, str]] = []
@@ -819,7 +822,7 @@ def generate_action_strips(
                     "-i", str(video_path),
                     "-t", f"{max_end_t:.3f}",
                     "-vf", f"select='{select_expr}',scale=240:-2",
-                    "-vsync", "0",
+                    "-fps_mode", "passthrough",
                     "-q:v", "4",
                     str(td_path / "strip_%03d.jpg"),
                 ],
@@ -932,10 +935,17 @@ def tidy_workspace(
         if src.is_file():
             shutil.copy2(src, target_out / fname)
             synced.append(fname)
+    rp_src = pipeline_dir / "review_pack"
+    if rp_src.is_dir():
+        rp_dst = target_out / "review_pack"
+        if rp_dst.exists():
+            shutil.rmtree(rp_dst, ignore_errors=True)
+        shutil.copytree(rp_src, rp_dst)
+        synced.append("review_pack/")
     write_json(target_out / "archive_receipt.json", {
         "plan_sha256": compute_plan_digest(pipeline_dir),
         "files": {name: sha256_file(target_out / name) for name in synced
-                  if name not in ("10_qa_report.json", "10_qa_report.md")},
+                  if not name.endswith("/") and name not in ("10_qa_report.json", "10_qa_report.md") and (target_out / name).is_file()},
     })
 
     if keep_temp:
@@ -1037,6 +1047,8 @@ def render_progress_card(
     inv = read_json(inv_p) if inv_p.is_file() else {}
     qa_p = pipeline_dir / "10_qa_report.json"
     qa = read_json(qa_p) if qa_p.is_file() else {}
+    anim_aud_p = pipeline_dir / "10_animation_audit.json"
+    anim_aud = read_json(anim_aud_p) if anim_aud_p.is_file() else {}
     lock_st = _load_lock_state(pipeline_dir)
 
     eff_track = str(track or prev_card.get("track") or ("store" if edl.get("style_id") in ("style_04", "style_05", "style_07", "style_13", "style_14", "style_17", "style_18", "style_20", "style_21", "style_23") else "creator"))
@@ -1044,7 +1056,7 @@ def render_progress_card(
         u_type = user_type
     elif prev_card.get("user_type") in USER_TYPES:
         u_type = str(prev_card["user_type"])
-    elif (pipeline_dir / "00_code_spec.json").is_file() or float(edl.get("broll_ratio_target") or 0.0) >= 0.85:
+    elif anim_aud_p.is_file() or (pipeline_dir / "00_code_spec.json").is_file() or float(edl.get("broll_ratio_target") or 0.0) >= 0.85:
         u_type = "faceless_visual"
     elif inv_p.is_file() and not (pipeline_dir / "shot_card.md").is_file() and not (pipeline_dir.parent / "shot_card.md").is_file():
         u_type = "footage_organizer"
@@ -1052,11 +1064,11 @@ def render_progress_card(
         u_type = "store_from_zero" if eff_track == "store" else "creator_talking"
 
     user_type_names = {
-        "store_from_zero": "实体店从零拍拉客",
-        "creator_talking": "个人博主说话视频提质感",
+        "store_from_zero": "实体店从零拍",
+        "creator_talking": "个人博主口播提质感",
         "footage_organizer": "手机存货一键挑剪",
-        "faceless_visual": "全程不露脸 / 动态图解短片",
-        "post_review": "发片后数据复盘调优",
+        "faceless_visual": "社恐不露脸 / 纯图解动画",
+        "post_review": "发片后复盘调优",
     }
     routes = {
         "store_from_zero": [
@@ -1101,8 +1113,22 @@ def render_progress_card(
 
     media_items = mf.get("items") or inv.get("items") or []
     usable_cnt = sum(1 for it in media_items if it.get("video_grade", "usable") != "ng")
-    dur_sec = float(edl.get("total_duration_sec") or ae.get("locked_duration_sec") or 0.0)
+    dur_sec = float(
+        edl.get("total_duration_sec")
+        or ae.get("locked_duration_sec")
+        or anim_aud.get("duration_sec")
+        or 0.0
+    )
     clip_cnt = len(edl.get("clips") or [])
+    is_anim_mode = bool(anim_aud)
+    has_jy_draft = (pipeline_dir / "jianying_draft").is_dir() or (pipeline_dir.parent / "out" / "jianying_draft").is_dir()
+    has_4k_covers = (pipeline_dir / "09_cover_land_4k.png").is_file() or (pipeline_dir / "09_cover_port_4k.png").is_file()
+    has_copy_pack = (pipeline_dir / "09_publish_copy_pack.md").is_file()
+    aspect_label = (
+        "横屏"
+        if is_anim_mode and int(anim_aud.get("width", 1920)) > int(anim_aud.get("height", 1080))
+        else "竖屏"
+    )
     gaps = edl.get("deictic_gaps") or []
 
     missing_items: List[str] = []
@@ -1134,7 +1160,13 @@ def render_progress_card(
             missing_items.append("需要提供发布后的播放、留存、点赞或私信数字")
     elif has_final and is_approved:
         cur_step = total_steps
-        ai_status = f"成片（全长 {dur_sec:.1f} 秒，共 {clip_cnt} 个画面段落）、主页封面和可编辑草稿包已全部打包归档，原素材完好未动。"
+        seg_desc = f"，共 {clip_cnt} 个画面段落" if clip_cnt > 0 else ""
+        pack_parts = ["封面图"]
+        if has_copy_pack:
+            pack_parts.append("分平台发布文案")
+        if has_jy_draft:
+            pack_parts.append("可编辑草稿包")
+        ai_status = f"成片（全长 {dur_sec:.1f} 秒{seg_desc}）、{'与'.join(pack_parts)}已全部打包归档，原素材完好未动。"
         user_action = "全部工序已圆满完工！你可以直接拿去发布，或者告诉我还想做什么："
         choices = [
             "回 A：直接去发片，两天后拿数据回来找你复盘",
@@ -1144,11 +1176,22 @@ def render_progress_card(
         remaining = "全部完成（0 项待办，随时可发片）。"
     elif has_final:
         cur_step = total_steps
-        qa_pass = bool(qa.get("all_passed") or qa.get("machine_passed", True))
-        ai_status = (
-            f"已经为你合成好 {dur_sec:.1f} 秒高清竖屏成片、3:4 主页封面及剪映草稿包，"
-            + ("并完成了声音、画面与字幕遮挡自动检查（全部通过）。" if qa_pass else "并附上了自动体检提醒。")
+        qa_pass = bool(qa.get("all_passed", False)) if qa else False
+        deliverable_bits = [f"{dur_sec:.1f} 秒高清{aspect_label}成片"]
+        if has_4k_covers:
+            deliverable_bits.append("横竖双比例超清封面")
+        else:
+            deliverable_bits.append("主页大图封面")
+        if has_copy_pack:
+            deliverable_bits.append("分平台发布文案")
+        if has_jy_draft:
+            deliverable_bits.append("剪映草稿包")
+        qa_tail = (
+            "并完成了声音、画面与字幕自动检查（全部通过）。"
+            if qa_pass
+            else ("并附上了自动体检提醒，建议先看一眼红色提醒项。" if qa else "请先打开成片核对画面与声音。")
         )
+        ai_status = f"已经为你合成好{'、'.join(deliverable_bits)}，" + qa_tail
         user_action = "请最后看一眼成品视频和封面，直接回个字母就能收工："
         choices = [
             "回 A：看过了很满意，确认收工拿片",

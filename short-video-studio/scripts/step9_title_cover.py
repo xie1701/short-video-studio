@@ -296,8 +296,10 @@ def build_publish_copy_pack(
     ]
     core_line = summary_pts[1] if len(summary_pts) > 1 else clean_hook
 
+    clean_seed = re.sub(r"[。！？!?]+$", "", str(title_seed or "")).strip()
+    primary_dy = (clean_seed or clean_hook)[:28]
     dy_titles = [
-        clean_hook[:28],
+        primary_dy,
         f"别猜了，把「{top_kw[:6]}」和「{sec_kw[:6]}」摆在一起看"[:28],
         f"为什么大家总在「{top_kw[:6]}」上吃亏？看完就明白"[:28],
     ]
@@ -445,6 +447,15 @@ def render_dual_4k_code_covers(
             "window.SVS_COVER_DATA = " + json.dumps(cov_data, ensure_ascii=False, indent=2) + ";\n",
             encoding="utf-8",
         )
+        try:
+            from knowledge_animator import inject_stage_commercial_fonts
+            inject_stage_commercial_fonts(
+                tdp,
+                extra_text=f"{cov_data['kicker']}{''.join(cov_data['hero_lines'])}{cov_data['title']}",
+                html_files=("cover_4k.html",),
+            )
+        except Exception:
+            pass
         cmd = [
             str(br["node_bin"]),
             str(SCRIPTS_DIR / "capture_html_video.mjs"),
@@ -457,7 +468,11 @@ def render_dual_4k_code_covers(
         ]
         if with_guides:
             cmd.append("--guides")
-        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        cap_env = dict(os.environ)
+        ff = find_bin("ffmpeg")
+        if ff:
+            cap_env["FFMPEG_BIN"] = ff
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", env=cap_env)
         if proc.returncode != 0:
             return {"ok": False, "reason": (proc.stderr or proc.stdout)[-300:], "outputs": []}
         try:
@@ -666,8 +681,6 @@ def run_step9(
             draw.text((86 + lw, 1296), p_right, fill=(255, 255, 255, 255), font=f_cta, stroke_width=6, stroke_fill=(0, 0, 0, 255))
 
         card_y = 262
-        main_txt_col = (255, 42, 36, 255)
-        card_fill = (10, 12, 16, 255)
         l1_w = int(draw.textbbox((0, 0), fit_l1, font=f_l1, stroke_width=7)[2])
         thumb_eval_box = (80, 256, min(860, max(380, 88 + l1_w + 24)), 460)
     elif cover_layout_id == "top_giant_bottom_sub":
@@ -868,6 +881,26 @@ def run_step9(
     crop_3x4.save(cover_3x4_path, quality=92)
 
     _render_ui_safe_preview(composed, ui_preview_path)
+
+    # 360px 手机信息流真实缩略对照图（左侧单列流 360px 首帧 + 右侧双列瀑布流 176px 主页封面，一眼看清手机上字清不清）
+    feed_preview_path = pipeline_dir / "09_cover_360px_feed.jpg"
+    try:
+        feed_canvas = Image.new("RGB", (600, 720), (18, 20, 26))
+        fd = ImageDraw.Draw(feed_canvas)
+        f_lbl = get_cached_font(font_path, 20)
+        card_916 = composed.resize((320, 568), Image.Resampling.LANCZOS)
+        card_34 = composed.crop((0, 240, CANVAS_WIDTH, 1680)).resize((180, 240), Image.Resampling.LANCZOS)
+        feed_canvas.paste(card_916, (24, 56))
+        feed_canvas.paste(card_34, (382, 56))
+        fd.text((24, 22), "手机单列全屏预览 (320px)", fill=(226, 232, 240), font=f_lbl)
+        fd.text((382, 22), "双列瀑布流预览 (180px)", fill=(250, 204, 21), font=f_lbl)
+        fd.text((382, 316), "一眼辨字检查：", fill=(226, 232, 240), font=f_lbl)
+        fd.text((382, 348), "不放大能看清大字吗？", fill=(148, 163, 184), font=f_lbl)
+        fd.text((382, 380), "主体有没有被切掉？", fill=(148, 163, 184), font=f_lbl)
+        feed_canvas.save(feed_preview_path, quality=92)
+    except Exception:
+        pass
+
     # 180px 缩略图真实像素对比度与清晰度验收（直接从最终合成像素采样，消灭硬编码黑白 21:1 假检）
     thumb_180 = composed.resize((180, 320))
     tx0 = max(0, min(176, int(thumb_eval_box[0] * 180 / CANVAS_WIDTH)))
@@ -945,6 +978,7 @@ def run_step9(
         "cover_jpg": str(cover_path.resolve()),
         "cover_3x4_jpg": str(cover_3x4_path.resolve()),
         "ui_safe_preview_jpg": str(ui_preview_path.resolve()),
+        "feed_360px_preview_jpg": str(feed_preview_path.resolve()) if feed_preview_path.is_file() else None,
         "publish_copy_pack_md": str((pipeline_dir / "09_publish_copy_pack.md").resolve()),
         "publish_copy_pack_json": str((pipeline_dir / "09_publish_copy_pack.json").resolve()),
         "dual_4k_covers": dual_4k_res,

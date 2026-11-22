@@ -2,7 +2,7 @@
 """
 「风格谱 (Style Spectrum)」运行时应用与 HyperFrames 样板导出器
 1. resolve_style_runtime_config(style_id): 供 run_pipeline.py 等脚本读取风格对应的模板、LUT、J-cut 与节奏配置。
-2. --apply-pipeline: 将 style_applied.json 落盘至流水线目录，绝不污染全局 assets/luts/。
+2. --apply-pipeline: 将 style_spectrum_applied.json 落盘至流水线目录，绝不污染全局 assets/luts/。
 3. --export-hyperframes: 导出无 STYLE-XX 徽标泄漏、零外部 CDN 的 HyperFrames 风格样板 HTML。
 """
 
@@ -75,6 +75,11 @@ def resolve_style_runtime_config(style_id: str) -> Dict[str, Any]:
         "title_cover_layout": entry.get("title_cover_layout") or {},
         "transition_and_packaging": entry.get("transition_and_packaging") or {},
         "packaging_techniques": entry.get("packaging_techniques") or {},
+        "pip_composition_spec": entry.get("pip_composition_spec") or {},
+        "giant_text_spec": entry.get("giant_text_spec") or {},
+        "audio_and_sfx": entry.get("audio_and_sfx") or {},
+        "shot_distribution": entry.get("shot_distribution") or {},
+        "beat_alignment": beat,
         "commercial_safe_font": entry.get("commercial_safe_font") or "AlimamaShuHeiTi-Bold.otf",
         "source_jianying_font": entry.get("source_jianying_font") or "",
         "plain_cn_pitch": entry.get("plain_cn_pitch") or "",
@@ -187,6 +192,11 @@ def apply_to_pipeline(lib: Dict[str, Any], style_id: str, pipeline_dir: Path) ->
         "dual_bgm_structure": entry.get("dual_bgm_structure"),
         "multi_zone_flower_spec": entry.get("multi_zone_flower_spec"),
         "packaging_techniques": entry.get("packaging_techniques"),
+        "pip_composition_spec": entry.get("pip_composition_spec"),
+        "giant_text_spec": entry.get("giant_text_spec"),
+        "audio_and_sfx": entry.get("audio_and_sfx"),
+        "shot_distribution": entry.get("shot_distribution"),
+        "beat_alignment": entry.get("beat_alignment"),
         "commercial_safe_font": entry.get("commercial_safe_font"),
         "source_jianying_font": entry.get("source_jianying_font"),
         "plain_cn_pitch": entry.get("plain_cn_pitch"),
@@ -197,12 +207,11 @@ def apply_to_pipeline(lib: Dict[str, Any], style_id: str, pipeline_dir: Path) ->
 
 
 def main() -> None:
-    maybe_reexec_in_venv()
     parser = argparse.ArgumentParser(description="应用「风格谱」至流水线或导出 HyperFrames 样板")
     parser.add_argument("--list", action="store_true", help="列出全部风格谱")
     parser.add_argument("--style-id", help="风格 ID（如 style_02）")
     parser.add_argument("--apply-pipeline", help="目标流水线目录")
-    parser.add_argument("--export-hyperframes", help="导出 HyperFrames HTML 文件路径")
+    parser.add_argument("--export-hyperframes", help="导出 HyperFrames HTML 目录或文件路径")
     parser.add_argument("--duration", type=float, default=15.0, help="样板时长（秒）")
     parser.add_argument("--title", default="核心视觉样板", help="样板标题")
     parser.add_argument("--print-config", action="store_true", help="打印运行时 JSON 配置")

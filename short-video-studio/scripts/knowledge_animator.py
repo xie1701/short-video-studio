@@ -25,12 +25,21 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 from common import (
     ASSETS_DIR,
+    TARGET_LUFS,
     detect_browser_renderer,
+    ffprobe_media,
     find_bin,
+    find_commercial_font,
     maybe_reexec_in_venv,
+    measure_lufs_ebur128,
+    parse_fps,
     read_json,
+    read_wav_as_48k_stereo,
     write_json,
+    write_wav_48k_stereo,
 )
+from subset_fonts import collect_project_chars, subset_font_file
+from synth_motion_sfx import mix_sfx_cues
 
 if __name__ == "__main__":
     maybe_reexec_in_venv()
@@ -87,7 +96,7 @@ def compile_animation_timeline(
         ae = read_json(Path(audio_events_path))
         audio_map = list(ae.get("sentences") or [])
 
-    canvas_w = 1080 if ratio == "9x16" else 1920
+    canvas_w = 1920 if ratio == "16x9" else 1080
     compiled: List[Dict[str, Any]] = []
     warnings: List[str] = []
     cursor = start_t
@@ -193,6 +202,176 @@ def compile_animation_timeline(
     return payload
 
 
+def inject_stage_commercial_fonts(
+    stage_dir: Path,
+    extra_text: str = "",
+    html_files: Tuple[str, ...] = ("anim_starter.html", "cover_4k.html"),
+) -> Dict[str, Any]:
+    """将随仓开源商用字体（阿里妈妈数黑体 -> SVSSans、思源宋体 Heavy -> SVSSerif）子集化并注入 HTML @font-face。"""
+    sd = Path(stage_dir).resolve()
+    fonts_dir = sd / "fonts"
+    fonts_dir.mkdir(parents=True, exist_ok=True)
+    chars = collect_project_chars([sd, sd.parent / "work"], extra_text=extra_text)
+
+    sans_src = find_commercial_font(["AlimamaShuHeiTi-Bold.otf"], verified_only=True)
+    serif_src = find_commercial_font(["SourceHanSerifCN-Heavy.otf", "SourceHanSerifCN-Bold.otf"], verified_only=True)
+    css_rules: List[str] = []
+    injected: List[Dict[str, Any]] = []
+
+    for fam, src_s in (("SVSSans", sans_src), ("SVSSerif", serif_src)):
+        if not src_s:
+            continue
+        src_p = Path(src_s)
+        ext = src_p.suffix.lower() or ".otf"
+        dst_p = fonts_dir / f"{src_p.stem}{ext}"
+        res = subset_font_file(src_p, dst_p, chars)
+        fmt = "opentype" if ext == ".otf" else ("truetype" if ext == ".ttf" else "woff2")
+        css_rules.append(
+            f"@font-face {{ font-family: '{fam}'; src: url('fonts/{dst_p.name}') format('{fmt}'); "
+            f"font-weight: 100 900; font-style: normal; font-display: block; }}"
+        )
+        injected.append({"family": fam, "file": str(dst_p), "status": res.get("status")})
+
+    css_block = "\n    ".join(css_rules)
+    if css_block:
+        for hf in html_files:
+            hp = sd / hf
+            if not hp.is_file():
+                continue
+            raw = hp.read_text(encoding="utf-8")
+            if "/* @fonts */" in raw:
+                hp.write_text(raw.replace("/* @fonts */", css_block), encoding="utf-8")
+    return {"fonts_dir": str(fonts_dir), "injected": injected, "char_count": len(set(chars))}
+
+
+def mix_animation_audio(
+    video_in: Path,
+    video_out: Path,
+    compiled_timing: Dict[str, Any],
+    work_dir: Path,
+    bgm_path: Optional[Path] = None,
+    voice_wav: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """
+    为知识讲解动画合成真实音轨并无损封装进成片 MP4：
+    - 按 timing.js 的金句 / 片名卡 / 场景切换事件通过 synth_motion_sfx.py 对齐生成 15 种拟音；
+    - 叠加 CC0 真录 BGM（有配音时自动压低背景乐）；
+    - 经 FFmpeg 响度控制统一至 -14.0 LUFS / TP <= -1.5 dBTP，彻底消灭无声成片。
+    """
+    ffmpeg = find_bin("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("需要 ffmpeg 封装动画音轨。")
+    wd = Path(work_dir).resolve()
+    wd.mkdir(parents=True, exist_ok=True)
+
+    meta = ffprobe_media(video_in)
+    dur_sec = max(1.0, float(meta.get("format", {}).get("duration") or compiled_timing.get("total_sec") or 8.0))
+    sr = 48000
+    n_samples = max(sr, int(round(dur_sec * sr)))
+
+    # 1) 根据时间线节点生成峰值对齐动效拟音
+    cues: List[Dict[str, Any]] = []
+    for idx, ln in enumerate(compiled_timing.get("lines") or []):
+        st = float(ln.get("start", 0.0))
+        if ln.get("card"):
+            cues.append({"t": max(0.05, st - 0.12), "sfx": "riser", "gain": 0.45, "align": "end"})
+            cues.append({"t": st, "sfx": "impact", "gain": 0.72, "align": "peak"})
+            cues.append({"t": st + 0.12, "sfx": "chime", "gain": 0.42})
+        elif ln.get("hook"):
+            cues.append({"t": st, "sfx": "whoosh_in" if idx == 0 else "pop", "gain": 0.58})
+        elif ln.get("scene"):
+            cues.append({"t": st, "sfx": "swish", "gain": 0.48})
+        else:
+            cues.append({"t": st, "sfx": "tick", "gain": 0.28})
+    sfx_wav_p = wd / "anim_sfx_track.wav"
+    sfx_arr = mix_sfx_cues(cues, total_duration_sec=dur_sec, out_wav=sfx_wav_p)
+    if len(sfx_arr) < n_samples:
+        sfx_arr = np.pad(sfx_arr, ((0, n_samples - len(sfx_arr)), (0, 0)))
+    sfx_arr = sfx_arr[:n_samples]
+
+    # 2) 加载 CC0 BGM 并无缝循环至全片等长
+    eff_bgm = Path(bgm_path) if bgm_path and Path(bgm_path).is_file() else (ASSETS_DIR / "sound_vibe" / "bgm" / "style_11_bgm.m4a")
+    if not eff_bgm.is_file():
+        cands = sorted((ASSETS_DIR / "sound_vibe" / "bgm").glob("*.m4a"))
+        eff_bgm = cands[0] if cands else eff_bgm
+    bgm_arr = np.zeros((n_samples, 2), dtype=np.float32)
+    used_bgm_file: Optional[str] = None
+    if eff_bgm.is_file():
+        b_raw, _ = read_wav_as_48k_stereo(eff_bgm, target_sr=sr)
+        if len(b_raw) > 1000:
+            rep = int(math.ceil(n_samples / float(len(b_raw)))) + 1
+            bgm_arr = np.tile(b_raw, (rep, 1))[:n_samples].astype(np.float32)
+            used_bgm_file = str(eff_bgm.resolve())
+
+    # 3) 可选配音轨（存在时压低 BGM，否则以音乐+拟音为主体叙事声场）
+    has_voice = bool(voice_wav and Path(voice_wav).is_file())
+    voice_arr = np.zeros((n_samples, 2), dtype=np.float32)
+    if has_voice and voice_wav is not None:
+        v_raw, _ = read_wav_as_48k_stereo(Path(voice_wav), target_sr=sr)
+        copy_n = min(n_samples, len(v_raw))
+        voice_arr[:copy_n] = v_raw[:copy_n]
+
+    bgm_gain = 0.22 if has_voice else 0.56
+    sfx_gain = 0.42 if has_voice else 0.58
+    mix = voice_arr * (1.0 if has_voice else 0.0) + bgm_arr * bgm_gain + sfx_arr * sfx_gain
+
+    # 首尾 0.25s 平滑淡入淡出防爆音
+    fn = min(n_samples // 6, int(0.25 * sr))
+    if fn > 4:
+        ramp = np.linspace(0.0, 1.0, fn, dtype=np.float32)[:, None]
+        mix[:fn] *= ramp
+        mix[-fn:] *= ramp[::-1]
+
+    raw_mix_wav = wd / "anim_mix_raw.wav"
+    master_wav = wd / "anim_master.wav"
+    write_wav_48k_stereo(raw_mix_wav, mix, sr=sr, clip_limit=0.98)
+
+    # 4) EBU R128 响度归一化 + 真峰值限幅 (TP <= -1.5 dBTP)
+    r128_pre = measure_lufs_ebur128(raw_mix_wav, raise_on_error=False)
+    gain_db = 0.0
+    if r128_pre.get("valid") and r128_pre["integrated_lufs"] > -70.0:
+        gain_db = max(-14.0, min(18.0, float(TARGET_LUFS) - float(r128_pre["integrated_lufs"])))
+    subprocess.run(
+        [
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+            "-i", str(raw_mix_wav),
+            "-af", f"volume={gain_db:.2f}dB,alimiter=limit=0.794:attack=2:release=45:level=disabled:latency=true",
+            "-acodec", "pcm_s16le", "-ar", str(sr), "-ac", "2",
+            str(master_wav),
+        ],
+        check=True,
+    )
+    r128_post = measure_lufs_ebur128(master_wav, raise_on_error=False)
+
+    # 5) 将规范化音轨无损合入 MP4
+    tmp_mux = wd / "anim_muxed_tmp.mp4"
+    subprocess.run(
+        [
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+            "-i", str(video_in),
+            "-i", str(master_wav),
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-c:v", "copy",
+            "-c:a", "aac", "-b:a", "192k", "-ar", str(sr), "-ac", "2",
+            "-shortest", "-movflags", "+faststart",
+            str(tmp_mux),
+        ],
+        check=True,
+    )
+    video_out.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(tmp_mux), str(video_out))
+    return {
+        "has_audio": True,
+        "voice_mode": "voice_synced" if has_voice else "bgm_and_motion_sfx",
+        "bgm_file": used_bgm_file,
+        "sfx_wav": str(sfx_wav_p.resolve()),
+        "master_wav": str(master_wav.resolve()),
+        "sfx_cue_count": len(cues),
+        "integrated_lufs": r128_post.get("integrated_lufs"),
+        "true_peak_dbtp": r128_post.get("true_peak_dbtp"),
+    }
+
+
 def init_animation_project(
     project_dir: Path,
     title: str,
@@ -201,8 +380,9 @@ def init_animation_project(
     font_mode: str = "sans",
     lines_override: Optional[List[Dict[str, Any]]] = None,
     palette: Optional[Dict[str, str]] = None,
+    audio_events_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """初始化独立知识动画工程目录（舞台运行时 + 双比例 4K 封面模板 + 初始字幕稿与时间轴）。"""
+    """初始化独立知识动画工程目录（舞台运行时 + 商用字体注入 + 双比例 4K 封面模板 + 初始字幕稿与时间轴）。"""
     proj = Path(project_dir).resolve()
     stage_dir = proj / "stage"
     work_dir = proj / "work"
@@ -219,9 +399,9 @@ def init_animation_project(
         {"id": "h1", "text": f"{title[:12]}背后有个[反常识真相]", "hook": True},
         {"id": "h2", "text": f"{one_idea[:14]}", "hook": True, "pause": 0.15},
         {"id": "title_card", "text": title, "card": True, "hold": 3.0},
-        {"id": "s1", "text": f"先看最直观的[日常现象]", "scene": True},
-        {"id": "s2", "text": f"拆开底层规律后，答案其实很清楚", "scene": False},
-        {"id": "s3", "text": f"回到开头再看一遍，[感受已经完全不同]", "scene": True},
+        {"id": "s1", "text": "先看最直观的[日常现象]", "scene": True},
+        {"id": "s2", "text": "拆开底层规律后，答案其实很清楚", "scene": False},
+        {"id": "s3", "text": "回到开头再看一遍，[感受已经完全不同]", "scene": True},
     ]
 
     lines_cfg: Dict[str, Any] = {
@@ -246,7 +426,12 @@ def init_animation_project(
     }
     lines_json_p = work_dir / "lines.json"
     write_json(lines_json_p, lines_cfg)
-    compiled = compile_animation_timeline(lines_cfg, out_timing_js=stage_dir / "timing.js", ratio=ratio)
+    compiled = compile_animation_timeline(
+        lines_cfg,
+        out_timing_js=stage_dir / "timing.js",
+        audio_events_path=audio_events_path,
+        ratio=ratio,
+    )
 
     # 写入封面数据文件供 cover_4k.html 读取
     clean_hero = re.sub(r"[\[\]]", "", lines_list[0]["text"])[:8]
@@ -261,6 +446,12 @@ def init_animation_project(
     (stage_dir / "cover_data.js").write_text(
         "window.SVS_COVER_DATA = " + json.dumps(cover_data, ensure_ascii=False, indent=2) + ";\n",
         encoding="utf-8",
+    )
+
+    # 注入随仓开源商用字体（SVSSans / SVSSerif），彻底避免无头浏览器静默回退系统字体
+    font_info = inject_stage_commercial_fonts(
+        stage_dir,
+        extra_text=f"{title}{one_idea}{''.join(str(x.get('text') or '') for x in lines_list)}",
     )
 
     brief_md = work_dir / "storyboard.md"
@@ -288,24 +479,18 @@ def init_animation_project(
         "total_sec": compiled["total_sec"],
         "hook_within_5s": compiled["hook_within_5s"],
         "warnings": compiled["warnings"],
+        "compiled_timing": compiled,
+        "fonts": font_info,
     }
 
 
 def _decode_gray_frames(video_path: Path, width: int = 192) -> Tuple[np.ndarray, float, float, int, int]:
     ffmpeg = find_bin("ffmpeg")
-    ffprobe = find_bin("ffprobe")
-    if not ffmpeg or not ffprobe:
-        raise RuntimeError("需要 ffmpeg 与 ffprobe 执行成片像素体检。")
-    pr = subprocess.run(
-        [
-            ffprobe, "-v", "error", "-show_streams", "-show_format", "-of", "json", str(video_path),
-        ],
-        capture_output=True, text=True, check=True,
-    )
-    info = json.loads(pr.stdout or "{}")
+    if not ffmpeg:
+        raise RuntimeError("需要 ffmpeg 执行成片像素体检。")
+    info = ffprobe_media(video_path)
     vs = next(s for s in info.get("streams", []) if s.get("codec_type") == "video")
-    num, den = map(int, str(vs.get("r_frame_rate") or "30/1").split("/"))
-    fps = float(num) / max(1.0, float(den))
+    fps = parse_fps(str(vs.get("r_frame_rate") or "30/1")) or 30.0
     vw, vh = int(vs["width"]), int(vs["height"])
     dur = float(info.get("format", {}).get("duration") or vs.get("duration") or 0.0)
     sh = max(12, int(round(vh * width / max(1, vw) / 2.0) * 2))
@@ -444,7 +629,7 @@ def audit_animation_video(
             "ok": luma_ok,
             "notes": luma_notes,
         },
-        "passed": (len(dead_zones) == 0 and len(flashes) == 0),
+        "passed": (len(dead_zones) == 0 and len(flashes) == 0 and luma_ok),
     }
 
 
@@ -473,7 +658,9 @@ def build_review_pack(
     for d in (od, tr_dir, mo_dir):
         d.mkdir(parents=True, exist_ok=True)
 
-    _, _, dur, _, _ = _decode_gray_frames(vp, width=96)
+    info = ffprobe_media(vp)
+    vs = next((s for s in info.get("streams", []) if s.get("codec_type") == "video"), {})
+    dur = max(1.0, float(info.get("format", {}).get("duration") or vs.get("duration") or 1.0))
     lines: List[Dict[str, Any]] = []
     if timing_js and Path(timing_js).is_file():
         txt = Path(timing_js).read_text(encoding="utf-8")
@@ -493,11 +680,39 @@ def build_review_pack(
         check=False,
     )
 
-    # 2) 确定场景边界与中点
+    # 2) 确定场景边界与中点，并产出 02_keyframes.png 场景中点关键帧拼图
     cuts = [float(l["start"]) for l in lines if (l.get("scene") or l.get("card")) and float(l["start"]) > 0.6]
     if not cuts and dur > 4.0:
         cuts = [round(dur * k / 3.0, 2) for k in (1, 2)]
     seg_bounds = [0.0] + [c for c in cuts if 0.6 < c < dur - 0.6] + [dur]
+
+    keyframes_p = od / "02_keyframes.png"
+    mid_points = [round((seg_bounds[i] + seg_bounds[i + 1]) * 0.5, 3) for i in range(len(seg_bounds) - 1)]
+    if mid_points:
+        from PIL import Image
+        kf_imgs: List[Image.Image] = []
+        for k_i, mt in enumerate(mid_points[:9]):
+            tmp_kf = od / f"_tmp_kf_{k_i:02d}.png"
+            subprocess.run(
+                [ffmpeg, "-y", "-v", "error", "-ss", f"{mt:.3f}", "-i", str(vp), "-vf", "scale=480:-2", "-frames:v", "1", str(tmp_kf)],
+                check=False,
+            )
+            if tmp_kf.is_file():
+                try:
+                    with Image.open(tmp_kf) as im_k:
+                        kf_imgs.append(im_k.convert("RGB"))
+                except Exception:
+                    pass
+                tmp_kf.unlink(missing_ok=True)
+        if kf_imgs:
+            tw, th = kf_imgs[0].size
+            cols = min(3, len(kf_imgs))
+            r_cnt = int(math.ceil(len(kf_imgs) / float(cols)))
+            grid = Image.new("RGB", (cols * tw + (cols + 1) * 6, r_cnt * th + (r_cnt + 1) * 6), (17, 17, 17))
+            for k_i, im_k in enumerate(kf_imgs):
+                rr, cc = divmod(k_i, cols)
+                grid.paste(im_k.resize((tw, th)), (6 + cc * (tw + 6), 6 + rr * (th + 6)))
+            grid.save(keyframes_p)
 
     def _make_strip(t0: float, t1: float, step: float, dest: Path, w: int = 240) -> bool:
         span = max(0.2, t1 - t0)
@@ -537,10 +752,11 @@ def build_review_pack(
     guide_p.write_text(
         "# 独立盲审检查指南\n\n"
         f"- **全片节奏联系表**：`01_contact_2s.png`\n"
+        f"- **场景中点关键帧拼图**：`02_keyframes.png`\n"
         f"- **转场条带（每格 0.1s）**：共 {len(transition_files)} 条，位于 `transitions/`\n"
         f"- **运动条带（每格 0.1s）**：共 {len(motion_files)} 条，位于 `motion/`\n\n"
         "## 必查 6 项硬指标\n"
-        "1. 开篇 5 秒内大字金句是否出完、画面是否足够干净抓人；\n"
+        "1. 开篇 5 秒内大字金句是否出完、静音状态下前 3 秒主视觉是否一眼看懂；\n"
         "2. 每帧是否只留 1 个主角 + ≤2 处小标注，没有信息堆砌；\n"
         "3. `transitions/` 中是否有双层叠影残影或突兀闪帧；\n"
         "4. `motion/` 中 10 格是否持续有重量感运动，而非死画面；\n"
@@ -552,6 +768,7 @@ def build_review_pack(
     return {
         "out_dir": str(od),
         "contact_sheet": str(contact_p) if contact_p.is_file() else None,
+        "keyframes_sheet": str(keyframes_p) if keyframes_p.is_file() else None,
         "transition_strips": transition_files,
         "motion_strips": motion_files,
         "guide_md": str(guide_p),
@@ -573,7 +790,7 @@ def main() -> None:
     p_tl.add_argument("--lines-json", required=True)
     p_tl.add_argument("--out-js", required=True)
     p_tl.add_argument("--audio-events", help="可选：绑定 03_audio_events.json 进入配音同步模式")
-    p_tl.add_argument("--ratio", choices=["16x9", "9x16"], default="16x9")
+    p_tl.add_argument("--ratio", choices=["16x9", "9x16", "1x1", "3x4"], default="16x9")
 
     p_aud = sub.add_parser("audit", help="对成片 MP4 执行 6x6 死区与亮度指纹体检")
     p_aud.add_argument("--video", required=True)

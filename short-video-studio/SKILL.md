@@ -22,19 +22,8 @@ description: 策划、剪辑和交付面向实体门店获客或个人账号增�
 5. **发片后复盘调优（`post_review`，共 2 步）**：视频已发出一两天，拿后台数据来找病因 → `看数据找卡点 → 存下改进配方`。
 
 ### 1.2 每一轮回复强制携带【四要素掌控感进度卡】（MUST）
-在陪伴用户推进项目的**每一轮回复**中，AI 必须调用或同步 `workflow_guard.py status --pipeline-dir <dir> [--user-type <类型>]`，在回复醒目位置展示大白话四要素进度卡（严禁出现任何技术缩写或黑话）：
-```markdown
----
-📍 **当前进度**：第 X 步 / 共 Y 步（当前阶段大白话名称）  `[■■□□]`
-🤖 **我刚做了 / 正在做**：（1 句大白话交代刚替用户完成了什么、原素材完好未动）
-👉 **现在轮到你**：（当下唯一需要用户做的一件事，必附 A / B / C 懒人快捷选项，回一个字母即可推进）
-   - **回 A**：（最省事的默认推进项）
-   - **回 B**：（最常见的微调项）
-   - **回 C**：（备选或补救项）
-⏳ **离能发还差**：（1 句话列出剩下的小步骤或还缺的材料）
----
-```
-- **选画面样式不甩全表**：走到选画面样式时，按用户所属人群从 [interactive-coach-protocol.md](references/interactive-coach-protocol.md) 第三节只挑 **3~4 款最对口的大白话样式**让用户选 A/B/C/D。
+在陪伴用户推进项目的**每一轮回复**中，AI 必须同步运行 `workflow_guard.py status --pipeline-dir <dir> [--user-type <类型>]`，按 [interactive-coach-protocol.md](references/interactive-coach-protocol.md) 第二节格式展示大白话四要素进度卡（`当前进度 / 我刚做了或正在做 / 现在轮到你(附 A/B/C 选项) / 离能发还差`，严禁技术缩写或黑话）：
+- **选画面样式不甩全表**：按用户所属人群从 [interactive-coach-protocol.md](references/interactive-coach-protocol.md) 第三节只挑 **3~4 款最对口的大白话样式**让用户选 A/B/C/D。
 - **后台长任务先预告、缺素材给二选一补救、隔天回来先读 `00_progress_card.json` 无缝续接**。
 
 ---
@@ -72,10 +61,10 @@ description: 策划、剪辑和交付面向实体门店获客或个人账号增�
   python3 scripts/inventory_media.py --input-dir <原素材目录> --output <项目目录>/pipeline/00_inventory.json --track <store|creator>
   ```
 - **入口 3（零实拍代码制片 `--mode code-video` / 知识讲解动画 `--mode knowledge-animation`）**：
-  - 编码前**必读总纲** [references/code-video-methodology.md](references/code-video-methodology.md) 及对应工艺手册（[knowledge-animation-craft.md](references/knowledge-animation-craft.md) / [motion-broll-and-subtitles.md](references/motion-broll-and-subtitles.md) / [script-craft-and-platforms.md](references/script-craft-and-platforms.md) / [craft-motion-promo.md](references/craft-motion-promo.md) / [craft-explainer-data.md](references/craft-explainer-data.md) / [craft-stylized-generative.md](references/craft-stylized-generative.md) / [craft-sound-beat-sync.md](references/craft-sound-beat-sync.md)）。
-  - **知识讲解动画（支持「无配音字幕即旁白」与「配音同步」双模式 + 双比例 4K 代码封面 + 分平台发布文案包）**：
+  - 编码前**必读总纲与四大工艺** [references/code-video-methodology.md](references/code-video-methodology.md) 及对应手册（[knowledge-animation-craft.md](references/knowledge-animation-craft.md) / [motion-broll-and-subtitles.md](references/motion-broll-and-subtitles.md) / [script-craft-and-platforms.md](references/script-craft-and-platforms.md)）。
+  - **知识讲解动画（支持「无配音字幕即旁白」与「配音同步」双模式 + 16:9/9:16/1:1/3:4 画幅 + 商业字体注入 + 配乐/拟音混音 + 双比例 4K 代码封面 + 分平台发布文案包）**：
     ```bash
-    python3 scripts/run_pipeline.py --account <账号> --workspace-root <工作区> --track creator --mode knowledge-animation --anim-title "<片名>" --anim-idea "<核心反常识命题>" --anim-ratio <16x9|9x16> --anim-font-mode <sans|serif>
+    python3 scripts/run_pipeline.py --account <账号> --workspace-root <工作区> --track creator --mode knowledge-animation --anim-title "<片名>" --anim-idea "<核心反常识命题>" --anim-ratio <16x9|9x16|1x1|3x4> --anim-font-mode <sans|serif>
     ```
   - **多卡片图解与产品演示规约闭环**：
     ```bash
@@ -83,8 +72,8 @@ description: 策划、剪辑和交付面向实体门店获客或个人账号增�
     python3 scripts/code_video_spec.py --validate-spec <pipeline目录>/00_code_spec.json
     python3 scripts/run_pipeline.py --account <账号> --workspace-root <工作区> --track <store|creator> --mode code-video --code-spec <pipeline目录>/00_code_spec.json --script-json <台词JSON> --style-id style_14
     ```
-  - **口播增强套件（语音岛粗剪、动态讲解窗口 + 平滑圆环人像、词边界 DP 短句字幕、程序化 14 种动效拟音与字体子集化）**：
-    - `step2_transcribe.py`（语音能量岛 + 5s 重叠短窗防吞重说）→ `step4_build_edl.py`（自动探测动态讲解窗口）→ `step5_subtitles.py`（词边界 DP 断句 + `terms.txt` 保护词 + 双层柔和阴影 ASS/SRT + `05_subtitle_check.txt`）→ `synth_motion_sfx.py`（14 种无版权动效拟音峰值对齐）→ `step9_title_cover.py --code-cover-4k`（分平台发布文案包 `09_publish_copy_pack.md` + 16:9/3:4 双比例 4K 封面）→ `subset_fonts.py`（按工程用字自动压缩子集字体）。
+  - **口播增强套件（语音岛粗剪、动态讲解窗口 + 平滑圆环人像双源画中画、词边界 DP 短句字幕、15 种动效拟音与字体子集化）**：
+    - `step2_transcribe.py`（语音能量岛 + 5s 重叠短窗防吞重说）→ `step4_build_edl.py`（自动探测动态讲解窗口并绑定真双源圆环画中画）→ `step5_subtitles.py`（词边界 DP 断句 + `terms.txt` 保护词 + 双层柔和阴影 ASS/SRT + `05_subtitle_check.txt`）→ `synth_motion_sfx.py`（15 种无版权动效拟音峰值对齐）→ `step9_title_cover.py --code-cover-4k`（分平台发布文案包 `09_publish_copy_pack.md` + 360px 手机信息流小图预览 + 16:9/3:4 双比例 4K 封面）→ `subset_fonts.py`（按工程用字自动压缩子集字体）。
 
 ### 专属工作区隔离、合规门禁与诚实基线（MUST）
 - **原素材严格只读**：所有加工、转码、临时帧和成片导出统一写入独立专属目录（默认 `~/.short-video-studio/workspaces/accounts/<account_slug>/projects/<project_id>/`，可用 `--workspace-root` 指定），**严禁向 `--raw-dir` 写入任何文件**。
@@ -120,7 +109,7 @@ python3 scripts/run_pipeline.py \
   --account <账号> \
   --raw-dir <原素材目录> \
   --track <store|creator> \
-  --mode <full|code-video|lock-preview|reedit-visuals|relock-voice|render-locked> \
+  --mode <full|code-video|knowledge-animation|lock-preview|reedit-visuals|relock-voice|render-locked> \
   [--style-id style_14] \
   [--raw-intel <00_raw_intel.json>] \
   [--sources-json <sources.json>] \
@@ -142,7 +131,7 @@ python3 scripts/qa_inspector.py --pipeline-dir <pipeline目录> [--sync-window <
 
 ### 核心专业能力与出厂验收门禁
 - **真居中对称字幕铁律**：全套渲染、剪映、HyperFrames 与白盒/黑盒质检统一锁死 `X = 540px` 正中对称带 `[220, 860]`（宽 `640px`）与 `Y = 1310px` 基准（自动 7 点避脸），绝不发生左偏或右撞点赞栏。
-- **真实物理音景与现场动作声**：全仓统一采用 `assets/sound_vibe/` CC0 真实录制乐段（波形校准真实起拍）与物理音效，支持开场→正文双段配乐切换、特写镜现场动作声轻混（`-18dB`）及三轨防削波总线控制（`-14.0 ±1.5 LUFS`）。
+- **真实物理音景与现场动作声**：实拍流水线统一采用 `assets/sound_vibe/` CC0 真实录制乐段（波形校准真实起拍）与物理音效，支持开场→正文双段配乐切换、特写镜现场动作声轻混（`-10dB`）及三轨防削波总线控制（`-14.0 ±1.5 LUFS`、真峰值 `≤ -1.0 dBTP`）；知识动画与动态图解辅以 `synth_motion_sfx.py` 15 种无版权动效拟音。
 - **视觉语义与封面**：支持高动态/常见 Log 色彩还原、横转竖人脸智能居中构图、53% 特写动态配比、景别与运镜防撞墙语法、全片情绪+眼部锐度选帧封面（9:16 + 3:4 防裁切 + 180px 真实像素对比度校验 + macOS Apple Vision 可选人物前景压字）。
 - **独立双层质检与盲审取证包**：`qa_inspector.py` + `independent_verifier.py` 执行白盒契约 + 单遍解码黑盒校验（含 540px OCR 居中实测、单框 WCAG、BT.709 肤色、切点像素跳变、SFX 5ms 起音校准、本地 Whisper 盲听复核与商业授权清查），同时生成一页式大白话《独立盲审取证包》（`10_blind_review_pack.md` + `10_action_strips.jpg`）。
 - **人工终审签字与归档验证**：核对后执行 `workflow_guard.py approve-final --pipeline-dir <dir> [--reviewed <ID> ...] --note "<实查结果>"` 签字，并可用 `workflow_guard.py verify-out --out-dir <out目录>` 核对成品指纹。风格复刻场景用 `workflow_guard.py replication-diff` 跑洁净室防抄袭与乱序盲测。
@@ -168,8 +157,8 @@ python3 scripts/content_log_review.py --account <账号> --track <store|creator>
 ## 六、 风格谱参考包装库与环境初始化
 
 - 已内置 **24 套 v2.1 量化风格谱**（`style_01` ~ `style_24`，涵盖 20 套主流商业短视频形态 + **4 套高空镜实拍/图解风格 `style_21`–`style_24`（空镜占比 85%–100%）**，100% 原生 `1080×1920` 竖屏安全区锁定）与 **3 大共享剪辑规则字典**（83 组 0ms 文字动画×音效配对、29 类口播语义音效分类、黄金四色排版与 3:4 封面四构图法则）：
-  - **门店获客默认（`style_14`）**：门店实景出镜、双段音乐情绪反转、过半店内实拍叠层、居中暖黄重点大字；另含全屋定制白边抠像（`style_07`）、清冷奶油美业（`style_04`）、二手车暖金强切（`style_17`）、户外探盘立体大字（`style_18`）、中医国风暖木（`style_20`）、牛皮纸工艺拆解（`style_05`）、慢调空间漫游（`style_13`）、**85% 门店工艺特写快切（`style_21`）**、**95% 品牌微纪录慢调空镜（`style_23`）**。
-  - **个人账号默认（`style_11`）**：清亮通透圆角底框配圆窗例证与双段音乐；另含极速跳剪荧光高亮（`style_02`）、10 轨顶栏长口播（`style_03`）、黑底竖相框治愈金句（`style_06`）、毛玻璃虚化画中画与双行巨字评论（`style_08`）、暗黑双格证据窗与圆窗主讲普法（`style_09`）、高频推拉种草（`style_10`）、极简白底卡片（`style_12`）、全屏高密动效大字访谈（`style_15`）、暗黑巨型数字三连跳与线性分屏书摘（`style_16`）、冷峻数据背景抠像（`style_19`）、暗黑控制台演示（`style_01`）、**90% 例证图解拆解（`style_22`）**、**100% 全画面无出镜卡点混剪（`style_24`）**。
+  - **门店获客默认（`style_14`）**：门店实景出镜、双段音乐情绪反转、过半店内实拍叠层、居中暖黄重点大字；另含白边圆角人像贴纸框（`style_07`）、清冷奶油美业（`style_04`）、二手车暖金双格框（`style_17`）、户外探盘立体大字（`style_18`）、暖木厚重宋体（`style_20`）、牛皮纸工艺拆解（`style_05`）、慢调空间漫游（`style_13`）、**85% 门店工艺特写快切（`style_21`）**、**95% 品牌微纪录慢调空镜（`style_23`）**。
+  - **个人账号默认（`style_11`）**：清亮通透圆角底框配圆窗例证与双段音乐；另含极速跳剪荧光高亮（`style_02`）、顶栏常驻长口播（`style_03`）、黑底竖相框治愈金句（`style_06`）、毛玻璃虚化画中画与双行巨字评论（`style_08`）、暗黑双格证据窗与圆窗主讲普法（`style_09`）、高能快切弹窗种草（`style_10`）、极简白底卡片（`style_12`）、全屏高密动效大字访谈（`style_15`）、暗黑三格巨型数字卡与线性分屏书摘（`style_16`）、冷峻数据背景白边贴纸框（`style_19`）、暗黑控制台演示（`style_01`）、**90% 例证图解拆解（`style_22`）**、**100% 全画面无出镜卡点混剪（`style_24`）**。
   - 完整大白话选用指南见 [assets/style_spectrum/STYLE_SPECTRUM_REPORT.md](assets/style_spectrum/STYLE_SPECTRUM_REPORT.md)。
   ```bash
   python3 scripts/apply_style_spectrum.py --list

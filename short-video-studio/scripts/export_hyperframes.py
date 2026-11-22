@@ -346,9 +346,33 @@ def _build_graphics(draft: Path, package: dict, fps: int, total: float, style_id
             if elem.get("overlay_mode") == "focus_blur":
                 fill += "backdrop-filter:blur(10px);"
         sub = _escape_subtext(elem.get("subtext"))
-        extra_attrs = f' data-giant-mode="{html.escape(str(elem.get("giant_mode") or ""))}"' if elem.get("giant_mode") else ""
+        g_mode = str(elem.get("giant_mode") or "")
+        extra_attrs = f' data-giant-mode="{html.escape(g_mode)}"' if g_mode else ""
+        if g_mode == "giant_numeric_trio":
+            chars = list(text.replace(" ", "")[:3])
+            inner_html = "".join(
+                f'<span style="display:inline-block;padding:6px 14px;margin:0 4px;background:rgba(16,20,28,0.92);'
+                f'border:3px solid {raw_fg};border-radius:14px;">{html.escape(ch)}</span>'
+                for ch in chars
+            )
+        elif g_mode == "giant_dual_clash":
+            fill += "transform:rotate(-2.5deg);background:rgba(16,20,28,0.88);padding:8px 20px;border-radius:16px;"
+            inner_html = f'<span id="{cid}-text">{html.escape(text)}</span>'
+        elif g_mode == "giant_vertical_seal":
+            fill += f"background:rgba(180,28,28,0.92);border:3px solid #FFF589;border-radius:14px;padding:12px 18px;"
+            inner_html = f'<span id="{cid}-text">{html.escape(text)}</span>'
+        else:
+            inner_html = f'<span id="{cid}-text">{html.escape(text)}</span>'
+        burst_tags = [str(t).strip() for t in (elem.get("burst_tags") or []) if str(t).strip()]
+        tags_html = ""
+        if burst_tags:
+            tags_html = '<div style="margin-top:8px;display:flex;gap:8px;justify-content:center;">' + "".join(
+                f'<span style="font-size:24px;padding:4px 12px;border-radius:999px;background:rgba(18,22,28,0.9);'
+                f'border:2px solid {raw_fg};color:#fff;-webkit-text-stroke:0px;">{html.escape(tg)}</span>'
+                for tg in burst_tags[:3]
+            ) + "</div>"
         built.append(f'    <div {attrs}{extra_attrs} class="clip graphic-text" style="{html.escape(pos + paint + fill, quote=True)}">'
-                     f'<span id="{cid}-text">{html.escape(text)}</span>{sub}</div>')
+                     f'{inner_html}{sub}{tags_html}</div>')
         native_text += 1
     return built, native_text
 

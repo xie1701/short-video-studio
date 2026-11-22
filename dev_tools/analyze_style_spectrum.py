@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
 """
-[20条参考包装视频逐帧特征提取与「风格谱」构建引擎]
-对指定目录中的所有参考视频执行逐帧级多维分析：
-1. 镜头时长分布（全帧像素差分 + 直方图突变 + 微跳剪/推拉检测）
-2. BGM 速度（BPM）、节拍网格、综合响度（LUFS）、静音气口、高频瞬态音效密度
-3. 画面切点与节拍/音频事件对齐率（±1帧 / ±3帧 / J-cut 提前量）
-4. 逐帧色彩统计（YAVG、对比度、饱和度、冷暖色温、暗部/中间调/高光偏色、Top-5主色）与逆向 33x33x33 .cube LUT
-5. 字幕位置、字号、主色/高亮色、描边宽度与颜色、底框与出场动效分析（macOS Vision OCR + 像素形态学）
-6. 导出每条视频的 3x3 高清关键帧图谱（keyframes/style_XX_contact.jpg）及原始汇总 JSON
-
-输出目录默认：short-video-studio/assets/style_spectrum/
+[历史离线样本逐帧统计工具 — 仅供研发采集自定义参考样本时使用]
+说明：本脚本用于从研发自备参考视频目录批量提取镜头/节奏/色彩/字幕统计并生成原始 style_spectrum_raw.json；
+现行生产使用的 24 套风格谱库由 assets/style_spectrum/style_spectrum_library.json (v2.1.0) 独立维护，
+正常制作视频请直接调用 scripts/apply_style_spectrum.py，无需运行本工具。
 """
 
 from __future__ import annotations
@@ -49,10 +43,12 @@ from common import (
 )
 from vision_inspector import inspect_images
 
-maybe_reexec_in_venv()
-
-import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+try:
+    import numpy as np
+    from PIL import Image, ImageDraw, ImageFont
+except ImportError:  # 命令行直接执行时由 __main__ 切入 venv
+    np = None  # type: ignore[assignment]
+    Image = ImageDraw = ImageFont = None  # type: ignore[assignment]
 
 DEFAULT_INPUT_DIR = ASSETS_DIR / "style_spectrum" / "samples"
 DEFAULT_OUT_DIR = ASSETS_DIR / "style_spectrum"
@@ -957,4 +953,5 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    maybe_reexec_in_venv()
     main()

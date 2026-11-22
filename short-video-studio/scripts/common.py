@@ -669,10 +669,15 @@ def _font_search_dirs() -> List[Path]:
     return dirs
 
 
-def find_commercial_font(candidates: Optional[List[str]] = None, verified_only: bool = True) -> Optional[str]:
+def find_commercial_font(
+    candidates: Optional[List[str]] = None,
+    verified_only: bool = True,
+    allow_fallback: bool = True,
+) -> Optional[str]:
     """
     跨平台查找中文字体（带结果缓存）：
     默认 verified_only=True，严格优先随仓与本地开源/免费商用字体，杜绝误用系统私有版权字体。
+    传 allow_fallback=False 时仅检查 candidates 中明确指定的字体，不拼接默认兜底池。
     """
     default_verified = [
         "AlimamaShuHeiTi-Bold.otf",
@@ -697,14 +702,17 @@ def find_commercial_font(candidates: Optional[List[str]] = None, verified_only: 
         "msyh.ttc",
         "simhei.ttf",
     ]
-    pool = list(default_verified) if verified_only else (list(default_verified) + fallback_system)
-    names = list(candidates or []) + [c for c in pool if not candidates or c not in candidates]
+    if allow_fallback or not candidates:
+        pool = list(default_verified) if verified_only else (list(default_verified) + fallback_system)
+        names = list(candidates or []) + [c for c in pool if not candidates or c not in candidates]
+    else:
+        names = list(candidates)
     if verified_only:
         names = [n for n in names if is_verified_commercial_font(n)]
-        if "AlimamaShuHeiTi-Bold.otf" not in names:
+        if allow_fallback and "AlimamaShuHeiTi-Bold.otf" not in names:
             names.append("AlimamaShuHeiTi-Bold.otf")
 
-    cache_key = (str(verified_only), *names)
+    cache_key = (str(verified_only), str(allow_fallback), *names)
     if cache_key in _FONT_CACHE:
         return _FONT_CACHE[cache_key]
 
@@ -1031,6 +1039,33 @@ def read_wav_as_48k_stereo(audio_path: Path, target_sr: int = 48000) -> Tuple[An
     return np.ascontiguousarray(arr, dtype=np.float32), int(target_sr)
 
 
+def write_wav_48k_stereo(
+    wav_path: Path,
+    arr: Any,
+    sr: int = 48000,
+    clip_limit: float = 0.985,
+) -> Path:
+    """全仓唯一权威 16-bit PCM 立体声 WAV 写盘器（自动扩充单声道、统一防削波硬限幅）。"""
+    import numpy as np
+
+    a = np.asarray(arr, dtype=np.float32)
+    if a.ndim == 1:
+        a = np.column_stack([a, a])
+    elif a.ndim == 2 and a.shape[1] == 1:
+        a = np.repeat(a, 2, axis=1)
+    elif a.ndim == 2 and a.shape[1] > 2:
+        a = a[:, :2]
+    clipped = np.clip(a, -float(clip_limit), float(clip_limit))
+    pcm = (clipped * 32767.0).astype(np.int16)
+    wav_path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(wav_path), "wb") as wf:
+        wf.setnchannels(2)
+        wf.setsampwidth(2)
+        wf.setframerate(int(sr))
+        wf.writeframes(pcm.tobytes())
+    return wav_path
+
+
 def measure_lufs_ebur128(media_path: Path, raise_on_error: bool = True) -> Dict[str, float]:
     """统一使用 ffmpeg ebur128 测量综合响度(I)、响度范围(LRA)与真峰值(TP)，绝不静默伪造假数值。"""
     ffmpeg = find_bin("ffmpeg")
@@ -1060,7 +1095,7 @@ def measure_lufs_ebur128(media_path: Path, raise_on_error: bool = True) -> Dict[
 
     def _to_db(token: str, default_val: float) -> float:
         t = token.strip().lower()
-        return -99.0 if t == "-inf" else float(t)
+        return default_val if t == "-inf" else float(t)
 
     return {
         "integrated_lufs": _to_db(m_i[-1], -99.0),
@@ -1212,7 +1247,7 @@ def sha256_file(path: Path) -> str:
     return h.hexdigest()
 
 
-_WHISPER_MODEL_CACHE: Dict[Tuple[str, str, str], Any] = {}
+_WHISPER_MODEL_CACHE: Dict[Tuple[str, str, str, bool], Any] = {}
 
 
 def get_cached_whisper_model(
@@ -1222,7 +1257,7 @@ def get_cached_whisper_model(
     local_files_only: bool = False,
 ) -> Any:
     """进程级单例缓存 faster-whisper 模型，消除同进程 Step 2 与 Step 10 重复冷加载。"""
-    key = (str(model_size), str(device), str(compute_type))
+    key = (str(model_size), str(device), str(compute_type), bool(local_files_only))
     if key not in _WHISPER_MODEL_CACHE:
         from faster_whisper import WhisperModel
         _WHISPER_MODEL_CACHE[key] = WhisperModel(
@@ -1231,8 +1266,39 @@ def get_cached_whisper_model(
     return _WHISPER_MODEL_CACHE[key]
 
 
+def _find_playwright_chromium_bin() -> Optional[str]:
+    """扫描 Playwright 缓存目录中通过 `playwright-core install chromium` 下载的浏览器可执行文件。"""
+    cache_roots: List[Path] = []
+    if os.environ.get("PLAYWRIGHT_BROWSERS_PATH"):
+        cache_roots.append(Path(os.environ["PLAYWRIGHT_BROWSERS_PATH"]).expanduser())
+    cache_roots.extend([
+        Path.home() / "Library" / "Caches" / "ms-playwright",
+        Path.home() / ".cache" / "ms-playwright",
+    ])
+    if os.environ.get("LOCALAPPDATA"):
+        cache_roots.append(Path(os.environ["LOCALAPPDATA"]) / "ms-playwright")
+
+    patterns = (
+        "chromium-*/chrome-mac*/Chromium.app/Contents/MacOS/Chromium",
+        "chromium-*/chrome-mac*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+        "chromium_headless_shell-*/chrome-mac*/chrome-headless-shell",
+        "chromium-*/chrome-linux*/chrome",
+        "chromium_headless_shell-*/chrome-linux*/chrome-headless-shell",
+        "chromium-*/chrome-win*/chrome.exe",
+    )
+    for root in cache_roots:
+        if not root.is_dir():
+            continue
+        for pat in patterns:
+            matches = sorted(root.glob(pat), reverse=True)
+            for m in matches:
+                if m.is_file():
+                    return str(m)
+    return None
+
+
 def detect_browser_renderer() -> Dict[str, Any]:
-    """只读探测 Node + playwright-core + 本机 Chrome/Chromium 可用性（不执行任何安装写操作）。"""
+    """只读探测 Node + playwright-core + 本机 Chrome/Chromium（含 Playwright 缓存与 Windows 路径）。"""
     node_bin = find_bin("node")
     pw_cands = [
         NODE_TOOLS_DIR / "node_modules" / "playwright-core",
@@ -1241,8 +1307,8 @@ def detect_browser_renderer() -> Dict[str, Any]:
     pw_path = next((str(p) for p in pw_cands if p.is_dir()), None)
 
     chrome_env = os.environ.get("SVS_CHROME_PATH")
-    chrome_cands = [
-        *( [chrome_env] if chrome_env else [] ),
+    chrome_cands: List[str] = [
+        *([chrome_env] if chrome_env else []),
         "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         "/Applications/Chromium.app/Contents/MacOS/Chromium",
         "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
@@ -1250,7 +1316,14 @@ def detect_browser_renderer() -> Dict[str, Any]:
         "/usr/bin/chromium",
         "/usr/bin/chromium-browser",
     ]
-    chrome_bin = next((c for c in chrome_cands if c and Path(c).is_file()), None)
+    for env_key in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+        base_d = os.environ.get(env_key)
+        if base_d:
+            chrome_cands.extend([
+                str(Path(base_d) / "Google" / "Chrome" / "Application" / "chrome.exe"),
+                str(Path(base_d) / "Microsoft" / "Edge" / "Application" / "msedge.exe"),
+            ])
+    chrome_bin = next((c for c in chrome_cands if c and Path(c).is_file()), None) or _find_playwright_chromium_bin()
     bridge = SCRIPTS_DIR / "capture_html_video.mjs"
     available = bool(node_bin and pw_path and chrome_bin and bridge.is_file())
     return {

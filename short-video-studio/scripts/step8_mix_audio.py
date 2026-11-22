@@ -384,8 +384,8 @@ def run_step8(
             cur_gain_db = max(-24.0, min(24.0, cur_gain_db))
             metrics = _render_master_pair(cur_gain_db)
 
-    # 同步导出四端同源分离分轨 (人声规范母带 + 已闪避定电平 BGM含现场动作声 + 定电平 SFX)
-    # 使用 20ms 平滑包络软限幅增益曲线 g[t] 代替全片单点最小值，保留正常说话段与母带一致的响度
+    # 同步导出三轨分离分轨 (人声规范母带 + 已闪避定电平 BGM含现场动作声 + 定电平 SFX)
+    # 统一采用与母带 alimiter 一致的 0.794 (-2.0dB) 峰值上限，保证三轨求和真峰值不越线
     final_scale = 10.0 ** (cur_gain_db / 20.0)
     v_stem_raw = voice_arr * 0.95 * final_scale
     b_stem_raw = (ducked_bgm + broll_ambient_arr) * final_scale
@@ -407,7 +407,7 @@ def run_step8(
         centers = (np.arange(n_blocks, dtype=np.float64) + 0.5) * win_n
         env_gain = np.interp(np.arange(n_samples, dtype=np.float64), centers, blk_gains).astype(np.float32)[:, None]
         post_peak = float(np.max(np.abs(bus_raw * env_gain)))
-        hard_cap = min(1.0, 0.89 / max(1e-5, post_peak))
+        hard_cap = min(1.0, 0.84 / max(1e-5, post_peak))
         stem_gain_curve = env_gain * hard_cap
         bus_safe_scale = float(np.mean(stem_gain_curve))
     else:

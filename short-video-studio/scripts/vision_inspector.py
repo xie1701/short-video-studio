@@ -27,8 +27,6 @@ if str(SCRIPTS_ROOT) not in sys.path:
 
 from common import bbox_iou, compute_bt709_luma, maybe_reexec_in_venv
 
-check_bbox_iou = bbox_iou
-
 if __name__ == "__main__":
     maybe_reexec_in_venv()
 
@@ -345,7 +343,7 @@ do {
 def _ensure_person_seg_bin() -> Optional[Path]:
     if platform.system() != "Darwin" or not shutil.which("swiftc"):
         return None
-    bin_dir = Path.home() / ".short-video-studio" / "bin"
+    bin_dir = Path.home() / ".short-video-studio" / "cache"
     bin_dir.mkdir(parents=True, exist_ok=True)
     sig = hashlib.sha256(_PERSON_SEG_SWIFT.encode("utf-8")).hexdigest()[:10]
     bin_path = bin_dir / f"svs_person_seg_{sig}"
@@ -388,7 +386,16 @@ def _fallback_inspect_single(img_path: Path) -> Dict[str, Any]:
             small = im_t.convert("L").resize((120, max(12, int(round(120 * h / max(1, w))))))
             arr = np.asarray(small, dtype=np.float32)
     except Exception:
-        return {"file": str(img_path), "width": 0, "height": 0, "faces": [], "saliency": None, "texts": [], "backend": "fallback"}
+        return {
+            "file": str(img_path),
+            "width": 0,
+            "height": 0,
+            "faces": [],
+            "saliency": None,
+            "texts": [],
+            "backend": "fallback",
+            "read_error": True,
+        }
 
     gx = np.abs(np.diff(arr, axis=1, prepend=arr[:, :1]))
     gy = np.abs(np.diff(arr, axis=0, prepend=arr[:1, :]))

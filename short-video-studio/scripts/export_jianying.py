@@ -603,7 +603,14 @@ def build_fcpxml_tree(
         # 追加可编辑字幕 <title> 备用轨（放在最高 lane，导入 NLE 后可直接双击微调文本）
         title_lane = max([int(l["lane"]) for l in overlay_layers] or [0]) + 1
         tpl_cfg = subs.get("template_config") or {}
-        dyn_font = Path(str(subs.get("font_path") or "AlimamaShuHeiTi-Bold.otf")).stem
+        font_stem = Path(str(subs.get("font_path") or "AlimamaShuHeiTi-Bold.otf")).stem
+        _FCP_FONT_FAMILIES = {
+            "AlimamaShuHeiTi-Bold": "Alimama ShuHeiTi",
+            "SmileySans-Oblique": "Smiley Sans",
+            "SourceHanSerifCN-Bold": "Source Han Serif CN",
+            "SourceHanSerifCN-Heavy": "Source Han Serif CN",
+        }
+        dyn_font = _FCP_FONT_FAMILIES.get(font_stem, font_stem)
         dyn_fs = str(max(24, int(tpl_cfg.get("font_size") or 54)))
         pri_hex = str(tpl_cfg.get("primary_color") or "#FFFFFF").strip().lstrip("#")
         if len(pri_hex) >= 6:
@@ -704,7 +711,11 @@ def export_jianying_draft(pipeline_dir: Path, simulate_failure: bool = False) ->
         fcpxml_path.write_text(fcpxml_text, encoding="utf-8")
 
         srt_path = draft_dir / "subtitles.srt"
-        srt_path.write_text(_build_srt_content(subs), encoding="utf-8")
+        srt_src = pipeline_dir / "05_subtitles.srt"
+        if srt_src.is_file():
+            shutil.copy2(srt_src, srt_path)
+        else:
+            srt_path.write_text(_build_srt_content(subs), encoding="utf-8")
         ass_src = pipeline_dir / "05_subtitles.ass"
         if ass_src.is_file():
             shutil.copy2(ass_src, draft_dir / "subtitles.ass")

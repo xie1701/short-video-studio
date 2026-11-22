@@ -83,7 +83,7 @@
         const c = K.ctx;
         const cx = W / 2;
         const cy = H * (H > W ? 0.38 : 0.44);
-        const baseR = Math.min(W, H) * 0.21;
+        const baseR = Math.min(W, H) * 0.155;
 
         // 1) 开篇冷开场主视觉：放大材质球 + 发光轨道 + 脉冲亮核
         const introA = S.envelope(t, 0.0, 0.55, tCardStart - 0.1, tCardStart + 0.25);
@@ -124,19 +124,29 @@
             c.arc(cx, cy, baseR * (1.15 + i * 0.32 + 0.04 * Math.sin(t * 1.2 + i)), 0, S.TAU);
             c.stroke();
           }
-          const tSize = Math.round(Math.min(W, H) * (H > W ? 0.11 : 0.12));
+          const tMaxW = W * 0.84;
+          const fitSize = (txt, px, weight, fam, minPx) => {
+            let s = px;
+            c.font = `${weight} ${s}px ${fam}`;
+            const m = c.measureText(txt).width;
+            if (m > tMaxW && m > 0) {
+              s = Math.max(minPx, Math.floor((s * tMaxW) / m));
+              c.font = `${weight} ${s}px ${fam}`;
+            }
+            return s;
+          };
+          const tSize = fitSize(TDATA.title || "知识讲解", Math.round(Math.min(W, H) * (H > W ? 0.11 : 0.12)), 900, K.fontSerif, 48);
           c.textAlign = "center";
           c.textBaseline = "middle";
-          c.font = `900 ${tSize}px ${K.fontSerif}`;
           c.shadowColor = K.rgba(K.P.accent, 0.78);
           c.shadowBlur = 36;
           c.fillStyle = "#ffffff";
           c.fillText(TDATA.title || "知识讲解", cx, cy - 10);
           c.shadowBlur = 0;
-          c.font = `500 ${Math.round(tSize * 0.22)}px ${K.fontSans}`;
+          fitSize(String(TDATA.subtitle_en || "KNOWLEDGE EXPLAINER").toUpperCase(), Math.round(tSize * 0.22), 500, K.fontSans, 16);
           c.fillStyle = K.rgba(K.P.accent, 0.85);
           c.fillText(String(TDATA.subtitle_en || "KNOWLEDGE EXPLAINER").toUpperCase(), cx, cy + tSize * 0.72);
-          c.font = `500 ${Math.round(tSize * 0.26)}px ${K.fontSans}`;
+          fitSize(TDATA.question || "", Math.round(tSize * 0.26), 500, K.fontSans, 20);
           c.fillStyle = K.rgba(K.P.ink, 0.82);
           c.fillText(TDATA.question || "", cx, cy + tSize * 1.22);
           c.restore();
@@ -151,10 +161,10 @@
           const lx = cx - spanX;
           const rx = cx + spanX;
           const pReveal = S.ease.outQuint(S.prog(t, tCardEnd, tCardEnd + 1.8));
-          const leftR = baseR * 0.56;
-          const rightR = baseR * (0.28 + 0.46 * pReveal);
-          K.drawMaterialOrb(c, lx, cy, leftR, { color: K.P.accent2, atmo: 0.72 });
-          K.drawMaterialOrb(c, rx, cy, rightR, { color: K.P.accent, atmo: 0.92 });
+          const leftR = baseR * 0.50;
+          const rightR = baseR * (0.26 + 0.40 * pReveal);
+          K.drawMaterialOrb(c, lx, cy, leftR, { color: K.P.accent2, atmo: 0.62 });
+          K.drawMaterialOrb(c, rx, cy, rightR, { color: K.P.accent, atmo: 0.78 });
 
           // 连接弧线与粒子脉冲
           const arcPts = [];

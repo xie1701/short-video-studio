@@ -170,15 +170,12 @@ def read_source_utterances(files: List[Path]) -> List[Dict[str, Any]]:
     return list({row["id"]: row for row in utterances}.values())
 
 
-def parse_comments_sources(files: List[Path]) -> List[str]:
-    return list(dict.fromkeys(row["quote"] for row in read_source_utterances(files)))
-
-
 def extract_raw_intel(
     comments_files: List[Path],
     proof_dir: Optional[Path] = None,
     track: str = "store",
     verified_customer_export: bool = False,
+    target_platform: str = "",
 ) -> Dict[str, Any]:
     source_rows = read_source_utterances(comments_files)
     usable_rows = [row for row in source_rows if row["role"] != "support"]
@@ -235,6 +232,7 @@ def extract_raw_intel(
     return {
         "step": "00_raw_intel",
         "track": track,
+        "target_platform": str(target_platform or "").strip().lower(),
         "verified_by_real_users": bool(verified_customer_export and usable_rows),
         "source_utterances": source_rows,
         "identified_participant_count": len({str(row["participant_id"]) for row in usable_rows if row["participant_id"]}),
@@ -247,12 +245,22 @@ def extract_raw_intel(
     }
 
 
+_EXAGGERATED_CLAIMS = ("全网第一", "100%有效", "必火", "绝对能爆", "震惊全网", "99%的人都不知道", "最强没有之一")
+_PLATFORM_RESIDUE_MAP = {
+    "xiaohongshu": ("左下角小黄车", "一键三连", "投币收藏", "点进橱窗"),
+    "bilibili": ("左下角小黄车", "点进橱窗", "主页笔记"),
+    "douyin": ("一键三连", "投币", "主页笔记"),
+    "shipinhao": ("左下角小黄车", "一键三连", "投币"),
+}
+_DANGLING_START_RE = re.compile(r"^(?:这个|那个|它|这里|那样)[，,。]?")
+
+
 def _item_text(it: Dict[str, Any]) -> str:
     return str(it.get("text") or it.get("show") or it.get("say") or "").strip()
 
 
 def lint_script(script_items: List[Dict[str, Any]], raw_intel: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """对口播台词做口语化断句、去 AI 陈词滥调、实证锚点与 6–8 秒留存节拍体检。"""
+    """对口播台词做口语化断句、去 AI 陈词滥调、实证锚点、四轮审稿与 6–8 秒留存节拍体检。"""
     issues: List[Dict[str, Any]] = []
     valid_items = [it for it in script_items if not it.get("is_filler", False) and _item_text(it)]
 
@@ -267,11 +275,16 @@ def lint_script(script_items: List[Dict[str, Any]], raw_intel: Optional[Dict[str
                 "message": "开头 3 秒别寒暄或自我介绍，直接抛具体问题、数字或顾客最关心的原话。",
             })
 
+    target_platform = str((raw_intel or {}).get("target_platform") or "").strip().lower()
+    seen_norms: List[Tuple[int, set]] = []
     chars_since_hook = 0
     dry_abstract_run = 0
+    full_chunks: List[str] = []
+
     for idx, it in enumerate(valid_items, start=1):
         txt = _item_text(it)
-        eff_chars = re.sub(r"[\s，。！？、；：“”‘’（）.,!?]+", "", txt)
+        full_chunks.append(txt)
+        eff_chars = re.sub(r"[\s，。！？、；：“”‘’（）.,!?;:]+", "", txt)
         char_len = len(eff_chars)
 
         if char_len > 16:
@@ -292,6 +305,51 @@ def lint_script(script_items: List[Dict[str, Any]], raw_intel: Optional[Dict[str
                 "text": txt,
                 "message": f"出现了书面套话 {cliches}，建议换成平时跟客人聊天的大白话。",
             })
+
+        for bad_claim in _EXAGGERATED_CLAIMS:
+            if bad_claim in txt:
+                issues.append({
+                    "line": idx,
+                    "severity": "error",
+                    "code": "exaggerated_claim",
+                    "text": txt,
+                    "message": f"包含无法兑现的夸大说法「{bad_claim}」，建议改成可核验的具体事实或实测数据。",
+                })
+
+        if idx == 1 and _DANGLING_START_RE.match(txt):
+            issues.append({
+                "line": idx,
+                "severity": "warn",
+                "code": "dangling_pronoun",
+                "text": txt,
+                "message": "第一句用「这个/那个/它」开头指向不明确，建议直接说出具体东西的名字。",
+            })
+
+        if target_platform in _PLATFORM_RESIDUE_MAP:
+            for res_w in _PLATFORM_RESIDUE_MAP[target_platform]:
+                if res_w in txt:
+                    issues.append({
+                        "line": idx,
+                        "severity": "warn",
+                        "code": "platform_residue",
+                        "text": txt,
+                        "message": f"当前目标平台为 {target_platform}，但句子里留有其他平台话术「{res_w}」，建议改掉。",
+                    })
+
+        if char_len >= 8:
+            cur_set = set(eff_chars)
+            for prev_i, prev_set in seen_norms:
+                overlap = len(cur_set & prev_set) / max(1, len(cur_set | prev_set))
+                if overlap >= 0.82:
+                    issues.append({
+                        "line": idx,
+                        "severity": "warn",
+                        "code": "redundant_paragraph",
+                        "text": txt,
+                        "message": f"与第 {prev_i} 句意思高度重复，做一遍“删除测试”：若没有新增例子或限制条件建议删掉。",
+                    })
+                    break
+            seen_norms.append((idx, cur_set))
 
         has_concrete = bool(re.search(r"\d+|半|两|三|块|元|年|天|小时|分钟|秒|斤|克|米|厘米|后厨|门店|合同|报告|票|图|表|实测|拆", txt))
         if has_concrete:
@@ -326,55 +384,8 @@ def lint_script(script_items: List[Dict[str, Any]], raw_intel: Optional[Dict[str
                     chars_since_hook = 0
 
     pain_kws = (raw_intel or {}).get("pain_keywords", [])
-    full_txt = "".join(_item_text(it) for it in valid_items)
+    full_txt = "".join(full_chunks)
     matched_pains = [k for k in pain_kws if k in full_txt]
-
-    # 四轮分焦增强校验：夸大承诺、段落相似重复（删除测试）、开句悬空指代、跨平台残留词
-    target_platform = str((raw_intel or {}).get("target_platform") or "").lower()
-    seen_norms: List[Tuple[int, str]] = []
-    for idx, it in enumerate(valid_items, start=1):
-        txt = _item_text(it)
-        for bad_claim in _EXAGGERATED_CLAIMS:
-            if bad_claim in txt:
-                issues.append({
-                    "line": idx,
-                    "severity": "error",
-                    "code": "exaggerated_claim",
-                    "text": txt,
-                    "message": f"包含无法兑现的夸大说法「{bad_claim}」，建议改成可核验的具体事实或实测数据。",
-                })
-        if idx == 1 and _DANGLING_START_RE.match(txt):
-            issues.append({
-                "line": idx,
-                "severity": "warn",
-                "code": "dangling_pronoun",
-                "text": txt,
-                "message": "第一句用「这个/那个/它」开头指向不明确，建议直接说出具体东西的名字。",
-            })
-        if target_platform in _PLATFORM_RESIDUE_MAP:
-            for res_w in _PLATFORM_RESIDUE_MAP[target_platform]:
-                if res_w in txt:
-                    issues.append({
-                        "line": idx,
-                        "severity": "warn",
-                        "code": "platform_residue",
-                        "text": txt,
-                        "message": f"当前目标平台为 {target_platform}，但句子里留有其他平台话术「{res_w}」，建议改掉。",
-                    })
-        norm_t = re.sub(r"[\s，。！？、；：,.!?;:]+", "", txt)
-        if len(norm_t) >= 8:
-            for prev_i, prev_n in seen_norms:
-                overlap = len(set(norm_t) & set(prev_n)) / max(1, len(set(norm_t) | set(prev_n)))
-                if overlap >= 0.82:
-                    issues.append({
-                        "line": idx,
-                        "severity": "warn",
-                        "code": "redundant_paragraph",
-                        "text": txt,
-                        "message": f"与第 {prev_i} 句意思高度重复，做一遍“删除测试”：若没有新增例子或限制条件建议删掉。",
-                    })
-                    break
-            seen_norms.append((idx, norm_t))
 
     errors = sum(1 for i in issues if i["severity"] == "error")
     warns = sum(1 for i in issues if i["severity"] == "warn")
@@ -388,16 +399,6 @@ def lint_script(script_items: List[Dict[str, Any]], raw_intel: Optional[Dict[str
     }
 
 
-_EXAGGERATED_CLAIMS = ("全网第一", "100%有效", "必火", "绝对能爆", "震惊全网", "99%的人都不知道", "最强没有之一")
-_PLATFORM_RESIDUE_MAP = {
-    "xiaohongshu": ("左下角小黄车", "一键三连", "投币收藏", "点进橱窗"),
-    "bilibili": ("左下角小黄车", "点进橱窗", "主页笔记"),
-    "douyin": ("一键三连", "投币", "主页笔记"),
-    "shipinhao": ("左下角小黄车", "一键三连", "投币"),
-}
-_DANGLING_START_RE = re.compile(r"^(?:这个|那个|它|这里|那样)[，,。]?")
-
-
 def export_script_deliverables(
     out_dir: Path,
     title: str,
@@ -405,31 +406,48 @@ def export_script_deliverables(
     opening_candidates: Optional[List[Dict[str, str]]] = None,
     platform: str = "douyin",
     todo_items: Optional[List[str]] = None,
+    proof_assets: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, str]:
     """
     口播文案双文件解耦导出：
-    1. 00_口播纯享稿.txt：零 Markdown、零停顿符与画面提示，直接放进提词器就能顺口开念；
-    2. 00_拍摄执行方案.md：含 3 选 1 开头候选（标出兑现段）、带停顿/画面提示逐字稿、易卡句提醒与待补核实清单。
+    1. 00_口播纯享稿.txt：零 Markdown、零停顿符与画面提示，过滤废话句，直接放进提词器顺口开念；
+    2. 00_拍摄执行方案.md：含 3 选 1 开头候选（标出兑现段）、带停顿/画面配合逐字稿、易卡句提醒与原始凭证核验槽位。
     """
     out_dir.mkdir(parents=True, exist_ok=True)
-    clean_lines = [str(s.get("text") or "").strip() for s in sentences if str(s.get("text") or "").strip()]
+    active_sents = [s for s in sentences if not s.get("is_filler", False)]
+    clean_lines = [
+        str(s.get("say") or s.get("text") or s.get("show") or "").strip()
+        for s in active_sents
+        if str(s.get("say") or s.get("text") or s.get("show") or "").strip()
+    ]
     pure_txt_p = out_dir / "00_口播纯享稿.txt"
     pure_txt_p.write_text("\n".join(clean_lines) + "\n", encoding="utf-8")
 
     cands = opening_candidates or [
         {"type": "数据反常识（推荐）", "text": clean_lines[0] if clean_lines else title, "payoff": "第 2 段直接给出真实对照"},
         {"type": "具体场景切入", "text": f"你有没有遇到过这种情况：{clean_lines[0] if clean_lines else title}", "payoff": "第 2–3 段给出解法"},
-        {"type": "常见误解纠偏", "text": f"很多人以为不是这样，但实际测下来恰恰相反", "payoff": "第 2 段用实拍验证"},
+        {"type": "常见误解纠偏", "text": "很多人以为不是这样，但实际测下来恰恰相反", "payoff": "第 2 段用实拍验证"},
     ]
     hard_to_read = [ln for ln in clean_lines if len(re.sub(r"[\s，。！？、]", "", ln)) > 16][:2]
     total_chars = sum(len(re.sub(r"[\s，。！？、]", "", ln)) for ln in clean_lines)
     est_sec = round(total_chars / 4.2, 1)
 
+    auto_todos = list(todo_items or [])
+    proof_count = len(proof_assets or [])
+    for idx, ln in enumerate(clean_lines, 1):
+        if re.search(r"\d+(?:\.\d+)?[%％倍元块斤克万亿小时分钟天年]", ln) and proof_count == 0:
+            auto_todos.append(f"第 {idx} 句含具体数字/对比（「{ln[:18]}」），请准备对应实拍特写或单据原件，若无则收敛表述")
+            if len(auto_todos) >= 5:
+                break
+
+    plat_cn = {"douyin": "抖音", "xiaohongshu": "小红书", "shipinhao": "视频号", "bilibili": "B站"}.get(
+        str(platform or "").lower(), str(platform or "通用平台")
+    )
     md_lines = [
         f"# 《{title}》口播拍摄执行方案",
         "",
-        f"- **适配平台**：`{platform}` | **全稿字数**：约 `{total_chars}` 字 | **预计口播时长**：约 `{est_sec}` 秒",
-        "- **开念纯享稿**：直接打开同目录 `00_口播纯享稿.txt`（无符号干扰，直接照念）",
+        f"- **适配平台**：{plat_cn} | **全稿字数**：约 `{total_chars}` 字 | **预计口播时长**：约 `{est_sec}` 秒 | **已关联物证**：`{proof_count}` 件",
+        "- **开念纯享稿**：直接打开同目录 `00_口播纯享稿.txt`（零符号干扰，放提词器直接照念）",
         "",
         "## 一、开头 3 选 1 候选（已标出正文兑现位置）",
         *[f"{i}. **【{c.get('type', '候选')}】** {c.get('text', '')}（兑现：{c.get('payoff', '正文展开')}）" for i, c in enumerate(cands[:3], 1)],
@@ -444,8 +462,8 @@ def export_script_deliverables(
             else ["- 全稿均为短句，正常语速顺口可读。"]
         ),
         "",
-        "## 四、发布前待补 / 待核实项",
-        *([f"- [ ] {x}" for x in todo_items] if todo_items else ["- 无额外待补项，确认片中数字准确即可开拍。"]),
+        "## 四、发布前待补 / 凭证核验清单",
+        *([f"- [ ] {x}" for x in auto_todos] if auto_todos else ["- 已备齐核验材料，确认片中数字准确即可开拍。"]),
         "",
     ]
     plan_md_p = out_dir / "00_拍摄执行方案.md"
@@ -507,19 +525,28 @@ def render_lint_markdown(lint_res: Dict[str, Any], raw_intel: Dict[str, Any]) ->
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="一手原始材料接入与口语去AI味剧本检查器")
-    parser.add_argument("--comments-file", nargs="*", default=[], help="同行评论区/客服聊天导出文件(.txt/.md/.csv)")
+    parser.add_argument("--comments-file", nargs="*", default=[], help="同行评论区/客服聊天导出文件(.txt/.md/.csv/.json)")
     parser.add_argument("--verified-customer-export", action="store_true", help="确认导出文件来自真实客户互动")
     parser.add_argument("--proof-dir", help="门店原始物证材料目录")
     parser.add_argument("--script-json", help="待体检口播文案 JSON")
     parser.add_argument("--track", choices=["store", "creator"], default="store")
+    parser.add_argument("--platform", default="", help="目标发布平台(douyin/xiaohongshu/shipinhao/bilibili)，用于检查跨平台残留话术")
+    parser.add_argument("--export-script-dir", help="可选：导出 00_口播纯享稿.txt 与 00_拍摄执行方案.md 的目录")
+    parser.add_argument("--title", default="", help="可选：拍摄执行方案标题")
     parser.add_argument("--output", required=True, help="输出 00_raw_intel.json 路径")
     args = parser.parse_args()
 
     comment_paths = [Path(p) for p in args.comments_file]
     proof_p = Path(args.proof_dir) if args.proof_dir else None
-    intel = extract_raw_intel(comment_paths, proof_dir=proof_p, track=args.track,
-                              verified_customer_export=args.verified_customer_export)
+    intel = extract_raw_intel(
+        comment_paths,
+        proof_dir=proof_p,
+        track=args.track,
+        verified_customer_export=args.verified_customer_export,
+        target_platform=args.platform,
+    )
 
+    script_items: List[Dict[str, Any]] = []
     if args.script_json and Path(args.script_json).exists():
         raw_script = read_json(Path(args.script_json))
         script_items = (
@@ -536,9 +563,18 @@ def main() -> None:
     write_json(out_json, intel)
     lint_md = out_json.parent / "00_script_lint.md"
     lint_md.write_text(render_lint_markdown(lint_res, intel), encoding="utf-8")
+    if args.export_script_dir and script_items:
+        exp = export_script_deliverables(
+            Path(args.export_script_dir),
+            title=args.title or (Path(args.script_json).stem if args.script_json else "口播视频"),
+            sentences=script_items,
+            platform=args.platform or "douyin",
+            proof_assets=intel.get("proof_assets"),
+        )
+        print(f"[raw_intel] 已导出双文件提词稿与拍摄方案 -> {exp['pure_script_txt']}")
     print(
-        f"[raw_intel] 已萃取原话 {intel['utterance_count']} 条 / 物证 {len(intel['proof_assets'])} 件，"
-        f"剧本检查 Error={lint_res['error_count']} Warn={lint_res['warn_count']} -> {out_json}"
+        f"[raw_intel] 已整理顾客原话 {intel['utterance_count']} 条 / 实拍凭证 {len(intel['proof_assets'])} 件，"
+        f"口播稿体检：必改 {lint_res['error_count']} 处 / 建议优化 {lint_res['warn_count']} 处 -> {out_json}"
     )
 
 

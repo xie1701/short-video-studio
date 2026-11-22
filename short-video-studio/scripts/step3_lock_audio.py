@@ -35,6 +35,7 @@ from common import (
     run_cmd,
     sec_to_frames,
     write_json,
+    write_wav_48k_stereo,
 )
 
 if __name__ == "__main__":
@@ -52,14 +53,7 @@ def load_stereo_wav_np(path: Path) -> Tuple[np.ndarray, int]:
 
 
 def save_stereo_wav_np(path: Path, audio: np.ndarray, sr: int = SR) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    clipped = np.clip(audio, -0.98, 0.98)
-    pcm = (clipped * 32767.0).astype(np.int16)
-    with wave.open(str(path), "wb") as wf:
-        wf.setnchannels(2)
-        wf.setsampwidth(2)
-        wf.setframerate(sr)
-        wf.writeframes(pcm.tobytes())
+    write_wav_48k_stereo(path, audio, sr=sr, clip_limit=0.985)
 
 
 def _loop_with_crossfade(unit: np.ndarray, target_len: int, fade_samples: int) -> np.ndarray:
@@ -226,17 +220,30 @@ def extract_real_room_tone(
     target_len = int(round(target_sec * sr))
     hop = int(0.020 * sr)
 
+    seg_audio_resolved: List[Tuple[str, float, float]] = []
+    for seg in all_segments:
+        sa = seg.get("source_audio")
+        if sa:
+            try:
+                sa_res = str(Path(sa).resolve())
+            except Exception:
+                sa_res = str(sa)
+            seg_audio_resolved.append((sa_res, float(seg["start_sec"]), float(seg["end_sec"])))
+
     candidates: List[Tuple[float, np.ndarray]] = []
     for path_str, arr in raw_audio_cache.items():
         if len(arr) < int(0.4 * sr):
             continue
+        try:
+            cur_res = str(Path(path_str).resolve())
+        except Exception:
+            cur_res = str(path_str)
         speech_mask_hops = np.zeros(max(1, len(arr) // hop), dtype=bool)
-        for seg in all_segments:
-            sa = seg.get("source_audio")
-            if not sa or str(Path(sa).resolve()) != str(Path(path_str).resolve()):
+        for sa_res, st_s, en_s in seg_audio_resolved:
+            if sa_res != cur_res:
                 continue
-            h0 = max(0, int((float(seg["start_sec"]) - 0.06) / 0.020))
-            h1 = min(len(speech_mask_hops), int((float(seg["end_sec"]) + 0.06) / 0.020))
+            h0 = max(0, int((st_s - 0.06) / 0.020))
+            h1 = min(len(speech_mask_hops), int((en_s + 0.06) / 0.020))
             speech_mask_hops[h0:h1] = True
 
         mono = arr.mean(axis=1)
@@ -353,7 +360,7 @@ def _resolve_default_bgm(track: str) -> Path:
             return Path(prof["bgm_wav"])
     except Exception:
         pass
-    sid = "style_14" if track == "store" else "style_12"
+    sid = "style_14" if track == "store" else "style_11"
     return ASSETS_DIR / "sound_vibe" / "bgm" / f"{sid}_bgm.m4a"
 
 
@@ -494,20 +501,35 @@ def run_step3(
         events.append(item)
         return eid
 
+    speech_islands_map = transcript.get("speech_islands") or {}
     prepared_slices: List[Tuple[np.ndarray, int, int]] = []
     raw_only_slices: List[np.ndarray] = []
     for seg in valid_segments:
         src_audio_path = seg.get("source_audio") or transcript["primary_audio"]
         src_arr = get_audio(src_audio_path)
+        src_key = str(Path(src_audio_path).resolve()) if src_audio_path else ""
+        islands = speech_islands_map.get(src_key) or []
 
-        raw_s0 = max(0, int(round(float(seg["start_sec"]) * SR)))
-        raw_s1 = min(len(src_arr), int(round(float(seg["end_sec"]) * SR)))
+        st_t = float(seg["start_sec"])
+        en_t = float(seg["end_sec"])
+        if islands:
+            # 实拍口播切点优先落入语音能量岛静音中段并吸附视频帧网格
+            cand_st = refine_cut_to_island_midpoint(st_t, islands, search_radius_sec=0.14, fps=fps)
+            cand_en = refine_cut_to_island_midpoint(en_t, islands, search_radius_sec=0.16, fps=fps)
+            if cand_en - cand_st >= max(0.25, (en_t - st_t) * 0.65):
+                st_t, en_t = cand_st, cand_en
+        else:
+            st_t = snap_cut_to_frame_grid(st_t, fps=fps)
+            en_t = snap_cut_to_frame_grid(en_t, fps=fps)
+
+        raw_s0 = max(0, int(round(st_t * SR)))
+        raw_s1 = min(len(src_arr), int(round(en_t * SR)))
         s0 = snap_to_zero_crossing(src_arr, raw_s0, int(0.010 * SR))
         s1 = _snap_tail_to_closed_mouth_valley(src_arr, raw_s1, SR)
         if s1 <= s0 + int(0.05 * SR):
             s0, s1 = raw_s0, raw_s1
 
-        raw_slice = src_arr[s0:s1].copy()
+        raw_slice = apply_edge_micro_fade(src_arr[s0:s1].copy(), fade_sec=0.010, sr=SR)
         prepared_slices.append((raw_slice, s0, s1))
         raw_only_slices.append(raw_slice)
 
@@ -520,8 +542,6 @@ def run_step3(
         zip(valid_segments, leveled_slices, prepared_slices), start=1
     ):
         sid = f"sent_{s_idx:03d}"
-        orig_start = float(seg["start_sec"])
-        orig_end = float(seg["end_sec"])
 
         chunk = leveled_slice.copy()
         if s_idx == 1:
@@ -603,7 +623,7 @@ def run_step3(
 
         for a_t in accent_anchors:
             if all(abs(a_t - kt) >= 0.45 for kt in keyword_anchors):
-                add_event("stress", a_t, "声学重音峰 (F0/RMS实测)", sid)
+                add_event("stress", a_t, "语气重音峰", sid)
 
         if s_idx == 1 and word_energy_peaks:
             existing_3s = [t for t in (keyword_anchors + accent_anchors) if 0.50 <= t <= 2.75]
@@ -756,8 +776,8 @@ def run_step3(
             "beat_method": bgm_info["method"],
             "dual_bgm_applied": dual_bgm_applied,
             "dual_bgm_switch_sec": dual_bgm_switch_sec,
-            "beat_times_sec": [t for t in shifted_beats if t <= total_dur],
-            "downbeat_times_sec": [t for t in shifted_downbeats if t <= total_dur],
+            "beat_times_sec": [t for t in eff_beats if t <= total_dur],
+            "downbeat_times_sec": [t for t in eff_downs if t <= total_dur],
             "hook_first_word_sec": locked_sentences[0]["start_sec"],
             "hook_aligned_downbeat_sec": 0.0,
         },
@@ -765,9 +785,10 @@ def run_step3(
         "events": events,
     }
     write_json(pipeline_dir / "03_audio_events.json", audio_events)
+    rt_cn = "已提取真实环境底噪" if room_tone_source == "extracted_real" else "柔和环境垫底"
     print(
-        f"[step3] 音轨已锁定！有效句 {len(locked_sentences)} 句，总长 {total_dur:.2f}s，"
-        f"RoomTone={room_tone_source}，动态停顿={audio_events['pause_range_sec']}s -> 03_audio_events.json"
+        f"[step3] 音轨已锁定：有效 {len(locked_sentences)} 句，总长 {total_dur:.2f} 秒，"
+        f"{rt_cn}，句间停顿 {audio_events['pause_range_sec']} 秒 -> 03_audio_events.json"
     )
     return audio_events
 

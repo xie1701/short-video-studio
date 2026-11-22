@@ -58,12 +58,25 @@ def write_source_review(pipeline_dir: Path) -> dict[str, Any]:
             digests[file_name] = sha256_file(file) if file.is_file() else None
         return digests[file_name]
 
-    media = {str(item.get("normalized_mp4")): item for item in manifest.get("items", []) if item.get("normalized_mp4")}
+    media: dict[str, dict[str, Any]] = {}
+    for item in manifest.get("items", []):
+        mp = item.get("normalized_mp4")
+        if mp:
+            media[str(mp)] = item
+            try:
+                media[str(Path(mp).resolve())] = item
+            except Exception:
+                pass
 
     def media_ref(media_path: str | None, start: Any, end: Any) -> dict[str, Any] | None:
         if not media_path:
             return None
-        item = media.get(media_path, {})
+        item = media.get(media_path) or {}
+        if not item:
+            try:
+                item = media.get(str(Path(media_path).resolve()), {})
+            except Exception:
+                item = {}
         source = str(item.get("source_path") or media_path)
         generated = bool(item.get("source_is_code_scene")) or not item
         return {
@@ -87,10 +100,16 @@ def write_source_review(pipeline_dir: Path) -> dict[str, Any]:
         voice = media_ref(sent.get("source_media"), sent.get("source_in_sec"), sent.get("source_out_sec"))
         if sent.get("voice_source"):
             original_offset = float(sent.get("voice_source_offset_sec") or 0)
+            s_in = sent.get("source_in_sec")
+            s_out = sent.get("source_out_sec")
+            rng = (
+                _range(max(0.0, float(s_in) - original_offset), float(s_out) - original_offset)
+                if s_in is not None and s_out is not None
+                else timeline_sec
+            )
             voice = {
                 "path": sent["voice_source"], "sha256": digest(sent["voice_source"]), "origin": "original",
-                "range_sec": _range(max(0, float(sent["source_in_sec"]) - original_offset),
-                                    float(sent["source_out_sec"]) - original_offset),
+                "range_sec": rng,
             }
         elif voice is None and tts_wav_p.is_file():
             voice = {

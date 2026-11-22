@@ -146,7 +146,7 @@ def build_ascii_sketch(diagram_type: str) -> str:
     if diagram_type == "portrait_hook":
         return "\n".join([
             "┌──────────────────────┐",
-            "│  (避开顶部UI遮挡区)  │",
+            "│  (避开顶部状态栏遮挡)│",
             "│       ╭───╮          │",
             "│       │^_^│  ←人物   │",
             "│      ╭┴───┴╮  居中   │",
@@ -203,20 +203,20 @@ def shots_from_audio_events(audio_events: Dict[str, Any]) -> List[Dict[str, Any]
         is_human_anchor = idx == 1 or idx == n_s or emo in ("hook", "persona", "cta")
         if is_human_anchor:
             diag = "portrait_hook"
-            role = f"真人出镜说话 #{idx}（{emo_label}，多留 2 秒头尾）"
+            role = f"真人出镜说话 #{idx}（{emo_label}）"
             what = f"主理人微侧身自然出镜说话：「{sent['text'][:18]}」，手里拿实物、说话带真实情绪"
             framing = "手机与眼齐平、微侧身别死板正怼脸，离人一臂远，头顶留空避开顶部遮挡"
-            tips = f"这段话长 {s_dur:.1f} 秒，请拍够 {rec_dur:.1f} 秒（头尾各停 1 秒）；手持允许轻微自然呼吸感，重点是情绪到位"
+            tips = f"这段台词约 {s_dur:.1f} 秒，手持允许轻微自然呼吸感，重点是情绪到位"
         else:
             broll_idx += 1
             diag = "closeup_detail" if broll_idx % 2 == 1 else "wide_scene"
-            role = f"{'产品/动作特写补拍' if diag == 'closeup_detail' else '门店环境实景补拍'} #{idx}（多留 2 秒头尾）"
+            role = f"{'产品/动作特写补拍' if diag == 'closeup_detail' else '门店环境实景补拍'} #{idx}"
             what = f"拍与这句话直接对应的真实画面：「{sent['text'][:16]}」对应的动作、实物或场景"
             framing = "主体放画面中上；特写距两掌宽，全景退后三步"
             if diag == "closeup_detail":
-                tips = f"这段话长 {s_dur:.1f} 秒，请拍够 {rec_dur:.1f} 秒；特写/物证镜头务必手肘贴稳锁焦，别把字和细节拍糊"
+                tips = f"这段台词约 {s_dur:.1f} 秒；特写/物证镜头务必手肘贴稳锁焦，别把字和细节拍糊"
             else:
-                tips = f"这段话长 {s_dur:.1f} 秒，请拍够 {rec_dur:.1f} 秒；第一视角带景走动可保留自然生活感，头尾各停稳 1 秒"
+                tips = f"这段台词约 {s_dur:.1f} 秒；第一视角带景走动可保留自然生活感"
         out.append({
             "shot_no": idx,
             "role": role,
@@ -290,7 +290,7 @@ def generate_shot_card(
             f"- **建议录制时长**：{s['duration_sec']} 秒（含头尾各 1.0 秒余量）",
             f"- **建议多拍几遍**：拍 **{s['backup_takes']} 遍**（说错别停直接重念，挑最顺的一遍）",
             f"- **手机拍摄要点**：{s['phone_tips']}",
-            f"- **简笔构图示意**：见 SVG 文件 `shot_sketches/{svg_file.name}`",
+            f"- **构图示意图**：已附高清构图示意图（打开 `shot_sketches/{svg_file.name}` 查看）",
             "",
             "```text",
             build_ascii_sketch(s.get("diagram_type", "portrait_hook")),

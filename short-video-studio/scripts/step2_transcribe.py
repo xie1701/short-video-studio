@@ -41,7 +41,9 @@ from common import (
     rescue_stereo_channels,
     run_cmd,
     write_json,
+    write_wav_48k_stereo,
 )
+from compliance_guard import audit_script_compliance, write_compliance_report_files
 
 if __name__ == "__main__":
     maybe_reexec_in_venv(("faster_whisper",))
@@ -73,7 +75,6 @@ DEFAULT_CREATOR_SCRIPT = [
     {"text": "写文案还是剪片子最难？评论区聊聊。", "keywords": ["评论区"], "is_filler": False, "emotion": "cta"},
 ]
 
-_WHISPER_MODEL_CACHE: Dict[str, Any] = {}
 _ASR_STOP_WORDS = {
     "我们", "你们", "他们", "这个", "那个", "就是", "其实", "然后", "因为", "所以",
     "可以", "大家", "什么", "怎么", "一个", "没有", "还是", "觉得", "如果", "自己", "为什么",
@@ -1406,7 +1407,7 @@ def run_step2(
         for idx, it_base in enumerate(pre_items, start=1):
             it_copy = dict(it_base)
             if it_copy["id"] in rewritten_by_idx:
-                it_copy["original_text_before_compliance"] = it_copy["text"]
+                it_copy.setdefault("original_text_before_compliance", it_copy["text"])
                 it_copy["text"] = rewritten_by_idx[it_copy["id"]]
                 it_copy["show"] = it_copy["text"]
                 if not it_copy.get("has_distinct_say"):
@@ -1447,7 +1448,10 @@ def run_step2(
                     for sf in say_findings:
                         sf["field"] = "say"
                     pre_comp.setdefault("findings", []).extend(say_findings)
-                    pre_comp["finding_count"] = len(pre_comp["findings"])
+                    pre_comp["must_sentence_count"] = int(pre_comp.get("must_sentence_count", 0)) + int(say_comp.get("must_sentence_count", 0))
+                    pre_comp["warn_hit_count"] = int(pre_comp.get("warn_hit_count", 0)) + int(say_comp.get("warn_hit_count", 0))
+                    pre_comp["unacked_warn_count"] = int(pre_comp.get("unacked_warn_count", 0)) + int(say_comp.get("unacked_warn_count", 0))
+                    pre_comp["auto_rewritten_count"] = int(pre_comp.get("auto_rewritten_count", 0)) + int(say_comp.get("auto_rewritten_count", 0))
                 rw_say = next(
                     (f.get("suggested_text") for f in say_findings if f.get("action") == "auto_rewrite_or_block" and f.get("suggested_text")),
                     None,
@@ -1476,12 +1480,7 @@ def run_step2(
                 arr_v, _ = read_wav_as_48k_stereo(sp, target_sr=48000)
                 arr_fixed, st_diag = rescue_stereo_channels(arr_v, imbalance_db=8.0)
                 if st_diag != "ok":
-                    pcm = (np.clip(arr_fixed, -0.99, 0.99) * 32767.0).astype(np.int16)
-                    with wave.open(str(sp), "wb") as wf:
-                        wf.setnchannels(2)
-                        wf.setsampwidth(2)
-                        wf.setframerate(48000)
-                        wf.writeframes(pcm.tobytes())
+                    write_wav_48k_stereo(sp, arr_fixed, sr=48000)
                 duration, m_on, m_off = _measure_wav_speech_extent(sp)
                 if duration <= 0.1 or m_off <= m_on:
                     raise ValueError(f"原始配音为空或过短：{voice_source}")
@@ -1542,7 +1541,8 @@ def run_step2(
         primary_audio = str(master_tts_wav.resolve())
         filter_stats = {"offcamera_dropped": 0, "retake_dropped": 0, "stumbles_dropped": 0, "silence_retimed": 0}
         compliance_report = pre_comp
-        write_json(pipeline_dir / "00_compliance_report.json", compliance_report)
+        write_compliance_report_files(pipeline_dir, compliance_report)
+        speech_islands_map: Dict[str, List[Dict[str, Any]]] = {}
     else:
         segments = []
         source_types: List[str] = []
@@ -1620,6 +1620,15 @@ def run_step2(
                 seg["keywords"] = extract_auto_keywords(seg["text"])
                 _mark_word_keywords(seg.get("words") or [], seg["keywords"])
 
+        # 实拍口播接入 10ms 语音能量岛检测，输出物理发声边界供 Step 3 切点对齐与孤立残句排查
+        speech_islands_map = {}
+        short_orphan_cnt = 0
+        for wk, (y16_a, sr16_a) in audio_cache.items():
+            islands = detect_speech_islands(y16_a, sr=sr16_a)
+            speech_islands_map[wk] = islands
+            short_orphan_cnt += sum(1 for isl in islands if isl.get("is_short_orphan_candidate"))
+        filter_stats["short_island_candidates"] = short_orphan_cnt
+
     transcript = {
         "step": "02_transcribe",
         "source_type": source_type,
@@ -1631,6 +1640,7 @@ def run_step2(
         "compliance_passed": compliance_report.get("passed", True),
         "compliance_report": str((pipeline_dir / "00_compliance_report.json").resolve()),
         "sanity_warnings": sanity_warnings,
+        "speech_islands": speech_islands_map,
         "paper_edit_suggestions": _build_paper_edit_suggestions(segments),
         "segments": segments,
     }
@@ -1652,10 +1662,10 @@ def detect_speech_islands(
     min_sil_sec: float = 0.18,
     hop_sec: float = 0.010,
     min_island_sec: float = 0.06,
-) -> List[Dict[str, float]]:
+) -> List[Dict[str, Any]]:
     """
     10ms 语音能量岛检测：定位每段真实发声物理边界，用于精剪口播、防止误切轻声尾字，
-    并精准揪出 0.3–0.6s 孤立短岛（2–4 字残留起句）。
+    并精准标出 0.20–0.65s 孤立短岛（2–4 字残留起句候选）。
     """
     if len(y16) == 0:
         return []
@@ -1705,19 +1715,27 @@ def probe_overlap_windows(
     win_sec: float = 5.0,
     hop_sec: float = 2.5,
     whisper_model: Optional[str] = None,
+    dialect: str = "mandarin",
 ) -> List[Dict[str, Any]]:
     """
-    重叠短窗口复核转写（不带文案 prompt、禁用前文条件依赖）：
+    重叠短窗口复核转写（真正不带文案 prompt、禁用前文条件依赖、纯离线缓存优先）：
     专门暴露长句整段转写中容易被语言模型“顺滑合并吞掉”的重复起句与半截重说。
     """
     y16, sr = load_wav_16k_mono(wav_path)
     total_sec = len(y16) / float(sr) if sr > 0 else 0.0
     if total_sec < 0.4:
         return []
-    model = get_cached_whisper_model(whisper_model or "small")
+    eff_model = whisper_model or find_cached_whisper_model()
+    if not eff_model:
+        return []
+    try:
+        model = get_cached_whisper_model(eff_model, local_files_only=True)
+    except Exception:
+        return []
     if model is None:
         return []
 
+    lang_arg = "yue" if str(dialect or "").lower() in ("cantonese", "yue") else "zh"
     rows: List[Dict[str, Any]] = []
     t = 0.0
     while t < total_sec:
@@ -1728,11 +1746,10 @@ def probe_overlap_windows(
         seg_audio = y16[s0:s1].astype(np.float32)
         segs, _ = model.transcribe(
             seg_audio,
-            language="zh",
+            language=lang_arg,
             condition_on_previous_text=False,
             temperature=0.0,
-            initial_prompt="以下是普通话口播，使用简体中文。",
-            word_timestamps=True,
+            word_timestamps=False,
         )
         txt = "".join(str(sg.text or "").strip() for sg in segs).strip()
         rows.append({

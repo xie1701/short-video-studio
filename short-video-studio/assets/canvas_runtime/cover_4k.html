@@ -134,11 +134,18 @@
 
         c.save();
         c.textAlign = "center";
-        c.font = `600 ${LAY.titleSize}px ${fontFam}`;
+        const titleRoom = SAFE_X[1] - SAFE_X[0] - 48;
+        let tPx = LAY.titleSize;
+        c.font = `600 ${tPx}px ${fontFam}`;
+        let tw = c.measureText(DATA.title).width;
+        if (tw > titleRoom && tw > 0) {
+          tPx = Math.max(20, Math.floor((tPx * titleRoom) / tw));
+          c.font = `600 ${tPx}px ${fontFam}`;
+          tw = c.measureText(DATA.title).width;
+        }
         c.fillStyle = K.rgba(K.P.accent2, 0.94);
         c.shadowColor = K.rgba(K.P.accent2, 0.55);
         c.shadowBlur = 14;
-        const tw = c.measureText(DATA.title).width;
         checkBounds("title", cx - tw / 2, cx + tw / 2);
         c.fillText(DATA.title, cx, LAY.titleY);
         c.restore();

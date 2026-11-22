@@ -484,10 +484,8 @@ class StudioTests(unittest.TestCase):
         )
 
     def test_pip_giant_text_and_template_packaging_rendering(self):
-        from PIL import Image
-        from render_mp4 import _build_ffmpeg_pip_vf, compose_pip_frame_pil, render_packaging_png
+        from render_mp4 import _build_dual_pip_cmd, _build_ffmpeg_pip_vf, render_packaging_png
 
-        base = Image.new("RGB", (1080, 1920), (110, 125, 140))
         for sid, expected_mode in (
             ("style_06", "black_polaroid_frame_pip"),
             ("style_07", "white_outline_cutout_pip"),
@@ -496,13 +494,30 @@ class StudioTests(unittest.TestCase):
             ("style_11", "corner_circle_evidence_pip"),
             ("style_16", "linear_split_feather_pip"),
             ("style_17", "dual_rect_grid_pip"),
+            ("style_11", "smooth_orbit_pip"),
         ):
-            out_im, eff_faces = compose_pip_frame_pil(base, style_id=sid)
-            self.assertEqual(out_im.size, (1080, 1920))
-            self.assertTrue(len(eff_faces) >= 1)
             vf_str = _build_ffmpeg_pip_vf({"mode": expected_mode, "border_hex": "#FFF589"})
             self.assertIsNotNone(vf_str)
             self.assertIn("overlay=", vf_str)
+
+        # 验证双源 PIP 命令路由：secondary_media_path 异于主镜时走多路 -i + -filter_complex
+        cmd_dual = _build_dual_pip_cmd(
+            "ffmpeg",
+            str(self.root / "pip_main.mp4"),
+            0.0,
+            5.0,
+            "scale=1080:1920",
+            {"mode": "smooth_orbit_pip", "corner": "tr", "radius_px": 146, "border_hex": "#F4B13E"},
+            str(self.root / "pip_sec.mp4"),
+            1.2,
+            2.0,
+            60,
+            30,
+            self.root / "seg_dual.mp4",
+        )
+        self.assertIsNotNone(cmd_dual)
+        self.assertIn("-filter_complex", cmd_dual)
+        self.assertEqual(cmd_dual.count("-i"), 4)  # main + sec + circle mask + circle ring
 
         for gmode in ("giant_smash_single", "giant_dual_clash", "giant_numeric_trio", "giant_vertical_seal"):
             im_g = render_packaging_png({
@@ -991,9 +1006,8 @@ class StudioTests(unittest.TestCase):
             self.assertGreaterEqual(len(rp["motion_strips"]), 1)
 
     def test_publish_copy_pack_four_round_lint_and_smooth_orbit_pip(self):
-        from PIL import Image
         from raw_intel_ingest import export_script_deliverables, lint_script
-        from render_mp4 import compose_pip_frame_pil
+        from render_mp4 import build_graded_segment_cmd
         from step4_build_edl import detect_explainer_broll_windows
         from step9_title_cover import build_publish_copy_pack
 
@@ -1016,30 +1030,56 @@ class StudioTests(unittest.TestCase):
         deliv = export_script_deliverables(
             self.root / "script_out",
             title="鲜羊排成本拆解",
-            sentences=[{"text": "四百块一份的烤羊排，成本其实占了七成。"}],
+            sentences=[
+                {"say": "呃那个废话跳过", "show": "废话", "is_filler": True},
+                {"say": "四百块一份的烤羊排，成本其实占了七成。", "show": "400元烤羊排成本占70%"},
+            ],
             platform="douyin",
         )
         self.assertTrue(Path(deliv["pure_script_txt"]).is_file())
         self.assertTrue(Path(deliv["execution_plan_md"]).is_file())
-        self.assertNotIn("〔画面", Path(deliv["pure_script_txt"]).read_text(encoding="utf-8"))
+        pure_txt = Path(deliv["pure_script_txt"]).read_text(encoding="utf-8")
+        self.assertNotIn("〔画面", pure_txt)
+        self.assertNotIn("废话跳过", pure_txt)
+        self.assertIn("四百块", pure_txt)
 
-        # 2) 口播动态讲解窗口探测 + smooth_orbit_pip 圆窗合成
+        # 2) 口播动态讲解窗口探测 + 真双源 smooth_orbit_pip FFmpeg 实测渲染
         wins = detect_explainer_broll_windows([
             {"id": "s1", "text": "很多人问为什么看起来一样大其实差了14倍。", "start_sec": 0.4, "end_sec": 3.4, "words": [{"word": "14倍", "start_sec": 2.2, "end_sec": 2.6}]},
             {"id": "s2", "text": "欢迎评论区聊聊。", "start_sec": 3.6, "end_sec": 5.0, "emotion_or_info": "cta"},
         ])
         self.assertEqual(len(wins), 1)
         self.assertEqual(wins[0]["presenter_pip_mode"], "smooth_orbit_pip")
-
-        base = Image.new("RGB", (1080, 1920), (40, 60, 90))
-        broll = Image.new("RGB", (1080, 1920), (8, 19, 31))
-        comp, faces = compose_pip_frame_pil(
-            base,
-            secondary_img=broll,
-            pip_spec={"mode": "smooth_orbit_pip", "corner": "tr", "radius_px": 146, "border_hex": "#F4B13E"},
-        )
-        self.assertEqual(comp.size, (1080, 1920))
-        self.assertEqual(len(faces), 1)
+        if shutil.which("ffmpeg"):
+            broll_v = self.root / "orbit_broll.mp4"
+            host_v = self.root / "orbit_host.mp4"
+            out_seg = self.root / "orbit_out.mp4"
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=#08131F:s=540x960:r=30:d=1.2",
+                            "-c:v", "libx264", "-pix_fmt", "yuv420p", str(broll_v)], check=True)
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=#C07A50:s=540x960:r=30:d=2.0",
+                            "-c:v", "libx264", "-pix_fmt", "yuv420p", str(host_v)], check=True)
+            cmd = build_graded_segment_cmd(
+                shutil.which("ffmpeg"),
+                {
+                    "clip_id": "orbit_01",
+                    "media_path": str(broll_v),
+                    "source_in_sec": 0.0,
+                    "source_out_sec": 1.0,
+                    "duration_sec": 1.0,
+                    "pip_spec": {"mode": "smooth_orbit_pip", "corner": "tr", "radius_px": 74, "border_hex": "#F4B13E"},
+                    "secondary_media_path": str(host_v),
+                    "secondary_in_sec": 0.4,
+                },
+                None,
+                {},
+                out_seg,
+                30,
+                tw=540,
+                th=960,
+                preview=True,
+            )
+            subprocess.run(cmd, check=True)
+            self.assertTrue(out_seg.is_file() and out_seg.stat().st_size > 1000)
 
         # 3) 分平台发布文案交付包
         pack = build_publish_copy_pack(
@@ -1057,6 +1097,167 @@ class StudioTests(unittest.TestCase):
         self.assertIn("douyin_shipinhao", pack["platforms"])
         self.assertIn("xiaohongshu", pack["platforms"])
         self.assertIn("bilibili", pack["platforms"])
+
+    def test_v25_tail_silence_and_residual_repeat_qa_gate(self):
+        import numpy as np
+        from independent_verifier import _detect_long_silences_np
+        from qa_inspector import inspect_video
+
+        # 1) 验证尾部纯静音能被正确检出（回归原尾段永假 Bug）
+        sr = 48000
+        t = np.arange(int(1.0 * sr)) / sr
+        speech = (0.3 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+        tail_sil = np.zeros(int(1.2 * sr), dtype=np.float32)
+        wav_arr = np.concatenate([speech, tail_sil])
+        sils = _detect_long_silences_np(wav_arr, sr=sr, thresh_db=-42.0, min_dur=0.8)
+        self.assertEqual(len(sils), 1)
+        self.assertGreaterEqual(sils[0], 1.1)
+
+        # 2) 验证 qa_inspector.inspect_video 接入 residual_repeat_scan 并检出残留重说
+        if shutil.which("ffmpeg"):
+            pdir = self.root / "qa_repeat"
+            pdir.mkdir()
+            mp4 = pdir / "output_final.mp4"
+            subprocess.run([
+                "ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=gray:s=1080x1920:r=30:d=4.0",
+                "-f", "lavfi", "-i", "sine=f=330:d=4.0:r=48000", "-af", "volume=-14dB",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(mp4),
+            ], check=True)
+            write_json(pdir / "03_audio_events.json", {
+                "locked_duration_sec": 4.0,
+                "locked_duration_frames": 120,
+                "sentences": [
+                    {"id": "s1", "text": "每天早起", "start_sec": 0.0, "end_sec": 0.6},
+                    {"id": "s2", "text": "每天早起现切鲜羊排不隔夜", "start_sec": 0.8, "end_sec": 2.4},
+                    {"id": "s3", "text": "现切鲜羊排不隔夜就是底线", "start_sec": 2.5, "end_sec": 4.0},
+                ],
+                "events": [{"id": "e1", "type": "sentence_start", "time_sec": 0.0, "frame": 0}],
+            })
+            write_json(pdir / "04_edl.json", {
+                "fps": 30, "total_duration_sec": 4.0, "total_frames": 120,
+                "clips": [{"clip_id": "c1", "media_path": str(mp4), "track_role": "a_roll",
+                           "source_in_sec": 0.0, "source_out_sec": 4.0, "timeline_in_sec": 0.0,
+                           "timeline_out_sec": 4.0, "duration_sec": 4.0}],
+            })
+            write_json(pdir / "05_subtitles.json", {"template_id": "style_14", "font_path": str(ASSETS_DIR / "fonts" / "AlimamaShuHeiTi-Bold.otf"), "entries": []})
+            write_json(pdir / "06_packaging.json", {"visual_elements": []})
+            rep = inspect_video(pdir, mp4, export_mode="mp4")
+            rc = next((c for c in rep["checks"] if c["id"] == "residual_repeat_scan"), None)
+            self.assertIsNotNone(rc)
+            self.assertEqual(rc["status"], "FAIL")
+
+    def test_v25_raw_intel_platform_and_compliance_copy_pack(self):
+        from compliance_guard import _classify_asset_license, audit_script_compliance, write_compliance_report_files
+
+        # 1) extract_raw_intel 透传 target_platform 到 lint_script
+        src_txt = self.root / "cmts.txt"
+        src_txt.write_text("羊排多少钱一份？\n你们家是不是现切的？\n", encoding="utf-8")
+        intel = extract_raw_intel([src_txt], target_platform="xiaohongshu")
+        self.assertEqual(intel["target_platform"], "xiaohongshu")
+
+        # 2) compliance_guard: 实拍新枚举识别 + pipeline code_broll 放行 + CLI --write-back 同步审计 09_publish_copy_pack.json
+        pdir = self.root / "comp_v25"
+        pdir.mkdir()
+        code_clip = pdir / "code_broll" / "card_01.mp4"
+        code_clip.parent.mkdir(parents=True)
+        code_clip.write_bytes(b"code-broll")
+        cls = _classify_asset_license(code_clip, "code_broll", pdir, {}, "abc")
+        self.assertTrue(cls["commercial_ok"])
+
+        segs = [
+            {"id": "seg_1", "text": "这家是全网第一好吃的羊排", "is_filler": False},
+            {"id": "seg_2", "text": "每天清晨现切现烤", "is_filler": False},
+            {"id": "seg_3", "text": "炭火慢烤三小时", "is_filler": False},
+        ]
+        comp_real = audit_script_compliance(segs, source_type="asr_script_forced", pipeline_dir=pdir, auto_action=True)
+        self.assertTrue(comp_real["is_real_voice"])
+        self.assertTrue(segs[0]["is_filler"])
+        self.assertTrue((pdir / "00_compliance_report.md").is_file())
+
+        tr_path = pdir / "02_transcript.json"
+        write_json(tr_path, {
+            "source_type": "script",
+            "segments": [
+                {"id": "seg_1", "text": "这家是全网第一好吃的羊排", "is_filler": False},
+                {"id": "seg_2", "text": "每天清晨现切现烤", "is_filler": False},
+            ],
+        })
+        write_json(pdir / "09_publish_copy_pack.json", {
+            "platforms": {"douyin_shipinhao": {"titles": ["全网第一的炭烤羊排"], "body": "实拍现切"}}
+        })
+        subprocess.run([
+            sys.executable, str(ROOT / "short-video-studio" / "scripts" / "compliance_guard.py"),
+            "audit-script", "--input-json", str(tr_path), "--source-type", "script",
+            "--pipeline-dir", str(pdir), "--write-back",
+        ], check=True)
+        tr_after = read_json(tr_path)
+        self.assertNotIn("全网第一", tr_after["segments"][0]["text"])
+        rep_after = read_json(pdir / "00_compliance_report.json")
+        self.assertTrue(any(f.get("sentence_id", "").startswith("copy_douyin") for f in rep_after.get("findings", [])))
+
+    def test_v25_knowledge_animation_fonts_audio_and_four_ratios(self):
+        from common import ffprobe_media, find_bin
+        from knowledge_animator import (
+            compile_animation_timeline,
+            init_animation_project,
+            inject_stage_commercial_fonts,
+            mix_animation_audio,
+        )
+
+        # 1) 验证 4 种画幅均被支持
+        for r in ("16x9", "9x16", "1x1", "3x4"):
+            tl = compile_animation_timeline({"title": "比例测试", "lines": [{"id": "l1", "text": "一句清晰短句"}]}, ratio=r)
+            self.assertEqual(tl["ratio"], r)
+
+        # 2) 验证商业字体真实注入 anim_starter.html 与 cover_4k.html
+        anim_root = self.root / "anim_v25"
+        init_animation_project(anim_root, title="时间复利", one_idea="每天进步1%一年变37倍", ratio="16x9", font_mode="serif")
+        finj = inject_stage_commercial_fonts(anim_root / "stage", extra_text="时间复利每天进步1%一年变37倍")
+        self.assertGreaterEqual(len(finj["injected"]), 1)
+        html_txt = (anim_root / "stage" / "anim_starter.html").read_text(encoding="utf-8")
+        self.assertIn("@font-face", html_txt)
+        self.assertNotIn("/* @fonts */", html_txt)
+
+        # 3) 验证知识动画有声合成封装（立体声 48kHz AAC）
+        ffmpeg = find_bin("ffmpeg")
+        if ffmpeg:
+            silent_mp4 = anim_root / "silent.mp4"
+            voiced_mp4 = anim_root / "voiced.mp4"
+            subprocess.run([
+                ffmpeg, "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=#050A14:s=640x360:r=30:d=3.0",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", str(silent_mp4),
+            ], check=True)
+            tl = compile_animation_timeline({
+                "title": "时间复利",
+                "lines": [
+                    {"id": "h1", "text": "每天进步[1%]", "hook": True},
+                    {"id": "c1", "text": "一年后翻37倍", "scene": True},
+                ],
+            })
+            mix_res = mix_animation_audio(silent_mp4, voiced_mp4, tl, anim_root / "work_audio")
+            self.assertTrue(voiced_mp4.is_file())
+            self.assertGreaterEqual(mix_res["sfx_cue_count"], 1)
+            self.assertLessEqual(float(mix_res["true_peak_dbtp"]), -1.0)
+            info = ffprobe_media(voiced_mp4)
+            a_streams = [s for s in info.get("streams", []) if s.get("codec_type") == "audio"]
+            self.assertEqual(len(a_streams), 1)
+            self.assertEqual(int(a_streams[0].get("channels", 0)), 2)
+
+    def test_v25_weekly_review_plain_cn_and_dirty_date(self):
+        from content_log_review import DEMO_RECORDS, append_record, generate_weekly_review
+
+        log_d = self.root / "review_v25"
+        for rec in DEMO_RECORDS:
+            append_record(log_d, dict(rec))
+        # 追加一条含脏日期的旧手填记录，验证不抛 ValueError
+        with (log_d / "records.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write('{"date":"bad-date","track":"store","title":"手填旧记录"}\n')
+        rev = generate_weekly_review(log_d, track="store")
+        md = Path(rev["weekly_review_md"]).read_text(encoding="utf-8")
+        self.assertIn("抖音", md)
+        self.assertIn("同城推荐", md)
+        self.assertNotIn("去重快照", md)
+        self.assertNotIn("95% 区间", md)
 
     def test_subset_fonts_char_collection_and_fallback(self):
         from common import find_commercial_font

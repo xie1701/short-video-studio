@@ -417,7 +417,10 @@ def run_step7(
                 cand_strengths.append(cs_r)
         min_cand = min(cand_strengths) if cand_strengths else 0.15
         for cand_str in cand_strengths:
-            cand_lut, cand_eff = build_blended_cube_lut(lut_path, cand_str, blended_out_path)
+            if abs(cand_str - eff_strength) < 1e-6 and blended_lut.is_file():
+                cand_lut, cand_eff = blended_lut, eff_strength
+            else:
+                cand_lut, cand_eff = build_blended_cube_lut(lut_path, cand_str, blended_out_path)
             blended_lut, eff_strength = cand_lut, cand_eff
             all_in_sector = True
             for vp, v_fb, v_at, v_st, v_is_hero in face_verify_targets:

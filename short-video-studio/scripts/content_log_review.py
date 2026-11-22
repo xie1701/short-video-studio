@@ -77,6 +77,23 @@ METRIC_NAMES = {
     "follow_rate": "新增关注",
 }
 
+PLATFORM_NAMES = {
+    "douyin": "抖音",
+    "xiaohongshu": "小红书",
+    "shipinhao": "视频号",
+    "bilibili": "B站",
+    "kuaishou": "快手",
+}
+
+TRAFFIC_SOURCE_NAMES = {
+    "local_feed": "同城推荐",
+    "feed": "推荐页自然流",
+    "organic": "自然推荐",
+    "search": "主动搜索",
+    "profile": "主页回看",
+    "paid": "付费推广",
+}
+
 
 def load_records(jsonl_path: Path) -> List[Dict[str, Any]]:
     if not jsonl_path.is_file():
@@ -168,7 +185,12 @@ def generate_weekly_review(log_dir: Path, out_md: Optional[Path] = None, track: 
 
     def captured_date(row: Dict[str, Any]) -> date:
         value = str(row.get("captured_at") or row.get("date") or "")
-        return date.fromisoformat(value[:10]) if value else date.min
+        if not value:
+            return date.min
+        try:
+            return date.fromisoformat(value[:10])
+        except ValueError:
+            return date.min
 
     dated = [row for row in records if captured_date(row) != date.min]
     last_day = max((captured_date(row) for row in dated), default=date.today())
@@ -201,19 +223,21 @@ def generate_weekly_review(log_dir: Path, out_md: Optional[Path] = None, track: 
     lines = [
         f"# {'门店' if track == 'store' else '博主'}运营周复盘",
         "",
-        f"观察日期 {first_day.isoformat()} 至 {last_day.isoformat()}，共 {len(recent)} 份去重快照。",
+        f"统计日期：{first_day.isoformat()} 至 {last_day.isoformat()}，共整理 {len(recent)} 条已发布视频的后台数据。",
         "",
-        "## 同条件指标",
+        "## 按相同发布条件分组的表现",
         "",
     ]
     if not cohorts:
-        lines.append("本期缺少可对账的分子和分母。历史手填记录保留供查阅。")
+        lines.append("本期还缺少带完整观看与转化人数的数据记录，历史手填记录已为你保留查阅。")
     for (platform, hours, traffic, band), metrics in sorted(cohorts.items()):
         units = len(cohort_video_ids[(platform, hours, traffic, band)])
-        lines.append(f"- {platform} · 发布后 {hours:g} 小时 · {traffic} · 片长 {band}–{band + 15} 秒 · {units} 条")
+        plat_zh = PLATFORM_NAMES.get(str(platform).casefold(), str(platform))
+        traf_zh = TRAFFIC_SOURCE_NAMES.get(str(traffic).casefold(), str(traffic))
+        lines.append(f"- {plat_zh} · 发布后 {hours:g} 小时 · {traf_zh} · 片长 {band}–{band + 15} 秒 · 共 {units} 条")
         for name, (numerator, denominator) in sorted(metrics.items()):
             label = METRIC_NAMES.get(name, name)
-            lines.append(f"  - {label} {numerator}/{denominator}（{numerator / denominator:.2%}）")
+            lines.append(f"  - {label}：{numerator}/{denominator}（{numerator / denominator:.2%}）")
     if diagnoses:
         lines.extend(["", "## 观众滑走最集中的画面时间点（建议下次优先改这里）", ""])
         for item in diagnoses:
@@ -222,20 +246,28 @@ def generate_weekly_review(log_dir: Path, out_md: Optional[Path] = None, track: 
                 f"- 《{item['title']}》第 {item['drop_off_sec']:.1f} 秒滑走最多"
                 f"（对应镜头 {item['clip_span']}，{role_zh}·{item.get('purpose') or '展示画面'}，当时正在讲：「{item['sentence_text']}」）"
             )
-    lines.extend(["", "## 实验与制作参数", ""])
-    lines.append(f"- 当前启用版本 {profile.get('active_candidate') or '已有配置或内置默认值'}")
+    lines.extend([
+        "",
+        "## 对比测试与下次沿用设置",
+        "",
+        "> 提醒：单条视频的涨跌受当天话题和推荐池波动影响很大，只有凑够多条同条件视频、效果稳稳高出一截时，系统才会建议把它变成你的固定做法。",
+        "",
+    ])
+    active_ver = profile.get("active_candidate")
+    lines.append(f"- 当前沿用的剪辑习惯：{'已按实测胜出方案自动记住（编号 ' + str(active_ver)[:8] + '）' if active_ver else '沿用默认设置'}")
     if not candidates:
-        lines.append("- 暂无已登记的对照实验。")
-    statuses = {"CANDIDATE": "达到预登记门槛", "INCONCLUSIVE": "提升证据不足", "INSUFFICIENT": "独立视频数不足"}
+        lines.append("- 目前还没有正在跑的对比测试。")
+    statuses = {"CANDIDATE": "效果稳稳高出一截，可以放心采纳", "INCONCLUSIVE": "目前差距还不明显，建议再观察", "INSUFFICIENT": "对比的视频条数还不够，继续积累"}
     for candidate in candidates:
         counts = candidate["units"]
-        line = (f"- {candidate['plan']['id']} · {statuses[candidate['status']]} · "
-                f"对照 {counts['control']} 条，变体 {counts['variant']} 条 · 候选版本 {candidate['candidate_id']}")
+        short_cid = str(candidate["candidate_id"])[:8]
+        line = (f"- 测试项「{candidate['plan']['id']}」 · {statuses[candidate['status']]} · "
+                f"旧做法 {counts['control']} 条 vs 新做法 {counts['variant']} 条（方案号 {short_cid}）")
         if "effect" in candidate:
             low, high = candidate["interval_95"]
-            line += f" · 变化 {candidate['effect']:+.2%}，95% 区间 [{low:+.2%}, {high:+.2%}]"
+            line += f" · 平均变化 {candidate['effect']:+.2%}（波动范围 {low:+.2%} ~ {high:+.2%}）"
         if candidate["plan"]["design"] == "matched":
-            line += " · 匹配比较"
+            line += " · 同题配对对比"
         lines.append(line)
     lines.append("")
     out_md.parent.mkdir(parents=True, exist_ok=True)

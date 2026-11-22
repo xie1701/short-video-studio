@@ -8,20 +8,22 @@
 
 | 步骤 | 产出的标准文件 | 核心职责 |
 | :--- | :--- | :--- |
-| 一手原材（可选） | `00_raw_intel.json` + `00_script_lint.md` | 同行评论/客服原话痛点萃取、真实物证索引与剧本口语去AI味体检 |
+| 进度与教练 | `00_progress_card.json` + `00_progress_card.md` | 5 类小白掌控感实时进度状态、下一步操作选项与跨天续接存档 |
+| 一手原材（可选） | `00_raw_intel.json` + `00_script_lint.md` + `00_口播纯享稿.txt` + `00_拍摄执行方案.md` | 同行评论/客服原话痛点萃取、真实物证索引、剧本四轮口语审稿与双文件解耦导出 |
+| 风格谱（可选） | `style_spectrum_applied.json` | 24 套风格谱完整运行时配置（含画中画模式、巨字规格、BGM/SFX 路由与镜头分布） |
 | 入口2（可选） | `00_inventory.json` + `00_shot_log.json` | HDR/VFR诊断、物理锐度/抖动锁精华入点 `best_in_sec`、人脸双眼/显著性/OCR日志与选题反推 |
-| 入口3（可选） | `00_code_spec.json` + `SPEC.md` + `STRUCTURE.md` | 纯代码制片规约（One Idea、Exact Copy 白名单、Fact Ledger、分幕时间表、安全区与可读停留校验） |
+| 入口3（可选） | `00_code_spec.json` + `SPEC.md` + `STRUCTURE.md` / `10_animation_audit.json` + `review_pack/` | 纯代码制片规约（One Idea、Exact Copy 白名单、Fact Ledger）或零实拍知识动画审计与运动静态化双盲审片包 |
 | Step 1 | `01_manifest.json` + `01_normalized/*.mp4/*.wav` | HDR→Rec.709 Hable 色调映射、统一转 CFR 30fps (`1080x1920`) 并提取 48kHz 16-bit WAV |
-| Step 2 | `02_transcript.json` | ASR/VAD 能量包络强制对齐、F0/RMS 真实韵律重音、物理剥离画外声与多条 NG Take 择优 |
-| Step 3 | `03_locked_voice.wav` + `03_locked_bgm.wav` + `03_audio_events.json` | 真实 Room Tone 抽样填缝 + 过零点真重叠等功率精剪 + 闭口帧微调 + 语义动态呼吸停顿 + 双段 BGM 锁定骨架 |
-| Step 4 | `04_edl.json` + `04_edl_table.md` | 53% 特写动态配比、景别/运镜防撞墙、一手痛点加权、真 J/L-cut、连续 A-roll `1.15x` 锁眼微推拉、特写原声 `ambient_audio_path` 挂载 |
-| Step 5 | `05_subtitles.json` + `05_subtitles.ass` | 逐字高亮字幕（含 `keywords` 与清洗后 `words`）、540px 正中对称带 `[220, 860]` 7 点避脸 `final_bbox` 与已验证可商用字体样式 |
-| Step 6 | `06_packaging.json` + `06_sfx_track.wav` | 流派 CC0 真实物理音效先行（峰值对齐切点 `onset_time_sec`/`peak_time_sec`）+ 多区无重叠花字/片尾召唤 + 预算控制 |
+| Step 2 | `02_transcript.json` | ASR/VAD 能量包络强制对齐、语音能量岛 `speech_islands`、F0/RMS 真实韵律重音、物理剥离画外声与多条 NG Take 择优 |
+| Step 3 | `03_locked_voice.wav` + `03_locked_bgm.wav` + `03_audio_events.json` | 真实 Room Tone 抽样填缝 + 语音岛静音中段切点对齐 + 过零点真重叠等功率精剪 + 12ms 防爆音微淡 + 语义动态呼吸停顿 + 双段 BGM 锁定骨架 |
+| Step 4 | `04_edl.json` + `04_edl_table.md` | 53% 特写动态配比、景别/运镜防撞墙、一手痛点加权、真 J/L-cut、动态讲解窗口 `explainer_broll_windows`（自动插图解 + `smooth_orbit_pip` 双源画中画）、特写原声 `ambient_audio_path` 挂载 |
+| Step 5 | `05_subtitles.json` + `05_subtitles.ass` + `05_subtitles.srt` + `05_subtitle_check.txt` (+ `terms.txt`) | 词边界 DP 断句（读取 `terms.txt` 保护词）、双层柔和阴影 ASS + 纯净单行 SRT + 逐行语速自检、540px 正中对称带 `[220, 860]` 7 点避脸与已验证可商用字体样式 |
+| Step 6 | `06_packaging.json` + `06_sfx_track.wav` | 流派 CC0 真实物理音效先行（峰值对齐切点 `onset_time_sec`/`peak_time_sec`）+ 多区无重叠花字/巨字/引语卡/贴纸 + 预算控制 |
 | Step 7 | `07_color_plan.json` (+ `07_blended_lut.cube`) | Hero 基准锚定 + 多人脸镜头 BT.709 皮肤矢量保护 + 中点测光矫正 + 单向不升强度 `17³` LUT 闭环 |
 | Step 8 | `08_mixed_master.wav` + `08_stem_nosfx.wav` + `08_voice_master.wav` + `08_bgm_ducked.wav` + `08_sfx_master.wav` + `08_sfx_audit_window.json` + `08_mix_metrics.json` | 广播人声链 + 双频段闪避 + 特写现场动作声轻混 + 总线防削波三轨解耦 + `-14.0 ±1.5 LUFS` 混音 |
-| Step 9 | `09_title_cover.md` + `09_title_cover.json` + `09_cover.jpg` + `09_cover_3x4.jpg` + `09_ui_safe_preview.jpg` | 全片情绪+眼部锐度优选封面、可选 Apple Vision 人物前景压字、3:4 防裁切封面、UI 遮罩预览与 180px 真实像素对比度校验 |
-| 出片 | `output_preview.mp4` / `output_final.mp4` / `jianying_draft/` / `hyperframes_draft/` | 本地 MP4 渲染 + 相对 URL FCPXML + 原生 HyperFrames Studio |
-| 质检与盲审 | `10_qa_report.json` + `10_qa_report.md` + `10_blind_review_pack.md` | **全套白盒 + 单遍解码黑盒门禁**（三态 `PASS \| FAIL \| SKIPPED_UNAVAILABLE`，含 540px OCR 居中实测）与一页式《独立盲审取证包》 |
+| Step 9 | `09_title_cover.md` + `09_title_cover.json` + `09_cover.jpg` + `09_cover_3x4.jpg` + `09_cover_360px_feed.jpg` + `09_ui_safe_preview.jpg` + `09_publish_copy_pack.{md,json}` (+ `09_cover_land_4k.png` / `09_cover_port_4k.png`) | 全片情绪+眼部锐度优选封面、3:4 防裁切封面、360px 手机信息流模拟小图、UI 遮罩预览、分平台发布文案包及可选双比例 4K 代码封面 |
+| 出片 | `output_preview.mp4` / `output_final.mp4` / `jianying_draft/` / `hyperframes_draft/` | 本地 MP4 渲染（支持双源 `-i` 真画中画与并发分镜编码）+ 相对 URL FCPXML + 原生 HyperFrames Studio |
+| 质检与盲审 | `10_qa_report.json` + `10_qa_report.md` + `10_blind_review_pack.md` | **23 项白盒 + 单遍解码黑盒门禁**（三态 `PASS \| FAIL \| SKIPPED_UNAVAILABLE`，含残留重说扫描、540px OCR 居中实测、True Peak `≤ -1.0 dBTP`）与一页式《独立盲审取证包》 |
 | 交付与清理 | `out/*` + `11_delivery_summary.md` + `review_player.html` + `10_action_strips.jpg` (+ `VERIFY.md`) + `tidy_report.json` | 交付物同步入 `out/` + 离线打点审片 + 单次 `select` 动作连拍条 + 默认清理大体积过程文件并保留锁轨 ASSETS 以支撑 `reedit-visuals` |
 | 进化闭环 | `content-log/weekly_review_<track>.md` + `content-log/account_profile_<track>.json` | 按 `--account` 与 `--track` 双重隔离复盘，同条件分子/分母对账、对照实验评估与掉点反查 EDL 镜头 |
 
@@ -126,15 +128,17 @@
       "sentence_text": "做了八年烧烤店",
       "purpose": "首帧高密度开篇钩子",
       "visual_description": "老板直视镜头切羊排特写",
-      "frame_canvas": {"x": 64, "y": 725, "w": 810, "h": 530, "bg_hex": "0xF1F3F5", "crop_y_frac": 0.32},
+      "pip_spec": null,
+      "secondary_media_path": null,
+      "secondary_in_sec": 0.0,
       "vf_extra": ""
     }
-  ]
+  ],
+  "explainer_broll_windows": []
 }
 ```
-> **画布与边界可选约束**：
-> - 分屏/边框流派可通过 `frame_canvas` 指定嵌套视窗坐标与背景色，并通过 `crop_y_frac`（默认 `0.32`）调整竖屏裁剪的垂直锚点（手持道具或特写画面建议设为 `0.44~0.48` 以居中防裁切）。
-> - 手工锁定 `a_roll` 切片边界时须严格隔离句前后摄影师/导演画外提词音与环境句首余响（建议设置 `lock_edges` 禁止自动向右/向左跨过外部停顿吸帧）。
+> **画中画与动态讲解说明**：
+> - 当口播触发数字/流程/对比动态讲解或套用带画中画的风格谱时，分镜通过 `pip_spec` 与 `secondary_media_path` + `secondary_in_sec` 挂载双源画中画（由 `render_mp4.py` 走双 `-i` + `-filter_complex` 真实合成），并记录检测出的 `explainer_broll_windows`。
 
 ### `06_packaging.json`（包装与预算控制）
 ```json
@@ -146,7 +150,7 @@
     "used_sfx_cues": 5
   },
   "sfx_cues": [
-    {"id": "sfx_001", "file": "assets/sound_vibe/sfx/whoosh_bright.wav", "time_sec": 0.90, "frame": 27, "gain_db": -6.0, "event_id": "evt_002"}
+    {"id": "sfx_001", "file": "assets/sound_vibe/sfx/style_14_whoosh.wav", "time_sec": 0.90, "frame": 27, "gain_db": -6.0, "event_id": "evt_002"}
   ],
   "visual_elements": [
     {

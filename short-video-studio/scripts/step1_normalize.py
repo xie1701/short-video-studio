@@ -42,6 +42,7 @@ from common import (
     rescue_stereo_channels,
     run_cmd,
     write_json,
+    write_wav_48k_stereo,
 )
 
 
@@ -148,7 +149,7 @@ def normalize_single_media(
             ])
         return cmd
 
-    hdr_tonemapped = was_hdr
+    hdr_tonemapped = bool(was_hdr and ffmpeg_has_filter("zscale"))
     res = run_cmd(_build_norm_cmd(vf_chain, has_audio), check=False)
     if res.returncode != 0 and was_hdr:
         plain_vf = (
@@ -156,6 +157,7 @@ def normalize_single_media(
             f"crop={CANVAS_WIDTH}:{CANVAS_HEIGHT}:{crop_tx['crop_x']}:{crop_tx['crop_y']},"
             f"fps={DEFAULT_FPS},{bt709_tail}"
         )
+        hdr_tonemapped = False
         fb_res = None
         if ffmpeg_has_filter("zscale"):
             fallback_vf = (
@@ -164,7 +166,6 @@ def normalize_single_media(
             )
             fb_res = run_cmd(_build_norm_cmd(fallback_vf, has_audio), check=False)
         if fb_res is None or fb_res.returncode != 0:
-            hdr_tonemapped = False
             run_cmd(_build_norm_cmd(plain_vf, has_audio), check=True)
     elif res.returncode != 0:
         raise RuntimeError(f"素材规整失败 ({src.name}): {(res.stderr or '')[-800:]}")
@@ -173,17 +174,10 @@ def normalize_single_media(
     if has_audio and out_wav.is_file():
         # 若无线麦单边明显失效，直接用完好单声道修复归整 WAV
         try:
-            import wave
-            import numpy as np
             arr_w, _ = read_wav_as_48k_stereo(out_wav, target_sr=48000)
             arr_fixed, stereo_diag = rescue_stereo_channels(arr_w, imbalance_db=8.0)
             if stereo_diag != "ok":
-                pcm = (np.clip(arr_fixed, -0.99, 0.99) * 32767.0).astype(np.int16)
-                with wave.open(str(out_wav), "wb") as wf:
-                    wf.setnchannels(2)
-                    wf.setsampwidth(2)
-                    wf.setframerate(48000)
-                    wf.writeframes(pcm.tobytes())
+                write_wav_48k_stereo(out_wav, arr_fixed, sr=48000)
         except Exception:
             pass
 
@@ -191,7 +185,7 @@ def normalize_single_media(
     nv = next(s for s in norm_meta["streams"] if s["codec_type"] == "video")
     norm_dur = float(norm_meta.get("format", {}).get("duration") or nv.get("duration") or 0.0)
 
-    # 判定素材角色：纯代码场景保护 > 显式传入 > inventory 人工/视觉索引 > 音频缺陷(silent/noisy) > 文件名提示
+    # 判定素材角色（与 inventory_media 保持一致）：纯代码保护 > 显式传入 > 人工 visual_index > 无音频 > 音频缺陷/文件名 > 建议角色
     name_low = src.name.lower()
     is_code_scene = (src.parent.name == "01_code_scenes") or name_low.startswith("code_scene_")
     shot_role = (shot_meta or {}).get("role")
@@ -203,10 +197,10 @@ def normalize_single_media(
         role = "b_roll"
     elif "code_broll" in name_low:
         role = "code_broll"
+    elif vis_indexed and shot_role in ("a_roll_candidate", "b_roll_candidate"):
+        role = "a_roll" if (shot_role == "a_roll_candidate" and has_audio) else "b_roll"
     elif not has_audio or shot_ag in ("silent", "noisy"):
         role = "b_roll"
-    elif vis_indexed and shot_role in ("a_roll_candidate", "b_roll_candidate"):
-        role = "a_roll" if shot_role == "a_roll_candidate" else "b_roll"
     elif "broll" in name_low or "b_roll" in name_low:
         role = "b_roll"
     elif "aroll" in name_low or "a_roll" in name_low or "talk" in name_low or "main" in name_low:

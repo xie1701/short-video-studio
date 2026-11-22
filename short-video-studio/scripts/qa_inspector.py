@@ -19,7 +19,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import (
@@ -388,7 +388,10 @@ def inspect_video(
             if any(sf_e < ce and ef_e > cs for cs, ce in code_ranges):
                 code_collisions += 1
                 ui_violations.append(f"{elem['id']}: 与代码补镜卡重叠")
-        pkg_sync_err = max([abs(int(e["start_frame"]) - int(e["aligned_sfx_or_accent_frame"])) for e in vis_elems] or [0])
+        pkg_sync_err = max(
+            [abs(int(e["start_frame"]) - int(e.get("aligned_sfx_or_accent_frame", e["start_frame"]))) for e in vis_elems]
+            or [0]
+        )
         ui_ok = len(ui_violations) == 0 and pkg_sync_err <= 1
         checks.append(_mk_check(
             "ui_safe_zone",
@@ -522,13 +525,36 @@ def inspect_video(
                 _scan_text(f"09_cover.{k}", cj.get(k))
             for ti, tline in enumerate(cj.get("titles") or []):
                 _scan_text(f"09_cover.titles[{ti}]", tline)
+        copy_pack_p = pipeline_dir / "09_publish_copy_pack.json"
+        if copy_pack_p.exists():
+            pj = read_json(copy_pack_p)
+            for plat_k, plat_v in (pj.get("platforms") or {}).items():
+                if not isinstance(plat_v, dict):
+                    continue
+                for ti, tline in enumerate(plat_v.get("titles") or []):
+                    _scan_text(f"09_copy.{plat_k}.titles[{ti}]", tline)
+                _scan_text(f"09_copy.{plat_k}.body", plat_v.get("body"))
 
         checks.append(_mk_check(
             "forbidden_meta_text",
-            "零开发词与风格名称露馅审计 (common.LEAK_REGEX_PATTERNS)",
+            "零开发词与风格名称露馅审计",
             "PASS" if len(meta_leaks) == 0 else "FAIL",
             f"检出 {len(meta_leaks)} 处" + (f" ({meta_leaks[0]})" if meta_leaks else ""),
             "0 处元数据/风格代号露馅",
+        ))
+
+        # 11b. 10 秒滑窗残留重说与半截起句复查（正式接入 scan_residual_repeats）
+        sent_list = audio_events.get("sentences") or []
+        rep_scan = scan_residual_repeats(sent_list, window_sec=10.0)
+        rep_ok = bool(rep_scan.get("clean", True))
+        dup_hits = rep_scan.get("duplicate_phrases") or []
+        orph_hits = rep_scan.get("orphan_starts") or []
+        checks.append(_mk_check(
+            "residual_repeat_scan",
+            "成片口播残留重说与半截起句复查",
+            "PASS" if rep_ok else "FAIL",
+            f"残留重复 {len(dup_hits)} 处 / 孤立半截起句 {len(orph_hits)} 处",
+            "10 秒内 0 处意外重复短语、0 处半截起句残留",
         ))
 
         # 12–22. 独立黑盒外部验收（复用 audio_ctx，严格 Fail-Closed 三态）
@@ -657,31 +683,78 @@ def inspect_video(
     }
     _manual_cn = {
         "jianying_import": "剪映工程导入抽查",
-        "hyperframes_preview": "HyperFrames 工程预览抽查",
-        "bb_ocr_av_loop": "画面字幕人工抽查",
+        "source_claims": "原始报价或证明材料核对",
+        "code_visual_review": "动态图解画面人眼核查",
+        "compliance_context": "需凭证表述核验确认",
+        "authorization_documents": "外置素材授权原件核对",
+        "bb_ocr_av_loop": "画面字幕居中与同步人工抽查",
+        "bb_pixel_readability": "字幕与人像遮挡及清晰度抽查",
+        "bb_meta_leak_ocr": "画面零异常水印/开发词抽查",
+        "bb_color_scope": "人物肤色与曝光自然度抽查",
         "bb_blind_asr_proxy": "整片盲听复核",
-        "source_review": "原始报价或证明材料核对",
+        "bb_cut_spot_verify": "镜头切换顺畅度抽查",
+    }
+    _check_plain_cn = {
+        "loudness": "整片声音大小适中、不破音",
+        "black_frames": "全程没有突然黑屏",
+        "long_silence": "说话之间没有冷场大空白",
+        "av_sync": "画面和声音严格对齐不脱节",
+        "subtitle_sync": "字幕出现时间紧贴说话节奏",
+        "cut_alignment": "切画面踩在说话和音乐节拍上",
+        "ui_safe_zone": "字幕居中好看、不撞点赞按钮、不留碎字",
+        "shot_rhythm": "镜头长短有起伏、不重复倒播",
+        "first_3s_hook": "开头前 3 秒画面节奏抓人",
+        "sentence_integrity": "没有把话说一半硬切断",
+        "forbidden_meta_text": "画面和文案没有多余乱码或模板字样",
+        "residual_repeat_scan": "没有漏剪的口误重说和半截话",
+        "bb_audio_master": "成品声音饱满清晰、无爆音无穿帮",
+        "bb_ocr_av_loop": "成片字幕实测正中对齐、字句准确",
+        "bb_pixel_readability": "字幕不挡脸且对比清晰好认",
+        "bb_color_scope": "人物肤色自然、不过曝不发灰",
+        "bb_export_contracts": "可编辑工程包完整不缺素材",
+        "bb_meta_leak_ocr": "成片画面干干净净无异常水印",
+        "bb_freeze_frame": "没有卡顿定格死画面",
+        "bb_cut_spot_verify": "每次切镜画面都有真实变化",
+        "bb_sfx_onset_align": "提示音和画面动作严丝合缝",
+        "bb_blind_asr_proxy": "脱离字幕盲听还原台词清晰准确",
+        "bb_compliance_and_license": "台词文案合规、字体音乐全部可商用",
     }
     md_lines = [
-        f"# 成片与交付工程质检报告（共 {len(checks)} 项）",
+        f"# 成片与交付工程体检报告（共 {len(checks)} 项）",
         "",
         f"- **一句话大白话结论**：{plain_verdict}",
         f"- **成片文件**：`{video_path.name}`",
         f"- **质量状态**：{status_banner}",
         f"- **统计**：共 {len(checks)} 项 · 通过 `{pass_cnt}` 项 · 未通过 `{fail_cnt}` 项 · 跳过 `{skip_cnt}` 项",
         "",
+        "## 一、 大白话体验体检表",
+        "",
+        "| 序号 | 体检项目 | 结果 |",
+        "| :---: | :--- | :---: |",
+    ]
+    for i, c in enumerate(checks, start=1):
+        st_label = _status_cn.get(c["status"], c["status"])
+        plain_title = _check_plain_cn.get(c["id"], c["name"])
+        md_lines.append(f"| {i} | {plain_title} | {st_label} |")
+    if manual_checks:
+        manual_readable = "、".join(_manual_cn.get(m, m) for m in manual_checks)
+        md_lines.extend(["", f"- **建议您最后一眼确认**：{manual_readable}"])
+    for target, result in export_results.items():
+        md_lines.extend(f"- {target}：{error}" for error in result.get("errors", []))
+
+    md_lines.extend([
+        "",
+        "<details>",
+        "<summary>展开查看专业工程实测明细（供技术复核）</summary>",
+        "",
         "| # | 检查项 | 状态 | 实测结果 | 门槛 |",
         "|:-:|:---|:---:|:---|:---|",
-    ]
+    ])
     for i, c in enumerate(checks, start=1):
         measured = c["measured"].replace("|", "｜")
         st_label = _status_cn.get(c["status"], c["status"])
         md_lines.append(f"| {i} | {c['name']} | {st_label} | {measured} | {c['threshold']} |")
-    if manual_checks:
-        manual_readable = "、".join(_manual_cn.get(m, m) for m in manual_checks)
-        md_lines.extend(["", f"需人工最后确认一眼的项目：{manual_readable}"])
-    for target, result in export_results.items():
-        md_lines.extend(f"- {target} {error}" for error in result.get("errors", []))
+    md_lines.append("</details>")
 
     if "benchmark_comparison" in report:
         bc = report["benchmark_comparison"]
@@ -717,20 +790,22 @@ def _write_blind_review_pack(
     cover_3x4 = pipeline_dir / "09_cover_3x4.jpg"
     cover_full = pipeline_dir / "09_cover.jpg"
     ui_prev = pipeline_dir / "09_ui_safe_preview.jpg"
+    feed_prev = pipeline_dir / "09_cover_360px_feed.jpg"
 
+    cover_files_list = [f"`{p.name}`" for p in (cover_full, cover_3x4, ui_prev, feed_prev) if p.is_file()]
     lines = [
         "# 成片出厂盲审取证包（不看内部制作过程，直接当普通观众验片）",
         "",
-        "这份清单把成片的开头、关键切镜、缩略封面和听写下来的台词摊平在一页里，方便你或第三方朋友 30 秒盲看打分：",
+        "这份清单把成片的开头、关键切镜、手机小图封面和盲听还原的台词摊平在一页里，方便你或朋友 30 秒一眼验收：",
         "",
         "## 1. 取证材料一览",
         f"- **最终成片**：`{video_path.name}`（总时长 {float(edl.get('total_duration_sec', 0.0)):.1f} 秒，共 {len(edl.get('clips') or [])} 个镜头）",
-        f"- **开头 3 秒与关键切点连拍长图**：`{strip_p.name}`" + ("（已生成）" if strip_p.is_file() else "（未生成）"),
-        f"- **竖版封面 / 主页 3:4 缩略封面 / 避挡预览图**：`{cover_full.name}` / `{cover_3x4.name}` / `{ui_prev.name}`",
+        f"- **开头 3 秒与关键切点连拍长图**：`{strip_p.name}`" + ("（已生成）" if strip_p.is_file() else "（本次未生成，请直接播放成片前 3 秒核对）"),
+        f"- **封面与手机信息流模拟预览**：{' / '.join(cover_files_list) if cover_files_list else '（本次未生成封面图）'}",
     ]
     if cover_meta:
         lines.append(
-            f"- **封面实测清晰度（缩小到主页尺寸）**：对比度 `{cover_meta.get('thumb_180_contrast_ratio', '-')}:1`（越高越醒目，建议 ≥ 4.5:1），"
+            f"- **封面实测清晰度（缩小到手机双列小图尺寸）**：对比度 `{cover_meta.get('thumb_180_contrast_ratio', '-')}:1`（越高越醒目，最低底线 3.8:1，推荐 ≥ 4.5:1），"
             f"人物前景压字：`{'已启用' if cover_meta.get('person_cutout_applied') else '标准排版'}`"
         )
 
@@ -764,13 +839,15 @@ def _write_blind_review_pack(
         lines.append(f"| {c_in:.1f}s–{c_out:.1f}s | {role_zh}：{purp} | {spoken_str.replace('|', '｜')} |")
 
     center_dev = ocr_detail.get("max_subtitle_center_dev_px")
+    hook_check_src = "看连拍长图前 3 秒" if strip_p.is_file() else "静音播放成片前 3 秒"
     lines.extend([
         "",
-        "## 4. 盲审人眼 4 问（全勾即可直接发布）",
-        "- [ ] **前 3 秒钩不钩人**：看连拍长图前 3 秒，静音状态下有没有立刻想停下来看？",
+        "## 4. 盲审人眼 5 问（全勾即可直接发布）",
+        f"- [ ] **静音盲看前 3 秒**：{hook_check_src}，关掉声音的情况下，能不能一眼看懂在讲什么并想停下来？",
+        "- [ ] **闭眼盲听顺不顺**：不看画面听一遍，有没有吞字、重说残句或音乐盖过说话声？",
         "- [ ] **画面对不对嘴**：看上面对照表，每段特写和字幕说的事是不是一回事？",
         f"- [ ] **字幕和按钮打不打架**：字幕都在正中间靠下清晰可读吗？（自动实测居中偏差：`{center_dev if center_dev is not None else '未测得'}px`）",
-        "- [ ] **小图封面清不清楚**：缩小成手机主页小卡片看，上面的主标题能不能 1 秒看清、没被裁切？",
+        "- [ ] **手机小图清不清楚**：看 `09_cover_360px_feed.jpg`（缩小成手机信息流真实宽度），主标题能不能 1 秒看清、没被裁切？",
     ])
     out_p = pipeline_dir / "10_blind_review_pack.md"
     out_p.write_text("\n".join(lines) + "\n", encoding="utf-8")

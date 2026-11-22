@@ -6,7 +6,7 @@
 - Node.js / npm (可选 HyperFrames Studio 支持)
 - Python 独立虚拟环境 (~/.short-video-studio/venv) 及依赖 (pillow, numpy, scipy, edge-tts, faster-whisper, librosa)
 - 开源免费可商用中文字体校验 (--init-fonts)
-- 初始化生成内置 CC0 资产 (--init-assets)
+- 校验随仓内置 CC0 音库、24 套风格配置与 3D LUT 完整性 (--init-assets)
 """
 
 from __future__ import annotations
@@ -116,7 +116,7 @@ def check_and_sync_commercial_fonts(stage_into_assets: bool = False) -> tuple[Op
             "SourceHanSerifCN-Bold.otf",
             "SourceHanSerifCN-Heavy.otf",
         ):
-            cand = find_commercial_font([cand_name], verified_only=True)
+            cand = find_commercial_font([cand_name], verified_only=True, allow_fallback=False)
             if cand:
                 dst = fonts_dir / Path(cand).name
                 if not dst.exists():
@@ -130,7 +130,7 @@ def check_and_sync_commercial_fonts(stage_into_assets: bool = False) -> tuple[Op
 def main() -> None:
     parser = argparse.ArgumentParser(description="short-video-studio 环境检查与依赖安装")
     parser.add_argument("--check-only", action="store_true", help="仅检查当前环境，不执行安装")
-    parser.add_argument("--init-assets", action="store_true", help="生成内置 CC0 BGM、音效与 3D LUT")
+    parser.add_argument("--init-assets", action="store_true", help="校验随仓内置 CC0 真录音库、24 套风格配置与 3D LUT 是否完整")
     parser.add_argument("--init-fonts", action="store_true", help="检测并归集已核验的免费商用中文字体到 assets/fonts/")
     parser.add_argument("--install-deps", action="store_true", help="创建 venv 并安装 Python 音视频依赖 (含 scipy)")
     parser.add_argument("--install-ml", action="store_true", help="额外安装 faster-whisper 与 librosa")

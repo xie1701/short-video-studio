@@ -5,10 +5,15 @@ import json
 import math
 import random
 import re
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from statistics import mean
 from typing import Any
+
+_SCRIPTS_DIR = str(Path(__file__).resolve().parent)
+if _SCRIPTS_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPTS_DIR)
 
 from common import read_json, write_json
 
@@ -232,7 +237,7 @@ def activate_candidate(log_dir: Path, records: list[dict[str, Any]], candidate_i
     profile = read_json(profile_path) if profile_path.is_file() else {"track": plan["track"]}
     if profile.get("active_candidate") == candidate_id:
         return profile_path
-    if profile.get("active_candidate") and profile.get("platform") != plan["platform"]:
+    if profile.get("active_candidate") and str(profile.get("platform") or "").casefold() != str(plan["platform"]).casefold():
         raise ValueError("当前配置属于其他平台，需要独立账号配置")
     if profile_path.is_file():
         write_json(log_dir / "profile_history" / f"{plan['track']}_{_fingerprint(profile)[:20]}.json", profile)

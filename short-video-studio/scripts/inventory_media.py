@@ -25,6 +25,7 @@ if str(SCRIPTS_ROOT) not in sys.path:
 
 from common import (
     MEDIA_EXTS,
+    compute_bt709_luma,
     detect_vfr_hdr,
     ffprobe_media,
     find_bin,
@@ -203,12 +204,8 @@ def analyze_video_quality(
         if len(raw) < frame_bytes:
             break
         arr = np.frombuffer(raw, dtype=np.uint8).reshape((h_s, w_s, 3))
-        # BT.709 RGB -> 全范围灰度 & TV-range Y (16..235)
-        y_full = (
-            0.2126 * arr[:, :, 0].astype(np.float32)
-            + 0.7152 * arr[:, :, 1].astype(np.float32)
-            + 0.0722 * arr[:, :, 2].astype(np.float32)
-        )
+        # 复用全仓唯一权威 BT.709 亮度公式 -> 全范围灰度 & TV-range Y (16..235)
+        y_full = compute_bt709_luma(arr.astype(np.float32))
         y_tv = 16.0 + (219.0 / 255.0) * y_full
         lumas_tv.append(float(np.mean(y_tv)))
         if len(p1s) < 60:
@@ -591,9 +588,10 @@ def _build_contact_sheet(
             except Exception:
                 pass
         vg = c.get("video_grade", "usable")
+        vg_cn = {"usable": "可用", "audio_only": "仅用声音", "ng": "建议跳过"}.get(vg, vg)
         tab = ",".join(c.get("taboo_tags") or [])
         line1 = f"#{idx+1} {c['filename'][:15]} ({c['duration_sec']:.1f}s)"
-        line2 = f"S:{c['sharpness_score']:.0f} St:{c['stability_score']:.2f} {vg}" + (f" [{tab}]" if tab else "")
+        line2 = f"清晰:{c['sharpness_score']:.0f} 稳:{c['stability_score']:.2f} {vg_cn}" + (f" [{tab}]" if tab else "")
         badge_col = (250, 204, 21) if vg == "audio_only" else ((248, 113, 113) if (vg == "ng" or tab) else (226, 232, 240))
         draw.text((x0 + 6, y0 + 4), line1, font=fnt, fill=(248, 250, 252))
         draw.text((x0 + 6, y0 + 24), line2, font=fnt, fill=badge_col)
@@ -721,7 +719,7 @@ def inventory_directory(
                 issues.append("手机原片帧率有波动，会自动统一成稳定 30 帧防止音画错位")
             if dw > dh:
                 issues.append(f"横屏画面（{dw}x{dh}），会自动锁定主角居中裁成竖屏")
-            if dw < 720 or dh < 1080:
+            if min(dw, dh) < 720 or max(dw, dh) < 1080:
                 issues.append(f"清晰度偏低（{dw}x{dh}），建议少用或当辅助小画面")
 
             role = classify_clip(f.name, a_stream, quality, dur, v_idx_entry=v_idx_entry)

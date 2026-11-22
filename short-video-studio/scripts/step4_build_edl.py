@@ -34,7 +34,7 @@ from common import (
     read_json,
     write_json,
 )
-from generate_code_broll import render_broll_clip_pillow, resolve_style_palette
+from generate_code_broll import render_broll_clip_pillow, render_code_clip, resolve_style_palette
 
 PROP_SHOW_CUES = ("睇下", "看下", "看一下", "给大家看", "给你看", "看我手上", "看我手里", "效果图", "实物", "清单", "明细")
 DEICTIC_CUES = ("这张图", "四张图", "两张图", "三张图", "效果图", "平面图", "明细表", "账单", "发票", "检测单", "看这里", "看这个", "你看这", "对比一下")
@@ -70,13 +70,26 @@ def detect_explainer_broll_windows(
         if (s_end - s_start) < min_dur_sec:
             continue
         hit_tok = m.group(1)
-        # 优先对齐触发关键词的真实逐字起音时间
+        # 按原句字符位置精确定位触发词的真实逐字起音时间（彻底避免单字误命中句首无关字）
         kw_start = s_start
-        for w in (sent.get("words") or []):
-            wt = str(w.get("word") or "")
-            if wt and (wt in hit_tok or hit_tok.startswith(wt)):
-                kw_start = float(w.get("start_sec", s_start))
-                break
+        words = sent.get("words") or []
+        if words:
+            clean_hit = re.sub(r"\s+", "", hit_tok)
+            joined = ""
+            word_spans: List[Tuple[int, int, float]] = []
+            for w in words:
+                wt = re.sub(r"\s+", "", str(w.get("word") or ""))
+                if not wt:
+                    continue
+                pos0 = len(joined)
+                joined += wt
+                word_spans.append((pos0, len(joined), float(w.get("start_sec", s_start))))
+            hit_pos = joined.find(clean_hit)
+            if hit_pos >= 0:
+                for p0, p1, wst in word_spans:
+                    if p0 <= hit_pos < p1:
+                        kw_start = wst
+                        break
         win_in = round(max(0.0, kw_start - lead_sec), 3)
         win_out = round(s_end, 3)
         if (win_out - win_in) < min_dur_sec:
@@ -892,8 +905,74 @@ def run_step4(
 
     # 按风格谱 pip_composition_spec 为分镜挂载真·画中画构图参数 (pip_layout)
     pip_spec = (style_entry or {}).get("pip_composition_spec") or {}
+    sent_by_id = {str(s.get("id")): s for s in sentences}
+    explainer_windows = detect_explainer_broll_windows(sentences)
+
+    # 消费 explainer_broll_windows：口播讲解数字/流程/对比句时，若镜头为真人出镜且整体代码图解占比不超 30%，
+    # 自动切入动态讲解图解并挂载平滑圆环人像画中画（smooth_orbit_pip），主讲人平滑缩至安全角继续同步说话
+    explainer_applied_count = 0
+    if explainer_windows and clips and not prefer_broll_only and usable_arolls:
+        win_by_sid = {str(w["sentence_id"]): w for w in explainer_windows}
+        gen_exp_dir = pipeline_dir / "04_generated_broll"
+        gen_exp_dir.mkdir(parents=True, exist_ok=True)
+        pal_exp = resolve_style_palette(style_id, track=track)
+        cur_code_dur = sum(float(c.get("duration_sec", 0.0)) for c in clips if c.get("track_role") == "code_broll")
+        for c_obj in clips:
+            if explainer_applied_count >= 2:
+                break
+            if c_obj.get("track_role") != "a_roll":
+                continue
+            sid_c = str(c_obj.get("sentence_id") or "")
+            ew = win_by_sid.get(sid_c)
+            if not ew:
+                continue
+            cdur = float(c_obj.get("duration_sec", 0.0))
+            if cdur < 1.6 or (cur_code_dur + cdur) / max(0.1, total_dur) > 0.30:
+                continue
+            exp_mp4 = gen_exp_dir / f"explainer_{sid_c}.mp4"
+            exp_mode = str(ew.get("suggested_mode") or "kinetic_text")
+            exp_title = str(ew.get("trigger_cue") or "核心要点")[:10]
+            exp_text = str(ew.get("sentence_text") or c_obj.get("sentence_text") or "")
+            try:
+                render_code_clip(
+                    exp_mp4,
+                    mode=exp_mode,
+                    title=exp_title,
+                    items=[{"label": exp_title, "subtitle": exp_text[:20]}],
+                    duration_sec=max(1.8, cdur),
+                    accent_hex=pal_exp["accent_hex"],
+                    bg_hex=pal_exp["bg_hex"],
+                    style_id=style_id,
+                    track=track,
+                    backend="pillow",
+                )
+            except Exception:
+                continue
+            orig_aroll = str(c_obj.get("media_path") or "")
+            orig_in = float(c_obj.get("source_in_sec", 0.0))
+            c_obj["media_path"] = str(exp_mp4.resolve())
+            c_obj["source_in_sec"] = 0.0
+            c_obj["source_out_sec"] = round(cdur, 4)
+            c_obj["track_role"] = "code_broll"
+            c_obj["purpose"] = f"动态讲解图解({exp_mode}) + 角落圆环人像"
+            c_obj["pip_layout"] = {
+                "mode": "smooth_orbit_pip",
+                "corner": "tr",
+                "radius_px": 146,
+                "center_y": 360,
+                "border_hex": pal_exp["accent_hex"],
+                "border_width": 4,
+                "tag_text": "主讲人",
+                "secondary_media_path": orig_aroll,
+                "secondary_in_sec": round(max(0.0, orig_in), 4),
+                "secondary_out_sec": round(max(0.0, orig_in) + cdur, 4),
+            }
+            cur_code_dur += cdur
+            explainer_applied_count += 1
+        code_ratio = round(cur_code_dur / max(0.1, total_dur), 3)
+
     pip_mode = str(pip_spec.get("mode") or "")
-    pip_applied_count = 0
+    pip_applied_count = explainer_applied_count
     if pip_mode and clips:
         live_brolls = [m for m in broll_pool if m.get("role") == "b_roll"] or list(broll_pool)
         full_frame_modes = {
@@ -903,7 +982,7 @@ def run_step4(
             "linear_split_feather_pip",
         }
         for c_i, c_obj in enumerate(clips):
-            if c_obj.get("track_role") == "code_broll":
+            if c_obj.get("track_role") == "code_broll" or c_obj.get("pip_layout"):
                 continue
             should_apply = (
                 pip_mode in full_frame_modes
@@ -919,10 +998,19 @@ def run_step4(
                 pick_m = live_brolls[c_i % len(live_brolls)]
                 sec_media = str(pick_m.get("normalized_mp4") or sec_media)
                 sec_in = float(pick_m.get("best_in_sec", 0.0))
-            elif c_obj.get("track_role") != "a_roll" and usable_arolls:
-                pick_a = usable_arolls[c_i % len(usable_arolls)]
-                sec_media = str(pick_a.get("normalized_mp4") or sec_media)
-                sec_in = 0.0
+            elif c_obj.get("track_role") != "a_roll":
+                # 优先绑定当前句的真实口播源与同步时间点，严禁硬从 0.0s 播口播造成口型穿帮
+                cur_sent = sent_by_id.get(str(c_obj.get("sentence_id") or "")) or {}
+                s_src_media = str(cur_sent.get("source_media") or "")
+                if s_src_media and Path(s_src_media).is_file():
+                    sec_media = s_src_media
+                    s_base = float(cur_sent.get("start_sec", 0.0))
+                    s_src_in = float(cur_sent.get("source_in_sec", 0.0))
+                    sec_in = max(0.0, s_src_in + max(0.0, float(c_obj.get("timeline_in_sec", s_base)) - s_base))
+                elif live_brolls and len(live_brolls) > 1:
+                    alt_b = next((m for m in live_brolls if str(m.get("normalized_mp4")) != sec_media), live_brolls[0])
+                    sec_media = str(alt_b.get("normalized_mp4") or sec_media)
+                    sec_in = float(alt_b.get("best_in_sec", 0.0))
             c_obj["pip_layout"] = {
                 **pip_spec,
                 "secondary_media_path": sec_media,
@@ -954,9 +1042,10 @@ def run_step4(
         "j_cut_applied_count": jcut_real_count,
         "l_cut_applied_count": lcut_real_count,
         "punch_in_count": punch_in_count,
-        "pip_mode": pip_mode or "none",
+        "pip_mode": pip_mode or ("smooth_orbit_pip" if explainer_applied_count > 0 else "none"),
         "pip_applied_count": pip_applied_count,
-        "explainer_broll_windows": detect_explainer_broll_windows(sentences),
+        "explainer_broll_windows": explainer_windows,
+        "explainer_applied_count": explainer_applied_count,
         "shot_duration_cv": shot_cv,
         "code_broll_ratio": code_ratio,
         "broll_ratio_target": round(broll_target_ratio, 3),
@@ -993,8 +1082,9 @@ def run_step4(
         )
     (pipeline_dir / "04_edl_table.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
     print(
-        f"[step4] 专业剪辑表生成完成：{len(clips)} 个镜头，前3秒切换 {first_3s_changes} 次，"
-        f"J-cut {jcut_real_count} / L-cut {lcut_real_count} 处，锁眼推拉 {punch_in_count} 处 -> 04_edl.json"
+        f"[step4] 剪辑排期完成：{len(clips)} 个镜头，前3秒切换 {first_3s_changes} 次，"
+        f"声画错位 {jcut_real_count + lcut_real_count} 处，重点拉近 {punch_in_count} 处，"
+        f"动态讲解画中画 {explainer_applied_count} 处 -> 04_edl.json"
     )
     return edl
 

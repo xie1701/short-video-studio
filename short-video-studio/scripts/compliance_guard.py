@@ -182,7 +182,15 @@ def audit_script_compliance(
     - 真人口播原声 (real_voice / asr / asr_whisper) 命中 must -> action="drop_sentence_or_reshoot"
     - 文本/配音脚本命中 must -> action="auto_rewrite_or_block"
     """
-    is_real_voice = str(source_type) in ("real_voice", "asr", "asr_whisper", "vad_energy_aligned", "multi_aroll_mixed")
+    is_real_voice = str(source_type) in (
+        "real_voice",
+        "asr",
+        "asr_whisper",
+        "asr_script_forced",
+        "asr_char_mapped",
+        "vad_energy_aligned",
+        "multi_aroll_mixed",
+    )
     acked = _load_whitelist_terms(whitelist_path)
 
     findings: List[Dict[str, Any]] = []
@@ -263,30 +271,41 @@ def audit_script_compliance(
     }
 
     if pipeline_dir is not None:
-        write_json(pipeline_dir / "00_compliance_report.json", report)
-        md_lines = [
-            "# 广告法与平台合规审校报告",
-            "",
-            f"- **音源性质**：{'实拍真人口播（违规原声只能整句弃用或重拍，严禁靠改字幕遮掩）' if is_real_voice else '文本/配音脚本'}",
-            f"- **判定结论**：{'✅ 合规通过' if passed else '❌ 存在未处置的禁止红线表达'}（禁止红线={must_count} 句，需凭证提醒={warn_count} 处，待补充凭证={unacked_warn_count} 处）",
-            "",
-        ]
-        if findings:
-            md_lines += [
-                "| 句子 | 级别 | 命中词 | 原话 | 改写/处置建议 | 触发原因 |",
-                "| :--- | :---: | :--- | :--- | :--- | :--- |",
-            ]
-            for f in findings:
-                sev = "禁止红线" if any(h["severity"] == "must" for h in f["hits"]) else "需凭证提醒"
-                terms = "、".join(h["matched_term"] for h in f["hits"])
-                reasons = "；".join(h["reason"] for h in f["hits"])
-                act = f"【已弃用原声句】建议重拍：{f['suggested_text']}" if f["action"] == "drop_sentence_or_reshoot" else f['suggested_text']
-                md_lines.append(f"| `{f['sentence_id']}` | {sev} | `{terms}` | {f['original_text']} | {act} | {reasons} |")
-        else:
-            md_lines.append("- 全文未检出违禁或高风险表达。")
-        (pipeline_dir / "00_compliance_report.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+        write_compliance_report_files(pipeline_dir, report)
 
     return report
+
+
+def write_compliance_report_files(pipeline_dir: Path, report: Dict[str, Any]) -> None:
+    """统一写入 00_compliance_report.json 与 00_compliance_report.md，防止 JSON 与 MD 脱节。"""
+    findings = list(report.get("findings") or [])
+    is_real_voice = bool(report.get("is_real_voice"))
+    passed = bool(report.get("passed"))
+    must_count = int(report.get("must_sentence_count", 0))
+    warn_count = int(report.get("warn_hit_count", 0))
+    unacked_warn_count = int(report.get("unacked_warn_count", 0))
+    write_json(pipeline_dir / "00_compliance_report.json", report)
+    md_lines = [
+        "# 广告法与平台合规审校报告",
+        "",
+        f"- **音源性质**：{'实拍真人口播（违规原声只能整句弃用或重拍，严禁靠改字幕遮掩）' if is_real_voice else '文本/配音脚本'}",
+        f"- **判定结论**：{'✅ 合规通过' if passed else '❌ 存在未处置的禁止红线表达'}（禁止红线={must_count} 句，需凭证提醒={warn_count} 处，待补充凭证={unacked_warn_count} 处）",
+        "",
+    ]
+    if findings:
+        md_lines += [
+            "| 句子 | 级别 | 命中词 | 原话 | 改写/处置建议 | 触发原因 |",
+            "| :--- | :---: | :--- | :--- | :--- | :--- |",
+        ]
+        for f in findings:
+            sev = "禁止红线" if any(h["severity"] == "must" for h in f["hits"]) else "需凭证提醒"
+            terms = "、".join(h["matched_term"] for h in f["hits"])
+            reasons = "；".join(h["reason"] for h in f["hits"])
+            act = f"【已弃用原声句】建议重拍：{f['suggested_text']}" if f["action"] == "drop_sentence_or_reshoot" else f["suggested_text"]
+            md_lines.append(f"| `{f['sentence_id']}` | {sev} | `{terms}` | {f['original_text']} | {act} | {reasons} |")
+    else:
+        md_lines.append("- 全文未检出违禁或高风险表达。")
+    (pipeline_dir / "00_compliance_report.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
 
 
 def _classify_asset_license(path: Path, asset_kind: str, pipeline_dir: Path,
@@ -311,9 +330,18 @@ def _classify_asset_license(path: Path, asset_kind: str, pipeline_dir: Path,
             "commercial_ok": True,
             "commercial_verified": True,
         }
-    generated = {"04_generated_broll", "01_normalized", "01_code_scenes"}
-    if asset_kind == "code_broll" and any(pipeline_dir.resolve() / name in resolved.parents for name in generated):
-        return {"source_tier": "project_generated", "license": "项目生成内容", "commercial_ok": True}
+    generated_roots = (
+        pipeline_dir.resolve() / "04_generated_broll",
+        pipeline_dir.resolve() / "01_normalized",
+        pipeline_dir.resolve() / "01_code_scenes",
+        pipeline_dir.resolve() / "06_custom_graphics",
+        pipeline_dir.resolve(),
+        pipeline_dir.resolve().parent / "animation" / "work",
+    )
+    if asset_kind in ("code_broll", "graphic", "sticker", "sfx") and any(
+        root == resolved.parent or root in resolved.parents for root in generated_roots
+    ):
+        return {"source_tier": "project_generated", "license": "项目程序化生成内容", "commercial_ok": True}
     return {"source_tier": "unregistered_external", "license": "未关联授权原件", "commercial_ok": False}
 
 
@@ -385,19 +413,44 @@ def build_asset_license_manifest(
             if asset.get("path"):
                 raw_assets.append(("code_input", Path(asset["path"])))
 
-    # 扫描 02_transcript.json 是否使用了 edge-tts 配音并记录商用授权风险提醒
+    # 扫描知识讲解动画的音频与字体资产（确保 knowledge-animation 模式也有完整授权清单）
+    anim_stage_fonts = pipeline_dir.parent / "animation" / "stage" / "fonts"
+    if anim_stage_fonts.is_dir():
+        for fp in sorted(anim_stage_fonts.iterdir()):
+            if fp.is_file() and fp.suffix.lower() in (".otf", ".ttf", ".woff2"):
+                raw_assets.append(("font", fp))
+    anim_aud_p = pipeline_dir / "10_animation_audit.json"
+    if anim_aud_p.is_file():
+        try:
+            aa = read_json(anim_aud_p)
+            bgm_used = (aa.get("audio_mix") or {}).get("bgm_file")
+            if bgm_used and Path(bgm_used).is_file():
+                raw_assets.append(("bgm", Path(bgm_used)))
+            sfx_used = (aa.get("audio_mix") or {}).get("sfx_wav")
+            if sfx_used and Path(sfx_used).is_file():
+                raw_assets.append(("sfx", Path(sfx_used)))
+        except Exception:
+            pass
+
+    # 扫描 02_transcript.json 是否使用了合成语音配音并区分 Edge TTS 与系统朗读
     tts_commercial_notice: Optional[str] = None
     tr_p = pipeline_dir / "02_transcript.json"
     if tr_p.is_file():
         try:
             tr = read_json(tr_p)
             src_t = str(tr.get("source_type") or "")
-            tts_prov = str(tr.get("tts_provider") or "")
-            if tr.get("uses_synthetic_voice", src_t == "tts") or "edge" in tts_prov.lower():
-                tts_commercial_notice = (
-                    "检测到当前成片音频由 Edge TTS 在线语音合成：Microsoft Edge TTS 仅面向演示/测试与非直接商业转售，"
-                    "正式商业投放或广告购买前建议替换为真人实拍配音或采购商业 TTS 授权。"
-                )
+            tts_prov = str(tr.get("tts_provider") or tr.get("tts_engine") or "").lower()
+            if tr.get("uses_synthetic_voice", src_t == "tts") or "edge" in tts_prov or "say" in tts_prov:
+                if "say" in tts_prov or "macos" in tts_prov:
+                    tts_commercial_notice = (
+                        "检测到当前成片音频由本机系统朗读 (macOS say) 兜底合成："
+                        "正式发布前建议替换为真人实拍配音或商用授权配音。"
+                    )
+                else:
+                    tts_commercial_notice = (
+                        "检测到当前成片音频由在线语音合成 (Edge TTS) 生成：仅适合演示/测试与非直接商业转售，"
+                        "正式商业投放或广告购买前建议替换为真人实拍配音或采购商业 TTS 授权。"
+                    )
         except Exception:
             pass
 
@@ -484,6 +537,7 @@ def main() -> None:
     p_aud.add_argument("--pipeline-dir", help="输出 00_compliance_report.json/md 的目录")
     p_aud.add_argument("--whitelist", help="可选 compliance_whitelist.json 路径")
     p_aud.add_argument("--no-auto-action", action="store_true", help="仅检测不自动改写/弃用")
+    p_aud.add_argument("--write-back", action="store_true", help="将自动改写/弃用结果写回原 --input-json")
 
     p_lic = sub.add_parser("build-licenses", help="生成带 SHA-256 的渲染副产物授权清单")
     p_lic.add_argument("--pipeline-dir", required=True)
@@ -492,11 +546,15 @@ def main() -> None:
 
     args = parser.parse_args()
     if args.cmd == "audit-script":
-        raw = read_json(Path(args.input_json))
+        in_path = Path(args.input_json)
+        raw = read_json(in_path)
         if isinstance(raw, dict):
-            sents = list(raw.get("sentences") or raw.get("segments") or [])
+            primary_key = "sentences" if "sentences" in raw else ("segments" if "segments" in raw else None)
+            primary_sents = list(raw.get(primary_key) or []) if primary_key else []
         else:
-            sents = list(raw or [])
+            primary_key = None
+            primary_sents = list(raw or [])
+        sents = list(primary_sents)
         if args.pipeline_dir:
             pdir = Path(args.pipeline_dir)
             pkg_p = pdir / "06_packaging.json"
@@ -512,6 +570,16 @@ def main() -> None:
                 for k in ("cover_main", "cover_sub"):
                     if cj.get(k):
                         sents.append({"id": k, "text": str(cj[k])})
+            pack_p = pdir / "09_publish_copy_pack.json"
+            if pack_p.is_file():
+                pj = read_json(pack_p)
+                for plat_k, plat_v in (pj.get("platforms") or {}).items():
+                    if not isinstance(plat_v, dict):
+                        continue
+                    for tidx, tt in enumerate(plat_v.get("titles") or [], 1):
+                        sents.append({"id": f"copy_{plat_k}_t{tidx}", "text": str(tt)})
+                    if plat_v.get("body"):
+                        sents.append({"id": f"copy_{plat_k}_body", "text": str(plat_v["body"])})
         rep = audit_script_compliance(
             sents,
             source_type=args.source_type,
@@ -519,6 +587,13 @@ def main() -> None:
             whitelist_path=Path(args.whitelist) if args.whitelist else None,
             auto_action=not args.no_auto_action,
         )
+        if args.write_back and not args.no_auto_action and (rep["auto_rewritten_count"] > 0 or rep["dropped_real_voice_ids"]):
+            if isinstance(raw, dict) and primary_key:
+                raw[primary_key] = primary_sents
+                write_json(in_path, raw)
+            elif isinstance(raw, list):
+                write_json(in_path, primary_sents)
+            print(f"[compliance] 已将合规处置结果写回 {in_path}")
         print(f"[compliance] 合规审校完成: passed={rep['passed']}, must={rep['must_sentence_count']}, warn={rep['warn_hit_count']}")
         if not rep["passed"]:
             raise SystemExit(2)

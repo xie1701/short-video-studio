@@ -15,7 +15,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from time import perf_counter
 from functools import lru_cache
 from pathlib import Path
@@ -572,302 +574,37 @@ def resolve_packaging_source(
     return out_png
 
 
-def _crop_aspect_fill(src: Image.Image, target_w: int, target_h: int, cx_norm: float = 0.50, cy_norm: float = 0.42, zoom: float = 1.0) -> Image.Image:
-    sw, sh = src.size
-    scale = max(target_w / max(1.0, float(sw)), target_h / max(1.0, float(sh))) * max(1.0, float(zoom))
-    nw = max(target_w, int(round(sw * scale)))
-    nh = max(target_h, int(round(sh * scale)))
-    resized = src.resize((nw, nh), Image.Resampling.LANCZOS)
-    x0 = max(0, min(nw - target_w, int(round(cx_norm * nw - target_w * 0.5))))
-    y0 = max(0, min(nh - target_h, int(round(cy_norm * nh - target_h * 0.42))))
-    return resized.crop((x0, y0, x0 + target_w, y0 + target_h))
+def _ensure_circle_mask_png(cache_dir: Path, radius_px: int) -> Path:
+    """预烘焙抗锯齿圆形灰度蒙版 PNG（替代逐像素 geq 解释器，提速 50x+）。"""
+    r = max(16, int(radius_px))
+    diam = r * 2
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    mask_p = cache_dir / f"_pip_circle_mask_{diam}.png"
+    if not mask_p.is_file():
+        mask = Image.new("L", (diam, diam), 0)
+        ImageDraw.Draw(mask).ellipse([(2, 2), (diam - 3, diam - 3)], fill=255)
+        mask.save(mask_p)
+    return mask_p
 
 
-def _paste_rounded_window(
-    canvas: Image.Image,
-    win_img: Image.Image,
-    x: int,
-    y: int,
-    radius: int = 24,
-    border_rgba: Tuple[int, int, int, int] = (255, 245, 137, 255),
-    border_w: int = 4,
-    shadow: bool = True,
-) -> None:
-    w, h = win_img.size
-    if shadow:
-        sh_layer = Image.new("RGBA", (w + 32, h + 32), (0, 0, 0, 0))
-        sdraw = ImageDraw.Draw(sh_layer)
-        sdraw.rounded_rectangle([(12, 14), (w + 18, h + 20)], radius=radius + 4, fill=(0, 0, 0, 165))
-        sh_layer = sh_layer.filter(ImageFilter.GaussianBlur(8))
-        canvas.alpha_composite(sh_layer, dest=(max(0, x - 14), max(0, y - 12)))
-    mask = Image.new("L", (w, h), 0)
-    ImageDraw.Draw(mask).rounded_rectangle([(0, 0), (w - 1, h - 1)], radius=radius, fill=255)
-    rgba_win = win_img.convert("RGBA")
-    rgba_win.putalpha(mask)
-    canvas.alpha_composite(rgba_win, dest=(x, y))
-    if border_w > 0:
-        draw = ImageDraw.Draw(canvas)
-        draw.rounded_rectangle([(x, y), (x + w - 1, y + h - 1)], radius=radius, outline=border_rgba, width=border_w)
-
-
-def _paste_circle_window(
-    canvas: Image.Image,
-    win_img: Image.Image,
-    x: int,
-    y: int,
-    border_rgba: Tuple[int, int, int, int] = (234, 212, 166, 255),
-    border_w: int = 5,
-    outer_ring_rgba: Optional[Tuple[int, int, int, int]] = None,
-) -> None:
-    w, h = win_img.size
-    sh_layer = Image.new("RGBA", (w + 28, h + 28), (0, 0, 0, 0))
-    ImageDraw.Draw(sh_layer).ellipse([(10, 12), (w + 18, h + 20)], fill=(0, 0, 0, 170))
-    sh_layer = sh_layer.filter(ImageFilter.GaussianBlur(7))
-    canvas.alpha_composite(sh_layer, dest=(max(0, x - 12), max(0, y - 10)))
-
-    mask = Image.new("L", (w, h), 0)
-    ImageDraw.Draw(mask).ellipse([(2, 2), (w - 3, h - 3)], fill=255)
-    rgba_win = win_img.convert("RGBA")
-    rgba_win.putalpha(mask)
-    canvas.alpha_composite(rgba_win, dest=(x, y))
-    draw = ImageDraw.Draw(canvas)
-    if outer_ring_rgba:
-        draw.ellipse([(x - 4, y - 4), (x + w + 3, y + h + 3)], outline=outer_ring_rgba, width=3)
-    if border_w > 0:
-        draw.ellipse([(x, y), (x + w - 1, y + h - 1)], outline=border_rgba, width=border_w)
-
-
-def compose_pip_frame_pil(
-    base_img: Image.Image,
-    style_id: str = "style_14",
-    secondary_img: Optional[Image.Image] = None,
-    pip_spec: Optional[Dict[str, Any]] = None,
-    font_candidates: Optional[List[str]] = None,
-    face_boxes_px: Optional[List[Dict[str, int]]] = None,
-) -> Tuple[Image.Image, List[Dict[str, int]]]:
-    """权威 7 模式剪映原生画中画（PIP）高分合成器：支持毛玻璃竖框浮窗、暗黑纪实金框双格+圆窗主讲、线性羽化分屏+书摘卡、黑底竖相框、角落圆窗例证、人像白纸边贴纸与多框拼贴。"""
-    if pip_spec is None:
-        st_entry = load_style_spectrum_entry(style_id) or {}
-        pip_spec = st_entry.get("pip_composition_spec") or {}
-    mode = str((pip_spec or {}).get("mode") or "")
-    base_rgba = base_img.convert("RGBA")
-    if base_rgba.size != (CANVAS_WIDTH, CANVAS_HEIGHT):
-        base_rgba = base_rgba.resize((CANVAS_WIDTH, CANVAS_HEIGHT), Image.Resampling.LANCZOS)
-    sec_rgba = (secondary_img.convert("RGBA") if secondary_img is not None else base_rgba)
-    font_path = find_commercial_font(font_candidates)
-    border_rgba = parse_hex_rgba(str(pip_spec.get("border_hex") or "#FFF589"))
-    border_w = max(2, int(pip_spec.get("border_width") or 4))
-    tag_text = str(pip_spec.get("tag_text") or "实证画面").strip()[:8]
-    raw_faces = list(face_boxes_px or [{"x": 380, "y": 480, "w": 320, "h": 390}])
-    f0 = raw_faces[0]
-    fcx = (f0["x"] + f0["w"] * 0.5) / float(CANVAS_WIDTH)
-    fcy = (f0["y"] + f0["h"] * 0.5) / float(CANVAS_HEIGHT)
-
-    if mode == "smooth_orbit_pip":
-        # 口播动态图解平滑圆环画中画：底图为动态讲解 B-roll，主讲人平滑缩至安全角旋转光环圆窗
-        bg = _crop_aspect_fill(sec_rgba, CANVAS_WIDTH, CANVAS_HEIGHT, 0.50, 0.50, zoom=1.0)
-        corner = str(pip_spec.get("corner") or "tr").lower()
-        r_pip = int(pip_spec.get("radius_px") or 146)
-        diam = r_pip * 2
-        cx_p = (CANVAS_WIDTH - 200) if corner != "tl" else 200
-        cy_p = int(pip_spec.get("center_y") or 360)
-        x0, y0 = cx_p - r_pip, cy_p - r_pip
-        avatar_crop = _crop_aspect_fill(base_rgba, diam, diam, fcx, max(0.24, fcy - 0.04), zoom=1.18)
-        _paste_circle_window(bg, avatar_crop, x0, y0, border_rgba=(236, 227, 207, 240), border_w=4, outer_ring_rgba=border_rgba)
-        # 外侧旋转装饰弧段
-        draw = ImageDraw.Draw(bg)
-        rot_deg = float(pip_spec.get("ring_deg", 28.0))
-        arc_box = [(x0 - 11, y0 - 11), (x0 + diam + 11, y0 + diam + 11)]
-        draw.arc(arc_box, start=rot_deg, end=rot_deg + 88.0, fill=border_rgba, width=4)
-        draw.arc(arc_box, start=rot_deg + 175.0, end=rot_deg + 240.0, fill=(236, 227, 207, 150), width=2)
-        eff_faces = [{"x": x0 + 36, "y": y0 + 28, "w": diam - 72, "h": diam - 64}]
-        return bg.convert("RGB"), eff_faces
-
-    if mode == "blur_bg_center_card_pip":
-        # style_08 / style_18：毛玻璃虚化底 + 中央悬浮圆角竖屏画中画 + 右下圆窗评论画中画
-        bg = _crop_aspect_fill(base_rgba, CANVAS_WIDTH, CANVAS_HEIGHT, fcx, fcy, zoom=1.12)
-        bg = bg.filter(ImageFilter.GaussianBlur(int(pip_spec.get("bg_blur_sigma") or 20)))
-        dark_ov = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (10, 12, 18, 96))
-        bg.alpha_composite(dark_ov)
-
-        wx, wy, ww, wh = 154, 386, 772, 810
-        fg_card = _crop_aspect_fill(base_rgba, ww, wh, fcx, fcy, zoom=1.02)
-        _paste_rounded_window(bg, fg_card, wx, wy, radius=26, border_rgba=border_rgba, border_w=border_w)
-
-        # 右下圆窗细节画中画（圆形蒙版）
-        cw = 216
-        cx_p, cy_p = wx + ww - cw + 24, wy + wh - cw - 12
-        detail_crop = _crop_aspect_fill(sec_rgba, cw, cw, 0.52, 0.62, zoom=1.35)
-        _paste_circle_window(bg, detail_crop, cx_p, cy_p, border_rgba=border_rgba, border_w=4, outer_ring_rgba=(255, 24, 55, 240))
-
-        # 浮窗左上角标
-        draw = ImageDraw.Draw(bg)
-        tfnt = get_cached_font(font_path, 22)
-        draw.rounded_rectangle([(wx + 18, wy + 16), (wx + 168, wy + 52)], radius=12, fill=(18, 22, 30, 232), outline=border_rgba, width=2)
-        draw.text((wx + 93, wy + 34), f"● {tag_text}", font=tfnt, fill=border_rgba, anchor="mm")
-        eff_faces = [{"x": wx + int(ww * 0.25), "y": wy + int(wh * 0.10), "w": int(ww * 0.50), "h": int(wh * 0.44)}]
-        return bg.convert("RGB"), eff_faces
-
-    if mode == "dark_doc_circle_avatar_pip":
-        # style_09 / style_19：纯黑纪实底 + 顶部暖金双格/圆角证据画中画 + 下部圆形主讲人画中画 + 卷宗摘要栏
-        bg = _crop_aspect_fill(base_rgba, CANVAS_WIDTH, CANVAS_HEIGHT, fcx, fcy, zoom=1.18)
-        bg = bg.filter(ImageFilter.GaussianBlur(24))
-        bg.alpha_composite(Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (8, 10, 16, 210)))
-        draw = ImageDraw.Draw(bg)
-
-        # 上半屏暖金双格证据窗 (y=344..744)
-        ex, ey, ew, eh = 74, 344, 932, 400
-        ev_img = Image.new("RGBA", (ew, eh), (14, 18, 26, 255))
-        if pip_spec.get("dual_grid_split", True):
-            half_w = ew // 2 - 2
-            left_pane = _crop_aspect_fill(sec_rgba, half_w, eh, 0.46, 0.48, zoom=1.12)
-            right_pane = _crop_aspect_fill(base_rgba, ew - half_w, eh, 0.56, 0.64, zoom=1.36)
-            ev_img.paste(left_pane, (0, 0))
-            ev_img.paste(right_pane, (half_w + 2, 0))
-            edraw = ImageDraw.Draw(ev_img)
-            edraw.line([(half_w, 0), (half_w, eh)], fill=border_rgba, width=4)
-        else:
-            ev_img = _crop_aspect_fill(sec_rgba, ew, eh, 0.50, 0.45, zoom=1.16)
-        _paste_rounded_window(bg, ev_img, ex, ey, radius=22, border_rgba=border_rgba, border_w=4)
-
-        # 证据框底部图注条
-        cap_fnt = get_cached_font(font_path, 22)
-        draw.rounded_rectangle([(310, ey + eh + 8), (770, ey + eh + 42)], radius=10, fill=(14, 18, 26, 230), outline=border_rgba, width=1)
-        draw.text((540, ey + eh + 25), f"“{tag_text}” · 实证核验现场", font=cap_fnt, fill=(245, 245, 245, 255), anchor="mm")
-
-        # 中下部圆形主讲人头像画中画 (y=802..1142, 直径 340px)
-        av_cfg = pip_spec.get("avatar_circle_bbox") or {"x": 112, "y": 804, "w": 336, "h": 336}
-        ax = int(av_cfg.get("x", 112))
-        ay = 804
-        aw = 336
-        avatar_crop = _crop_aspect_fill(base_rgba, aw, aw, fcx, max(0.28, fcy - 0.04), zoom=1.15)
-        _paste_circle_window(bg, avatar_crop, ax, ay, border_rgba=border_rgba, border_w=5, outer_ring_rgba=(255, 24, 55, 210))
-
-        # 圆窗对侧纪实卷宗信息栏（避开圆形人像，填补黑底留白）
-        dx0 = 478 if ax < 400 else 88
-        dx1 = 994 if ax < 400 else 604
-        dy0, dy1 = 836, 1112
-        draw.rounded_rectangle([(dx0, dy0), (dx1, dy1)], radius=18, fill=(16, 20, 30, 224), outline=border_rgba, width=2)
-        draw.rounded_rectangle([(dx0 + 14, dy0 + 22), (dx0 + 22, dy1 - 22)], radius=4, fill=(255, 24, 55, 255))
-        dfnt1 = get_cached_font(font_path, 28)
-        dfnt2 = get_cached_font(font_path, 22)
-        draw.text((dx0 + 40, dy0 + 52), "核心事实与关键证据", font=dfnt1, fill=border_rgba, anchor="lm")
-        draw.line([(dx0 + 40, dy0 + 84), (dx1 - 28, dy0 + 84)], fill=(234, 212, 166, 95), width=1)
-        draw.text((dx0 + 40, dy0 + 124), "▸ 逐项核对关键时间线与细节", font=dfnt2, fill=(240, 244, 250, 245), anchor="lm")
-        draw.text((dx0 + 40, dy0 + 168), "▸ 拒绝主观臆断，只看真实凭据", font=dfnt2, fill=(255, 245, 137, 245), anchor="lm")
-        draw.text((dx0 + 40, dy0 + 212), "▸ 重点条款与避坑红线对照", font=dfnt2, fill=(210, 218, 230, 235), anchor="lm")
-
-        eff_faces = [{"x": ax + 48, "y": ay + 36, "w": aw - 96, "h": aw - 84}]
-        return bg.convert("RGB"), eff_faces
-
-    if mode == "linear_split_feather_pip":
-        # style_16 / style_03：线性羽化分屏 + 居中方框书摘/实证画中画卡
-        # 将主讲人底画面轻微下移，使人脸落在 y=680..1040，把上半屏 y=340..630 留给线性羽化分屏与书摘图卡
-        bg = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (12, 15, 22, 255))
-        shifted_main = _crop_aspect_fill(base_rgba, CANVAS_WIDTH, CANVAS_HEIGHT - 160, fcx, max(0.24, fcy - 0.08), zoom=1.04)
-        bg.paste(shifted_main, (0, 160))
-
-        # 上半屏线性羽化蒙版层 (y=0..630, feather ramp 460..630)
-        top_split = _crop_aspect_fill(sec_rgba, CANVAS_WIDTH, 630, 0.50, 0.55, zoom=1.22).filter(ImageFilter.GaussianBlur(10))
-        top_split.alpha_composite(Image.new("RGBA", (CANVAS_WIDTH, 630), (10, 12, 18, 148)))
-        grad_l = Image.new("L", (1, 630), 255)
-        for gy in range(440, 630):
-            alpha_v = int(round(255 * (1.0 - (gy - 440) / 190.0)))
-            grad_l.putpixel((0, gy), max(0, min(255, alpha_v)))
-        top_split.putalpha(grad_l.resize((CANVAS_WIDTH, 630), Image.Resampling.BILINEAR))
-        bg.alpha_composite(top_split, dest=(0, 0))
-
-        # 居中暗金方框书摘/实证画中画卡片 (y=382..634)
-        bx, by, bw, bh = 134, 382, 812, 252
-        book_card = Image.new("RGBA", (bw, bh), (16, 20, 28, 236))
-        thumb_pip = _crop_aspect_fill(sec_rgba, 236, bh - 28, 0.52, 0.52, zoom=1.28)
-        _paste_rounded_window(book_card, thumb_pip, 14, 14, radius=14, border_rgba=border_rgba, border_w=2, shadow=False)
-        bdraw = ImageDraw.Draw(book_card)
-        bfnt1 = get_cached_font(font_path, 26)
-        bfnt2 = get_cached_font(font_path, 21)
-        bdraw.rounded_rectangle([(272, 18), (446, 50)], radius=8, fill=border_rgba)
-        bdraw.text((359, 34), f"📖 {tag_text}", font=bfnt2, fill=(14, 18, 26, 255), anchor="mm")
-        bdraw.text((272, 86), "“真正决定结果的往往不是表面蛮干，", font=bfnt1, fill=(255, 255, 255, 255), anchor="lm")
-        bdraw.text((272, 128), " 而是选对可复制、高复利的核心杠杆。”", font=bfnt1, fill=(255, 245, 137, 255), anchor="lm")
-        bdraw.line([(272, 168), (bw - 28, 168)], fill=(212, 175, 55, 120), width=2)
-        bdraw.text((272, 200), "—— 经典认知书摘 · 底层模型拆解", font=bfnt2, fill=(205, 214, 228, 240), anchor="lm")
-        _paste_rounded_window(bg, book_card, bx, by, radius=20, border_rgba=border_rgba, border_w=4)
-
-        eff_faces = [{"x": f0["x"], "y": min(1120, f0["y"] + 160), "w": f0["w"], "h": f0["h"]}]
-        return bg.convert("RGB"), eff_faces
-
-    if mode == "black_polaroid_frame_pip":
-        # style_06 / style_04 / style_13 / style_23：黑底竖相框拍立得留白画中画
-        frame_rgba = parse_hex_rgba(str(pip_spec.get("frame_bg_hex") or "#0E1117"))
-        # 保持画框底色亮度 >= 18，既呈现深邃拍立得黑框又绝不误触 blackdetect
-        safe_frame = (max(18, frame_rgba[0]), max(18, frame_rgba[1]), max(22, frame_rgba[2]), 255)
-        bg = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), safe_frame)
-        wx, wy, ww, wh = 74, 352, 932, 1136
-        inner_img = _crop_aspect_fill(base_rgba, ww, wh, fcx, fcy, zoom=1.02)
-        _paste_rounded_window(bg, inner_img, wx, wy, radius=26, border_rgba=border_rgba, border_w=border_w)
-        draw = ImageDraw.Draw(bg)
-        tfnt = get_cached_font(font_path, 20)
-        draw.text((wx + 24, wy + wh + 26), f"FILM 35MM · {tag_text}", font=tfnt, fill=border_rgba, anchor="lm")
-        draw.text((wx + ww - 24, wy + wh + 26), "1080P STUDIO FRAME", font=tfnt, fill=(180, 186, 198, 220), anchor="rm")
-        eff_faces = [{"x": wx + int((f0["x"] / float(CANVAS_WIDTH)) * ww), "y": wy + int((f0["y"] / float(CANVAS_HEIGHT)) * wh), "w": int(f0["w"] * 0.86), "h": int(f0["h"] * 0.86)}]
-        return bg.convert("RGB"), eff_faces
-
-    if mode == "corner_circle_evidence_pip":
-        # style_11 / style_01 / style_22 / style_24：圆窗例证画中画弹窗（自动选人脸对侧角）
-        bg = base_rgba.copy()
-        cw = 264
-        place_left = (fcx > 0.54) or (style_id == "style_22")
-        cx_p = 94 if place_left else (CANVAS_WIDTH - 94 - cw)
-        cy_p = 386
-        circle_crop = _crop_aspect_fill(sec_rgba, cw, cw, 0.50, 0.58, zoom=1.35)
-        _paste_circle_window(bg, circle_crop, cx_p, cy_p, border_rgba=border_rgba, border_w=5, outer_ring_rgba=(18, 22, 30, 230))
-        draw = ImageDraw.Draw(bg)
-        tfnt = get_cached_font(font_path, 21)
-        px0, px1 = cx_p + 28, cx_p + cw - 28
-        draw.rounded_rectangle([(px0, cy_p + cw - 24), (px1, cy_p + cw + 14)], radius=14, fill=(16, 20, 28, 238), outline=border_rgba, width=2)
-        draw.text(((px0 + px1) // 2, cy_p + cw - 5), f"● {tag_text}", font=tfnt, fill=border_rgba, anchor="mm")
-        return bg.convert("RGB"), raw_faces
-
-    if mode == "white_outline_cutout_pip":
-        # style_07 / 05 / 10 / 14 / 21：白纸边贴纸抠像画中画
-        bg = base_rgba.copy()
-        cw, ch = 292, 360
-        place_left = (fcx > 0.54) or (style_id == "style_10")
-        wx = 92 if place_left else (CANVAS_WIDTH - 92 - cw)
-        wy = 386
-        sticker_crop = _crop_aspect_fill(sec_rgba, cw, ch, fcx, max(0.32, fcy), zoom=1.28)
-        # 先画 10px 纯白纸质外轮廓贴纸底板 + 投影，再嵌内层金色细框
-        _paste_rounded_window(bg, sticker_crop, wx, wy, radius=28, border_rgba=(255, 255, 255, 255), border_w=10, shadow=True)
-        draw = ImageDraw.Draw(bg)
-        draw.rounded_rectangle([(wx + 8, wy + 8), (wx + cw - 9, wy + ch - 9)], radius=20, outline=(255, 191, 23, 245), width=3)
-        tfnt = get_cached_font(font_path, 21)
-        draw.rounded_rectangle([(wx + 24, wy + ch - 26), (wx + cw - 24, wy + ch + 14)], radius=12, fill=(255, 255, 255, 248), outline=(18, 22, 30, 255), width=2)
-        draw.text((wx + cw // 2, wy + ch - 6), f"✂ {tag_text}", font=tfnt, fill=(18, 22, 30, 255), anchor="mm")
-        return bg.convert("RGB"), raw_faces
-
-    if mode == "dual_rect_grid_pip":
-        # style_17 / 02 / 12 / 15 / 20：上下双格拼贴画中画框
-        bg = base_rgba.copy()
-        cw, ch = 304, 368
-        place_left = (fcx > 0.54)
-        wx = 92 if place_left else (CANVAS_WIDTH - 92 - cw)
-        wy = 386
-        grid_card = Image.new("RGBA", (cw, ch), (16, 20, 28, 245))
-        half_h = ch // 2 - 2
-        top_g = _crop_aspect_fill(sec_rgba, cw, half_h, 0.45, 0.45, zoom=1.26)
-        bot_g = _crop_aspect_fill(base_rgba, cw, ch - half_h, 0.55, 0.68, zoom=1.42)
-        grid_card.paste(top_g, (0, 0))
-        grid_card.paste(bot_g, (0, half_h + 2))
-        gdraw = ImageDraw.Draw(grid_card)
-        gdraw.line([(0, half_h), (cw, half_h)], fill=border_rgba, width=4)
-        _paste_rounded_window(bg, grid_card, wx, wy, radius=20, border_rgba=border_rgba, border_w=5, shadow=True)
-        draw = ImageDraw.Draw(bg)
-        tfnt = get_cached_font(font_path, 21)
-        draw.rounded_rectangle([(wx + 26, wy - 16), (wx + cw - 26, wy + 20)], radius=10, fill=(16, 20, 28, 242), outline=border_rgba, width=2)
-        draw.text((wx + cw // 2, wy + 2), f"▣ {tag_text}", font=tfnt, fill=border_rgba, anchor="mm")
-        return bg.convert("RGB"), raw_faces
-
-    return base_rgba.convert("RGB"), raw_faces
+def _ensure_circle_ring_png(cache_dir: Path, radius_px: int, border_hex: str = "#FFF589") -> Path:
+    """预烘焙平滑圆环人像的发光装饰外环 PNG。"""
+    r = max(16, int(radius_px))
+    pad = 14
+    size = r * 2 + pad * 2
+    safe_hex = re.sub(r"[^0-9A-Fa-f]", "", str(border_hex or "FFF589"))[:6] or "FFF589"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    ring_p = cache_dir / f"_pip_circle_ring_{r}_{safe_hex}.png"
+    if not ring_p.is_file():
+        img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        col = parse_hex_rgba(f"#{safe_hex}")
+        d.ellipse([(pad, pad), (size - pad - 1, size - pad - 1)], outline=(236, 227, 207, 240), width=4)
+        d.ellipse([(pad - 5, pad - 5), (size - pad + 4, size - pad + 4)], outline=col, width=3)
+        d.arc([(pad - 10, pad - 10), (size - pad + 9, size - pad + 9)], start=25, end=115, fill=col, width=4)
+        d.arc([(pad - 10, pad - 10), (size - pad + 9, size - pad + 9)], start=205, end=270, fill=(236, 227, 207, 170), width=2)
+        img.save(ring_p)
+    return ring_p
 
 
 def _rects_overlap(a: Tuple[int, int, int, int], b: Tuple[int, int, int, int]) -> bool:
@@ -980,7 +717,7 @@ def _compute_base_cache_key(
 
 
 def _build_ffmpeg_pip_vf(pip_layout: Optional[Dict[str, Any]], tw: int = CANVAS_WIDTH, th: int = CANVAS_HEIGHT) -> Optional[str]:
-    """生成 30fps 动态视频画中画 FFmpeg 滤镜链（供 render_mp4 / export_jianying / export_hyperframes 同源分镜共享）。"""
+    """生成 30fps 单源动态画中画 FFmpeg 滤镜链（双源场景由 build_graded_segment_cmd 升级为双输入 filter_complex）。"""
     if not isinstance(pip_layout, dict) or tw != CANVAS_WIDTH or th != CANVAS_HEIGHT:
         return None
     mode = str(pip_layout.get("mode") or "")
@@ -999,8 +736,7 @@ def _build_ffmpeg_pip_vf(pip_layout: Optional[Dict[str, Any]], tw: int = CANVAS_
         return (
             f"split=2[pip_bg][pip_av];"
             f"[pip_av]crop=min(iw\\,ih):min(iw\\,ih):(iw-min(iw\\,ih))/2:(ih-min(iw\\,ih))*0.28,"
-            f"scale={diam}:{diam},format=rgba,"
-            f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(hypot(X-{r_pip},Y-{r_pip}),{r_pip - 2}),255,0)'[pip_circ];"
+            f"scale={diam}:{diam},pad={diam + 8}:{diam + 8}:4:4:color={bd_hex}[pip_circ];"
             f"[pip_bg][pip_circ]overlay=x={ox}:y={oy}:shortest=1"
         )
 
@@ -1044,6 +780,113 @@ def _build_ffmpeg_pip_vf(pip_layout: Optional[Dict[str, Any]], tw: int = CANVAS_
             f"[pip_fg]crop=iw*0.64:ih*0.44:iw*0.18:ih*0.20,scale={in_w}:{in_h},pad=296:340:{pad_w}:{pad_w}:color={pad_c}[pip_fg_p];"
             f"[pip_bg][pip_fg_p]overlay=x=692:y=356"
         )
+    return None
+
+
+def _build_dual_pip_cmd(
+    ffmpeg_bin: str,
+    media_path: str,
+    src_in: float,
+    src_avail: float,
+    base_vf_chain: str,
+    pip_layout: Dict[str, Any],
+    sec_media: str,
+    sec_in: float,
+    clip_dur: float,
+    clip_frames: int,
+    fps: int,
+    out_mp4: Path,
+) -> Optional[List[str]]:
+    """真双源画中画（主镜头 + 独立副镜头）高速合成器：使用预烘焙圆形 Alpha 蒙版与平滑入场缩放，彻底消灭自己叠自己与慢速 geq。"""
+    mode = str(pip_layout.get("mode") or "")
+    bd_hex = str(pip_layout.get("border_hex") or "#FFF589")
+    if not bd_hex.startswith("#") or len(bd_hex) not in (7, 9):
+        bd_hex = "#FFF589"
+    bd_hex = bd_hex[:7]
+    tail_str = ",".join(BT709_VF_SUFFIX)
+    sec_trim = f"fps=fps={fps},trim=duration={clip_dur:.4f},setpts=PTS-STARTPTS"
+
+    if mode == "smooth_orbit_pip":
+        corner = str(pip_layout.get("corner") or "tr").lower()
+        r_pip = int(pip_layout.get("radius_px") or 146)
+        diam = r_pip * 2
+        cx_p = (CANVAS_WIDTH - 200) if corner != "tl" else 200
+        cy_p = int(pip_layout.get("center_y") or 360)
+        ox, oy = cx_p - r_pip, cy_p - r_pip
+        mask_p = _ensure_circle_mask_png(out_mp4.parent, r_pip)
+        ring_p = _ensure_circle_ring_png(out_mp4.parent, r_pip, bd_hex)
+        # 前 0.32s 从画面中心顺滑滑向安全角，末尾 0.28s 顺滑回中（纯表达式零重算开销）
+        cx0, cy0 = (CANVAS_WIDTH - diam) // 2, (CANVAS_HEIGHT - diam) // 2
+        t_out = max(0.45, clip_dur - 0.30)
+        x_expr = f"if(lt(t,0.32),{cx0}+({ox}-{cx0})*sin(t/0.32*PI/2),if(gt(t,{t_out:.3f}),{ox}+({cx0}-{ox})*sin(min(1,(t-{t_out:.3f})/0.30)*PI/2),{ox}))"
+        y_expr = f"if(lt(t,0.32),{cy0}+({oy}-{cy0})*sin(t/0.32*PI/2),if(gt(t,{t_out:.3f}),{oy}+({cy0}-{oy})*sin(min(1,(t-{t_out:.3f})/0.30)*PI/2),{oy}))"
+        fc = (
+            f"[0:v]{base_vf_chain}[p_main];"
+            f"[1:v]{sec_trim},crop=min(iw\\,ih):min(iw\\,ih):(iw-min(iw\\,ih))/2:(ih-min(iw\\,ih))*0.24,"
+            f"scale={diam}:{diam},format=rgba[p_av_raw];"
+            f"[2:v]format=gray[p_mask];"
+            f"[p_av_raw][p_mask]alphamerge[p_av_circ];"
+            f"[p_main][p_av_circ]overlay=x='{x_expr}':y='{y_expr}':shortest=1[p_m1];"
+            f"[p_m1][3:v]overlay=x='({x_expr})-14':y='({y_expr})-14':shortest=1,{tail_str}[vout]"
+        )
+        return [
+            ffmpeg_bin, "-y",
+            "-ss", f"{src_in:.4f}", "-t", f"{src_avail + 0.1:.4f}", "-i", media_path,
+            "-ss", f"{sec_in:.4f}", "-t", f"{clip_dur + 0.2:.4f}", "-i", sec_media,
+            "-loop", "1", "-framerate", str(fps), "-i", str(mask_p),
+            "-loop", "1", "-framerate", str(fps), "-i", str(ring_p),
+            "-an", "-filter_complex", fc, "-map", "[vout]",
+            "-frames:v", str(clip_frames), "-c:v", "libx264", "-preset", "medium", "-crf", "15",
+            "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS, str(out_mp4),
+        ]
+
+    if mode == "dark_doc_circle_avatar_pip":
+        av_x = int((pip_layout.get("avatar_circle_bbox") or {}).get("x", 112))
+        mask_p = _ensure_circle_mask_png(out_mp4.parent, 168)
+        fc = (
+            f"[0:v]{base_vf_chain},split=2[p_bg_src][p_av_src];"
+            f"[p_bg_src]boxblur=18:2,eq=brightness=-0.20[p_bg];"
+            f"[1:v]{sec_trim},scale=924:392:force_original_aspect_ratio=increase,crop=924:392,"
+            f"pad=932:400:4:4:color={bd_hex}[p_ev];"
+            f"[p_av_src]crop=min(iw\\,ih):min(iw\\,ih):(iw-min(iw\\,ih))/2:(ih-min(iw\\,ih))*0.22,"
+            f"scale=336:336,format=rgba[p_av_raw];"
+            f"[2:v]format=gray[p_mask];"
+            f"[p_av_raw][p_mask]alphamerge[p_av];"
+            f"[p_bg][p_ev]overlay=x=74:y=344:shortest=1[p_m1];"
+            f"[p_m1][p_av]overlay=x={av_x}:y=804:shortest=1,{tail_str}[vout]"
+        )
+        return [
+            ffmpeg_bin, "-y",
+            "-ss", f"{src_in:.4f}", "-t", f"{src_avail + 0.1:.4f}", "-i", media_path,
+            "-ss", f"{sec_in:.4f}", "-t", f"{clip_dur + 0.2:.4f}", "-i", sec_media,
+            "-loop", "1", "-framerate", str(fps), "-i", str(mask_p),
+            "-an", "-filter_complex", fc, "-map", "[vout]",
+            "-frames:v", str(clip_frames), "-c:v", "libx264", "-preset", "medium", "-crf", "15",
+            "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS, str(out_mp4),
+        ]
+
+    if mode in ("corner_circle_evidence_pip", "white_outline_cutout_pip", "dual_rect_grid_pip", "linear_split_feather_pip"):
+        if mode == "linear_split_feather_pip":
+            box_w, box_h, px, py, pad_w, pad_c = 812, 264, 134, 346, 4, bd_hex
+        else:
+            pad_c = "#FFFFFF" if mode == "white_outline_cutout_pip" else bd_hex
+            pad_w = 8 if mode == "white_outline_cutout_pip" else 4
+            box_w, box_h, px, py = 296, 340, 692, 356
+        in_w, in_h = box_w - pad_w * 2, box_h - pad_w * 2
+        fc = (
+            f"[0:v]{base_vf_chain}[p_main];"
+            f"[1:v]{sec_trim},scale={in_w}:{in_h}:force_original_aspect_ratio=increase,crop={in_w}:{in_h},"
+            f"pad={box_w}:{box_h}:{pad_w}:{pad_w}:color={pad_c}[p_sub];"
+            f"[p_main][p_sub]overlay=x={px}:y={py}:shortest=1,{tail_str}[vout]"
+        )
+        return [
+            ffmpeg_bin, "-y",
+            "-ss", f"{src_in:.4f}", "-t", f"{src_avail + 0.1:.4f}", "-i", media_path,
+            "-ss", f"{sec_in:.4f}", "-t", f"{clip_dur + 0.2:.4f}", "-i", sec_media,
+            "-an", "-filter_complex", fc, "-map", "[vout]",
+            "-frames:v", str(clip_frames), "-c:v", "libx264", "-preset", "medium", "-crf", "15",
+            "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS, str(out_mp4),
+        ]
     return None
 
 
@@ -1123,12 +966,35 @@ def build_graded_segment_cmd(
 
     if color_vf and not preview:
         vf_parts.append(color_vf)
-    pip_vf = _build_ffmpeg_pip_vf(clip.get("pip_layout"), tw=tw, th=th) if not preview else None
-    if pip_vf:
-        vf_parts.append(pip_vf)
     if src_avail < clip_dur - 0.01:
         pad_sec = (clip_dur - src_avail) + 0.3
         vf_parts.append(f"tpad=stop_mode=clone:stop_duration={pad_sec:.4f}")
+
+    pip_cfg = clip.get("pip_layout") if (not preview and tw == CANVAS_WIDTH and th == CANVAS_HEIGHT) else None
+    if isinstance(pip_cfg, dict):
+        sec_media = str(pip_cfg.get("secondary_media_path") or "")
+        sec_in = max(0.0, float(pip_cfg.get("secondary_in_sec", 0.0)))
+        if sec_media and Path(sec_media).is_file() and str(Path(sec_media).resolve()) != str(Path(media_path).resolve()):
+            dual_cmd = _build_dual_pip_cmd(
+                ffmpeg_bin=ffmpeg_bin,
+                media_path=media_path,
+                src_in=src_in,
+                src_avail=src_avail,
+                base_vf_chain=",".join(vf_parts),
+                pip_layout=pip_cfg,
+                sec_media=sec_media,
+                sec_in=sec_in,
+                clip_dur=clip_dur,
+                clip_frames=clip_frames,
+                fps=fps,
+                out_mp4=out_mp4,
+            )
+            if dual_cmd:
+                return dual_cmd
+        pip_vf = _build_ffmpeg_pip_vf(pip_cfg, tw=tw, th=th)
+        if pip_vf:
+            vf_parts.append(pip_vf)
+
     if preview:
         vf_parts.extend(["setsar=1", "format=yuv420p"])
     else:
@@ -1201,6 +1067,7 @@ def build_base_video_track(
     seg_files: List[Path] = []
     geom_cache: Dict[str, Tuple[int, int]] = {}
     reused = 0
+    render_jobs: List[Tuple[List[str], Path, Path, Path, str]] = []
 
     for idx, clip in enumerate(clips):
         seg_out = expected_segments[idx]
@@ -1213,9 +1080,12 @@ def build_base_video_track(
             ffmpeg_bin, clip, cf, eye_by_mp4, staged_seg, fps,
             tw=tw, th=th, preview=preview, geom_cache=geom_cache,
         )
+        sec_p = str((clip.get("pip_layout") or {}).get("secondary_media_path") or "")
+        sec_hash = sha256_file(Path(sec_p)) if sec_p and Path(sec_p).is_file() else ""
         seg_key = compute_segment_cache_key({
             "cmd": cmd[:-1],
             "source_hash": source_hashes[media_path],
+            "sec_hash": sec_hash,
             "lut_hash": source_hashes.get(lut_path),
             "fps": fps,
             "preview": preview,
@@ -1224,13 +1094,24 @@ def build_base_video_track(
         if seg_out.is_file() and seg_flag.is_file() and seg_flag.read_text(encoding="utf-8") == seg_key:
             reused += 1
         else:
-            try:
-                run_cmd(cmd)
-                staged_seg.replace(seg_out)
-            finally:
-                staged_seg.unlink(missing_ok=True)
-            seg_flag.write_text(seg_key, encoding="utf-8")
+            render_jobs.append((cmd, staged_seg, seg_out, seg_flag, seg_key))
         seg_files.append(seg_out)
+
+    if render_jobs:
+        def _exec_seg(job: Tuple[List[str], Path, Path, Path, str]) -> None:
+            j_cmd, j_staged, j_out, j_flag, j_key = job
+            try:
+                run_cmd(j_cmd)
+                j_staged.replace(j_out)
+            finally:
+                j_staged.unlink(missing_ok=True)
+            j_flag.write_text(j_key, encoding="utf-8")
+
+        if len(render_jobs) == 1:
+            _exec_seg(render_jobs[0])
+        else:
+            with ThreadPoolExecutor(max_workers=min(2, len(render_jobs))) as pool:
+                list(pool.map(_exec_seg, render_jobs))
 
     concat_txt = work_dir / f"concat_{'p' if preview else 'f'}.txt"
     def _ff_concat_line(p: Path) -> str:
@@ -1336,6 +1217,14 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
             continue
         sub_png = work_dir / f"sub_{idx:03d}.png"
         sw_px, sh_px = render_subtitle_png(sub, tpl, font_path, sub_png)
+        # 同步写入 .key 指纹，供 export_jianying.py 零重复渲染直接命中字幕 PNG 缓存
+        sub_cache_key = compute_segment_cache_key({
+            "text": sub.get("text"),
+            "words": sub.get("words"),
+            "tpl": tpl,
+            "font_path": font_path,
+        })
+        (work_dir / f"sub_{idx:03d}.key").write_text(sub_cache_key, encoding="utf-8")
         def_x, def_y = compute_subtitle_place_xy(sw_px, sh_px, tpl)
         px, py = _place_from_final_bbox(sub, sw_px, sh_px, SUBTITLE_SAFE_ZONE, (def_x, def_y), _faces_at_time(s_t))
         if sw_px <= SUBTITLE_SYMMETRIC_MAX_W:

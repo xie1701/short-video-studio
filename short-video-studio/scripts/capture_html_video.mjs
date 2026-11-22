@@ -231,10 +231,15 @@ async function seekPage(page, t, frameCenterT = null) {
   );
 }
 
+let _diffCtx = null;
+let _diffPage = null;
+
 async function diffPngBuffers(browser, bufA, bufB) {
-  const ctx = await browser.newContext({ viewport: { width: 128, height: 128 } });
-  const p = await ctx.newPage();
-  const res = await p.evaluate(
+  if (!_diffPage || _diffPage.isClosed()) {
+    _diffCtx = await browser.newContext({ viewport: { width: 128, height: 128 } });
+    _diffPage = await _diffCtx.newPage();
+  }
+  return await _diffPage.evaluate(
     async ([b64A, b64B]) => {
       const load = (s) =>
         new Promise((resolve) => {
@@ -275,8 +280,6 @@ async function diffPngBuffers(browser, bufA, bufB) {
     },
     [bufA.toString("base64"), bufB.toString("base64")]
   );
-  await ctx.close();
-  return res;
 }
 
 function measureSmokePixels(mp4File, frameCount) {

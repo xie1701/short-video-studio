@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
 [Step 5: 字幕生成与统一权威布局]
-1. 读取锁定音轨 03_audio_events.json 的逐字时间戳，按 >=0.30s 真静音呼吸组 + 92% 像素宽断句（绝不留 <=3 字残句）。
+1. 读取锁定音轨 03_audio_events.json 的逐字时间戳，结合 terms.txt 保护词与词边界动态规划（DP）切分清爽单行短句。
 2. 修复数字旁中文标点残留（仅保住夹在数字间的小数点 . 与时间冒号 : 以及数字后 %），尊重模板 punct_stripped 配置。
 3. 基于唯一权威 SUBTITLE_SAFE_ZONE 与 01_manifest.json 裁切后精确人脸框一次性完成像素测宽与避脸位移，
    写出权威 final_bbox（同步写入 bbox），供 render / jianying / hyperframes / qa 四端同源消费。
-4. B9 双通道互斥：code_broll 在场覆盖 >=60% 时标记 suppressed=True 并跳过上屏。
-输出：pipeline/05_subtitles.json 与 pipeline/05_subtitles.ass
+4. 双通道防重复：code_broll 在场覆盖 >=60% 时标记 suppressed=True 并跳过上屏（仅普通无画中画图解）。
+输出：pipeline/05_subtitles.json、05_subtitles.ass、05_subtitles.srt 与 05_subtitle_check.txt
 """
 
 from __future__ import annotations
@@ -27,9 +27,11 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from common import (
+    BT709_FFMPEG_ARGS,
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
     SUBTITLE_CENTER_X,
+    SUBTITLE_DEFAULT_Y_CENTER,
     SUBTITLE_SAFE_ZONE,
     SUBTITLE_SYMMETRIC_MAX_W,
     bbox_iou,
@@ -193,6 +195,12 @@ def dp_segment_short_lines(
             sub = re.sub(r"\s+", " ", sub).strip()
         return sub
 
+    # 预计算保护词区间，避免 DP 内层每次重复 re.finditer
+    prot_spans: List[Tuple[int, int]] = []
+    for tm in prot:
+        for m in re.finditer(re.escape(tm), raw):
+            prot_spans.append((m.start(), m.end()))
+
     def _break_cost(pos: int) -> float:
         if pos <= 0 or pos >= len(raw):
             return 0.0
@@ -211,16 +219,16 @@ def dp_segment_short_lines(
             cost += 15.0
         if r0.isdigit():
             cost += 25.0
-        for tm in prot:
-            for m in re.finditer(re.escape(tm), raw):
-                if m.start() < pos < m.end():
-                    cost += 1000.0
+        for ps, pe in prot_spans:
+            if ps < pos < pe:
+                cost += 1000.0
         return cost
 
     inf = float("inf")
     best = [inf] * nb
     prev = [-1] * nb
     best[0] = 0.0
+    max_len_hard = max(6, int(max_chars) + 1)
 
     for j in range(1, nb):
         for i in range(j):
@@ -234,7 +242,7 @@ def dp_segment_short_lines(
                 continue
             compact_len = len(txt.replace(" ", ""))
             pw, _ = _measure_text_px(txt, font_path, font_size)
-            if pw > max_width_px or compact_len > max(max_chars + 2, 14):
+            if pw > max_width_px or compact_len > max_len_hard:
                 continue
             short_pen = max(0, 5 - compact_len) * 2.5 if j < nb - 1 or i > 0 else 0.0
             if compact_len <= 3 and (i > 0 or j < nb - 1):
@@ -264,11 +272,12 @@ def align_corrected_text_to_words(
     corrected_text: str,
     asr_words: List[Dict[str, Any]],
 ) -> Tuple[List[Dict[str, Any]], float]:
-    """用 difflib.SequenceMatcher 将人工校对后的纯文本字符级对齐到逐字时间戳，未匹配字线性插值。"""
-    clean_chars = [ch for ch in re.sub(r"[\s，。！？、；：,.!?;:“”\"'（）()《》—]+", "", str(corrected_text or ""))]
+    """用 difflib.SequenceMatcher 将人工校对后的纯文本字符级对齐到逐字时间戳，保留数字间小数点/冒号，未匹配字平滑插值。"""
+    norm_corr = strip_display_punctuation(re.sub(r"\s+", "", str(corrected_text or "")))
+    clean_chars = [ch for ch in norm_corr if ch.strip()]
     asr_flat: List[Tuple[str, float, float]] = []
     for w in asr_words:
-        wt = re.sub(r"[\s，。！？、；：,.!?;:“”\"'（）()《》—]+", "", str(w.get("word") or ""))
+        wt = strip_display_punctuation(re.sub(r"\s+", "", str(w.get("word") or "")))
         if not wt:
             continue
         ws = float(w.get("start_sec", 0.0))
@@ -288,6 +297,7 @@ def align_corrected_text_to_words(
             _, s, e = asr_flat[blk.b + k]
             times[blk.a + k] = (s, e)
 
+    first_asr_t = float(asr_flat[0][1])
     n = len(times)
     i = 0
     while i < n:
@@ -295,11 +305,24 @@ def align_corrected_text_to_words(
             j = i
             while j < n and times[j] is None:
                 j += 1
-            t0 = times[i - 1][1] if i > 0 and times[i - 1] else (times[j][0] if j < n and times[j] else 0.0)
-            t1 = times[j][0] if j < n and times[j] else t0 + 0.18 * (j - i)
-            span = max(0.02 * (j - i), t1 - t0) / max(1, j - i)
-            for k in range(i, j):
-                times[k] = (t0 + span * (k - i), t0 + span * (k - i + 1))
+            gap_n = max(1, j - i)
+            if i == 0 and j < n and times[j] is not None:
+                # 句首未匹配字：严格落在第一个已匹配字 times[j][0] 之前，彻底避免时间轴倒挂重叠
+                t1 = float(times[j][0])
+                t0 = max(0.0, min(first_asr_t, t1 - 0.12 * gap_n))
+                if t1 <= t0 + 0.01:
+                    t0 = max(0.0, t1 - 0.04 * gap_n)
+                span = max(0.015, (t1 - t0) / gap_n)
+                for k in range(i, j):
+                    s_k = max(0.0, t1 - span * (j - k))
+                    e_k = max(s_k + 0.01, t1 - span * (j - k - 1))
+                    times[k] = (s_k, e_k)
+            else:
+                t0 = float(times[i - 1][1]) if i > 0 and times[i - 1] else first_asr_t
+                t1 = float(times[j][0]) if j < n and times[j] else (t0 + 0.16 * gap_n)
+                span = max(0.02 * gap_n, t1 - t0) / gap_n
+                for k in range(i, j):
+                    times[k] = (t0 + span * (k - i), t0 + span * (k - i + 1))
             i = j
         else:
             i += 1
@@ -341,7 +364,9 @@ def burn_ass_safely(
         fonts_dir = tdp / "fonts"
         fonts_dir.mkdir(exist_ok=True)
         if font_path and Path(font_path).is_file():
-            shutil.copy2(font_path, fonts_dir / ("font" + Path(font_path).suffix.lower()))
+            # 保留原始商用字体文件名（替换非 ASCII 字符），便于 libass fontselect 精准核对命中
+            safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(font_path).stem) or "commercial_font"
+            shutil.copy2(font_path, fonts_dir / f"{safe_stem}{Path(font_path).suffix.lower()}")
         ass_esc = str(tmp_ass).replace("\\", "/").replace(":", "\\:")
         fd_esc = str(fonts_dir).replace("\\", "/").replace(":", "\\:")
         vf = f"ass='{ass_esc}':fontsdir='{fd_esc}'"
@@ -350,14 +375,20 @@ def burn_ass_safely(
                 ffmpeg, "-y", "-hide_banner", "-loglevel", "verbose",
                 "-i", str(video_in), "-vf", vf,
                 "-c:v", "libx264", "-preset", "medium", "-crf", "17", "-pix_fmt", "yuv420p",
+                *BT709_FFMPEG_ARGS,
                 "-c:a", "copy", "-movflags", "+faststart", str(video_out),
             ],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
         font_hits = re.findall(r"fontselect:\s*\(([^)]+)\)\s*->\s*(.+)", proc.stderr or "")
-        matched_ok = True
-        if expected_font_hint and font_hits:
-            matched_ok = any(expected_font_hint.lower() in f"{a} {b}".lower() for a, b in font_hits)
+        if proc.returncode != 0:
+            matched_ok = False
+        elif expected_font_hint:
+            matched_ok = bool(font_hits) and any(
+                expected_font_hint.lower() in f"{a} {b}".lower() for a, b in font_hits
+            )
+        else:
+            matched_ok = bool(font_hits)
         return {
             "returncode": proc.returncode,
             "font_select_hits": [f"{a} -> {b.strip()}" for a, b in font_hits[:6]],
@@ -427,9 +458,7 @@ def _measure_text_px(text: str, font_path: Optional[str], font_size: int) -> Tup
     fnt = get_cached_font(font_path, font_size)
     if fnt is not None:
         try:
-            from PIL import Image, ImageDraw
-            d = ImageDraw.Draw(Image.new("RGBA", (10, 10)))
-            bb = d.textbbox((0, 0), text, font=fnt)
+            bb = fnt.getbbox(text)
             return int(max(40, (bb[2] - bb[0]) + max(8, len(text) * 3))), int(max(font_size + 16, (bb[3] - bb[1]) + 28))
         except Exception:
             pass
@@ -455,8 +484,8 @@ def _compute_authoritative_subtitle_bbox(
     # 水平中心 100% 锁定画布正中央 540px，且 box_w <= 640 保证永不触发右侧 860px 单侧推偏
     box_x = center_x - box_w // 2
 
-    # 钳位 safe_y_center，默认对齐黄金水位 1310px
-    safe_yc = int(tpl.get("safe_y_center", 1310))
+    # 钳位 safe_y_center，默认对齐黄金水位 SUBTITLE_DEFAULT_Y_CENTER (1310px)
+    safe_yc = int(tpl.get("safe_y_center", SUBTITLE_DEFAULT_Y_CENTER))
     box_y = max(SUBTITLE_SAFE_ZONE["y_min"], min(SUBTITLE_SAFE_ZONE["y_max"] - box_h, safe_yc - box_h // 2))
     cand = {"x": int(box_x), "y": int(box_y), "w": int(box_w), "h": int(box_h)}
 
@@ -495,7 +524,7 @@ def split_sentence_into_chunks(
     max_chars: int = 10,
     font_path: Optional[str] = None,
     font_size: int = 62,
-    max_safe_px: int = 608,
+    max_safe_px: int = SUBTITLE_SYMMETRIC_MAX_W - 32,
     strip_punct: bool = True,
     protected_terms: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
@@ -699,6 +728,10 @@ def run_step5(
     raw_intel_p = pipeline_dir / "00_raw_intel.json"
     raw_pain_kws = set(str(k) for k in ((read_json(raw_intel_p).get("pain_keywords") or []) if raw_intel_p.is_file() else []) if str(k).strip())
 
+    # 切分前即加载 terms.txt 与原材关键词作为 DP 保护词，从源头禁止把专有名词/品牌词切碎
+    terms_p = pipeline_dir / "terms.txt"
+    prot_terms = load_protected_terms(terms_p if terms_p.is_file() else None, extra_terms=list(raw_pain_kws))
+
     idx = 1
     suppressed_count = 0
     tpl_max_chars = max(6, min(14, int(tpl.get("max_chars_per_line", 10))))
@@ -747,12 +780,14 @@ def run_step5(
                                     new_ws[wi]["is_keyword"] = True
                             search_i = hit_end
                     sent_eff["words"] = new_ws
+        sent_prot = load_protected_terms(None, extra_terms=[*prot_terms, *(sent_eff.get("keywords") or [])])
         for ch in split_sentence_into_chunks(
             sent_eff,
             max_chars=tpl_max_chars,
             font_path=font_path,
             font_size=eff_measure_fs,
             strip_punct=strip_punct,
+            protected_terms=sent_prot,
         ):
             st_sec = round(float(ch["start_sec"]), 4)
             en_sec = round(float(ch["end_sec"]), 4)
@@ -855,8 +890,6 @@ def run_step5(
         flag = "  <- 偏快 (>9字/秒)" if cps_e > 9.0 else ""
         check_lines.append(f"{s_idx:02d} [{ent['start_sec']:6.2f}-{ent['end_sec']:6.2f}] {dur_e:4.2f}s {cps_e:4.1f}字/秒 | {ent['text']}{flag}")
 
-    terms_p = pipeline_dir / "terms.txt"
-    prot_terms = load_protected_terms(terms_p if terms_p.is_file() else None)
     broken_terms: List[str] = []
     for a, b in zip(active_entries, active_entries[1:]):
         ta = str(a["text"]).replace(" ", "")
@@ -888,7 +921,7 @@ def run_step5(
     }
     write_json(pipeline_dir / "05_subtitles.json", out_json)
     print(
-        f"[step5] 字幕生成完成：{len(entries)} 条（B9让位挂起 {suppressed_count} 条，"
+        f"[step5] 字幕生成完成：{len(entries)} 条（图解画面自动让位 {suppressed_count} 条，"
         f"模板 `{template_id}`, 字体 `{Path(font_path).name if font_path else 'default'}`）-> 05_subtitles.json"
     )
     return out_json
@@ -900,8 +933,21 @@ def main() -> None:
     parser.add_argument("--pipeline-dir", required=True)
     parser.add_argument("--track", choices=["store", "creator"], default="store")
     parser.add_argument("--template", help="字幕模板ID")
+    parser.add_argument("--corrected-text", help="可选：人工校对后的纯文本文件，字符级回填逐字时间戳后重排字幕")
     args = parser.parse_args()
-    run_step5(Path(args.pipeline_dir), track=args.track, template_id=args.template)
+    pdir = Path(args.pipeline_dir)
+    if args.corrected_text and Path(args.corrected_text).is_file():
+        ae_p = pdir / "03_audio_events.json"
+        if ae_p.is_file():
+            ae = read_json(ae_p)
+            corr_lines = [ln.strip() for ln in Path(args.corrected_text).read_text(encoding="utf-8").splitlines() if ln.strip()]
+            for sent, corr in zip(ae.get("sentences") or [], corr_lines):
+                aligned, ratio = align_corrected_text_to_words(corr, sent.get("words") or [])
+                if aligned and ratio >= 0.35:
+                    sent["text"] = corr
+                    sent["words"] = aligned
+            write_json(ae_p, ae)
+    run_step5(pdir, track=args.track, template_id=args.template)
 
 
 if __name__ == "__main__":

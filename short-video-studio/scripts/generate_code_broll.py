@@ -537,7 +537,7 @@ def render_broll_clip_pillow(
                         if raw_sub:
                             fs, ts_txt = _fit_single_line(draw, raw_sub, font_path, 28, static_flow_w)
                             draw.text((x1 + 128, cy + 104), ts_txt, fill=sub_col, font=fs)
-                        if idx < len(items[:4]) - 1:
+                        if idx < len(items[:3]) - 1:
                             draw.line([(x1 + 73, cy + card_h), (x1 + 73, cy + card_h + 28)], fill=use_accent, width=4)
                     else:
                         fl, tl = _fit_single_line(draw, raw_lbl, font_path, 38, static_card_w)

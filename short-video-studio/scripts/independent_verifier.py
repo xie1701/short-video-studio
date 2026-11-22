@@ -98,7 +98,7 @@ def _mk_check(
 def _detect_digital_splice_clicks(audio_48k: np.ndarray, sr: int = 48000) -> List[Dict[str, Any]]:
     if len(audio_48k) < 16:
         return []
-    mono = audio_48k.mean(axis=1)
+    mono = audio_48k.mean(axis=1) if audio_48k.ndim > 1 else audio_48k
     diff = np.abs(np.diff(mono))
     win = max(1, int(sr * 0.04))
     abs_m = np.abs(mono)
@@ -119,7 +119,7 @@ def _detect_digital_splice_clicks(audio_48k: np.ndarray, sr: int = 48000) -> Lis
 def _detect_long_silences_np(audio_48k: np.ndarray, sr: int = 48000, thresh_db: float = -42.0, min_dur: float = 0.8) -> List[float]:
     if len(audio_48k) < int(sr * 0.1):
         return []
-    mono = audio_48k.mean(axis=1)
+    mono = audio_48k.mean(axis=1) if audio_48k.ndim > 1 else audio_48k
     hop = max(1, int(sr * 0.02))
     n_hops = len(mono) // hop
     if n_hops < 2:
@@ -141,8 +141,9 @@ def _detect_long_silences_np(audio_48k: np.ndarray, sr: int = 48000, thresh_db: 
             cur_start = None
     if cur_start is not None:
         s_t = cur_start * 0.02
-        dur = (n_hops * 0.02) - s_t
-        if dur >= min_dur and s_t > 0.2 and (n_hops * 0.02) < total_dur - 0.5:
+        dur = total_dur - s_t
+        # 允许合法片尾 0.45s 呼吸尾音，若片尾意外静音 >= max(min_dur, 1.0s) 则必须报出
+        if dur >= max(min_dur, 1.0) and s_t > 0.2:
             long_sils.append(round(dur, 3))
     return long_sils
 
@@ -249,7 +250,7 @@ def verify_audio_blackbox(
                 missing_aroll_clips.append(str(clip.get("clip_id", "unknown")))
 
     lufs_ok = abs(r128["integrated_lufs"] - TARGET_LUFS) <= LOUDNESS_TOLERANCE_LUFS
-    tp_ok = r128["true_peak_dbtp"] <= -0.5
+    tp_ok = r128["true_peak_dbtp"] <= -1.0
     lra_ok = 0.0 <= r128["lra_lu"] <= 11.5
     phase_ok = mono_corr >= 0.45
     clicks_ok = len(clicks) == 0
@@ -438,8 +439,9 @@ def verify_visual_and_subtitle_blackbox(
         texts = [t for t in (vr.get("texts") or []) if float(t.get("conf", 0.0)) >= 0.32 and len(str(t.get("text", "")).strip()) >= 2]
 
         with Image.open(fp) as im:
-            rgb = np.asarray(im.convert("RGB"))
-            thumb = np.asarray(im.convert("RGB").resize((270, 480)), dtype=np.float32)
+            im_rgb = im.convert("RGB")
+            rgb = np.asarray(im_rgb)
+            thumb = np.asarray(im_rgb.resize((270, 480)), dtype=np.float32)
 
         thumb_masked = thumb.copy()
         thumb_masked[285:380, :, :] = 0.0
@@ -488,7 +490,6 @@ def verify_visual_and_subtitle_blackbox(
             if any(float(t["y"]) >= 0.55 for t in texts):
                 speech_frames_with_sub_ocr += 1
 
-        rel_lum = _relative_luminance(rgb)
         sub_band_boxes: List[Tuple[int, int, int, int, str]] = []
         active_overlay_corpus = "".join(
             [et for st_s, en_s, et in expected_sub_entries if (st_s - 0.45) <= t_sec <= (en_s + 0.45)] + pkg_texts
@@ -542,13 +543,14 @@ def verify_visual_and_subtitle_blackbox(
 
             in_sub_or_pkg = py1 >= 150 and py2 <= SUBTITLE_SAFE_ZONE["y_max"] + 25
             if in_sub_or_pkg and ph >= 24 and matches_overlay:
-                # 纳入文字外圈 6px Halo/描边带联合采样前后景极端相对亮度比
+                # 仅在文字框及外圈 6px Halo/描边带的小 ROI 上计算相对亮度，提速 100x+
                 bx0 = max(0, px1 - 6)
                 by0 = max(0, py1 - 6)
                 bx1 = min(CANVAS_WIDTH, px2 + 6)
                 by1 = min(CANVAS_HEIGHT, py2 + 6)
-                patch = rel_lum[by0:by1, bx0:bx1]
-                if patch.size >= 36:
+                rgb_patch = rgb[by0:by1, bx0:bx1]
+                if rgb_patch.size >= 36 * 3:
+                    patch = _relative_luminance(rgb_patch)
                     l_max = float(np.percentile(patch, 92))
                     l_min = float(np.percentile(patch, 10))
                     ratio = (l_max + 0.05) / (l_min + 0.05)
@@ -706,12 +708,17 @@ def verify_visual_and_subtitle_blackbox(
         if not any(abs(ct - (i - 0.5) * 0.5) <= 0.55 for ct in cut_times_sec)
     ]
     max_luma_jump = round(max(luma_jumps or [0.0]), 1)
-    skin_missing_fail = bool(expected_aroll_has_face and skin_checked == 0)
+    skin_missing_fail = bool(ocr_supported and expected_aroll_has_face and skin_checked == 0)
     luma_jump_ok = (max_luma_jump <= 90.0)
     color_ok = (max_white <= 55.0) and (max_black <= 92.0) and (skin_violations == 0) and (not skin_missing_fail) and luma_jump_ok
+    color_status = (
+        "SKIPPED_UNAVAILABLE"
+        if (not ocr_supported and expected_aroll_has_face and skin_checked == 0 and color_ok)
+        else ("PASS" if color_ok else "FAIL")
+    )
     color_res = {
-        "status": "PASS" if color_ok else "FAIL",
-        "passed": color_ok,
+        "status": color_status,
+        "passed": (color_status == "PASS"),
         "max_clipped_white_pct": max_white,
         "max_clipped_black_pct": max_black,
         "skin_samples_checked": skin_checked,
@@ -740,6 +747,8 @@ def verify_cut_spot_blackbox(video_path: Path, pipeline_dir: Optional[Path], tmp
         return {"status": "PASS", "passed": True, "checked_cuts": 0, "verified_cuts": 0, "verified_ratio": 1.0, "max_unverified_run": 0}
 
     ffmpeg = find_bin("ffmpeg")
+    if not ffmpeg:
+        return {"status": "SKIPPED_UNAVAILABLE", "passed": False, "checked_cuts": 0, "verified_cuts": 0, "verified_ratio": 0.0, "max_unverified_run": 0}
     req_frames = sorted({max(0, cf - 2) for cf in cuts} | {cf + 2 for cf in cuts})
     spot_dir = tmp_dir / "spot_cuts"
     spot_dir.mkdir(parents=True, exist_ok=True)
@@ -1229,6 +1238,24 @@ def verify_compliance_and_license_blackbox(pipeline_dir: Optional[Path]) -> Dict
             )
             comp_ok = comp_ok and bool(c_audit.get("passed", False))
             extra_audits.append(c_audit)
+
+    if (pipeline_dir / "09_publish_copy_pack.json").is_file():
+        pk = read_json(pipeline_dir / "09_publish_copy_pack.json")
+        pk_sents: List[Dict[str, str]] = []
+        for plat_k, plat_v in (pk.get("platforms") or {}).items():
+            if not isinstance(plat_v, dict):
+                continue
+            for ti, tline in enumerate(plat_v.get("titles") or [], 1):
+                if str(tline).strip():
+                    pk_sents.append({"id": f"copy_{plat_k}_t{ti}", "text": str(tline)})
+            if str(plat_v.get("body") or "").strip():
+                pk_sents.append({"id": f"copy_{plat_k}_body", "text": str(plat_v["body"])})
+        if pk_sents:
+            pk_audit = audit_script_compliance(
+                pk_sents, source_type="publish_copy", pipeline_dir=None, whitelist_path=wl_path, auto_action=False
+            )
+            comp_ok = comp_ok and bool(pk_audit.get("passed", False))
+            extra_audits.append(pk_audit)
 
     lic_p = pipeline_dir / "asset_license_manifest.json"
     lic = read_json(lic_p) if lic_p.is_file() else {}

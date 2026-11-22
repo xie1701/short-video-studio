@@ -444,11 +444,11 @@ def run_step6(
     top_ef = min(int(min(4.2, total_dur * 0.45) * fps), int(total_dur * fps))
     hook_ef = min(int(2.2 * fps), int(total_dur * fps))
 
-    # 1. 若风格启用「顶部常驻标题栏」(如 style_01 / 03 / 06 / 08 / 22 / 24)，挂在 y=156 顶部栏
+    # 1. 若风格启用「顶部常驻标题栏」(如 style_01 / 03 / 06 / 08 / 22 / 24)，严格落在安全区 y=162 (>= SAFE_ZONE.y_min=160)
     if use_top_bar and total_dur >= 3.2 and not overlaps_code(0, top_ef):
         top_label = f"本期主题 · {hook_badge_text[:8]}"
         top_w = _measure_pkg_badge_width(top_label, pkg_font_path, SUBTITLE_SYMMETRIC_MAX_W, target_fs=34, min_w=280)
-        top_bb = {"x": SUBTITLE_CENTER_X - top_w // 2, "y": 156, "w": top_w, "h": 58}
+        top_bb = {"x": SUBTITLE_CENTER_X - top_w // 2, "y": 162, "w": top_w, "h": 58}
         ok_top, _ = check_bbox_in_safe_zone(top_bb)
         visual_elements.append({
             "id": f"pkg_{len(visual_elements)+1:03d}",
