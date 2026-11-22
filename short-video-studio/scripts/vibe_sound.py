@@ -378,7 +378,20 @@ def get_style_sound_profile(style_id: str) -> Optional[Dict[str, Any]]:
     resolved_sfx: Dict[str, str] = {}
     for role, sp in (raw_prof.get("sfx") or {}).items():
         resolved_sfx[role] = _resolve_asset_path(sp)
+
+    # 用户自备原版音效：sound_vibe/user/<style_id>/<role>.(wav|mp3|m4a|aac|flac|ogg)
+    user_roles: List[str] = []
+    user_dir = SOUND_VIBE_DIR / "user" / style_id
+    if user_dir.is_dir():
+        exts = (".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg")
+        pool = [p for p in user_dir.glob("**/*") if p.is_file() and p.suffix.lower() in exts]
+        for role in list(resolved_sfx):
+            hit = next((p for p in pool if p.stem.lower() == str(role).lower()), None)
+            if hit is not None:
+                resolved_sfx[role] = str(hit)
+                user_roles.append(role)
     raw_prof["sfx"] = resolved_sfx
+    raw_prof["user_original_sfx_roles"] = user_roles
     raw_prof["mapped_from_style_id"] = target_sid
     return raw_prof
 

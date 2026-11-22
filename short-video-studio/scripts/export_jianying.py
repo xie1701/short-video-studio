@@ -728,7 +728,11 @@ def export_jianying_draft(pipeline_dir: Path, simulate_failure: bool = False) ->
         n_sub = sum(1 for x in overlay_layers if x["group"] == "subtitle")
 
         readme = "\n".join([
-            f"【{safe_name} 剪映专业版可编辑工程导入指南】",
+            f"【{safe_name} 剪映专业版导入指南（烘焙版）】",
+            "",
+            "0. 注意：本包是**烘焙版**——字幕与花字已烧成透明 PNG 图层，导入剪映后不能改字、改字号、改描边。",
+            "   要改文字请用原生草稿路线：python3 scripts/export_jianying_native.py --pipeline-dir <项目>/pipeline",
+            "   （原生草稿里的字幕/花字是真文字素材，字体族与样式按源模版写入，打开即可编辑）。",
             "",
             "1. 打开剪映专业版 -> 全局设置开启「导入工程」 -> 导入本目录下的 timeline.fcpxml。",
             "2. 所有媒体与透明 PNG 图层均采用相对路径存储，整包拷贝不丢素材：",
@@ -742,6 +746,11 @@ def export_jianying_draft(pipeline_dir: Path, simulate_failure: bool = False) ->
         write_json(draft_dir / "manifest.json", {
             "project_name": safe_name,
             "export_format": "fcpxml_1.10+png_overlays+srt",
+            "export_kind": "baked_interchange",
+            "text_editable": False,
+            "baked_layers": True,
+            "text_editable_note": "字幕与花字已烘焙为 PNG；可编辑文字请用 export_jianying_native.py 生成原生草稿",
+            "native_draft_route": "python3 scripts/export_jianying_native.py --pipeline-dir <项目>/pipeline",
             "relative_paths_only": True,
             "fcpxml": "timeline.fcpxml",
             "subtitles_srt": "subtitles.srt",
@@ -776,6 +785,9 @@ def export_jianying_draft(pipeline_dir: Path, simulate_failure: bool = False) ->
             "status": "success",
             "degraded_to_mp4_only": False,
             "export_format": "fcpxml_1.10+png_overlays+srt",
+            "export_kind": "baked_interchange",
+            "text_editable": False,
+            "baked_layers": True,
             "relative_paths_only": True,
             "draft_dir": str(draft_dir.resolve()),
             "fcpxml_path": str(fcpxml_path.resolve()),
@@ -783,7 +795,7 @@ def export_jianying_draft(pipeline_dir: Path, simulate_failure: bool = False) ->
             "flower_texts_count": n_pkg,
             "subtitles_rendered_count": n_sub,
             "overlays_count": len(overlay_layers),
-            "message": f"剪映全相对路径多轨工程导出成功 ({fcpxml_path.name}，{n_pkg} 包装 + {n_sub} 字幕 PNG)。",
+            "message": f"剪映烘焙版工程导出成功 ({fcpxml_path.name}，{n_pkg} 包装 + {n_sub} 字幕 PNG，文字不可改；可编辑文字请走原生草稿导出)。",
         }
         write_json(pipeline_dir / "jianying_export_status.json", status)
         print(f"[jianying] 相对路径 FCPXML + 透明 PNG 工程导出成功 -> {draft_dir}")

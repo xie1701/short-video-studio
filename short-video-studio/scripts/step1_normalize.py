@@ -316,7 +316,7 @@ def normalize_single_media(
             "best_in_sec", "sharpness_score", "stability_score",
             "motion_speed_px", "accel_jitter_px", "camera_motion", "shot_size", "action_apex_sec",
             "audio_grade", "video_grade", "taboo_tags", "usable", "excluded_windows", "visual_indexed",
-            "semantic_tags", "manual_tags", "scene_group",
+            "semantic_tags", "manual_tags", "scene_group", "description",
         ):
             if k in shot_meta:
                 item[k] = shot_meta[k]

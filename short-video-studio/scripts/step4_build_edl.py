@@ -34,6 +34,9 @@ from common import (
     read_json,
     write_json,
 )
+import os
+
+from broll_semantics import describe_clip, legacy_score, relate, summarize as summarize_semantics
 from generate_code_broll import render_broll_clip_pillow, render_code_clip, resolve_style_palette
 
 PROP_SHOW_CUES = ("睇下", "看下", "看一下", "给大家看", "给你看", "看我手上", "看我手里", "效果图", "实物", "清单", "明细")
@@ -49,6 +52,8 @@ MEDIA_GAP_OBJECT_GROUPS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
 )
 POSITIVE_PRAISE_CUES = ("招牌", "正宗", "干净", "舒服", "鲜嫩", "多汁", "放心", "透明", "美味", "好吃", "靓", "靠谱", "新鲜", "卫生", "环境好")
 HARD_TABOO_ALWAYS = {"crew_leak", "kitchen_trash", "construction_trash"}
+# 旧口径对照开关：只用于证明"以前为什么对不上"，正常出片必须走概念桥
+LEGACY_SEM_MATCH = str(os.environ.get("SVS_LEGACY_SEM_MATCH") or "").strip() in ("1", "true", "yes")
 
 
 def detect_script_media_gaps(
@@ -469,7 +474,15 @@ def run_step4(
     raw_proof_names = [Path(str(a.get("filename") or "")).stem for a in (raw_intel.get("proof_assets") or []) if a.get("filename")]
 
     style_entry = load_style_spectrum_entry(style_id) if style_id else None
-    broll_target_ratio = float((style_entry or {}).get("broll_overlay_ratio_target", 0.53))
+    broll_prior_ratio = float((style_entry or {}).get("broll_overlay_ratio_target", 0.53))
+    # 风格里的 B-roll 占比只是先验：实际配比按素材能力动态调整（用户明确要求，不可刻板执行模版比例）
+    broll_target_hard = bool((style_entry or {}).get("broll_target_hard", False))
+    band_raw = (style_entry or {}).get("broll_target_band_pct") or [
+        max(0.0, (broll_prior_ratio - 0.15) * 100),
+        min(100.0, (broll_prior_ratio + 0.15) * 100),
+    ]
+    broll_band = (max(0.0, float(band_raw[0]) / 100.0), min(1.0, float(band_raw[1]) / 100.0))
+    broll_policy_note = ""
     ambient_policy = (style_entry or {}).get("broll_ambient_sound_policy") or {}
     ambient_enabled = bool(ambient_policy.get("enabled", True))
     ambient_gain_db = float(ambient_policy.get("gain_db", -10.0))
@@ -480,6 +493,25 @@ def run_step4(
     pacing = dict(EDIT_PROFILES[edit_profile])
     max_shot = float(pacing["max_shot_sec"])
     micro_hook_max_sec = min(max_shot, float(eff_prof.get("micro_hook_max_sec", max_shot - 1.8)))
+    # ── 动态配比：先验 → 按实际素材能力收敛，并记录原因 ──
+    aroll_capacity = min(1.0, sum(float(m.get("duration_sec") or 0) for m in usable_arolls) / max(total_dur, 0.1))
+    broll_capacity = min(1.0, sum(float(m.get("duration_sec") or 0) for m in broll_pool) / max(total_dur, 0.1))
+    broll_target_ratio = broll_prior_ratio
+    if usable_arolls and aroll_capacity < (1.0 - broll_prior_ratio) - 0.02:
+        broll_target_ratio = min(1.0, 1.0 - aroll_capacity)
+        broll_policy_note = f"A-roll 可用时长只够 {aroll_capacity*100:.0f}%，B-roll 上调到 {broll_target_ratio*100:.0f}%"
+    elif broll_pool and broll_capacity < broll_prior_ratio - 0.02:
+        broll_target_ratio = broll_capacity
+        broll_policy_note = f"B-roll 素材只够覆盖 {broll_capacity*100:.0f}%，目标下调"
+    if not broll_target_hard:
+        broll_target_ratio = max(broll_band[0], min(broll_band[1], broll_target_ratio)) if broll_capacity >= broll_band[0] else broll_target_ratio
+        if broll_target_ratio > broll_band[1]:
+            broll_target_ratio = broll_capacity if broll_capacity < broll_target_ratio else broll_target_ratio
+    broll_target_ratio = max(0.0, min(1.0, broll_target_ratio))
+    if not broll_policy_note:
+        broll_policy_note = f"落在风格动态带 {broll_band[0]*100:.0f}%–{broll_band[1]*100:.0f}% 内（先验 {broll_prior_ratio*100:.0f}%）"
+
+
     default_aroll_r = max(0.0, min(0.80, 1.0 - broll_target_ratio))
     target_aroll_ratio = max(0.0, min(0.85, float(eff_prof.get("target_aroll_ratio", default_aroll_r))))
     broll_only_mode = bool(prefer_broll_only or (broll_target_ratio >= 0.995) or (target_aroll_ratio <= 0.005))
@@ -740,6 +772,37 @@ def run_step4(
                     if cur_aroll_sec <= max_aroll_sec:
                         break
 
+    # 反向校正：初始排期天然偏多 B-roll（隔一镜一插），低覆盖率风格必须按目标把插入画面收回来
+    if usable_arolls and not broll_only_mode and not zero_broll_mode:
+        seg_durs_cap = [
+            frames_to_sec(
+                (cut_points[i + 1]["raw_frame"] if i + 1 < n_segs else total_frames) - cut_points[i]["raw_frame"], fps
+            )
+            for i in range(n_segs)
+        ]
+        broll_cap_ratio = min(1.0, broll_target_ratio + 0.03)
+        cur_broll_sec = sum(d for r, d in zip(roles, seg_durs_cap) if r != "a_roll")
+        if cur_broll_sec > total_dur * broll_cap_ratio:
+            conv_cands = []
+            for i_c in range(n_segs):
+                if roles[i_c] == "a_roll" or not _can_be_safe_aroll(i_c):
+                    continue
+                t_s = frames_to_sec(cut_points[i_c]["raw_frame"], fps)
+                s_obj = find_sentence_for_time(t_s, cut_points[i_c]["event"])
+                s_txt = str(s_obj.get("text", ""))
+                sem_hit = any(
+                    tg and (tg in s_txt)
+                    for m in broll_pool if m.get("role") == "b_roll"
+                    for tg in (m.get("semantic_tags", []) + m.get("manual_tags", []))
+                )
+                has_prop = any(cue in s_txt for cue in PROP_SHOW_CUES)
+                conv_cands.append((-int(sem_hit) + int(has_prop) * 3, i_c))
+            for _, i_conv in sorted(conv_cands):
+                if cur_broll_sec <= total_dur * broll_cap_ratio:
+                    break
+                roles[i_conv] = "a_roll"
+                cur_broll_sec -= seg_durs_cap[i_conv]
+
     if zero_broll_mode:
         for i_z in range(n_segs):
             if not audio_only_flags[i_z] and source_aroll_valid[i_z]:
@@ -805,6 +868,12 @@ def run_step4(
 
     OPPOSING_MOTION = {("pan_left", "pan_right"), ("pan_right", "pan_left"), ("tilt_up", "tilt_down"), ("tilt_down", "tilt_up")}
 
+    def sem_of_choice(m: Dict[str, Any], s: Dict[str, Any]) -> Dict[str, Any]:
+        """写进剪辑表的语义依据（与选片同口径；旧口径对照模式下也照实记录概念桥判定）。"""
+        rel = relate(str(s.get("text", "")), m, s.get("keywords") or [])
+        rel["legacy_tag_hits"] = legacy_score(str(s.get("text", "")), m, s.get("keywords") or [])
+        return rel
+
     def pick_best_broll(
         sent: Dict[str, Any],
         seg_dur: float,
@@ -832,9 +901,16 @@ def run_step4(
             if taboo_pen > 0:
                 blocked_here = True
 
-            tags = [str(t) for t in (m.get("semantic_tags", []) + m.get("manual_tags", []))]
+            tags = [str(t) for t in (m.get("semantic_tags", []) + (m.get("manual_tags") or []))]
             fname_m = Path(str(m.get("source_path") or m.get("normalized_mp4") or "")).stem
-            sem_hits = sum(1 for tg in tags if tg and (tg in s_txt or any(tg in k or k in tg for k in s_kws)))
+            if LEGACY_SEM_MATCH:
+                # 旧口径（字面 tag 命中）：仅用于 A/B 对照复现，不参与正常出片
+                sem_hits = sum(1 for tg in tags if tg and (tg in s_txt or any(tg in k or k in tg for k in s_kws)))
+                sem_weight = sem_hits * 6.5
+            else:
+                rel = relate(s_txt, m, s_kws)
+                sem_hits = 1 if rel["verdict"] == "hit" else 0
+                sem_weight = float(rel["score"]) * 10.0
             # 一手原始痛点词/物证优先匹配加权
             intel_bonus = 0.0
             if raw_pain_kws and any(pk in s_txt and (pk in fname_m or any(pk in tg for tg in tags)) for pk in raw_pain_kws):
@@ -869,7 +945,7 @@ def run_step4(
             dur_bonus = 2.0 if rem >= seg_dur else (0.5 if avail >= seg_dur else -2.0)
             live_bonus = 3.5 if (t_start < 3.0 and m.get("role") == "b_roll") else 0.0
             sc = (
-                sem_hits * 6.5 + intel_bonus + size_bonus + cont_bonus + stab_bonus + sharp_bonus
+                sem_weight + intel_bonus + size_bonus + cont_bonus + stab_bonus + sharp_bonus
                 + dur_bonus + live_bonus - reuse_pen - taboo_pen - same_media_pen - exhausted_pen - motion_pen
             )
             if sc > best_score:
@@ -1071,6 +1147,9 @@ def run_step4(
                 "sentence_id": sent["id"],
                 "sentence_text": sent["text"],
                 "purpose": b_purpose,
+                # 语义对位可审计：这个画面凭什么被认为"对得上这句台词"（零依据就是 none）
+                "sem_match": sem_of_choice(br, sent),
+                "media_signal": describe_clip(br)[:160],
             })
 
     first_3s_changes = sum(1 for c in clips[1:] if c["timeline_in_frame"] < first_3s_cutoff_f)
@@ -1079,8 +1158,12 @@ def run_step4(
     shot_cv = round(statistics.stdev(durs) / max(1e-5, statistics.mean(durs)), 3) if len(durs) >= 2 else 0.0
     code_dur = sum(float(c["duration_sec"]) for c in clips if c.get("track_role") == "code_broll")
     code_ratio = round(code_dur / max(0.1, total_dur), 3)
-    broll_actual_dur = sum(float(c["duration_sec"]) for c in clips if c.get("track_role") != "a_roll")
+    # 真实插入画面（b_roll）与自制图卡（code_broll）分开统计：源的覆盖率只由真实画面构成，
+    # 图卡是我们自己的补位手段，不能算进「与源一致」的口径
+    broll_actual_dur = sum(float(c["duration_sec"]) for c in clips if c.get("track_role") == "b_roll")
+    code_card_dur = sum(float(c["duration_sec"]) for c in clips if c.get("track_role") == "code_broll")
     broll_ratio_actual = round(broll_actual_dur / max(0.1, total_dur), 3)
+    broll_ratio_with_cards = round((broll_actual_dur + code_card_dur) / max(0.1, total_dur), 3)
 
     # 按风格谱 pip_composition_spec 为分镜挂载真·画中画构图参数 (pip_layout)
     pip_spec = (style_entry or {}).get("pip_composition_spec") or {}
@@ -1221,13 +1304,15 @@ def run_step4(
                                "giant_back_text": c_kws[0] if c_kws else (clean or "核心真相")}
                         hook_left -= 1
                 else:
-                    cfg = {"mode": "blur_bg_center_card_pip", "border_hex": "#FFD426", "single_source": True}
+                    # B-roll 也用该风格的真值几何，不再硬套「背景虚化卡片」这张别人的版面
+                    cfg = {**pip_spec, "mode": pip_mode, "single_source": True}
             elif ab_pattern == "cutout_broll_alternating":
                 if role == "a_roll":
                     sec_m, sec_i = _alt_broll(main_media)
                     cfg = _dual_cfg(c_obj, sec_m, sec_i) if sec_m else {**pip_spec, "mode": pip_mode, "single_source": True}
             elif ab_pattern == "dual_window_broll_switcher":
-                if pip_mode == "dark_doc_circle_avatar_pip":
+                # 真草稿里主轨缩成小窗且叠加层是「大画面」时（如 style_09），B-roll 段必须把真人塞回窗口里
+                if pip_mode in ("dark_doc_circle_avatar_pip", "geometry_pip_main_shrunk"):
                     if role == "a_roll":
                         sec_m, sec_i = _alt_broll(main_media)
                         cfg = _dual_cfg(c_obj, sec_m, sec_i) if sec_m else None
@@ -1255,6 +1340,9 @@ def run_step4(
             "person_behind_giant_text_pip",
             "top_white_rounded_frame_pip",
             "black_spotlight_circle_pip",
+            # 真草稿几何驱动：主轨推近/缩窗只需当前主镜
+            "geometry_pip_main_punch_in",
+            "geometry_pip_main_shrunk",
         }
         # 双源构图类（其中 vision_portrait_cutout_pip / data_news_cutout_pip / linear_split_feather_pip 无副镜时也可独立单源成立）
         full_dual_modes = {
@@ -1263,12 +1351,17 @@ def run_step4(
             "dual_gold_frame_pip",
             "vision_portrait_cutout_pip",
             "data_news_cutout_pip",
+            # 真草稿几何驱动：窗口构图需要第二路副素材
+            "geometry_pip_window",
         }
         self_sufficient_fallback_modes = {
             "vision_portrait_cutout_pip",
             "data_news_cutout_pip",
             "linear_split_feather_pip",
             "dark_doc_circle_avatar_pip",
+            # 无副镜时至少把主轨真值几何（推近/缩窗）落地，不硬套别人的版面
+            "geometry_pip_window",
+            "geometry_pip_main_shrunk",
         }
         first_kw_back = ""
         if sentences:
@@ -1350,6 +1443,40 @@ def run_step4(
             }
             pip_applied_count += 1
 
+    # 会裁切的构图（小窗/缩窗/推近/相框/圆窗）先在剪辑表里定好人脸锚点：
+    # 剪辑表自己就能交代"这个窗口是按脸取的还是素材里根本没脸"，渲染与导出共用同一份依据
+    CUT_MODES = {
+        "geometry_pip_window", "geometry_pip_main_shrunk", "geometry_pip_main_punch_in",
+        "blur_bg_center_card_pip", "smooth_orbit_pip", "black_polaroid_frame_pip",
+        "person_behind_giant_text_pip", "vision_portrait_cutout_pip", "data_news_cutout_pip",
+    }
+    try:
+        import face_framing
+
+        face_framing.set_cache_path(pipeline_dir / "state" / "face_anchors.json")
+        face_center_count = 0
+        no_face_count = 0
+        for c_obj in clips:
+            lay = c_obj.get("pip_layout")
+            if not isinstance(lay, dict) or str(lay.get("mode") or "") not in CUT_MODES:
+                continue
+            dur = float(c_obj.get("duration_sec", 1.5))
+            mid = float(c_obj.get("source_in_sec", 0.0)) + dur / 2.0  # 锚点要取源片时间，不是时间线时间
+            anchor = face_framing.anchor_for(str(c_obj.get("media_path") or ""), mid, dur)
+            sec_a = None
+            if lay.get("secondary_media_path"):
+                sec_a = face_framing.anchor_for(str(lay["secondary_media_path"]),
+                                                float(lay.get("secondary_in_sec", 0.0)) + dur / 2.0, dur)
+            lay["face_anchor"] = anchor
+            lay["secondary_face_anchor"] = sec_a
+            lay["face_framing"] = "face_center" if anchor else "no_face_center_crop"
+            face_center_count += 1 if anchor else 0
+            no_face_count += 0 if anchor else 1
+        if face_center_count or no_face_count:
+            print(f"[step4] 小窗/推近取景：按人脸 {face_center_count} 处，素材里没脸退回居中 {no_face_count} 处")
+    except Exception as exc:  # 没有 ffmpeg / 没有视觉检测时不许假装做过
+        print(f"[step4] [WARN] 人脸锚点未计算（{exc}），小窗将按画面正中取景")
+
     # 真实测算首帧视觉密度：文件存在且非废画、且非低对比死黑
     first_c = clips[0] if clips else {}
     first_item = next((m for m in manifest.get("items", []) if m.get("normalized_mp4") == first_c.get("media_path")), {})
@@ -1385,6 +1512,22 @@ def run_step4(
         "code_broll_ratio": code_ratio,
         "broll_ratio_target": round(broll_target_ratio, 3),
         "broll_ratio_actual": broll_ratio_actual,
+        "broll_ratio_with_cards": broll_ratio_with_cards,
+        "broll_semantic": summarize_semantics([
+            {"role": c.get("track_role"), "verdict": (c.get("sem_match") or {}).get("verdict", "none")}
+            for c in clips if c.get("track_role") in ("b_roll", "code_broll")
+        ]),
+        "broll_semantic_note": (
+            "外来画面与它压着的那句台词的语义对位：hit=有概念依据，weak=同场景沾边，"
+            "none=素材侧没有任何可用于匹配的描述（文件名/OCR/素材说明都没有），"
+            "不代表画错了，但不能声称对得上"
+        ),
+        "code_card_ratio": round(code_card_dur / max(0.1, total_dur), 3),
+        "broll_ratio_prior": round(broll_prior_ratio, 3),
+        "broll_ratio_band": [round(broll_band[0], 3), round(broll_band[1], 3)],
+        "broll_target_hard": broll_target_hard,
+        "broll_policy_note": broll_policy_note,
+        "broll_capacity": {"aroll": round(aroll_capacity, 3), "broll": round(broll_capacity, 3)},
         "ppt_warning": code_ratio > 0.30,
         "audio_only_masked_count": sum(1 for c in clips if c.get("audio_only_masked")),
         "taboo_blocked_count": taboo_blocked_count,
@@ -1403,23 +1546,40 @@ def run_step4(
         f"- **开头 3 秒画面切换**：{first_3s_changes} 次（全部踩在说话节奏点上）",
         f"- **声音提前衔接 / 画面微拉近**：声画自然错位 {jcut_real_count + lcut_real_count} 处，重点画面拉近 {punch_in_count} 处",
         "",
-        "| 序号 | 画面类型 | 截取起点 | 成片时间段 | 时长 | 衔接处理 | 安排用意 | 对应台词 |",
-        "| :--- | :--- | :---: | :--- | :---: | :---: | :--- | :--- |",
+        "| 序号 | 画面类型 | 截取起点 | 成片时间段 | 时长 | 衔接处理 | 安排用意 | 对应台词 | 凭什么对得上 |",
+        "| :--- | :--- | :---: | :--- | :---: | :---: | :--- | :--- | :--- |",
     ]
     role_cn = {"a_roll": "真人出镜", "b_roll": "实拍细节", "code_broll": "动态图表"}
+
+    def sem_cn(c: Dict[str, Any]) -> str:
+        if c.get("track_role") == "a_roll":
+            return "—（讲这句话的本人）"
+        rel = c.get("sem_match") or {}
+        v = str(rel.get("verdict") or "none")
+        if v == "none":
+            return "无依据：素材侧没有可对的内容线索"
+        return f"{'贴合' if v == 'hit' else '同场景'}：" + "；".join(rel.get("basis") or [])[:40]
+
     for i_c, c in enumerate(clips, start=1):
         jl = c["j_cut_lead_frames"]
         j_p = "声音先入半拍" if jl > 0 else ("画面先露半拍" if jl < 0 else ("轻推拉近" if c["punch_in_zoom"] > 1.01 else "常规硬切"))
         md_lines.append(
             f"| 第 {i_c} 镜 | {role_cn.get(c['track_role'], '实拍画面')} | {c['source_in_sec']:.2f}s | "
             f"{c['timeline_in_sec']:.2f}s–{c['timeline_out_sec']:.2f}s | {c['duration_sec']:.2f}s | "
-            f"{j_p} | {c['purpose']} | {c['sentence_text']} |"
+            f"{j_p} | {c['purpose']} | {c['sentence_text']} | {sem_cn(c)} |"
         )
     (pipeline_dir / "04_edl_table.md").write_text("\n".join(md_lines) + "\n", encoding="utf-8")
     print(
         f"[step4] 剪辑排期完成：{len(clips)} 个镜头，前3秒切换 {first_3s_changes} 次，"
         f"声画错位 {jcut_real_count + lcut_real_count} 处，重点拉近 {punch_in_count} 处，"
         f"动态讲解画中画 {explainer_applied_count} 处 -> 04_edl.json"
+    )
+    _sem = edl.get("broll_semantic") or {}
+    if _sem.get("clips"):
+        print(
+            f"[step4] 外来画面与台词对位：{_sem['clips']} 个里贴合 {_sem['hit']}、同场景 {_sem['weak']}、"
+            f"无依据 {_sem['none']}（命中率 {_sem['hit_ratio']*100:.0f}%；无依据的多半是素材侧没有主题词，"
+            f"补一句 素材说明.txt 即可，不在剪辑里瞎配）"
     )
     return edl
 

@@ -11,6 +11,7 @@ v5 增强：
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import re
 import subprocess
@@ -400,6 +401,61 @@ def classify_clip(
     ):
         return "a_roll_candidate"
     return "b_roll_candidate"
+
+
+MEDIA_NOTE_FILES = ("素材说明.txt", "素材说明.md", "media_notes.txt", "media_notes.json")
+
+
+def load_media_notes(input_dir: Path) -> Dict[str, str]:
+    """读用户手写的「素材说明」：一行一条 `文件名 一句描述`（也支持 JSON: {文件名: 描述}）。
+
+    这是唯一能给出"主题词"的离线信号——文件名是 IMG_4821.MOV 时，除了 OCR 就只剩它。
+    """
+    notes: Dict[str, str] = {}
+    for name in MEDIA_NOTE_FILES:
+        f = Path(input_dir) / name
+        if not f.is_file():
+            continue
+        try:
+            raw = f.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        if f.suffix.lower() == ".json":
+            try:
+                data = json.loads(raw)
+            except Exception:
+                continue
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    key = str(k).strip()
+                    val = str(v).strip() if not isinstance(v, dict) else str(v.get("note") or v.get("description") or "").strip()
+                    if key and val:
+                        notes[key] = val
+            continue
+        for line in raw.splitlines():
+            line = line.strip().lstrip("-*").strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split(None, 1)
+            if len(parts) == 2 and re.search(r"\.(mov|mp4|m4v|avi|mkv|MOV|MP4)$", parts[0]):
+                notes[parts[0]] = parts[1].strip()
+            else:
+                # 也允许「整条目录都一样」的宽口径：没有文件名前缀的行按 *_all 收下
+                notes.setdefault("*_all", "")
+                notes["*_all"] = (notes["*_all"] + " " + line).strip()
+    return notes
+
+
+def _note_for(notes: Dict[str, str], filename: str, rel_path: str) -> str:
+    if not notes:
+        return ""
+    for key in (filename, rel_path, Path(rel_path).as_posix()):
+        if key in notes and notes[key]:
+            return notes[key]
+    stem = Path(filename).stem
+    if stem in notes:
+        return notes[stem]
+    return str(notes.get("*_all") or "")
 
 
 def _infer_semantic_tags(
@@ -862,6 +918,7 @@ def inventory_directory(
                 "ocr_texts": [],
                 "semantic_tags": [],
                 "manual_tags": list((v_idx_entry or {}).get("manual_tags", [])),
+                "description": "",
                 "visual_indexed": bool(v_idx_entry),
                 "_v_idx_entry": v_idx_entry,
             })
@@ -943,14 +1000,50 @@ def inventory_directory(
             if vg == "ng":
                 c["usable"] = False
 
+        notes = load_media_notes(input_dir)
+        if notes:
+            filled = 0
+            for c in clips:
+                note_s = _note_for(notes, str(c.get("filename") or ""), str(c.get("rel_path") or ""))
+                if note_s:
+                    c["description"] = note_s
+                    if note_s not in c["manual_tags"]:
+                        c["manual_tags"] = list(c["manual_tags"]) + [note_s]
+                    filled += 1
+            if filled:
+                print(f"[inventory] 读到素材说明 {filled}/{len(clips)} 条（这是 B-roll 能与台词对上的一手依据）")
+
         if contact_sheet_path is not None:
             _build_contact_sheet(clips, primary_frames, contact_sheet_path)
+
+    # B-roll 能不能跟台词对上，取决于素材侧有没有"主题词"（文件名/文件夹名/OCR/素材说明）。
+    # 这里把没有主题词的素材列出来，并给一份可以直接填空的说明骨架，避免到剪辑时才发现对不上。
+    from broll_semantics import concepts_of, describe_clip
+
+    untagged: List[str] = []
+    for c in clips:
+        if c.get("suggested_role") != "b_roll_candidate":
+            continue
+        topic = [k for k in concepts_of(describe_clip(c)) if k not in ("环境空镜", "人物出镜")]
+        if not topic:
+            untagged.append(str(c.get("filename") or ""))
+    if untagged and not notes:
+        skeleton = input_dir / "素材说明.txt"
+        if not skeleton.is_file():
+            lines = ["# 一行一条：文件名 + 一句画面内容（这句话会用来跟口播文案对齐，越具体越准）"]
+            lines += [f"{name} " for name in untagged]
+            try:
+                skeleton.write_text("\n".join(lines) + "\n", encoding="utf-8")
+            except Exception:
+                pass
 
     recommendation = recommend_angle(clips, track, raw_intel=raw_intel)
     return {
         "input_dir": str(input_dir.resolve()),
         "clip_count": len(clips),
         "clips": clips,
+        "untagged_broll": untagged,
+        "media_notes_used": bool(notes),
         "contact_sheet": str(contact_sheet_path.resolve()) if contact_sheet_path and contact_sheet_path.exists() else None,
         "visual_index_used": bool(v_index),
         "recommendation": recommendation,
@@ -967,6 +1060,11 @@ def render_markdown_summary(data: Dict[str, Any]) -> str:
         f"- **这条片子适合干嘛用**：{rec['recommended_5a_level']}",
         f"- **建议怎么拍的类型**：{rec.get('recommended_script_type', '晒干活过程 / 聊行业看法')}",
         f"- **建议靠什么吸引人**：{rec.get('recommended_viral_element', '算钱对比 / 前后反差')}",
+        "- **需要你顺手补一句的素材**：" + (
+            f"{len(data.get('untagged_broll') or [])} 条（文件名和画面都读不出内容，已生成 素材说明.txt 骨架，一行填一句就行；"
+            "不填的话剪辑时这些画面跟口播对不上，系统会照实标出来，不会瞎配）"
+            if data.get("untagged_broll") else "无，素材侧都有可读的内容线索"
+        ),
         f"- **整条串起来怎么讲**：{rec['recommended_formula']}",
         f"- **开头 3 秒抓人建议**：{rec['recommended_hook']}",
         "",
@@ -979,7 +1077,7 @@ def render_markdown_summary(data: Dict[str, Any]) -> str:
         diag = "；".join(c["issues"]) if c["issues"] else "正常可用"
         hdr_tag = "高动态(自动还原)" if c["color_meta"]["is_hdr"] else "标准"
         vfr_tag = "变帧(需统一)" if c["is_vfr"] else "稳帧"
-        tags_str = ",".join(c["semantic_tags"][:4]) or "-"
+        tags_str = ",".join([*c["semantic_tags"][:4], *([c["description"]] if c.get("description") else [])]) or "-"
         face_str = f"{len(c['faces'])}人出镜" if c["faces"] else "无人物正脸"
         dim_str = f"{c['width']}x{c['height']}" + (f"({c.get('rotation_deg',0)}°)" if c.get("rotation_deg") else "")
         lines.append(

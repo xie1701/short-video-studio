@@ -825,6 +825,47 @@ def is_verified_commercial_font(font_path: Optional[Path | str]) -> bool:
     return any(stem in low for stem in VERIFIED_COMMERCIAL_FONT_STEMS)
 
 
+def style_font_dirs(style_id: Optional[str] = None) -> List[Path]:
+    """风格专属字体目录：把源模版原版字体放进这里，就按原版渲染。
+
+    assets/style_spectrum/fonts/            全风格共享（按文件名匹配）
+    assets/style_spectrum/fonts/<style_id>/ 该风格专属
+    """
+    base = ASSETS_DIR / "style_spectrum" / "fonts"
+    dirs = [base]
+    if style_id:
+        dirs.insert(0, base / str(style_id))
+    return [d for d in dirs if d.is_dir()]
+
+
+def find_source_font(source_family: Optional[str], style_id: Optional[str] = None,
+                     alias_names: Optional[List[str]] = None) -> Optional[str]:
+    """按源草稿里的字体族名找原版字体文件（支持 .ttf/.otf/.ttc/.TTF/.OTF）。
+
+    找到即返回绝对路径，让渲染用原版字体做到像素级 1:1；找不到返回 None，
+    调用方继续走可商用替代并标 exact_1to1=false。
+    """
+    fam = str(source_family or "").strip()
+    names = [n for n in ([fam] + list(alias_names or [])) if n]
+    if not names:
+        return None
+    suffixes = (".ttf", ".otf", ".ttc", ".TTF", ".OTF", ".TTC")
+    cache_key = ("source_font", style_id or "", *names)
+    if cache_key in _FONT_CACHE:
+        return _FONT_CACHE[cache_key]
+    for d in style_font_dirs(style_id):
+        for path in sorted(d.glob("**/*")):
+            if not path.is_file() or path.suffix not in suffixes:
+                continue
+            stem = path.stem
+            for n in names:
+                if n in stem or stem.replace(" ", "") == str(n).replace(" ", ""):
+                    _FONT_CACHE[cache_key] = str(path)
+                    return _FONT_CACHE[cache_key]
+    _FONT_CACHE[cache_key] = None  # type: ignore[assignment]
+    return None
+
+
 def _font_search_dirs() -> List[Path]:
     dirs: List[Path] = [ASSETS_DIR / "fonts"]
     sys_name = platform.system()
@@ -972,6 +1013,84 @@ def load_style_spectrum_entry(style_id: str) -> Optional[Dict[str, Any]]:
     except Exception:
         return None
     return None
+
+
+# 7 个画面特效键，与剪映 effect 轨里的真实特效名一一对应（暗角/荧幕噪点/怀旧边框/模糊/聚光灯/
+# 不规则黑框/颤抖）；源里没挂特效的风格必须全为 false，不许凭空补效果。
+COLOR_EFFECT_KEYS: Tuple[str, ...] = (
+    "vignette",
+    "grain",
+    "film_frame",
+    "blur",
+    "spotlight",
+    "irregular_black_frame",
+    "shake",
+)
+
+
+def load_color_effects() -> Dict[str, Any]:
+    """读取 style_spectrum/color_effects.json（库外逐风格三段曲线 + 特效开关）。"""
+    p = ASSETS_DIR / "style_spectrum" / "color_effects.json"
+    if not p.is_file():
+        return {"styles": {}}
+    try:
+        doc = read_json(p)
+    except Exception:
+        return {"styles": {}}
+    return doc if isinstance(doc, dict) else {"styles": {}}
+
+
+def validate_color_effects(doc: Dict[str, Any]) -> List[str]:
+    """校验库外调色配置：24 套齐全、三段锚点单调、7 个特效开关逐套显式给出。返回问题列表（空=通过）。"""
+    issues: List[str] = []
+    styles = doc.get("styles") if isinstance(doc, dict) else None
+    if not isinstance(styles, dict) or not styles:
+        return ["color_effects.styles 缺失或为空"]
+    if len(styles) != 24:
+        issues.append(f"color_effects 风格数 {len(styles)} != 24")
+    for sid, node in styles.items():
+        if not isinstance(node, dict):
+            issues.append(f"{sid}: 条目不是对象")
+            continue
+        try:
+            strength = float(node.get("lut_strength"))
+            if not 0.30 <= strength <= 1.0:
+                issues.append(f"{sid}: lut_strength {strength} 越界")
+        except (TypeError, ValueError):
+            issues.append(f"{sid}: 缺少 lut_strength")
+        try:
+            sat = float(node.get("saturation_scale"))
+            if not 0.50 <= sat <= 1.60:
+                issues.append(f"{sid}: saturation_scale {sat} 越界")
+        except (TypeError, ValueError):
+            issues.append(f"{sid}: 缺少 saturation_scale")
+        anchors = ((node.get("tone_curve") or {}).get("anchors")) or []
+        if len(anchors) != 3:
+            issues.append(f"{sid}: 三段锚点应为 3 个，实为 {len(anchors)}")
+        else:
+            xs = [float(a.get("input", -1)) for a in anchors]
+            if xs != sorted(xs) or len(set(xs)) != 3:
+                issues.append(f"{sid}: 锚点 input 未严格递增 {xs}")
+            for a in anchors:
+                try:
+                    if not 0.0 <= float(a.get("output")) <= 1.0:
+                        issues.append(f"{sid}: 锚点 output 越界")
+                except (TypeError, ValueError):
+                    issues.append(f"{sid}: 锚点 output 缺失")
+        tint = node.get("zone_tint") or {}
+        for zone in ("shadow", "midtone", "highlight"):
+            vals = tint.get(zone)
+            if not isinstance(vals, list) or len(vals) != 3:
+                issues.append(f"{sid}: zone_tint.{zone} 应为三元组")
+        effects = node.get("effects") or {}
+        missing = [k for k in COLOR_EFFECT_KEYS if k not in effects]
+        if missing:
+            issues.append(f"{sid}: 特效开关未显式给出 {missing}")
+        for k in COLOR_EFFECT_KEYS:
+            v = effects.get(k)
+            if v is not None and not isinstance(v, (bool, dict)):
+                issues.append(f"{sid}: 特效 {k} 应为 false 或参数对象")
+    return issues
 
 
 def load_animation_sfx_pairs() -> Dict[str, Any]:

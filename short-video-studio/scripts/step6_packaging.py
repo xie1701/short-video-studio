@@ -222,6 +222,39 @@ def _measure_pkg_badge_width(text: str, font_path: Optional[str], max_pkg_w: int
     return int(min(max_pkg_w, max(min_w, len(text) * target_fs + 68)))
 
 
+def _bp_overlay_style(style_id: str) -> Dict[str, Any]:
+    try:
+        from render_template_overlays import get_style_blueprint
+
+        return (get_style_blueprint(style_id) or {}).get("overlay_style") or {}
+    except Exception:
+        return {}
+
+
+def flower_budget_from_source(style_id: str, total_dur: float, legacy: int) -> int:
+    """花字条数预算：优先按源草稿实测的「每分钟花字条数」，没有实测值才用旧的经验公式。"""
+    ppm = _bp_overlay_style(style_id).get("flower_per_min")
+    try:
+        ppm_v = float(ppm) if ppm is not None else 0.0
+    except (TypeError, ValueError):
+        ppm_v = 0.0
+    if ppm_v <= 0:
+        return int(legacy)
+    return max(int(legacy), min(120, int(math.ceil(total_dur * ppm_v / 60.0))))
+
+
+def giant_count_from_source(style_id: str, total_dur: float, pkg_tech: Dict[str, Any]) -> int:
+    """巨字条数：优先蓝图里源草稿实测的 giant_count，再按片长做一次 sanity 上限。"""
+    raw = (pkg_tech or {}).get("giant_impact_count")
+    if raw is None:
+        raw = _bp_overlay_style(style_id).get("giant_count")
+    try:
+        n = int(raw) if raw is not None else 2
+    except (TypeError, ValueError):
+        n = 2
+    return max(0, min(n, int(math.ceil(max(1.0, float(total_dur)) / 4.0))))
+
+
 def run_step6(
     pipeline_dir: Path,
     fps: int = DEFAULT_FPS,
@@ -259,8 +292,10 @@ def run_step6(
     sfx_per_min_tgt = float((style_entry_pre.get("audio_and_sfx") or {}).get("sfx_per_min_target") or 24.0)
     total_dur = float(audio_events["locked_duration_sec"])
     total_samples = int(round(total_dur * SR))
-    max_visual_budget = max(2, math.ceil(total_dur / 5.5)) if broll_target >= 0.85 else max(3, math.ceil(total_dur / 3.5))
-    dyn_sfx_budget = max(5, int(math.ceil(total_dur * max(15.0, min(48.0, sfx_per_min_tgt)) / 60.0)))
+    _legacy_budget = max(2, math.ceil(total_dur / 5.5)) if broll_target >= 0.85 else max(3, math.ceil(total_dur / 3.5))
+    max_visual_budget = flower_budget_from_source(style_id, total_dur, _legacy_budget)
+    # 上限从 48 提到 72：源里 style_15 实测 64.8 次/分，旧的 48 上限会把它削平
+    dyn_sfx_budget = max(5, int(math.ceil(total_dur * max(15.0, min(72.0, sfx_per_min_tgt)) / 60.0)))
     max_sfx_budget = max(8, dyn_sfx_budget) if style_id == "style_06" else dyn_sfx_budget
 
     sentences_map = {s["id"]: s for s in audio_events["sentences"]}
@@ -504,7 +539,7 @@ def run_step6(
     giant_fg = _safe_readable_fg(giant_spec.get("fg_hex") or flower_spec.get("center_burst_color"), "#FFE28A")
     giant_accent = _safe_readable_fg(giant_spec.get("accent_hex") or flower_spec.get("flank_color"), "#FFF589")
     giant_stroke = str(giant_spec.get("stroke_hex") or flower_spec.get("stroke_color") or "#000000")
-    giant_count_target = int(pkg_tech.get("giant_impact_count") or 2)
+    giant_count_target = giant_count_from_source(style_id, total_dur, pkg_tech)
     use_multi_tag = bool(pkg_tech.get("multi_tag_burst") or flower_spec.get("multi_tag_burst"))
 
     raw_intel_p = pipeline_dir / "00_raw_intel.json"

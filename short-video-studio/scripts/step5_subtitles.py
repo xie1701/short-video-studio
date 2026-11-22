@@ -38,6 +38,7 @@ from common import (
     check_bbox_in_safe_zone,
     find_bin,
     find_commercial_font,
+    find_source_font,
     get_cached_font,
     load_subtitle_templates,
     maybe_reexec_in_venv,
@@ -723,7 +724,11 @@ def run_step5(
     if not template_id or template_id not in templates:
         template_id = "store_bold_yellow" if track == "store" else "creator_clean_white"
     tpl = templates[template_id]
-    font_path = find_commercial_font(tpl.get("font_candidates"), verified_only=True) or find_commercial_font()
+    # 字体优先级：源模版原版字体（放 assets/style_spectrum/fonts/<style_id>/）> 可商用替代
+    source_font_family = tpl.get("source_font_family") or (tpl.get("font_substitution") or {}).get("source_font")
+    source_font = find_source_font(source_font_family, template_id, tpl.get("font_candidates"))
+    exact_font = bool(source_font)
+    font_path = source_font or find_commercial_font(tpl.get("font_candidates"), verified_only=True) or find_commercial_font()
     strip_punct = bool(tpl.get("punct_stripped", True))
 
     entries: List[Dict[str, Any]] = []
@@ -740,7 +745,9 @@ def run_step5(
 
     idx = 1
     suppressed_count = 0
-    tpl_max_chars = max(6, min(14, int(tpl.get("max_chars_per_line", 10))))
+    # 每套风格的字数上限来自源草稿实测（7–96 字），不再统一压到 14 字
+    tpl_char_cap = max(6, int(tpl.get("max_chars_hard", 96)))
+    tpl_max_chars = max(6, min(tpl_char_cap, int(tpl.get("max_chars_per_line", 10))))
     base_fs = int(tpl.get("font_size", 62))
     kw_scale_f = float(tpl.get("keyword_scale", 1.133))
     eff_measure_fs = int(round(base_fs * max(1.0, (1.0 + kw_scale_f) * 0.5)))
@@ -943,6 +950,14 @@ def run_step5(
         "template_name": tpl["name"],
         "font_path": font_path,
         "font_license": tpl["license"],
+        "font_source_family": source_font_family,
+        "font_exact_match": exact_font,
+        "exact_1to1_hint": (
+            "字体已是源模版原版，字形可 1:1"
+            if exact_font else
+            "当前为可商用替代字体；把源模版字体放进 assets/style_spectrum/fonts/"
+            f"{template_id}/ 即可按原版字形渲染"
+        ),
         "template_config": tpl,
         "count": len(entries),
         "suppressed_count": suppressed_count,

@@ -1,5 +1,6 @@
 ---
 name: short-video-studio
+version: 4.0.0
 description: 策划、剪辑和交付面向实体门店获客或个人账号增长的短视频。适用于从真实素材策划选题、编写口播和拍摄任务卡、剪辑已有实拍，或用代码制作图解与产品演示。以锁定音轨为剪辑骨架，支持成片质检、MP4 与可编辑工程导出，以及发布数据复盘。
 ---
 
@@ -132,7 +133,8 @@ python3 scripts/run_pipeline.py \
 
 独立导出与单步重跑命令：
 ```bash
-python3 scripts/export_jianying.py --pipeline-dir <pipeline目录>
+python3 scripts/export_jianying.py --pipeline-dir <pipeline目录>        # 烘焙版：字幕/花字烧成 PNG，不可改字
+python3 scripts/export_jianying_native.py --pipeline-dir <pipeline目录> # 原生草稿：文字真可编辑（同字体族/同版式）
 python3 scripts/export_hyperframes.py --pipeline-dir <pipeline目录>
 python3 scripts/qa_inspector.py --pipeline-dir <pipeline目录> [--sync-window <起秒> <止秒>] [--strict-asr]
 ```
@@ -142,6 +144,13 @@ python3 scripts/qa_inspector.py --pipeline-dir <pipeline目录> [--sync-window <
 - **真实物理音景与现场动作声**：实拍流水线统一采用 `assets/sound_vibe/` CC0 真实录制乐段（波形校准真实起拍）与物理音效，支持开场→正文双段配乐切换、特写镜现场动作声轻混（`-10dB`）及三轨防削波总线控制（`-14.0 ±1.5 LUFS`、真峰值 `≤ -1.0 dBTP`）；知识动画与动态图解辅以 `synth_motion_sfx.py` 15 种无版权动效拟音。
 - **视觉语义与封面**：支持高动态/常见 Log 色彩还原、横转竖人脸智能居中构图、53% 特写动态配比、景别与运镜防撞墙语法、全片情绪+眼部锐度选帧封面（9:16 + 3:4 防裁切 + 180px 真实像素对比度校验 + macOS Apple Vision 可选人物前景压字）。
 - **独立双层质检与盲审取证包**：`qa_inspector.py` + `independent_verifier.py` 执行白盒契约 + 单遍解码黑盒校验（含 540px OCR 居中实测、单框 WCAG、BT.709 肤色、切点像素跳变、SFX 5ms 起音校准、本地 Whisper 盲听复核与商业授权清查），同时生成一页式大白话《独立盲审取证包》（`10_blind_review_pack.md` + `10_action_strips.jpg`）。
+- **按源接线（不妥协版）**：想做到像素级/听感级 1:1，把源模版原版资产放进三个位置即可，代码会自动优先命中并在产物里标注：① 字体 `assets/style_spectrum/fonts/<style_id>/`（文件名含源字体族名，如 `知新体-Bold.otf`；命中后 `05_subtitles.json` 里 `font_exact_match: true`，否则回落可商用替代并给出放置路径提示）；② BGM `assets/sound_vibe/user/<style_id>/`（文件名含源曲名，如 `复合片段5.wav`）；③ 音效 `assets/sound_vibe/user/<style_id>/<role>.(wav|mp3|m4a)`，role 取 `transition/accent/ui/receipt`，命中角色会记进 `user_original_sfx_roles`。
+- **两条工程交付路线**：`export_jianying.py` 出的是**烘焙版**（FCPXML + 透明 PNG 图层，`manifest.json` 里 `export_kind: baked_interchange`、`text_editable: false`，导入后文字不能改）；要改字走 `export_jianying_native.py` 出**原生草稿**（`draft_content.json` + `draft_meta_info.json` + 相对路径素材，字幕与花字是真文字素材，字体族沿用源模版的 `source_font_family`，字号/描边/底框/位置按实测写入）。原生草稿结构可用 `dev_tools/verify_native_draft.py` 对解密后的真草稿逐键自证（顶层键/素材表/各轨 segment/文字素材/视频素材零缺失）。HyperFrames 样板 `apply_style_spectrum.py --export-hyperframes` 也按单套风格生成（巨字 hook + 顶栏/画中画 + 按源字数上限切的字幕行 + 底框/描边/调色近似），不再是通用标题加一行字。
+- **调色与画面特效只认源草稿真值**：三段曲线按「源分位→目标分位」直连（`black_lift` 可抬黑位），闭环校准最多 5 轮、判据是**特效之前**的 p05/p50/p95；验收器 `dev_tools/verify_grade_calibration.py`（自校 + 中性迁移两种口径，均要求残差 ≤12 级）。画面特效只做源 `effect` 轨里真有的那几段：24 套里仅 `style_02/04/08/15/17/20/21` 有（暗角/怀旧边框/不规则黑框/荧幕噪点/颤抖/聚光灯/模糊），其余 17 套一条不加；特效带 `window`，只在源时间窗内生效。真值由 `dev_tools/build_effect_usage.py` 从解密草稿生成 `forensic/effect_usage.json`，漂移由 `verify_style_parity.py` 的 `effects vs source track` 拦截。聚光灯用 `geq` 径向遮罩真挖亮圈，不再是暗角顶替。
+- **画中画按真草稿几何渲染**：24 套都有叠加视频轨（1–9 条），库里的 `pip_composition_spec` 一律是 `geometry_pip_*`，几何取自 `forensic/pip_usage.json`（`clip.transform` / `uniform_scale` / `materials.videos.matting`）。渲染端单源按主轨推近或缩窗、双源把副素材摆到真值窗口坐标并加描边；`step4` 的范式分支也只写真值几何，不再套别人的版面。`render_profile.json` 的 `pip_geometry.windows_unrealized` 会明写「没拿到第二路素材的镜数」。
+- **特性图自查**：`dev_tools/render_style_feature_sheet.py` 每套出 5 格（源素材 / 真草稿构图 / 库字幕 / 蓝图花字 / 源真值特效）并标出构图与源帧的逐像素差，供人眼核对，不必靠指标自述。
+- **B-roll 必须和台词对得上，对不上就说对不上**：`broll_semantics.py` 是离线概念桥（场景/实体/动作/意图/人物 × 行业域），把台词和素材的文字线索概念化后再比，零依据就是 0 分。每个外来画面在剪辑表里带 `sem_match`（verdict + basis），md 表里有「凭什么对得上」一列。素材侧唯一的主题词来源是：中文文件名、中文文件夹名、画面 OCR、以及用户手写的 `素材说明.txt`（一行一条 `文件名 一句画面内容`，`inventory_media` 会自动读，缺失时盘点报告点名并生成填空骨架）。素材没线索时系统标 `none` 并计入 QA，不许假配。
+- **小窗/推近以人脸为中心取景**：`face_framing.py` 抽 3 帧用 Apple Vision 找人脸，取最大一张跨帧中位作锚点；横向正中、纵向落窗高 44%（大特写自动往正中收），脸太大先退远再裁，贴边钳位。`step4` 把锚点写进 EDL（`face_anchor`/`secondary_face_anchor`/`face_framing`），渲染、封面、导出共用一份依据；检测不到人脸就退回居中并明写 `no_face_center_crop`。
 - **人工终审签字与归档验证**：核对后执行 `workflow_guard.py approve-final --pipeline-dir <dir> [--reviewed <ID> ...] --note "<实查结果>"` 签字，并可用 `workflow_guard.py verify-out --out-dir <out目录>` 核对成品指纹。风格复刻场景用 `workflow_guard.py replication-diff` 跑洁净室防抄袭与乱序盲测。
 
 ---
@@ -164,9 +173,10 @@ python3 scripts/content_log_review.py --account <账号> --track <store|creator>
 
 ## 六、 风格谱参考包装库与环境初始化
 
-- 已内置 **24 套 v3.2 100% 剪映白盒模板复刻风格库**（`style_01` ~ `style_24`，24/24 全白盒真草稿源，涵盖 13 套纯全屏原生模板 + 11 套真 AI 逐帧人像前景抠像/圆角画框/聚光圆窗/双格金线/线性羽化分屏模板，全部等比零变形、严禁同脸套娃；同时 1:1 复刻 24 套的**中位镜长切换频率（`1.11s` 极速跳剪至 `29.2s` 零特写一镜到底）、特写占比、6 大主讲与特写切换样式范式（`ab_switch_spec`）、运镜推拉关键帧密度（`0` 至 `190.3 次/分`）、8 种 30fps 动态文字动效与 `xfade` 镜头转场**）与 **3 大共享剪辑规则字典**：
-  - **全局/门店获客默认（`style_01`）**：完整复刻门店爆款原生模板——全屏实景出镜、中下部高低错落 3 拍砸屏综艺斜标开场、53% 店内特写穿插（保留 `-10dB` 现场动作真声）、居中无底框大号双色暖黄重点字、双段音乐切换；另含真沿发丝肩膀 10px/8px 纯白描边人像抠像与全屏特写虚实呼吸交替（`style_07` / `style_21`）、清冷奶油极简宋体（`style_04`）、暖金上下双格对比（`style_17`）、户外探盘 3D 金属高光扫光立体大字（`style_18`）、国风暖木 1080px 通宽双行黑条粗宋体（`style_20`）、开场人像前景压背后巨字+正文矩形画框特写交替（`style_05`）、上白圆角画框内部主讲与特写切换（`style_13`）、品牌微纪录 4.08s 慢调空镜（`style_23`）。
-  - **个人账号默认（`style_11`）**：清亮知性通透圆角字幕；另含 1080px 通宽双行暗灰底框荧光绿 1.13s 极速跳剪（`style_02`）、1080px 通宽双行深红实心底条大字（`style_03`）、黑底拍立得大号毛笔手写金句+Daily Vlog（`style_06`）、专家 0% 特写一镜到底长镜+左上角斜杠双色标（`style_08`）、纯黑纪实左下正圆头像常驻同步说话+顶部双格金线窗高频换特写（`style_09`）、1.12s 190 次/分高频推拉微距（`style_10`）、顶置双色悬念大标（`style_12`）、纯黑聚光圆窗内部切换（`style_14`）、弹性双色花字流（`style_15`）、暗黑 180px 线性羽化分屏书摘巨字（`style_16`）、冷峻动态数据折线演播室背景+人像抠像与全屏交替（`style_19`）、九成例证顶栏横幅（`style_22`）、100% 不露脸 1.11s 快切混剪（`style_24`）。
+- 已内置 **24 套 v4.0 剪映实测风格库**（`style_01` ~ `style_24`，24/24 全部解密自真实剪映主稿 `draft_content.json`，每套带 `source_hash`；指标由 `dev_tools/build_style_library_v4.py` 从草稿推导，`dev_tools/verify_style_parity.py` 逐字段校验 24/24 PASS）与 **3 大共享剪辑规则字典**：
+  - **全局/门店获客默认（`style_01`）**：全屏实景出镜、中下部高低错落斜标开场、57% 店内特写穿插（保留 `-10dB` 现场动作真声）、居中无底框双色暖黄重点字、双段音乐；同组还有真轮廓白边抠像（`style_07` 60%、`style_21` 76% / 7 处抠像）、清冷奶油极简宋体（`style_04`）、暖金双格对比（`style_17`）、户外探盘 3D 金属立体大字（`style_18`）、国风古字典体大字（`style_20`）、人像压巨字+矩形画框（`style_05`）、上圆角框下黑幕（`style_13`）、慢调空镜微纪录（`style_23` 46%、4.08s 中位）。
+  - **个人账号默认（`style_11`）**：清亮通透无底框大字；同组还有暗灰底框极速跳剪（`style_02` 11%、1.13s）、顶栏引语卡+10 条巨型浅黄大字（`style_03`）、黑底拍立得手写金句（`style_06`）、专家长镜 29.23s 一镜到底+方角底框（`style_08`）、多重圆窗纪实（`style_09`）、190 次/分高频推拉（`style_10`）、顶置双色悬念标（`style_12`）、纯黑聚光圆窗（`style_14`）、弹性双色花字流（`style_15` 10 条巨字）、羽化分屏书摘（`style_16`）、抠像长句大字（`style_19`）、案例轮播（`style_22` 41%）、不露脸快切混剪（`style_24` 55%）。
+  - **口径**：所有风格源草稿转场数均为 0，默认硬切；B-roll 占比是风格先验、运行时按素材动态自适应（±15pp）；字体按 `source_font_family` 声明，缺源字体时回落替代并标 `exact_1to1=false`。
   - 完整大白话选用指南见 [assets/style_spectrum/STYLE_SPECTRUM_REPORT.md](assets/style_spectrum/STYLE_SPECTRUM_REPORT.md)。
   ```bash
   python3 scripts/apply_style_spectrum.py --list [--has-aroll no]

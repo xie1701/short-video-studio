@@ -1,14 +1,49 @@
 {
-  "version": "3.2.0",
+  "version": "4.0.0",
   "default_style_id": "style_01",
   "blueprints": {
     "style_01": {
       "template_family": "store_poster_burst",
       "label_cn": "门店原生爆款风 · 综艺分拍斜标开场（默认）",
       "requires_aroll": "required",
-      "allow_explainer_pip": false,
+      "allow_explainer_pip": true,
       "pip_spec": {
-        "mode": "none"
+        "mode": "geometry_pip_window",
+        "main": {
+          "x": 0.0,
+          "y": 0.0,
+          "scale": 1.0
+        },
+        "windows": [
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "scale": 0.995,
+            "segments": 1,
+            "matting": false,
+            "stroke_hex": null
+          },
+          {
+            "x": 0.38,
+            "y": -0.301,
+            "scale": 0.699,
+            "segments": 1,
+            "matting": true,
+            "stroke_hex": "#FFFFFF"
+          },
+          {
+            "x": 0.133,
+            "y": -0.323,
+            "scale": 1.254,
+            "segments": 1,
+            "matting": false,
+            "stroke_hex": null
+          }
+        ],
+        "cutout": true,
+        "single_source": false,
+        "source": "forensic/pip_usage.json",
+        "note_cn": "几何全部来自真草稿 clip.transform / uniform_scale；渲染端按数字摆，不按风格名字猜"
       },
       "overlay_style": {
         "opening_mode": "store_poster_burst",
@@ -25,29 +60,70 @@
         "has_sticker_tag": true,
         "entry_anim": "bounce_pop",
         "anim_mode": "store_stagger_burst",
-        "transition_style": "zoomin",
-        "suppress_top_duplicate_flower": false
+        "transition_style": "none",
+        "suppress_top_duplicate_flower": false,
+        "transition_source_count": 0,
+        "transition_policy": "hard_cut_only",
+        "anim_primitives": [
+          "渐显",
+          "弹入",
+          "放大"
+        ],
+        "flower_colors": [
+          "#B71C1C",
+          "#FFFFFF",
+          "#FF4C2C",
+          "#FFE28A"
+        ],
+        "giant_count": 0,
+        "source_font": "新青年体-文跃新青年体",
+        "flower_font": "AlimamaShuHeiTi-Bold.otf",
+        "letter_spacing_px": 0
       },
       "subtitle_override": {
-        "font_size": 64,
+        "name": "[style_01] 门店原生爆款风 · 综艺分拍斜标开场（默认）",
+        "font_size": 48,
         "keyword_scale": 1.16,
         "primary_color": "#FFFFFF",
-        "keyword_color": "#FFE24A",
+        "keyword_color": "#FFE28A",
         "stroke_color": "#000000",
         "stroke_width": 5,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
-        "safe_y_center": 1330,
-        "full_width_bar": false
+        "bg_shape": "none",
+        "safe_y_center": 1309,
+        "max_chars_per_line": 12,
+        "full_width_bar": false,
+        "source_font_family": "新青年体-文跃新青年体",
+        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
       }
     },
     "style_02": {
       "template_family": "dark_gray_neon_slab",
       "label_cn": "极速跳剪避坑 · 通宽暗灰底框荧光绿风",
       "requires_aroll": "required",
-      "allow_explainer_pip": false,
+      "allow_explainer_pip": true,
       "pip_spec": {
-        "mode": "none"
+        "mode": "geometry_pip_window",
+        "main": {
+          "x": 0.0,
+          "y": 0.0,
+          "scale": 1.0
+        },
+        "windows": [
+          {
+            "x": 0.0,
+            "y": -0.413,
+            "scale": 1.0,
+            "segments": 1,
+            "matting": true,
+            "stroke_hex": null
+          }
+        ],
+        "cutout": true,
+        "single_source": false,
+        "source": "forensic/pip_usage.json",
+        "note_cn": "几何全部来自真草稿 clip.transform / uniform_scale；渲染端按数字摆，不按风格名字猜"
       },
       "overlay_style": {
         "opening_mode": "dark_gray_neon_slab",
@@ -63,29 +139,79 @@
         "stroke_width": 4,
         "entry_anim": "slide_snap",
         "anim_mode": "wipe_reveal",
-        "transition_style": "fadeblack",
-        "suppress_top_duplicate_flower": true
+        "transition_style": "none",
+        "suppress_top_duplicate_flower": true,
+        "transition_source_count": 0,
+        "transition_policy": "hard_cut_only",
+        "anim_primitives": [
+          "弹幕滚动",
+          "滑动出入",
+          "擦除"
+        ],
+        "flower_colors": [
+          "#BCFF00",
+          "#FFFFFF",
+          "#B71C1C",
+          "#000000"
+        ],
+        "giant_count": 0,
+        "source_font": "思源宋体-Bold",
+        "flower_font": "SourceHanSerifCN-Bold.otf",
+        "letter_spacing_px": 0
       },
       "subtitle_override": {
-        "font_size": 58,
+        "name": "[style_02] 极速跳剪避坑 · 暗灰方角底框荧光绿风",
+        "font_size": 64,
         "keyword_scale": 1.14,
         "primary_color": "#FFFFFF",
         "keyword_color": "#BCFF00",
         "stroke_color": "#000000",
-        "stroke_width": 3,
-        "bg_box_color": "#1E2220D4",
-        "bg_radius": 18,
-        "safe_y_center": 1340,
-        "full_width_bar": true
+        "stroke_width": 5,
+        "bg_box_color": "#000000B2",
+        "bg_radius": 0,
+        "bg_shape": "square",
+        "safe_y_center": 1459,
+        "max_chars_per_line": 13,
+        "full_width_bar": false,
+        "source_font_family": "思源宋体-Bold",
+        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
       }
     },
     "style_03": {
       "template_family": "red_bar_dual_line",
-      "label_cn": "暗调深度口播 · 通宽深红实心底条大字风",
+      "label_cn": "暗调深度口播 · 顶栏引语卡+巨型浅黄大字风",
       "requires_aroll": "required",
-      "allow_explainer_pip": false,
+      "allow_explainer_pip": true,
       "pip_spec": {
-        "mode": "none"
+        "mode": "geometry_pip_window",
+        "main": {
+          "x": 0.0,
+          "y": 0.0,
+          "scale": 1.0
+        },
+        "windows": [
+          {
+            "x": 0.057,
+            "y": -0.477,
+            "scale": 1.057,
+            "segments": 1,
+            "matting": true,
+            "stroke_hex": "#FFFFFF"
+          },
+          {
+            "x": 0.0,
+            "y": -0.469,
+            "scale": 1.0,
+            "segments": 1,
+            "matting": true,
+            "stroke_hex": "#FFFFFF"
+          }
+        ],
+        "cutout": true,
+        "single_source": false,
+        "source": "forensic/pip_usage.json",
+        "note_cn": "几何全部来自真草稿 clip.transform / uniform_scale；渲染端按数字摆，不按风格名字猜",
+        "border_hex": "#FFFFFF"
       },
       "overlay_style": {
         "opening_mode": "red_bar_dual_line",
@@ -101,29 +227,78 @@
         "stroke_width": 3,
         "entry_anim": "wipe_in",
         "anim_mode": "wipe_reveal",
-        "transition_style": "dissolve",
-        "suppress_top_duplicate_flower": true
+        "transition_style": "none",
+        "suppress_top_duplicate_flower": true,
+        "transition_source_count": 0,
+        "transition_policy": "hard_cut_only",
+        "anim_primitives": [
+          "渐显",
+          "打字机",
+          "滑动出入"
+        ],
+        "flower_colors": [
+          "#FFFFFF",
+          "#FFF589",
+          "#B91C1C",
+          "#FDE047"
+        ],
+        "giant_count": 10,
+        "source_font": "FZCuJinLJW / 特黑体-思源黑体1号",
+        "flower_font": "SourceHanSerifCN-Heavy.otf",
+        "letter_spacing_px": 0
       },
       "subtitle_override": {
-        "font_size": 58,
+        "name": "[style_03] 暗调深度口播 · 顶栏引语卡+巨型浅黄大字风",
+        "font_size": 48,
         "keyword_scale": 1.12,
         "primary_color": "#FFFFFF",
-        "keyword_color": "#FFF066",
+        "keyword_color": "#FFF589",
         "stroke_color": "#000000",
-        "stroke_width": 3,
-        "bg_box_color": "#B91C1CE6",
-        "bg_radius": 8,
-        "safe_y_center": 1345,
-        "full_width_bar": true
+        "stroke_width": 5,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
+        "bg_shape": "none",
+        "safe_y_center": 1498,
+        "max_chars_per_line": 15,
+        "full_width_bar": false,
+        "source_font_family": "FZCuJinLJW",
+        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
       }
     },
     "style_04": {
       "template_family": "cream_minimal_serif",
       "label_cn": "清冷奶油高光 · 极简轻描边宋体风",
       "requires_aroll": "required",
-      "allow_explainer_pip": false,
+      "allow_explainer_pip": true,
       "pip_spec": {
-        "mode": "none"
+        "mode": "geometry_pip_window",
+        "main": {
+          "x": 0.0,
+          "y": 0.0,
+          "scale": 1.0
+        },
+        "windows": [
+          {
+            "x": 0.0,
+            "y": 0.696,
+            "scale": 0.846,
+            "segments": 1,
+            "matting": false,
+            "stroke_hex": null
+          },
+          {
+            "x": -0.1,
+            "y": 0.0,
+            "scale": 1.1,
+            "segments": 1,
+            "matting": false,
+            "stroke_hex": null
+          }
+        ],
+        "cutout": false,
+        "single_source": false,
+        "source": "forensic/pip_usage.json",
+        "note_cn": "几何全部来自真草稿 clip.transform / uniform_scale；渲染端按数字摆，不按风格名字猜"
       },
       "overlay_style": {
         "opening_mode": "minimal_serif_subtle",
@@ -131,46 +306,100 @@
         "persistent_top_bar": false,
         "accent_colors": [
           "#FFFFFF",
-          "#F6E7CB"
+          "#FFF589"
         ],
         "stroke_color": "#262320",
         "stroke_width": 2,
         "entry_anim": "fade_up",
-        "anim_mode": "ink_bloom",
-        "transition_style": "dissolve",
-        "suppress_top_duplicate_flower": false
+        "anim_mode": "scale_in",
+        "transition_style": "none",
+        "suppress_top_duplicate_flower": false,
+        "transition_source_count": 0,
+        "transition_policy": "hard_cut_only",
+        "anim_primitives": [
+          "缩小",
+          "擦除",
+          "折叠展开"
+        ],
+        "flower_colors": [
+          "#FFF589",
+          "#FFFFFF",
+          "#B71C1C",
+          "#F6E7CB"
+        ],
+        "giant_count": 4,
+        "source_font": "SourceHanSerifCN-Heavy",
+        "flower_font": "SourceHanSerifCN-Heavy.otf",
+        "flower_layout": "two_line_serif_light_stroke",
+        "letter_spacing_px": 5
       },
       "subtitle_override": {
-        "font_size": 52,
+        "name": "[style_04] 清冷奶油高光 · 极简轻描边宋体风",
+        "font_size": 48,
         "keyword_scale": 1.08,
         "primary_color": "#FFFFFF",
-        "keyword_color": "#FFE8B6",
+        "keyword_color": "#FFF589",
         "stroke_color": "#22201E",
-        "stroke_width": 2,
+        "stroke_width": 5,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
-        "safe_y_center": 1350,
-        "full_width_bar": false
+        "bg_shape": "none",
+        "safe_y_center": 1334,
+        "max_chars_per_line": 7,
+        "full_width_bar": false,
+        "source_font_family": "SourceHanSerifCN-Heavy",
+        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
       }
     },
     "style_05": {
       "template_family": "person_depth_giant_title",
       "label_cn": "人像前景压巨字 · 三层海报景深风",
       "requires_aroll": "required",
-      "allow_explainer_pip": false,
+      "allow_explainer_pip": true,
       "pip_spec": {
-        "mode": "person_behind_giant_text_pip",
-        "bg_darken": -0.22,
-        "bg_blur": 8,
-        "giant_color": "#FFD426",
-        "single_source": true
+        "mode": "geometry_pip_window",
+        "main": {
+          "x": 0.0,
+          "y": 0.0,
+          "scale": 1.0
+        },
+        "windows": [
+          {
+            "x": 0.517,
+            "y": -0.097,
+            "scale": 1.0,
+            "segments": 2,
+            "matting": true,
+            "stroke_hex": null
+          },
+          {
+            "x": 0.0,
+            "y": 0.244,
+            "scale": 1.0,
+            "segments": 1,
+            "matting": true,
+            "stroke_hex": null
+          },
+          {
+            "x": 0.0,
+            "y": -0.303,
+            "scale": 1.241,
+            "segments": 1,
+            "matting": true,
+            "stroke_hex": null
+          }
+        ],
+        "cutout": true,
+        "single_source": false,
+        "source": "forensic/pip_usage.json",
+        "note_cn": "几何全部来自真草稿 clip.transform / uniform_scale；渲染端按数字摆，不按风格名字猜"
       },
       "overlay_style": {
         "template_family": "person_depth_giant_title",
         "opening_mode": "person_depth_giant_title",
         "flower_mode": "depth_front_question",
         "anim_mode": "depth_behind_person",
-        "transition_style": "fadeblack",
+        "transition_style": "none",
         "persistent_top_bar": false,
         "suppress_top_duplicate_flower": false,
         "accent_colors": [
@@ -179,38 +408,69 @@
           "#FF4D4F"
         ],
         "stroke_color": "#0A0A0C",
-        "stroke_width": 6
+        "stroke_width": 6,
+        "transition_source_count": 0,
+        "transition_policy": "hard_cut_only",
+        "anim_primitives": [
+          "放大",
+          "折叠展开",
+          "缩小"
+        ],
+        "flower_colors": [
+          "#FFBF17",
+          "#FFD426",
+          "#FFFFFF",
+          "#FF4D4F"
+        ],
+        "giant_count": 2,
+        "source_font": "得意黑",
+        "flower_font": "AlimamaShuHeiTi-Bold.otf",
+        "letter_spacing_px": 0
       },
       "subtitle_override": {
-        "font_size": 58,
+        "name": "[style_05] 人像前景压巨字 · 三层海报景深风",
+        "font_size": 96,
         "keyword_scale": 1.15,
         "primary_color": "#FFFFFF",
-        "keyword_color": "#FFD426",
+        "keyword_color": "#FE5252",
         "stroke_color": "#000000",
         "stroke_width": 5,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
-        "safe_y_center": 1370,
-        "full_width_bar": false
+        "bg_shape": "none",
+        "safe_y_center": 1384,
+        "max_chars_per_line": 10,
+        "full_width_bar": false,
+        "source_font_family": "得意黑",
+        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
       }
     },
     "style_06": {
       "template_family": "black_polaroid_vlog",
       "label_cn": "黑底拍立得相框 · 顶部毛笔手写金句风",
       "requires_aroll": "optional",
-      "allow_explainer_pip": false,
+      "allow_explainer_pip": true,
       "pip_spec": {
-        "mode": "black_polaroid_frame_pip",
-        "frame_x": 140,
-        "frame_y": 465,
-        "frame_w": 800,
-        "frame_h": 690,
-        "bg_hex": "#050506",
-        "border_hex": "#FFFFFF",
-        "border_width": 0,
-        "bottom_tag": "Daily Vlog",
-        "bottom_quote": "Every ordinary moment carries quiet strength.",
-        "single_source": true
+        "mode": "geometry_pip_window",
+        "main": {
+          "x": 0.0,
+          "y": 0.0,
+          "scale": 1.0
+        },
+        "windows": [
+          {
+            "x": 0.0,
+            "y": 0.7,
+            "scale": 1.0,
+            "segments": 1,
+            "matting": false,
+            "stroke_hex": null
+          }
+        ],
+        "cutout": true,
+        "single_source": false,
+        "source": "forensic/pip_usage.json",
+        "note_cn": "几何全部来自真草稿 clip.transform / uniform_scale；渲染端按数字摆，不按风格名字猜"
       },
       "overlay_style": {
         "opening_mode": "polaroid_handwritten_top",
@@ -224,34 +484,87 @@
         "stroke_width": 0,
         "entry_anim": "fade_up",
         "anim_mode": "typewriter_char",
-        "transition_style": "dissolve",
+        "transition_style": "none",
         "suppress_top_duplicate_flower": false,
-        "handwriting_font": "MaShanZheng-Regular.ttf"
+        "handwriting_font": "MaShanZheng-Regular.ttf",
+        "transition_source_count": 0,
+        "transition_policy": "hard_cut_only",
+        "anim_primitives": [
+          "打字机",
+          "放大",
+          "滑动出入"
+        ],
+        "flower_colors": [
+          "#FFF589",
+          "#FFFFFF",
+          "#E5E7EB",
+          "#B71C1C"
+        ],
+        "giant_count": 0,
+        "source_font": "喜鹊古字典体 / 思源宋体-Bold",
+        "flower_font": "SourceHanSerifCN-Bold.otf",
+        "letter_spacing_px": 0
       },
       "subtitle_override": {
-        "font_size": 46,
+        "name": "[style_06] 黑底拍立得相框 · 顶部毛笔手写金句风",
+        "font_size": 48,
         "keyword_scale": 1.08,
-        "primary_color": "#F8FAFC",
-        "keyword_color": "#FDE68A",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFF589",
         "stroke_color": "#000000",
-        "stroke_width": 2,
+        "stroke_width": 5,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
-        "safe_y_center": 1390,
-        "full_width_bar": false
+        "bg_shape": "none",
+        "safe_y_center": 1331,
+        "max_chars_per_line": 9,
+        "full_width_bar": false,
+        "source_font_family": "喜鹊古字典体(字节试用版)",
+        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
       }
     },
     "style_07": {
       "template_family": "white_outline_cutout",
       "label_cn": "人像真轮廓白边抠像 · 虚化展厅避坑风",
       "requires_aroll": "required",
-      "allow_explainer_pip": false,
+      "allow_explainer_pip": true,
       "pip_spec": {
-        "mode": "vision_portrait_cutout_pip",
-        "outline_px": 10,
-        "outline_hex": "#FFFFFF",
-        "bg_blur_sigma": 12,
-        "single_source": false
+        "mode": "geometry_pip_window",
+        "main": {
+          "x": 0.0,
+          "y": 0.0,
+          "scale": 1.0
+        },
+        "windows": [
+          {
+            "x": 0.267,
+            "y": 0.671,
+            "scale": 0.733,
+            "segments": 1,
+            "matting": false,
+            "stroke_hex": null
+          },
+          {
+            "x": -0.267,
+            "y": 0.303,
+            "scale": 0.733,
+            "segments": 1,
+            "matting": false,
+            "stroke_hex": null
+          },
+          {
+            "x": -0.673,
+            "y": 0.0,
+            "scale": 1.0,
+            "segments": 1,
+            "matting": false,
+            "stroke_hex": null
+          }
+        ],
+        "cutout": true,
+        "single_source": false,
+        "source": "forensic/pip_usage.json",
+        "note_cn": "几何全部来自真草稿 clip.transform / uniform_scale；渲染端按数字摆，不按风格名字猜"
       },
       "overlay_style": {
         "opening_mode": "sticker_cutout_badge",
@@ -261,24 +574,47 @@
           "#FFFFFF",
           "#FFBF17"
         ],
-        "stroke_color": "#111111",
-        "stroke_width": 4,
+        "stroke_color": "#FFFFFF",
+        "stroke_width": 9,
         "entry_anim": "bounce_pop",
-        "anim_mode": "bounce_smash",
-        "transition_style": "zoomin",
-        "suppress_top_duplicate_flower": false
+        "anim_mode": "ink_bloom",
+        "transition_style": "none",
+        "suppress_top_duplicate_flower": false,
+        "transition_source_count": 0,
+        "transition_policy": "hard_cut_only",
+        "anim_primitives": [
+          "模糊显影",
+          "放大",
+          "快速翻页"
+        ],
+        "flower_colors": [
+          "#FFFFFF",
+          "#FFBF17",
+          "#B71C1C",
+          "#FF0000"
+        ],
+        "giant_count": 3,
+        "source_font": "DouyinSansBold / Aa研宋",
+        "flower_font": "AlimamaShuHeiTi-Bold.otf",
+        "flower_layout": "outline_cutout_tight_tracking",
+        "letter_spacing_px": 0
       },
       "subtitle_override": {
-        "font_size": 56,
+        "name": "[style_07] 人像真轮廓白边抠像 · 虚化展厅避坑风",
+        "font_size": 40,
         "keyword_scale": 1.15,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFBF17",
         "stroke_color": "#111111",
-        "stroke_width": 4,
+        "stroke_width": 5,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
-        "safe_y_center": 1310,
-        "full_width_bar": false
+        "bg_shape": "none",
+        "safe_y_center": 1235,
+        "max_chars_per_line": 10,
+        "full_width_bar": false,
+        "source_font_family": "DouyinSansBold",
+        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
       }
     },
     "style_08": {
@@ -287,7 +623,17 @@
       "requires_aroll": "required",
       "allow_explainer_pip": false,
       "pip_spec": {
-        "mode": "none"
+        "mode": "geometry_pip_main_shrunk",
+        "main": {
+          "x": 0.0,
+          "y": 0.0,
+          "scale": 0.9
+        },
+        "windows": [],
+        "cutout": false,
+        "single_source": true,
+        "source": "forensic/pip_usage.json",
+        "note_cn": "几何全部来自真草稿 clip.transform / uniform_scale；渲染端按数字摆，不按风格名字猜"
       },
       "overlay_style": {
         "opening_mode": "top_left_slash_badge",
@@ -302,42 +648,85 @@
         "entry_anim": "slide_snap",
         "anim_mode": "wipe_reveal",
         "transition_style": "none",
-        "suppress_top_duplicate_flower": false
+        "suppress_top_duplicate_flower": false,
+        "transition_source_count": 0,
+        "transition_policy": "hard_cut_only",
+        "anim_primitives": [
+          "缩小",
+          "弹入",
+          "滑动出入"
+        ],
+        "flower_colors": [
+          "#FFDE00",
+          "#FFFFFF",
+          "#FFE14D",
+          "#FF1837"
+        ],
+        "giant_count": 2,
+        "source_font": "得意黑",
+        "flower_font": "SmileySans-Oblique.ttf",
+        "letter_spacing_px": 0
       },
       "subtitle_override": {
-        "font_size": 54,
+        "name": "[style_08] 专家长镜 · 左上角斜杠双色大标风",
+        "font_size": 48,
         "keyword_scale": 1.12,
         "primary_color": "#FFFFFF",
-        "keyword_color": "#FFE14D",
+        "keyword_color": "#FFDE00",
         "stroke_color": "#000000",
-        "stroke_width": 4,
-        "bg_box_color": "#00000000",
+        "stroke_width": 5,
+        "bg_box_color": "#000000B2",
         "bg_radius": 0,
-        "safe_y_center": 1350,
-        "full_width_bar": false
+        "bg_shape": "square",
+        "safe_y_center": 1331,
+        "max_chars_per_line": 11,
+        "full_width_bar": false,
+        "source_font_family": "方正超粗黑繁体",
+        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
       }
     },
     "style_09": {
       "template_family": "dark_doc_dual_gold_panel",
-      "label_cn": "纯黑纪实面板 · 顶栏双格金线+左圆头像风",
+      "label_cn": "纯黑纪实面板 · 多重圆窗头像+长句纪实字幕风",
       "requires_aroll": "optional",
-      "allow_explainer_pip": false,
+      "allow_explainer_pip": true,
       "pip_spec": {
-        "mode": "dark_doc_circle_avatar_pip",
-        "top_frame_x": 76,
-        "top_frame_y": 290,
-        "top_frame_w": 928,
-        "top_frame_h": 540,
-        "avatar_cx": 215,
-        "avatar_cy": 1030,
-        "avatar_r": 122,
-        "bg_hex": "#060608",
-        "border_hex": "#C8A96A",
-        "border_width": 3,
-        "avatar_border_hex": "#E2D5B5",
+        "mode": "geometry_pip_main_shrunk",
+        "main": {
+          "x": -0.585,
+          "y": -0.495,
+          "scale": 0.6
+        },
+        "windows": [
+          {
+            "x": 0.0,
+            "y": 0.357,
+            "scale": 0.919,
+            "segments": 3,
+            "matting": true,
+            "stroke_hex": null
+          },
+          {
+            "x": 0.0,
+            "y": -0.197,
+            "scale": 1.0,
+            "segments": 1,
+            "matting": true,
+            "stroke_hex": null
+          },
+          {
+            "x": 0.0,
+            "y": 0.242,
+            "scale": 0.751,
+            "segments": 1,
+            "matting": true,
+            "stroke_hex": null
+          }
+        ],
+        "cutout": true,
         "single_source": false,
-        "dual_pane_divider": true,
-        "case_caption": "核心现场实录 · 重点拆解"
+        "source": "forensic/pip_usage.json",
+        "note_cn": "几何全部来自真草稿 clip.transform / uniform_scale；渲染端按数字摆，不按风格名字猜"
       },
       "overlay_style": {
         "opening_mode": "dark_doc_panel_header",
@@ -351,29 +740,86 @@
         "stroke_width": 2,
         "entry_anim": "fade_up",
         "anim_mode": "typewriter_char",
-        "transition_style": "fadeblack",
-        "suppress_top_duplicate_flower": false
+        "transition_style": "none",
+        "suppress_top_duplicate_flower": false,
+        "transition_source_count": 0,
+        "transition_policy": "hard_cut_only",
+        "anim_primitives": [
+          "渐显",
+          "横向模糊",
+          "模糊显影"
+        ],
+        "flower_colors": [
+          "#FFFFFF",
+          "#F5F5F4",
+          "#D4AF37",
+          "#FF1837"
+        ],
+        "giant_count": 2,
+        "source_font": "得意黑 / SourceHanSerifCN-Heavy",
+        "flower_font": "SmileySans-Oblique.ttf",
+        "letter_spacing_px": 0
       },
       "subtitle_override": {
+        "name": "[style_09] 纯黑纪实面板 · 多重圆窗头像+长句纪实字幕风",
         "font_size": 48,
         "keyword_scale": 1.1,
-        "primary_color": "#F5F5F4",
-        "keyword_color": "#E5C07B",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FF1837",
         "stroke_color": "#000000",
-        "stroke_width": 3,
+        "stroke_width": 5,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
-        "safe_y_center": 1370,
-        "full_width_bar": false
+        "bg_shape": "none",
+        "safe_y_center": 1284,
+        "max_chars_per_line": 46,
+        "full_width_bar": false,
+        "source_font_family": "得意黑",
+        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
       }
     },
     "style_10": {
       "template_family": "clean_punch_minimal",
       "label_cn": "高频推拉微距 · 极净全屏职场干货风",
       "requires_aroll": "required",
-      "allow_explainer_pip": false,
+      "allow_explainer_pip": true,
       "pip_spec": {
-        "mode": "none"
+        "mode": "geometry_pip_window",
+        "main": {
+          "x": 0.0,
+          "y": 0.0,
+          "scale": 1.0
+        },
+        "windows": [
+          {
+            "x": -0.1,
+            "y": -0.1,
+            "scale": 1.1,
+            "segments": 2,
+            "matting": true,
+            "stroke_hex": null
+          },
+          {
+            "x": 0.0,
+            "y": 0.684,
+            "scale": 1.0,
+            "segments": 1,
+            "matting": false,
+            "stroke_hex": null
+          },
+          {
+            "x": 0.0,
+            "y": -0.206,
+            "scale": 1.0,
+            "segments": 1,
+            "matting": true,
+            "stroke_hex": null
+          }
+        ],
+        "cutout": true,
+        "single_source": false,
+        "source": "forensic/pip_usage.json",
+        "note_cn": "几何全部来自真草稿 clip.transform / uniform_scale；渲染端按数字摆，不按风格名字猜"
       },
       "overlay_style": {
         "opening_mode": "clean_minimal_title",
@@ -381,35 +827,93 @@
         "persistent_top_bar": false,
         "accent_colors": [
           "#FFFFFF",
-          "#38BDF8"
+          "#FFBF17"
         ],
-        "stroke_color": "#0F172A",
-        "stroke_width": 3,
+        "stroke_color": "#000000",
+        "stroke_width": 0,
         "entry_anim": "fade_up",
-        "anim_mode": "typewriter_char",
-        "transition_style": "zoomin",
-        "suppress_top_duplicate_flower": false
+        "anim_mode": "scale_up_in",
+        "transition_style": "none",
+        "suppress_top_duplicate_flower": false,
+        "transition_source_count": 0,
+        "transition_policy": "hard_cut_only",
+        "anim_primitives": [
+          "放大",
+          "快速翻页",
+          "横向模糊"
+        ],
+        "flower_colors": [
+          "#FFFFFF",
+          "#38BDF8",
+          "#FFBF17",
+          "#B71C1C"
+        ],
+        "giant_count": 7,
+        "source_font": "知新体 / DINNextW1G-Black",
+        "flower_font": "SmileySans-Oblique.ttf",
+        "flower_layout": "borderless_two_line_clean",
+        "letter_spacing_px": 2
       },
       "subtitle_override": {
-        "font_size": 52,
+        "name": "[style_10] 高频推拉微距 · 极净全屏职场干货风",
+        "font_size": 84,
         "keyword_scale": 1.12,
         "primary_color": "#FFFFFF",
-        "keyword_color": "#7DD3FC",
+        "keyword_color": "#FFBF17",
         "stroke_color": "#0F172A",
-        "stroke_width": 3,
-        "bg_box_color": "#0F172A99",
-        "bg_radius": 14,
-        "safe_y_center": 1355,
-        "full_width_bar": false
+        "stroke_width": 5,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
+        "bg_shape": "none",
+        "safe_y_center": 1208,
+        "max_chars_per_line": 10,
+        "full_width_bar": false,
+        "source_font_family": "知新体",
+        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
       }
     },
     "style_11": {
       "template_family": "clean_creator_studio",
-      "label_cn": "清亮知性干货 · 柔和圆角通透字幕风（博主默认）",
+      "label_cn": "清亮知性干货 · 无底框通透大字风（博主默认）",
       "requires_aroll": "required",
       "allow_explainer_pip": true,
       "pip_spec": {
-        "mode": "none"
+        "mode": "geometry_pip_window",
+        "main": {
+          "x": 0.0,
+          "y": 0.0,
+          "scale": 1.0
+        },
+        "windows": [
+          {
+            "x": -0.289,
+            "y": 0.086,
+            "scale": 1.0,
+            "segments": 2,
+            "matting": true,
+            "stroke_hex": null
+          },
+          {
+            "x": 0.364,
+            "y": -0.624,
+            "scale": 1.0,
+            "segments": 2,
+            "matting": true,
+            "stroke_hex": null
+          },
+          {
+            "x": 0.029,
+            "y": -0.2,
+            "scale": 1.2,
+            "segments": 1,
+            "matting": false,
+            "stroke_hex": null
+          }
+        ],
+        "cutout": true,
+        "single_source": false,
+        "source": "forensic/pip_usage.json",
+        "note_cn": "几何全部来自真草稿 clip.transform / uniform_scale；渲染端按数字摆，不按风格名字猜"
       },
       "overlay_style": {
         "opening_mode": "clean_creator_callout",
@@ -417,27 +921,49 @@
         "persistent_top_bar": false,
         "accent_colors": [
           "#FFFFFF",
-          "#38BDF8",
-          "#FDE047"
+          "#B71C1C"
         ],
-        "stroke_color": "#1E293B",
-        "stroke_width": 3,
+        "stroke_color": "#B71C1C",
+        "stroke_width": 0,
         "entry_anim": "fade_up",
-        "anim_mode": "wipe_reveal",
-        "transition_style": "dissolve",
-        "suppress_top_duplicate_flower": false
+        "anim_mode": "slide_in_out",
+        "transition_style": "none",
+        "suppress_top_duplicate_flower": false,
+        "transition_source_count": 0,
+        "transition_policy": "hard_cut_only",
+        "anim_primitives": [
+          "滑动出入",
+          "渐显",
+          "模糊显影"
+        ],
+        "flower_colors": [
+          "#FFFFFF",
+          "#38BDF8",
+          "#FDE047",
+          "#B71C1C"
+        ],
+        "giant_count": 4,
+        "source_font": "得意黑 / Aa研宋",
+        "flower_font": "SmileySans-Oblique.ttf",
+        "flower_layout": "borderless_weight_hierarchy",
+        "letter_spacing_px": 1
       },
       "subtitle_override": {
-        "font_size": 52,
+        "name": "[style_11] 清亮知性干货 · 无底框通透大字风（博主默认）",
+        "font_size": 48,
         "keyword_scale": 1.12,
         "primary_color": "#FFFFFF",
-        "keyword_color": "#FFE066",
+        "keyword_color": "#B71C1C",
         "stroke_color": "#1A1A1A",
-        "stroke_width": 3,
-        "bg_box_color": "#11182788",
-        "bg_radius": 16,
-        "safe_y_center": 1350,
-        "full_width_bar": false
+        "stroke_width": 5,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
+        "bg_shape": "none",
+        "safe_y_center": 1334,
+        "max_chars_per_line": 10,
+        "full_width_bar": false,
+        "source_font_family": "得意黑",
+        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
       }
     },
     "style_12": {
@@ -446,14 +972,33 @@
       "requires_aroll": "required",
       "allow_explainer_pip": true,
       "pip_spec": {
-        "mode": "none"
+        "mode": "geometry_pip_window",
+        "main": {
+          "x": 0.0,
+          "y": 0.0,
+          "scale": 1.0
+        },
+        "windows": [
+          {
+            "x": 0.0,
+            "y": -0.157,
+            "scale": 1.3,
+            "segments": 1,
+            "matting": true,
+            "stroke_hex": null
+          }
+        ],
+        "cutout": true,
+        "single_source": false,
+        "source": "forensic/pip_usage.json",
+        "note_cn": "几何全部来自真草稿 clip.transform / uniform_scale；渲染端按数字摆，不按风格名字猜"
       },
       "overlay_style": {
         "template_family": "top_dual_color_hook_header",
         "opening_mode": "top_dual_color_hook_header",
         "flower_mode": "dual_color_hook_pop",
         "anim_mode": "typewriter_char",
-        "transition_style": "wipeleft",
+        "transition_style": "none",
         "persistent_top_bar": true,
         "suppress_top_duplicate_flower": false,
         "accent_colors": [
@@ -462,62 +1007,135 @@
           "#FFA800"
         ],
         "stroke_color": "#111111",
-        "stroke_width": 6
+        "stroke_width": 6,
+        "transition_source_count": 0,
+        "transition_policy": "hard_cut_only",
+        "anim_primitives": [
+          "模糊显影",
+          "弹入",
+          "缩小"
+        ],
+        "flower_colors": [
+          "#FFFFFF",
+          "#C6FF00",
+          "#FFA800",
+          "#FFBF17"
+        ],
+        "giant_count": 2,
+        "source_font": "后现代体",
+        "flower_font": "SmileySans-Oblique.ttf",
+        "letter_spacing_px": 0
       },
       "subtitle_override": {
+        "name": "[style_12] 顶置双色悬念标 · 干货对比口播风",
         "font_size": 56,
         "keyword_scale": 1.15,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFA800",
         "stroke_color": "#000000",
-        "stroke_width": 4,
+        "stroke_width": 5,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
-        "safe_y_center": 1310,
-        "full_width_bar": false
+        "bg_shape": "none",
+        "safe_y_center": 1284,
+        "max_chars_per_line": 16,
+        "full_width_bar": false,
+        "source_font_family": "后现代体",
+        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
       }
     },
     "style_13": {
       "template_family": "top_rounded_black_cinema",
       "label_cn": "上白圆角画框 · 下纯黑宽幕沉浸风",
       "requires_aroll": "optional",
-      "allow_explainer_pip": false,
+      "allow_explainer_pip": true,
       "pip_spec": {
-        "mode": "top_white_rounded_frame_pip",
-        "frame_x": 40,
-        "frame_y": 96,
-        "frame_w": 1000,
-        "frame_h": 980,
-        "corner_radius": 38,
-        "bg_hex": "#050506",
-        "single_source": true
+        "mode": "geometry_pip_window",
+        "main": {
+          "x": 0.0,
+          "y": 0.0,
+          "scale": 1.0
+        },
+        "windows": [
+          {
+            "x": 0.0,
+            "y": -0.05,
+            "scale": 1.2,
+            "segments": 1,
+            "matting": true,
+            "stroke_hex": null
+          },
+          {
+            "x": 0.227,
+            "y": 0.045,
+            "scale": 0.773,
+            "segments": 1,
+            "matting": true,
+            "stroke_hex": null
+          },
+          {
+            "x": -0.49,
+            "y": 0.445,
+            "scale": 0.346,
+            "segments": 1,
+            "matting": true,
+            "stroke_hex": null
+          }
+        ],
+        "cutout": true,
+        "single_source": false,
+        "source": "forensic/pip_usage.json",
+        "note_cn": "几何全部来自真草稿 clip.transform / uniform_scale；渲染端按数字摆，不按风格名字猜"
       },
       "overlay_style": {
         "template_family": "top_rounded_black_cinema",
         "opening_mode": "cinema_serif_title",
         "flower_mode": "minimal_serif_caption",
-        "anim_mode": "ink_bloom",
-        "transition_style": "dissolve",
+        "anim_mode": "page_flip",
+        "transition_style": "none",
         "persistent_top_bar": false,
         "suppress_top_duplicate_flower": true,
         "accent_colors": [
           "#FFFFFF",
-          "#FFE066"
+          "#FFBF17"
         ],
         "stroke_color": "#000000",
-        "stroke_width": 2
+        "stroke_width": 2,
+        "transition_source_count": 0,
+        "transition_policy": "hard_cut_only",
+        "anim_primitives": [
+          "快速翻页",
+          "折叠展开",
+          "横向模糊"
+        ],
+        "flower_colors": [
+          "#FFFFFF",
+          "#FFE066",
+          "#FFBF17",
+          "#FF0000"
+        ],
+        "giant_count": 1,
+        "source_font": "得意黑",
+        "flower_font": "SourceHanSerifCN-Bold.otf",
+        "flower_layout": "centered_refined_white_with_rule",
+        "letter_spacing_px": 6
       },
       "subtitle_override": {
-        "font_size": 50,
+        "name": "[style_13] 上白圆角画框 · 下纯黑宽幕沉浸风",
+        "font_size": 48,
         "keyword_scale": 1.12,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFBF17",
         "stroke_color": "#000000",
-        "stroke_width": 2,
+        "stroke_width": 5,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
-        "safe_y_center": 1245,
-        "full_width_bar": false
+        "bg_shape": "none",
+        "safe_y_center": 1334,
+        "max_chars_per_line": 96,
+        "full_width_bar": false,
+        "source_font_family": "得意黑",
+        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
       }
     },
     "style_14": {
@@ -526,20 +1144,24 @@
       "requires_aroll": "optional",
       "allow_explainer_pip": false,
       "pip_spec": {
-        "mode": "black_spotlight_circle_pip",
-        "circle_cx": 540,
-        "circle_cy": 560,
-        "circle_r": 295,
-        "bg_hex": "#040405",
-        "border_hex": "#2A2D36",
-        "single_source": true
+        "mode": "geometry_pip_full",
+        "main": {
+          "x": 0.0,
+          "y": 0.0,
+          "scale": 1.0
+        },
+        "windows": [],
+        "cutout": true,
+        "single_source": true,
+        "source": "forensic/pip_usage.json",
+        "note_cn": "几何全部来自真草稿 clip.transform / uniform_scale；渲染端按数字摆，不按风格名字猜"
       },
       "overlay_style": {
         "template_family": "black_spotlight_focus",
         "opening_mode": "spotlight_focus_caption",
         "flower_mode": "spotlight_gold_callout",
         "anim_mode": "typewriter_char",
-        "transition_style": "fadeblack",
+        "transition_style": "none",
         "persistent_top_bar": false,
         "suppress_top_duplicate_flower": false,
         "accent_colors": [
@@ -547,28 +1169,85 @@
           "#FFBF17"
         ],
         "stroke_color": "#000000",
-        "stroke_width": 3
+        "stroke_width": 3,
+        "transition_source_count": 0,
+        "transition_policy": "hard_cut_only",
+        "anim_primitives": [
+          "渐显",
+          "放大",
+          "滑动出入"
+        ],
+        "flower_colors": [
+          "#FFFFFF",
+          "#FFBF17",
+          "#B71C1C",
+          "#000000"
+        ],
+        "giant_count": 0,
+        "source_font": "知新体",
+        "flower_font": "AlimamaShuHeiTi-Bold.otf",
+        "letter_spacing_px": 0
       },
       "subtitle_override": {
-        "font_size": 52,
+        "name": "[style_14] 纯黑聚光圆窗 · 极简聚焦口播风",
+        "font_size": 60,
         "keyword_scale": 1.14,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFBF17",
         "stroke_color": "#000000",
-        "stroke_width": 3,
+        "stroke_width": 5,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
-        "safe_y_center": 1350,
-        "full_width_bar": false
+        "bg_shape": "none",
+        "safe_y_center": 1384,
+        "max_chars_per_line": 11,
+        "full_width_bar": false,
+        "source_font_family": "知新体",
+        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
       }
     },
     "style_15": {
       "template_family": "interview_flower_flow",
       "label_cn": "实景访谈切片 · 弹性双色花字节奏流",
       "requires_aroll": "required",
-      "allow_explainer_pip": false,
+      "allow_explainer_pip": true,
       "pip_spec": {
-        "mode": "none"
+        "mode": "geometry_pip_window",
+        "main": {
+          "x": 0.0,
+          "y": 0.0,
+          "scale": 1.0
+        },
+        "windows": [
+          {
+            "x": -0.333,
+            "y": 0.267,
+            "scale": 0.64,
+            "segments": 3,
+            "matting": false,
+            "stroke_hex": null
+          },
+          {
+            "x": 1.251,
+            "y": 0.0,
+            "scale": 1.01,
+            "segments": 2,
+            "matting": false,
+            "stroke_hex": null
+          },
+          {
+            "x": -0.749,
+            "y": 0.0,
+            "scale": 1.01,
+            "segments": 1,
+            "matting": false,
+            "stroke_hex": null
+          }
+        ],
+        "cutout": false,
+        "single_source": false,
+        "source": "forensic/pip_usage.json",
+        "note_cn": "几何全部来自真草稿 clip.transform / uniform_scale；渲染端按数字摆，不按风格名字猜"
       },
       "overlay_style": {
         "opening_mode": "interview_kinetic_title",
@@ -576,40 +1255,78 @@
         "persistent_top_bar": false,
         "accent_colors": [
           "#FFFFFF",
-          "#FACC15",
-          "#F97316"
+          "#FFBF17"
         ],
-        "stroke_color": "#111111",
-        "stroke_width": 5,
+        "stroke_color": "#000000",
+        "stroke_width": 7,
         "entry_anim": "bounce_pop",
-        "anim_mode": "bounce_smash",
-        "transition_style": "fadeblack",
-        "suppress_top_duplicate_flower": false
+        "anim_mode": "depth_behind_person",
+        "transition_style": "none",
+        "suppress_top_duplicate_flower": false,
+        "transition_source_count": 0,
+        "transition_policy": "hard_cut_only",
+        "anim_primitives": [
+          "渐显",
+          "模糊显影",
+          "缩小"
+        ],
+        "flower_colors": [
+          "#FFFFFF",
+          "#FFBF17",
+          "#000000",
+          "#B71C1C"
+        ],
+        "giant_count": 10,
+        "source_font": "思源宋体-Bold / DouyinSansBold",
+        "flower_font": "SourceHanSerifCN-Bold.otf",
+        "flower_layout": "elastic_dual_color_scatter",
+        "letter_spacing_px": 0,
+        "flower_per_min": 88
       },
       "subtitle_override": {
-        "font_size": 58,
+        "name": "[style_15] 实景访谈切片 · 弹性双色花字节奏流",
+        "font_size": 60,
         "keyword_scale": 1.15,
         "primary_color": "#FFFFFF",
-        "keyword_color": "#FACC15",
+        "keyword_color": "#FFBF17",
         "stroke_color": "#111111",
-        "stroke_width": 4,
+        "stroke_width": 0,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
-        "safe_y_center": 1340,
-        "full_width_bar": false
+        "bg_shape": "none",
+        "safe_y_center": 1331,
+        "max_chars_per_line": 4,
+        "full_width_bar": false,
+        "source_font_family": "思源宋体-Bold",
+        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
       }
     },
     "style_16": {
       "template_family": "dark_feather_book_quote",
       "label_cn": "暗黑羽化分屏 · 上窄实景下黑底书摘巨字风",
       "requires_aroll": "optional",
-      "allow_explainer_pip": false,
+      "allow_explainer_pip": true,
       "pip_spec": {
-        "mode": "linear_split_feather_pip",
-        "top_h": 680,
-        "feather_px": 180,
-        "bg_hex": "#050507",
-        "single_source": false
+        "mode": "geometry_pip_window",
+        "main": {
+          "x": 0.0,
+          "y": 0.0,
+          "scale": 1.0
+        },
+        "windows": [
+          {
+            "x": 0.0,
+            "y": 0.127,
+            "scale": 1.741,
+            "segments": 1,
+            "matting": true,
+            "stroke_hex": null
+          }
+        ],
+        "cutout": true,
+        "single_source": false,
+        "source": "forensic/pip_usage.json",
+        "note_cn": "几何全部来自真草稿 clip.transform / uniform_scale；渲染端按数字摆，不按风格名字猜"
       },
       "overlay_style": {
         "opening_mode": "dark_book_quote_giant",
@@ -623,74 +1340,180 @@
         "stroke_width": 2,
         "entry_anim": "fade_up",
         "anim_mode": "number_flip_trio",
-        "transition_style": "fadeblack",
-        "suppress_top_duplicate_flower": false
+        "transition_style": "none",
+        "suppress_top_duplicate_flower": false,
+        "transition_source_count": 0,
+        "transition_policy": "hard_cut_only",
+        "anim_primitives": [
+          "渐显",
+          "快速翻页",
+          "缩小"
+        ],
+        "flower_colors": [
+          "#B71C1C",
+          "#FFFFFF",
+          "#EAB308",
+          "#000000"
+        ],
+        "giant_count": 6,
+        "source_font": "特黑体-思源黑体1号",
+        "flower_font": "AlimamaShuHeiTi-Bold.otf",
+        "letter_spacing_px": 0
       },
       "subtitle_override": {
-        "font_size": 54,
+        "name": "[style_16] 暗黑羽化分屏 · 上窄实景下黑底书摘巨字风",
+        "font_size": 40,
         "keyword_scale": 1.14,
-        "primary_color": "#F8FAFC",
-        "keyword_color": "#FACC15",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFF589",
         "stroke_color": "#000000",
-        "stroke_width": 2,
+        "stroke_width": 5,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
-        "safe_y_center": 1320,
-        "full_width_bar": false
+        "bg_shape": "none",
+        "safe_y_center": 1384,
+        "max_chars_per_line": 12,
+        "full_width_bar": false,
+        "source_font_family": "特黑体",
+        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
       }
     },
     "style_17": {
       "template_family": "warm_gold_highlight",
       "label_cn": "暖金强切探店 · 上下双格金线对比风",
       "requires_aroll": "optional",
-      "allow_explainer_pip": false,
+      "allow_explainer_pip": true,
       "pip_spec": {
-        "mode": "dual_gold_frame_pip",
-        "top_y": 240,
-        "top_h": 610,
-        "bot_y": 870,
-        "bot_h": 610,
-        "border_hex": "#D4AF37",
-        "border_width": 4,
-        "bg_hex": "#100D08",
-        "single_source": false
+        "mode": "geometry_pip_window",
+        "main": {
+          "x": 0.0,
+          "y": 0.0,
+          "scale": 1.0
+        },
+        "windows": [
+          {
+            "x": 0.0,
+            "y": 0.572,
+            "scale": 0.85,
+            "segments": 1,
+            "matting": false,
+            "stroke_hex": null
+          },
+          {
+            "x": 0.0,
+            "y": 0.286,
+            "scale": 0.85,
+            "segments": 1,
+            "matting": false,
+            "stroke_hex": null
+          },
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "scale": 0.85,
+            "segments": 1,
+            "matting": false,
+            "stroke_hex": null
+          }
+        ],
+        "cutout": false,
+        "single_source": false,
+        "source": "forensic/pip_usage.json",
+        "note_cn": "几何全部来自真草稿 clip.transform / uniform_scale；渲染端按数字摆，不按风格名字猜"
       },
       "overlay_style": {
         "opening_mode": "warm_gold_banner",
         "flower_mode": "gold_badge_pop",
         "persistent_top_bar": false,
         "accent_colors": [
-          "#FDE047",
           "#FFFFFF",
-          "#F59E0B"
+          "#FFDE00"
         ],
-        "stroke_color": "#1C1408",
-        "stroke_width": 5,
+        "stroke_color": "#FFDE00",
+        "stroke_width": 2,
         "entry_anim": "bounce_pop",
-        "anim_mode": "shimmer_3d_gold",
-        "transition_style": "zoomin",
-        "suppress_top_duplicate_flower": false
+        "anim_mode": "depth_behind_person",
+        "transition_style": "none",
+        "suppress_top_duplicate_flower": false,
+        "transition_source_count": 0,
+        "transition_policy": "hard_cut_only",
+        "anim_primitives": [
+          "渐显",
+          "滑动出入",
+          "折叠展开"
+        ],
+        "flower_colors": [
+          "#FFF589",
+          "#FFFFFF",
+          "#FFDE00",
+          "#FDE047"
+        ],
+        "giant_count": 4,
+        "source_font": "SourceHanSerifCN-Heavy / DouyinSansBold",
+        "flower_font": "SourceHanSerifCN-Heavy.otf",
+        "flower_layout": "gold_hairline_plus_square_plate",
+        "letter_spacing_px": 2
       },
       "subtitle_override": {
-        "font_size": 58,
+        "name": "[style_17] 暖金强切探店 · 上下双格金线对比风",
+        "font_size": 60,
         "keyword_scale": 1.15,
         "primary_color": "#FFFFFF",
-        "keyword_color": "#FDE047",
+        "keyword_color": "#FFDE00",
         "stroke_color": "#1C1408",
-        "stroke_width": 4,
-        "bg_box_color": "#00000000",
+        "stroke_width": 5,
+        "bg_box_color": "#000000B2",
         "bg_radius": 0,
-        "safe_y_center": 1345,
-        "full_width_bar": false
+        "bg_shape": "square",
+        "safe_y_center": 1331,
+        "max_chars_per_line": 7,
+        "full_width_bar": false,
+        "source_font_family": "SourceHanSerifCN-Heavy",
+        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
       }
     },
     "style_18": {
       "template_family": "metallic_3d_gold_title",
       "label_cn": "户外实景探盘 · 3D 金属扫光立体大字风",
       "requires_aroll": "required",
-      "allow_explainer_pip": false,
+      "allow_explainer_pip": true,
       "pip_spec": {
-        "mode": "none"
+        "mode": "geometry_pip_window",
+        "main": {
+          "x": 0.0,
+          "y": 0.0,
+          "scale": 1.0
+        },
+        "windows": [
+          {
+            "x": 0.201,
+            "y": 0.0,
+            "scale": 1.5,
+            "segments": 1,
+            "matting": true,
+            "stroke_hex": null
+          },
+          {
+            "x": 0.0,
+            "y": -0.066,
+            "scale": 1.5,
+            "segments": 1,
+            "matting": true,
+            "stroke_hex": null
+          },
+          {
+            "x": 0.137,
+            "y": -0.143,
+            "scale": 1.3,
+            "segments": 1,
+            "matting": true,
+            "stroke_hex": null
+          }
+        ],
+        "cutout": true,
+        "single_source": false,
+        "source": "forensic/pip_usage.json",
+        "note_cn": "几何全部来自真草稿 clip.transform / uniform_scale；渲染端按数字摆，不按风格名字猜"
       },
       "overlay_style": {
         "opening_mode": "metallic_3d_gold_title",
@@ -705,32 +1528,70 @@
         "stroke_width": 6,
         "entry_anim": "zoom_smash",
         "anim_mode": "shimmer_3d_gold",
-        "transition_style": "zoomin",
-        "suppress_top_duplicate_flower": false
+        "transition_style": "none",
+        "suppress_top_duplicate_flower": false,
+        "transition_source_count": 0,
+        "transition_policy": "hard_cut_only",
+        "anim_primitives": [
+          "滑动出入",
+          "横向模糊",
+          "打字机"
+        ],
+        "flower_colors": [
+          "#B71C1C",
+          "#FFFFFF",
+          "#FFBF17",
+          "#FFF2A6"
+        ],
+        "giant_count": 7,
+        "source_font": "得意黑 / 造字工房俊雅体",
+        "flower_font": "SmileySans-Oblique.ttf",
+        "letter_spacing_px": 0
       },
       "subtitle_override": {
-        "font_size": 62,
+        "name": "[style_18] 户外实景探盘 · 3D 金属扫光立体大字风",
+        "font_size": 48,
         "keyword_scale": 1.18,
-        "primary_color": "#FFF6CC",
-        "keyword_color": "#FFB800",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFBF17",
         "stroke_color": "#3B1800",
         "stroke_width": 5,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
-        "safe_y_center": 1335,
-        "full_width_bar": false
+        "bg_shape": "none",
+        "safe_y_center": 1334,
+        "max_chars_per_line": 10,
+        "full_width_bar": false,
+        "source_font_family": "得意黑",
+        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
       }
     },
     "style_19": {
       "template_family": "cool_data_news_cutout",
-      "label_cn": "冷峻数据新闻前景 · 人像抠像白条字幕风",
+      "label_cn": "冷峻数据新闻前景 · 人像抠像长句大字风",
       "requires_aroll": "required",
-      "allow_explainer_pip": false,
+      "allow_explainer_pip": true,
       "pip_spec": {
-        "mode": "data_news_cutout_pip",
-        "outline_px": 0,
-        "bg_tint": "cool_news",
-        "single_source": false
+        "mode": "geometry_pip_main_punch_in",
+        "main": {
+          "x": 0.0,
+          "y": 0.0,
+          "scale": 1.3
+        },
+        "windows": [
+          {
+            "x": 0.0,
+            "y": 0.099,
+            "scale": 0.642,
+            "segments": 1,
+            "matting": true,
+            "stroke_hex": null
+          }
+        ],
+        "cutout": true,
+        "single_source": false,
+        "source": "forensic/pip_usage.json",
+        "note_cn": "几何全部来自真草稿 clip.transform / uniform_scale；渲染端按数字摆，不按风格名字猜"
       },
       "overlay_style": {
         "opening_mode": "news_ticker_card",
@@ -745,29 +1606,86 @@
         "stroke_width": 2,
         "entry_anim": "wipe_in",
         "anim_mode": "wipe_reveal",
-        "transition_style": "fadeblack",
-        "suppress_top_duplicate_flower": false
+        "transition_style": "none",
+        "suppress_top_duplicate_flower": false,
+        "transition_source_count": 0,
+        "transition_policy": "hard_cut_only",
+        "anim_primitives": [
+          "模糊显影",
+          "滑动出入",
+          "快速翻页"
+        ],
+        "flower_colors": [
+          "#0F172A",
+          "#FFFFFF",
+          "#38BDF8",
+          "#FFBF17"
+        ],
+        "giant_count": 5,
+        "source_font": "得意黑 / 造字工房俊雅体",
+        "flower_font": "SmileySans-Oblique.ttf",
+        "letter_spacing_px": 0
       },
       "subtitle_override": {
-        "font_size": 50,
+        "name": "[style_19] 冷峻数据新闻前景 · 人像抠像长句大字风",
+        "font_size": 48,
         "keyword_scale": 1.1,
-        "primary_color": "#0F172A",
-        "keyword_color": "#0369A1",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFBF17",
         "stroke_color": "#FFFFFF",
-        "stroke_width": 0,
-        "bg_box_color": "#FFFFFFE6",
-        "bg_radius": 6,
-        "safe_y_center": 1335,
-        "full_width_bar": false
+        "stroke_width": 5,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
+        "bg_shape": "none",
+        "safe_y_center": 1384,
+        "max_chars_per_line": 83,
+        "full_width_bar": false,
+        "source_font_family": "得意黑",
+        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
       }
     },
     "style_20": {
       "template_family": "guofeng_black_band_serif",
-      "label_cn": "国风暖木匠心 · 通宽黑条双行粗宋体风",
+      "label_cn": "国风暖木匠心 · 古字典体大字风",
       "requires_aroll": "required",
-      "allow_explainer_pip": false,
+      "allow_explainer_pip": true,
       "pip_spec": {
-        "mode": "none"
+        "mode": "geometry_pip_window",
+        "main": {
+          "x": 0.0,
+          "y": 0.0,
+          "scale": 1.0
+        },
+        "windows": [
+          {
+            "x": 0.0,
+            "y": -0.422,
+            "scale": 1.0,
+            "segments": 1,
+            "matting": false,
+            "stroke_hex": null
+          },
+          {
+            "x": 0.0,
+            "y": -0.705,
+            "scale": 1.0,
+            "segments": 1,
+            "matting": false,
+            "stroke_hex": null
+          },
+          {
+            "x": 0.0,
+            "y": 0.525,
+            "scale": 1.0,
+            "segments": 1,
+            "matting": false,
+            "stroke_hex": null
+          }
+        ],
+        "cutout": true,
+        "single_source": false,
+        "source": "forensic/pip_usage.json",
+        "note_cn": "几何全部来自真草稿 clip.transform / uniform_scale；渲染端按数字摆，不按风格名字猜"
       },
       "overlay_style": {
         "opening_mode": "guofeng_black_band",
@@ -783,33 +1701,78 @@
         "stroke_width": 2,
         "entry_anim": "fade_up",
         "anim_mode": "ink_bloom",
-        "transition_style": "dissolve",
-        "suppress_top_duplicate_flower": true
+        "transition_style": "none",
+        "suppress_top_duplicate_flower": true,
+        "transition_source_count": 0,
+        "transition_policy": "hard_cut_only",
+        "anim_primitives": [
+          "模糊显影",
+          "渐显",
+          "滑动出入"
+        ],
+        "flower_colors": [
+          "#FFFFFF",
+          "#FFF589",
+          "#F5EBDC",
+          "#C89B54"
+        ],
+        "giant_count": 4,
+        "source_font": "喜鹊古字典体 / FZCuJinLJW",
+        "flower_font": "SourceHanSerifCN-Heavy.otf",
+        "letter_spacing_px": 0
       },
       "subtitle_override": {
+        "name": "[style_20] 国风暖木匠心 · 古字典体大字风",
         "font_size": 56,
         "keyword_scale": 1.08,
-        "primary_color": "#F7EFE1",
-        "keyword_color": "#F2C97D",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFF589",
         "stroke_color": "#120D0A",
-        "stroke_width": 2,
-        "bg_box_color": "#14100DB8",
-        "bg_radius": 4,
-        "safe_y_center": 1270,
-        "full_width_bar": true
+        "stroke_width": 5,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
+        "bg_shape": "none",
+        "safe_y_center": 1331,
+        "max_chars_per_line": 10,
+        "full_width_bar": false,
+        "source_font_family": "FZCuJinLJW",
+        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
       }
     },
     "style_21": {
       "template_family": "high_broll_store_tag",
-      "label_cn": "门店工艺快切 · 85% 实拍特写暖黄大字风",
+      "label_cn": "门店工艺快切 · 76% 实拍特写暖黄大字风",
       "requires_aroll": "none",
-      "allow_explainer_pip": false,
+      "allow_explainer_pip": true,
       "pip_spec": {
-        "mode": "vision_portrait_cutout_pip",
-        "outline_px": 8,
-        "outline_hex": "#FFFFFF",
-        "bg_blur_sigma": 10,
-        "single_source": false
+        "mode": "geometry_pip_main_punch_in",
+        "main": {
+          "x": 0.0,
+          "y": 0.0,
+          "scale": 1.2
+        },
+        "windows": [
+          {
+            "x": 0.0,
+            "y": 0.107,
+            "scale": 0.998,
+            "segments": 1,
+            "matting": false,
+            "stroke_hex": null
+          },
+          {
+            "x": 0.0,
+            "y": -0.199,
+            "scale": 1.6,
+            "segments": 1,
+            "matting": true,
+            "stroke_hex": "#FFFFFF"
+          }
+        ],
+        "cutout": true,
+        "single_source": false,
+        "source": "forensic/pip_usage.json",
+        "note_cn": "几何全部来自真草稿 clip.transform / uniform_scale；渲染端按数字摆，不按风格名字猜"
       },
       "overlay_style": {
         "opening_mode": "store_detail_badge",
@@ -817,39 +1780,93 @@
         "persistent_top_bar": false,
         "accent_colors": [
           "#FFFFFF",
-          "#FCD34D",
-          "#EF4444"
+          "#FFF589"
         ],
-        "stroke_color": "#18181B",
+        "stroke_color": "#1C1604",
         "stroke_width": 4,
         "entry_anim": "bounce_pop",
-        "anim_mode": "bounce_smash",
-        "transition_style": "zoomin",
-        "suppress_top_duplicate_flower": false
+        "anim_mode": "scale_in",
+        "transition_style": "none",
+        "suppress_top_duplicate_flower": false,
+        "transition_source_count": 0,
+        "transition_policy": "hard_cut_only",
+        "anim_primitives": [
+          "缩小",
+          "渐显",
+          "滑动出入"
+        ],
+        "flower_colors": [
+          "#FFFFFF",
+          "#FCD34D",
+          "#EF4444",
+          "#FFF589"
+        ],
+        "giant_count": 4,
+        "source_font": "Alimama ShuHeiTi",
+        "flower_font": "AlimamaShuHeiTi-Bold.otf",
+        "flower_layout": "store_tag_plus_warm_big_word",
+        "letter_spacing_px": 2
       },
       "subtitle_override": {
-        "font_size": 58,
+        "name": "[style_21] 门店工艺快切 · 76% 实拍特写暖黄大字风",
+        "font_size": 48,
         "keyword_scale": 1.15,
         "primary_color": "#FFFFFF",
-        "keyword_color": "#FCD34D",
+        "keyword_color": "#FFF589",
         "stroke_color": "#000000",
-        "stroke_width": 4,
+        "stroke_width": 5,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
-        "safe_y_center": 1345,
-        "full_width_bar": false
+        "bg_shape": "none",
+        "safe_y_center": 1334,
+        "max_chars_per_line": 10,
+        "full_width_bar": false,
+        "source_font_family": "SourceHanSerifCN-Heavy",
+        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
       }
     },
     "style_22": {
       "template_family": "top_banner_case_study",
-      "label_cn": "九成例证拆解 · 顶栏常驻主题横幅风",
+      "label_cn": "例证拆解 · 案例画面轮播风",
       "requires_aroll": "none",
-      "allow_explainer_pip": false,
+      "allow_explainer_pip": true,
       "pip_spec": {
-        "mode": "top_banner_evidence_pip",
-        "banner_h": 240,
-        "bg_hex": "#0B0D12",
-        "single_source": true
+        "mode": "geometry_pip_window",
+        "main": {
+          "x": 0.0,
+          "y": 0.0,
+          "scale": 1.0
+        },
+        "windows": [
+          {
+            "x": -0.059,
+            "y": -0.183,
+            "scale": 1.431,
+            "segments": 1,
+            "matting": true,
+            "stroke_hex": null
+          },
+          {
+            "x": -0.814,
+            "y": -0.065,
+            "scale": 0.822,
+            "segments": 1,
+            "matting": true,
+            "stroke_hex": null
+          },
+          {
+            "x": -0.394,
+            "y": -0.134,
+            "scale": 0.24,
+            "segments": 1,
+            "matting": true,
+            "stroke_hex": null
+          }
+        ],
+        "cutout": true,
+        "single_source": false,
+        "source": "forensic/pip_usage.json",
+        "note_cn": "几何全部来自真草稿 clip.transform / uniform_scale；渲染端按数字摆，不按风格名字猜"
       },
       "overlay_style": {
         "opening_mode": "top_banner_headline",
@@ -864,65 +1881,181 @@
         "stroke_width": 3,
         "entry_anim": "slide_snap",
         "anim_mode": "wipe_reveal",
-        "transition_style": "wipeleft",
-        "suppress_top_duplicate_flower": false
+        "transition_style": "none",
+        "suppress_top_duplicate_flower": false,
+        "transition_source_count": 0,
+        "transition_policy": "hard_cut_only",
+        "anim_primitives": [
+          "擦除",
+          "缩小",
+          "滑动出入"
+        ],
+        "flower_colors": [
+          "#FFFFFF",
+          "#FACC15",
+          "#1D4ED8",
+          "#B71C1C"
+        ],
+        "giant_count": 4,
+        "source_font": "Smiley Sans",
+        "flower_font": "SmileySans-Oblique.ttf",
+        "letter_spacing_px": 0
       },
       "subtitle_override": {
-        "font_size": 52,
+        "name": "[style_22] 例证拆解 · 案例画面轮播风",
+        "font_size": 48,
         "keyword_scale": 1.12,
         "primary_color": "#FFFFFF",
-        "keyword_color": "#FDE047",
+        "keyword_color": "#B71C1C",
         "stroke_color": "#000000",
-        "stroke_width": 3,
-        "bg_box_color": "#0B0D12B8",
-        "bg_radius": 10,
-        "safe_y_center": 1365,
-        "full_width_bar": false
+        "stroke_width": 5,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
+        "bg_shape": "none",
+        "safe_y_center": 1334,
+        "max_chars_per_line": 18,
+        "full_width_bar": false,
+        "source_font_family": "得意黑",
+        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
       }
     },
     "style_23": {
       "template_family": "micro_doc_film_serif",
-      "label_cn": "品牌微纪录 · 95% 慢调空镜克制宋体风",
+      "label_cn": "品牌微纪录 · 慢调空镜克制宋体风",
       "requires_aroll": "none",
-      "allow_explainer_pip": false,
+      "allow_explainer_pip": true,
       "pip_spec": {
-        "mode": "none"
+        "mode": "geometry_pip_main_punch_in",
+        "main": {
+          "x": 0.0,
+          "y": 0.0,
+          "scale": 1.1
+        },
+        "windows": [
+          {
+            "x": 0.184,
+            "y": -0.275,
+            "scale": 1.0,
+            "segments": 1,
+            "matting": true,
+            "stroke_hex": "#FFFFFF"
+          },
+          {
+            "x": 0.0,
+            "y": 0.503,
+            "scale": 1.129,
+            "segments": 1,
+            "matting": true,
+            "stroke_hex": "#FFFFFF"
+          },
+          {
+            "x": 0.0,
+            "y": -0.64,
+            "scale": 1.222,
+            "segments": 1,
+            "matting": false,
+            "stroke_hex": null
+          }
+        ],
+        "cutout": true,
+        "single_source": false,
+        "source": "forensic/pip_usage.json",
+        "note_cn": "几何全部来自真草稿 clip.transform / uniform_scale；渲染端按数字摆，不按风格名字猜",
+        "border_hex": "#FFFFFF"
       },
       "overlay_style": {
         "opening_mode": "micro_doc_title",
         "flower_mode": "minimal_serif_caption",
         "persistent_top_bar": false,
         "accent_colors": [
+          "#FFFFFF",
+          "#FFBF17"
+        ],
+        "stroke_color": "#24201C",
+        "stroke_width": 0,
+        "entry_anim": "fade_up",
+        "anim_mode": "depth_behind_person",
+        "transition_style": "none",
+        "suppress_top_duplicate_flower": false,
+        "transition_source_count": 0,
+        "transition_policy": "hard_cut_only",
+        "anim_primitives": [
+          "渐显",
+          "滑动出入",
+          "擦除"
+        ],
+        "flower_colors": [
+          "#FFF589",
+          "#FFFFFF",
           "#F5F5F4",
           "#D6D3D1"
         ],
-        "stroke_color": "#0C0A09",
-        "stroke_width": 2,
-        "entry_anim": "fade_up",
-        "anim_mode": "ink_bloom",
-        "transition_style": "dissolve",
-        "suppress_top_duplicate_flower": false
+        "giant_count": 1,
+        "source_font": "Source Han Serif CN",
+        "flower_font": "SourceHanSerifCN-Bold.otf",
+        "flower_layout": "quiet_small_serif_with_rule",
+        "letter_spacing_px": 5
       },
       "subtitle_override": {
-        "font_size": 46,
+        "name": "[style_23] 品牌微纪录 · 慢调空镜克制宋体风",
+        "font_size": 48,
         "keyword_scale": 1.06,
-        "primary_color": "#FAFAF9",
-        "keyword_color": "#FDE68A",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFBF17",
         "stroke_color": "#0C0A09",
-        "stroke_width": 2,
+        "stroke_width": 5,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
-        "safe_y_center": 1380,
-        "full_width_bar": false
+        "bg_shape": "none",
+        "safe_y_center": 1334,
+        "max_chars_per_line": 11,
+        "full_width_bar": false,
+        "source_font_family": "造字工房俊雅体",
+        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
       }
     },
     "style_24": {
       "template_family": "faceless_kinetic_montage",
-      "label_cn": "100% 不露脸混剪 · 炸裂金句高燃踩点风",
+      "label_cn": "不露脸混剪 · 炸裂金句高燃踩点风",
       "requires_aroll": "none",
-      "allow_explainer_pip": false,
+      "allow_explainer_pip": true,
       "pip_spec": {
-        "mode": "none"
+        "mode": "geometry_pip_window",
+        "main": {
+          "x": 0.0,
+          "y": 0.0,
+          "scale": 1.0
+        },
+        "windows": [
+          {
+            "x": 0.0,
+            "y": 0.048,
+            "scale": 1.0,
+            "segments": 2,
+            "matting": true,
+            "stroke_hex": null
+          },
+          {
+            "x": 0.0,
+            "y": 0.0,
+            "scale": 0.8,
+            "segments": 2,
+            "matting": true,
+            "stroke_hex": null
+          },
+          {
+            "x": 0.0,
+            "y": 0.363,
+            "scale": 1.0,
+            "segments": 1,
+            "matting": false,
+            "stroke_hex": null
+          }
+        ],
+        "cutout": true,
+        "single_source": false,
+        "source": "forensic/pip_usage.json",
+        "note_cn": "几何全部来自真草稿 clip.transform / uniform_scale；渲染端按数字摆，不按风格名字猜"
       },
       "overlay_style": {
         "opening_mode": "faceless_giant_impact",
@@ -930,28 +2063,55 @@
         "persistent_top_bar": false,
         "accent_colors": [
           "#FFFFFF",
-          "#FFE14D",
-          "#FF453A"
+          "#FFBF17"
         ],
         "stroke_color": "#000000",
-        "stroke_width": 6,
+        "stroke_width": 9,
         "entry_anim": "zoom_smash",
-        "anim_mode": "bounce_smash",
-        "transition_style": "fadeblack",
-        "suppress_top_duplicate_flower": false
+        "anim_mode": "scale_up_in",
+        "transition_style": "none",
+        "suppress_top_duplicate_flower": false,
+        "transition_source_count": 0,
+        "transition_policy": "hard_cut_only",
+        "anim_primitives": [
+          "放大",
+          "缩小",
+          "渐显"
+        ],
+        "flower_colors": [
+          "#FFFFFF",
+          "#FFE14D",
+          "#FF453A",
+          "#FFBF17"
+        ],
+        "giant_count": 3,
+        "source_font": "Source Han Serif CN Heavy",
+        "flower_font": "SourceHanSerifCN-Heavy.otf",
+        "flower_layout": "kinetic_impact_tilted",
+        "letter_spacing_px": 0
       },
       "subtitle_override": {
-        "font_size": 60,
+        "name": "[style_24] 不露脸混剪 · 炸裂金句高燃踩点风",
+        "font_size": 71,
         "keyword_scale": 1.18,
         "primary_color": "#FFFFFF",
-        "keyword_color": "#FFE14D",
+        "keyword_color": "#FFBF17",
         "stroke_color": "#000000",
         "stroke_width": 5,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
-        "safe_y_center": 1335,
-        "full_width_bar": false
+        "bg_shape": "none",
+        "safe_y_center": 1498,
+        "max_chars_per_line": 14,
+        "full_width_bar": false,
+        "source_font_family": "FZZJ-JHTJW",
+        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
       }
     }
+  },
+  "transition_policy": {
+    "default": "none",
+    "reason": "24/24 源草稿转场数=0（112 套全库验证）",
+    "per_boundary_override": "not_implemented"
   }
 }

@@ -62,6 +62,7 @@ from common import (
 if __name__ == "__main__":
     maybe_reexec_in_venv()
 
+import face_framing
 from generate_code_broll import resolve_style_palette
 
 from PIL import Image, ImageDraw, ImageFilter
@@ -851,8 +852,10 @@ def _compute_base_cache_key(
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
-def _cover_crop_vf(w: int, h: int, face_bias: bool = False) -> str:
-    """等比放大填满并居中（或略偏上保人脸）裁切，100% 根治画中画/相框拉伸与压扁变形。"""
+def _cover_crop_vf(w: int, h: int, face_bias: bool = False, anchor: Optional[Dict[str, Any]] = None) -> str:
+    """等比放大填满窗口的裁切：有人脸锚点时以人脸为中心取景（不再按正中瞎切），否则居中/偏上。"""
+    if anchor:
+        return face_framing.cover_crop_vf(w, h, anchor)
     iw = max(2, int(w) & ~1)
     ih = max(2, int(h) & ~1)
     if face_bias:
@@ -878,6 +881,43 @@ def _build_ffmpeg_pip_vf(pip_layout: Optional[Dict[str, Any]], tw: int = CANVAS_
         bd_hex = "#FFF589"
     bd_hex = bd_hex[:7]
 
+    if mode.startswith("geometry_pip"):
+        # 真草稿几何驱动：主轨 scale>1 推近、scale<1 缩窗居中/偏置；窗口由双源路径补（单源没有第二路素材）
+        main = pip_layout.get("main") or {}
+        sc = float(main.get("scale") or 1.0)
+        mx = float(main.get("x") or 0.0)
+        my = float(main.get("y") or 0.0)
+        if sc <= 1.001:
+            if sc >= 0.999:
+                return None
+            # 主轨缩窗：背景用自身模糊铺底（真草稿里缩窗背后是素材底 + 叠加层）
+            w = int(round(CANVAS_WIDTH * sc / 2)) * 2
+            h = int(round(CANVAS_HEIGHT * sc / 2)) * 2
+            cx = int(round(CANVAS_WIDTH * (1.0 + mx) / 2.0))
+            cy = int(round(CANVAS_HEIGHT * (1.0 + my) / 2.0))
+            ox = max(0, min(CANVAS_WIDTH - w, cx - w // 2))
+            oy = max(0, min(CANVAS_HEIGHT - h, cy - h // 2))
+            return (
+                f"split=2[gp_bg][gp_fg];"
+                f"[gp_bg]scale={CANVAS_WIDTH}:{CANVAS_HEIGHT}:force_original_aspect_ratio=increase,"
+                f"crop={CANVAS_WIDTH}:{CANVAS_HEIGHT},boxblur=24:2,eq=brightness=-0.14[gp_bgb];"
+                f"[gp_fg]{_cover_crop_vf(w, h, anchor=pip_layout.get('face_anchor'))}[gp_fgw];"
+                f"[gp_bgb][gp_fgw]overlay=x={ox}:y={oy}:shortest=1"
+            )
+        # 推近：按 scale 放大后按 (x,y) 偏移裁回画布
+        bw = int(round(CANVAS_WIDTH * sc / 2)) * 2
+        bh = int(round(CANVAS_HEIGHT * sc / 2)) * 2
+        ox = int(round((bw - CANVAS_WIDTH) / 2.0 - mx * CANVAS_WIDTH / 2.0))
+        oy = int(round((bh - CANVAS_HEIGHT) / 2.0 - my * CANVAS_HEIGHT / 2.0))
+        ox = max(0, min(bw - CANVAS_WIDTH, ox))
+        oy = max(0, min(bh - CANVAS_HEIGHT, oy))
+        pin = face_framing.punch_in_crop_expr(CANVAS_WIDTH, CANVAS_HEIGHT, pip_layout.get("face_anchor"))
+        if pin:
+            # 有人脸时推近跟着脸走：宁可少推一点也不把人推出画
+            return f"scale={bw}:{bh}:flags=bicubic,{pin}"
+        return (f"scale={bw}:{bh}:flags=bicubic,"
+                f"crop={CANVAS_WIDTH}:{CANVAS_HEIGHT}:{ox}:{oy}")
+
     if mode == "smooth_orbit_pip":
         corner = str(pip_layout.get("corner") or "tr").lower()
         r_pip = int(pip_layout.get("radius_px") or 146)
@@ -887,7 +927,7 @@ def _build_ffmpeg_pip_vf(pip_layout: Optional[Dict[str, Any]], tw: int = CANVAS_
         ox, oy = cx_p - r_pip, cy_p - r_pip
         return (
             f"split=2[pip_bg][pip_av];"
-            f"[pip_av]{_cover_crop_vf(diam, diam, face_bias=True)},pad={diam + 8}:{diam + 8}:4:4:color={bd_hex}[pip_circ];"
+            f"[pip_av]{_cover_crop_vf(diam, diam, face_bias=True, anchor=pip_layout.get('face_anchor'))},pad={diam + 8}:{diam + 8}:4:4:color={bd_hex}[pip_circ];"
             f"[pip_bg][pip_circ]overlay=x={ox}:y={oy}:shortest=1"
         )
 
@@ -895,7 +935,7 @@ def _build_ffmpeg_pip_vf(pip_layout: Optional[Dict[str, Any]], tw: int = CANVAS_
         return (
             f"split=2[pip_bg][pip_fg];"
             f"[pip_bg]boxblur=16:2,eq=brightness=-0.10[pip_bg_b];"
-            f"[pip_fg]{_cover_crop_vf(764, 802, face_bias=True)},pad=772:810:4:4:color={bd_hex}[pip_fg_p];"
+            f"[pip_fg]{_cover_crop_vf(764, 802, face_bias=True, anchor=pip_layout.get('face_anchor'))},pad=772:810:4:4:color={bd_hex}[pip_fg_p];"
             f"[pip_bg_b][pip_fg_p]overlay=x=154:y=386"
         )
 
@@ -909,7 +949,7 @@ def _build_ffmpeg_pip_vf(pip_layout: Optional[Dict[str, Any]], tw: int = CANVAS_
         return (
             f"split=2[pip_bg][pip_fg];"
             f"[pip_bg]drawbox=x=0:y=0:w=iw:h=ih:color={bg_c}:t=fill[pip_bg_b];"
-            f"[pip_fg]{_cover_crop_vf(fw, fh, face_bias=True)}[pip_fg_p];"
+            f"[pip_fg]{_cover_crop_vf(fw, fh, face_bias=True, anchor=pip_layout.get('face_anchor'))}[pip_fg_p];"
             f"[pip_bg_b][pip_fg_p]overlay=x={fx}:y={fy}"
         )
 
@@ -984,6 +1024,33 @@ def _build_dual_pip_cmd(
     bd_hex = bd_hex[:7]
     tail_str = ",".join(BT709_VF_SUFFIX)
     sec_trim = f"fps=fps={fps},trim=duration={clip_dur:.4f},setpts=PTS-STARTPTS"
+
+    if mode.startswith("geometry_pip"):
+        wins = pip_layout.get("windows") or []
+        win = wins[0] if wins else {"x": 0.0, "y": 0.32, "scale": 0.55}
+        wsc = max(0.18, min(0.98, float(win.get("scale") or 0.55)))
+        ww = int(round(CANVAS_WIDTH * wsc / 2)) * 2
+        wh = int(round(CANVAS_HEIGHT * wsc / 2)) * 2
+        cx = int(round(CANVAS_WIDTH * (1.0 + float(win.get("x") or 0.0)) / 2.0))
+        cy = int(round(CANVAS_HEIGHT * (1.0 + float(win.get("y") or 0.0)) / 2.0))
+        ox = max(0, min(CANVAS_WIDTH - ww, cx - ww // 2))
+        oy = max(0, min(CANVAS_HEIGHT - wh, cy - wh // 2))
+        bw = max(0, int(pip_layout.get("border_width") or 6))
+        main_fg = base_vf_chain
+        return [
+            ffmpeg_bin, "-v", "error",
+            "-i", str(media_path), "-ss", f"{max(0.0, float(src_in)):.3f}",
+            "-i", str(sec_media), "-ss", f"{max(0.0, float(sec_in)):.3f}",
+            "-filter_complex",
+            f"[0:v]{main_fg}[gpm];"
+            f"[1:v]{sec_trim},{_cover_crop_vf(max(16, ww - bw * 2), max(16, wh - bw * 2), face_bias=True, anchor=pip_layout.get('secondary_face_anchor'))},"
+            f"pad={ww}:{wh}:{bw}:{bw}:color={bd_hex}[gpw];"
+            f"[gpm][gpw]overlay=x={ox}:y={oy}:shortest=1,{tail_str}[v]",
+            "-map", "[v]", "-an", "-frames:v", str(clip_frames),
+            "-r", str(fps), "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+            "-pix_fmt", "yuv420p", "-y", str(out_mp4),
+        ]
+
 
     if mode == "smooth_orbit_pip":
         corner = str(pip_layout.get("corner") or "tr").lower()
@@ -1562,6 +1629,17 @@ def build_graded_segment_cmd(
     if isinstance(pip_cfg, dict):
         sec_media = str(pip_cfg.get("secondary_media_path") or "")
         sec_in = max(0.0, float(pip_cfg.get("secondary_in_sec", 0.0)))
+        # 会裁切的构图（小窗/缩窗/推近/相框/圆窗）必须先拿到人脸锚点，否则就是按画面正中瞎切
+        _mode = str(pip_cfg.get("mode") or "")
+        # 剪辑表已经定了锚点（含"确认过没有脸"=None）就不重复检测，尊重上游结论
+        if _mode and _mode not in ("none", "null") and "face_anchor" not in pip_cfg:
+            pip_cfg = {**pip_cfg}
+            pip_cfg["face_anchor"] = face_framing.anchor_for(media_path, src_in + clip_dur / 2.0, clip_dur)
+            if sec_media and Path(sec_media).is_file():
+                pip_cfg["secondary_face_anchor"] = face_framing.anchor_for(sec_media, sec_in + clip_dur / 2.0, clip_dur)
+            pip_cfg["face_framing"] = "face_center" if pip_cfg.get("face_anchor") else "no_face_center_crop"
+            pip_cfg["_face_checked"] = True
+            clip["pip_layout"] = pip_cfg  # 回写，render_profile 才能统计到底人脸构图落了几镜
         swap_spk = str(pip_cfg.get("speaker_media_path") or "") if pip_cfg.get("swap_main_secondary") else ""
         if swap_spk and Path(swap_spk).is_file() and sec_media and Path(sec_media).is_file():
             # B-roll 镜头也要保证「主讲人头像/同步口型」是当前句真人：把真人口播源换成主输入，B-roll 作为证据窗副输入
@@ -1666,6 +1744,8 @@ def build_base_video_track(
         raise RuntimeError("未找到 ffmpeg，无法渲染底轨视频。")
     work_dir = pipeline_dir / "_render_final"
     work_dir.mkdir(parents=True, exist_ok=True)
+    # 人脸锚点缓存落盘：同一条素材只检测一次，重渲不重复抽帧
+    face_framing.set_cache_path(pipeline_dir / "state" / "face_anchors.json")
     base_mp4 = work_dir / ("base_preview.mp4" if preview else "base_video.mp4")
     cache_flag = work_dir / ("base_preview.hash" if preview else "base_video.hash")
 
@@ -1689,8 +1769,13 @@ def build_base_video_track(
     if not preview and len(clips) >= 2:
         try:
             from render_template_overlays import get_style_blueprint
-            raw_tr = str((get_style_blueprint(style_id).get("overlay_style") or {}).get("transition_style") or "none").strip()
-            xf_type = _XFADE_STYLE_MAP.get(raw_tr, "")
+            bp_ov = get_style_blueprint(style_id).get("overlay_style") or {}
+            raw_tr = str(bp_ov.get("transition_style") or "none").strip()
+            # 硬约束：源草稿转场数为 0 的风格一律硬切，任何配置都不能开 xfade
+            if int(bp_ov.get("transition_source_count") or 0) > 0:
+                xf_type = _XFADE_STYLE_MAP.get(raw_tr, "")
+            else:
+                xf_type = ""
         except Exception:
             xf_type = ""
 
@@ -1715,11 +1800,43 @@ def build_base_video_track(
         xf_edges = [False] * max(0, len(clips) - 1)
     use_xfade = any(xf_edges)
 
+    def _pip_summary() -> Dict[str, Any]:
+        """画中画落地情况：几何模式挂了几镜、几镜真做了双源窗口、几镜窗口没素材可填。"""
+        single = dual = unrealized = 0
+        for c_item in clips:
+            cfg = c_item.get("pip_layout") or {}
+            if not str(cfg.get("mode") or "").startswith("geometry_pip"):
+                continue
+            wins = cfg.get("windows") or []
+            has_sec = bool(cfg.get("secondary_media_path"))
+            if has_sec:
+                dual += 1
+            elif wins:
+                single += 1
+                unrealized += 1
+            else:
+                single += 1
+        return {"geometry_pip_single": single, "geometry_pip_dual": dual,
+                "windows_unrealized": unrealized,
+                "note_cn": "windows_unrealized>0 表示该镜没拿到第二路素材，只落了主轨几何（窗口不下假图）"}
+
     def profile(base_hit: bool, reused: int) -> None:
         write_json(pipeline_dir / "render_profile.json", {
+            "face_framing": {
+                "windows_face_centered": sum(
+                    1 for c in clips
+                    if (c.get("pip_layout") or {}).get("face_framing") == "face_center"
+                ),
+                "windows_no_face_detected": sum(
+                    1 for c in clips
+                    if (c.get("pip_layout") or {}).get("face_framing") == "no_face_center_crop"
+                ),
+                "note_cn": "画中画小窗/缩窗/推近一律先检测人脸再取景；没有检测到人脸的镜头照实退回居中裁切并在此计数",
+            },
             "preview": preview, "base_cache_hit": base_hit, "segments_reused": reused,
             "segments_rendered": len(clips) - reused, "xfade_applied": sum(1 for e in xf_edges if e),
             "xfade_transition": xf_type if use_xfade else "none",
+            "pip_geometry": _pip_summary(),
             "base_elapsed_sec": round(perf_counter() - started, 4),
         })
 
@@ -1783,12 +1900,27 @@ def build_base_video_track(
         def _exec_seg(job: Tuple[Dict[str, Any], Optional[str], int, List[str], Path, Path, Path, str]) -> None:
             j_clip, j_cf, j_frames, j_cmd, j_staged, j_out, j_flag, j_key = job
             try:
-                pip_m = str((j_clip.get("pip_layout") or {}).get("mode") or "")
+                pip_cfg_m = j_clip.get("pip_layout") or {}
+                pip_m = str(pip_cfg_m.get("mode") or "")
+                # 真草稿几何模式里带抠像语义的（cutout=true 且主轨不打小窗）走 AI 人像抠像合成；
+                # 抠像器内部按「满屏真人 + 副镜背景 + 纯色描边」实现，与这些风格的源结构一致
+                mat_m = pip_m
+                if pip_m.startswith("geometry_pip"):
+                    try:
+                        cut = bool(pip_cfg_m.get("cutout"))
+                        main_sc = float((pip_cfg_m.get("main") or {}).get("scale") or 1.0)
+                    except (TypeError, ValueError):
+                        cut, main_sc = False, 1.0
+                    if cut and main_sc >= 0.999:
+                        mat_m = "vision_portrait_cutout_pip"
                 mat_ok = False
-                if (not preview) and (pip_m in _AI_MATTING_MODES):
+                if (not preview) and (mat_m in _AI_MATTING_MODES):
+                    clip_for_mat = dict(j_clip)
+                    clip_for_mat["pip_layout"] = {**pip_cfg_m, "mode": mat_m,
+                                                  "outline_px": int(pip_cfg_m.get("outline_px") or 10)}
                     mat_ok = _render_ai_person_matting_segment(
                         ffmpeg_bin=ffmpeg_bin,
-                        clip=j_clip,
+                        clip=clip_for_mat,
                         color_vf=j_cf,
                         eye_by_mp4=eye_by_mp4,
                         out_mp4=j_staged,

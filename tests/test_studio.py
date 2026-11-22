@@ -1,3 +1,4 @@
+import json
 import shutil
 import subprocess
 import sys
@@ -32,6 +33,151 @@ class StudioTests(unittest.TestCase):
         self.root = Path(self.temp.name).resolve()
         self.pipeline = self.root / "pipeline"
         self.pipeline.mkdir()
+
+    def test_source_font_and_audio_override_win_when_present(self):
+        from common import find_source_font, read_json
+        from step3_lock_audio import find_source_bgm
+        from vibe_sound import get_style_sound_profile
+        sid = "style_21"
+        entry = [x for x in read_json(ASSETS_DIR / "style_spectrum" / "style_spectrum_library.json")["styles"]
+                 if x["style_id"] == sid][0]
+        fam = entry["subtitle_spec"]["source_font_family"]
+        font_dir = ASSETS_DIR / "style_spectrum" / "fonts" / sid
+        font_dir.mkdir(parents=True, exist_ok=True)
+        probe = font_dir / f"{fam}-Bold.otf"
+        base = next((q for q in (ASSETS_DIR / "fonts").glob("*") if q.suffix in (".otf", ".ttf")), None)
+        self.assertIsNotNone(base, "随包字体缺失，无法构造探针")
+        probe.write_bytes(base.read_bytes())
+        from common import _FONT_CACHE
+        _FONT_CACHE.clear()
+        user_dir = ASSETS_DIR / "sound_vibe" / "user" / sid
+        user_dir.mkdir(parents=True, exist_ok=True)
+        bgm_names = read_json(ASSETS_DIR / "sound_vibe" / "vibe_sound_manifest.json")["styles"][sid]["source_bgm_names"]
+        probes = [probe, user_dir / f"{bgm_names[0]}.wav", user_dir / "accent.wav"]
+        for q in probes[1:]:
+            with wave.open(str(q), "w") as w:
+                w.setnchannels(2); w.setsampwidth(2); w.setframerate(44100)
+                w.writeframes(b"\x00\x00" * 4410)
+        try:
+            self.assertIsNotNone(find_source_font(fam, sid), "源字体放进专属目录后应被优先命中")
+            bgm = find_source_bgm(sid)
+            self.assertIsNotNone(bgm)
+            self.assertIn(bgm_names[0], bgm.name)
+            prof = get_style_sound_profile(sid)
+            self.assertIn("accent", prof["user_original_sfx_roles"])
+            self.assertIn("user", prof["sfx"]["accent"])
+        finally:
+            for q in probes:
+                q.unlink(missing_ok=True)
+            _FONT_CACHE.clear()
+        self.assertIsNone(find_source_font(fam, sid))
+        self.assertIsNone(find_source_bgm(sid))
+
+    def test_flower_palette_reads_blueprint_not_hardcoded(self):
+        from render_template_overlays import get_style_blueprint, style_flower_palette
+        bp_all = read_json(ASSETS_DIR / "style_spectrum" / "template_blueprints.json")["blueprints"]
+        for sid, node in bp_all.items():
+            ov = node["overlay_style"]
+            self.assertTrue(ov.get("flower_colors"), f"{sid} 缺 flower_colors")
+            pal = style_flower_palette(ov, sid)
+            self.assertLessEqual(max(pal["accent"]) - min(pal["accent"]), 255)
+            # 主强调色不得是纯白/纯黑（否则花字会失去层次）
+            self.assertNotEqual(pal["accent"], (255, 255, 255), f"{sid} 主强调色退化成纯白")
+            self.assertNotIn(pal["accent"], [(0, 0, 0)], f"{sid} 主强调色退化成纯黑")
+        # 换掉蓝图配色，调色板必须跟着变（证明不是写字面量）
+        fake = {"flower_colors": ["#12AB34", "#FFFFFF"], "stroke_color": "#000000"}
+        self.assertEqual(style_flower_palette(fake, "style_x")["accent"], (0x12, 0xAB, 0x34))
+        # 字幕关键词色优先于按频次排出的第一个色
+        self.assertEqual(
+            style_flower_palette({"flower_colors": ["#38BDF8", "#B71C1C"]}, "style_y", "#B71C1C")["accent"],
+            (0xB7, 0x1C, 0x1C),
+        )
+
+    def _native_fixture(self):
+        from export_jianying_native import export_native_draft
+        norm = self.pipeline / "01_normalized"
+        norm.mkdir(parents=True, exist_ok=True)
+        v1, v2 = norm / "a.mp4", norm / "b.mp4"
+        v1.write_bytes(b"fixture")
+        v2.write_bytes(b"fixture")
+        clips, cursor = [], 0.0
+        for i, (path, role) in enumerate(((v1, "a_roll"), (v2, "b_roll"), (v1, "a_roll"), (v2, "b_roll"))):
+            clips.append({
+                "clip_id": f"c{i + 1}", "track_role": role, "media_path": str(path),
+                "source_in_sec": float(i), "duration_sec": 2.0,
+                "timeline_in_sec": cursor, "timeline_out_sec": cursor + 2.0,
+            })
+            cursor += 2.0
+        write_json(self.pipeline / "04_edl.json", {
+            "step": "step4", "fps": 30, "style_id": "style_14", "canvas": {"width": 1080, "height": 1920},
+            "total_duration_sec": cursor, "total_frames": int(cursor * 30), "clip_count": len(clips), "clips": clips,
+        })
+        write_json(self.pipeline / "05_subtitles.json", {"step": "step5", "template_id": "style_14", "entries": [
+            {"id": "s1", "text": "第一行示范字幕", "start_sec": 0.2, "end_sec": 2.0},
+            {"id": "s2", "text": "第二行示范字幕", "start_sec": 2.2, "end_sec": 4.0},
+            {"id": "s3", "text": "第三行示范字幕", "start_sec": 4.2, "end_sec": 7.8},
+        ]})
+        write_json(self.pipeline / "06_packaging.json", {"step": "step6", "style_id": "style_14", "visual_elements": [
+            {"id": "p1", "kind": "center_burst_title", "text_or_asset": "关键一点", "fg_hex": "#FFF589",
+             "stroke_hex": "#000000", "start_frame": 0, "end_frame": 60},
+        ]})
+        return export_native_draft(self.pipeline, self.root / "native_out")
+
+    def test_native_jianying_draft_is_text_editable(self):
+        status = self._native_fixture()
+        self.assertEqual(status["status"], "success")
+        self.assertTrue(status["editable_text"])
+        self.assertFalse(status["baked_layers"])
+        draft = Path(status["draft_content"])
+        content = read_json(draft)
+        types = [t["type"] for t in content["tracks"]]
+        self.assertIn("video", types)
+        self.assertGreaterEqual(types.count("text"), 2)
+        texts = content["materials"]["texts"]
+        self.assertTrue(all(m.get("type") == "text" for m in texts))
+        bodies = [json.loads(m["content"])["text"] for m in texts]
+        self.assertIn("第一行示范字幕", bodies)
+        self.assertIn("关键一点", bodies)
+        entry = [s for s in read_json(ASSETS_DIR / "style_spectrum" / "style_spectrum_library.json")["styles"]
+                 if s["style_id"] == "style_14"][0]
+        src_font = entry["subtitle_spec"]["source_font_family"]
+        self.assertTrue(all(m["font_name"] == src_font for m in texts))
+        self.assertIn("source_timerange", content["tracks"][0]["segments"][0])
+        self.assertAlmostEqual(content["duration"] / 1e6, 8.0, places=2)
+
+    def test_native_draft_schema_matches_decrypted_reference(self):
+        import os
+        ref = Path(os.environ.get("JY_DRAFT_REF") or "")
+        if not ref.is_file():
+            self.skipTest("未提供 JY_DRAFT_REF（真草稿参考不入库），跳过 schema 逐键对比")
+        sys.path.insert(0, str(ROOT / "dev_tools"))
+        from verify_native_draft import verify
+        status = self._native_fixture()
+        self.assertEqual(verify(Path(status["draft_dir"]), ref), 0)
+
+    def test_hyperframes_sample_is_per_style_not_generic(self):
+        from apply_style_spectrum import export_hyperframes_html, get_style_entry, load_library
+        lib = load_library()
+        out_a = self.root / "hf_a" / "index.html"
+        out_b = self.root / "hf_b" / "index.html"
+        export_hyperframes_html(lib, "style_14", out_a, duration_sec=12.0)
+        export_hyperframes_html(lib, "style_01", out_b, duration_sec=12.0)
+        a, b = out_a.read_text(), out_b.read_text()
+        self.assertNotEqual(a, b)
+        pip_mode = get_style_entry(lib, "style_14")["pip_composition_spec"]["mode"]
+        self.assertIn("sample-pip", a)
+        self.assertIn(pip_mode, a)
+        self.assertGreaterEqual(a.count("sample-caption-"), 3)
+        self.assertNotIn("STYLE-", a + b)
+        self.assertNotIn("style_14", a.replace("data-", ""))
+        max_chars = get_style_entry(lib, "style_14")["subtitle_spec"]["max_chars_per_line"]
+        self.assertIn(f'data-max-chars="{max_chars}"', a)
+
+    def test_fcpxml_export_is_labeled_baked(self):
+        source = (ROOT / "short-video-studio" / "scripts" / "export_jianying.py").read_text()
+        self.assertIn('"export_kind": "baked_interchange"', source)
+        self.assertIn('"text_editable": False', source)
+        self.assertIn("export_jianying_native.py", source)
 
     def test_optional_and_explicit_exports(self):
         for selection, state, required in (("mp4", "NOT_REQUESTED", False), ("auto", "FAIL", False),
@@ -420,7 +566,7 @@ class StudioTests(unittest.TestCase):
         self.assertIsNone(re.search(r"/(?:Users|home)/[A-Za-z0-9._-]+", raw_lib_text))
         self.assertNotIn("com." + "lveditor.draft", raw_lib_text)
         lib = read_json(lib_path)
-        self.assertEqual(lib.get("version"), "3.2.0")
+        self.assertEqual(lib.get("version"), "4.0.0")
         self.assertEqual(lib.get("default_style_id"), "style_01")
         styles = lib.get("styles") or []
         self.assertEqual(len(styles), 24)
@@ -444,8 +590,9 @@ class StudioTests(unittest.TestCase):
             meta = s["meta"]
             self.assertEqual((meta["width"], meta["height"], meta["aspect"]), (1080, 1920, "9:16"), f"{sid} not 9:16")
             sub = s["subtitle_spec"]
-            self.assertGreaterEqual(float(sub["safe_y_ratio"]), 0.63)
-            self.assertLessEqual(float(sub["safe_y_ratio"]), 0.78)
+            # v4：安全区直接取源草稿实测值（0.629–0.721），带外即为漂移
+            self.assertGreaterEqual(float(sub["safe_y_ratio"]), 0.60)
+            self.assertLessEqual(float(sub["safe_y_ratio"]), 0.80)
             self.assertEqual(sub.get("symmetry_center_x"), 540)
             self.assertEqual(sub.get("symmetry_max_width_px"), 640)
             self.assertTrue(is_verified_commercial_font(s.get("commercial_safe_font")))
@@ -464,6 +611,10 @@ class StudioTests(unittest.TestCase):
             giant_spec = s.get("giant_text_spec") or {}
             self.assertIn(pip_spec.get("mode"), {
                 "none",
+                "geometry_pip_full",
+                "geometry_pip_window",
+                "geometry_pip_main_shrunk",
+                "geometry_pip_main_punch_in",
                 "blur_bg_center_card_pip",
                 "dark_doc_circle_avatar_pip",
                 "linear_split_feather_pip",
@@ -486,7 +637,7 @@ class StudioTests(unittest.TestCase):
         self.assertEqual(whitebox_cnt, 24)
         self.assertEqual(
             high_broll_targets,
-            {"style_21": 0.85, "style_22": 0.90, "style_23": 0.95, "style_24": 1.00},
+            {"style_21": 0.76, "style_22": 0.41, "style_23": 0.46, "style_24": 0.55},
         )
 
     def test_pip_giant_text_and_template_packaging_rendering(self):
@@ -635,33 +786,48 @@ class StudioTests(unittest.TestCase):
             {"id": "br2", "role": "b_roll", "normalized_mp4": str(br2_mp4), "duration_sec": 6.0, "video_grade": "usable", "semantic_tags": ["细节", "现场"], "sharpness_score": 48.0, "stability_score": 0.9, "best_in_sec": 0.4},
         ]
 
-        # style_21 (85% B-roll)
+        # style_21 (源实测 75.6% 覆盖，动态带 ±15pp)
         p21 = self.root / "p21"
         p21.mkdir()
         write_json(p21 / "01_manifest.json", {"items": manifest_items})
         write_json(p21 / "03_audio_events.json", {"locked_duration_sec": 9.6, "locked_duration_frames": 288, "sentences": sents, "events": evts})
         edl21 = run_step4(p21, track="store", style_id="style_21", edit_profile="documentary")
-        self.assertGreaterEqual(edl21["broll_ratio_target"], 0.85)
-        self.assertGreaterEqual(edl21["broll_ratio_actual"], 0.70)
+        self.assertAlmostEqual(edl21["broll_ratio_prior"], 0.756, places=3)
+        self.assertEqual(edl21["broll_ratio_band"], [0.606, 0.906])
+        # 口径：真实插入画面单独统计（自制图卡不计入与源一致的覆盖率）
+        self.assertGreaterEqual(edl21["broll_ratio_with_cards"], 0.60)
+        self.assertLessEqual(edl21["broll_ratio_with_cards"], 0.95)
         self.assertTrue(all(float(c["duration_sec"]) >= 0.30 for c in edl21["clips"]))
 
-        # style_24 (100% B-roll, zero A-roll) + TTS source mismatch must block a_roll binding
+        # style_24 (源实测 54.8%，非 100%) + TTS source mismatch must block a_roll binding
         p24 = self.root / "p24"
         p24.mkdir()
         tts_sents = [{**s, "source_media": str(self.root / "tts_fake.wav")} for s in sents]
         write_json(p24 / "01_manifest.json", {"items": manifest_items})
         write_json(p24 / "03_audio_events.json", {"locked_duration_sec": 9.6, "locked_duration_frames": 288, "sentences": tts_sents, "events": evts})
         edl24 = run_step4(p24, track="creator", style_id="style_24", edit_profile="documentary")
-        self.assertEqual(edl24["broll_ratio_actual"], 1.0)
-        self.assertFalse(any(c["track_role"] == "a_roll" for c in edl24["clips"]))
+        # 本 fixture 的 A-roll 全部被 TTS 源不匹配挡掉，B-roll 只能吃满 —— 这正是动态配比应有的结果
+        self.assertAlmostEqual(edl24["broll_ratio_prior"], 0.548, places=3)
+        self.assertEqual(edl24["broll_ratio_band"], [0.398, 0.698])
+        self.assertEqual(edl24["broll_target_hard"], False)
+        self.assertGreaterEqual(edl24["broll_ratio_actual"], 0.40)
+        self.assertFalse(any(
+            c["track_role"] == "a_roll" and "tts_fake" in str(c.get("media_path") or "")
+            for c in edl24["clips"]
+        ))
         self.assertTrue(all(float(c["duration_sec"]) >= 0.30 for c in edl24["clips"]))
 
-        # QA #8 must pass on 100% high-broll style_24
+        # QA #8 must pass on high-broll style_24
         write_json(p24 / "05_subtitles.json", {"template_id": "style_24", "font_path": str(ASSETS_DIR / "fonts" / "SourceHanSerifCN-Heavy.otf"), "entries": []})
         write_json(p24 / "06_packaging.json", {"visual_elements": []})
         qa_rep = inspect_video(p24, out_mp4, export_mode="mp4")
         c8 = next(c for c in qa_rep["checks"] if c["id"] == "shot_duration_dist")
         self.assertEqual(c8["status"], "PASS", f"QA #8 failed on style_24: {c8}")
+        # 新增两条"不许假装""不许瞎切"的自查：素材没主题词就照实记 none，小窗必须交代有没有按脸取景
+        sem_c = next(c for c in qa_rep["checks"] if c["id"] == "broll_semantic_fit")
+        self.assertEqual(sem_c["status"], "PASS", f"语义对位自查不通过: {sem_c}")
+        face_c = next(c for c in qa_rep["checks"] if c["id"] == "pip_face_framing")
+        self.assertEqual(face_c["status"], "PASS", f"小窗人脸构图自查不通过: {face_c}")
 
     def test_bbox_iou_normalized_and_archive_approve_order(self):
         from common import bbox_iou
@@ -1329,9 +1495,16 @@ class StudioTests(unittest.TestCase):
         self.assertEqual(lib.get("default_style_id"), "style_01")
         bps = load_template_blueprints()
         self.assertEqual(len(bps), 24)
-        none_cnt = sum(1 for s in lib["styles"] if (s.get("pip_composition_spec") or {}).get("mode") == "none")
-        self.assertGreaterEqual(none_cnt, 13)
-        self.assertEqual((lib["styles"][0].get("pip_composition_spec") or {}).get("mode"), "none")
+        # 24 套全部改成真草稿几何驱动；逐套与 pip_usage.json 的主轨数字比对，杜绝「手写版面」
+        usage = read_json(ROOT / "forensic" / "pip_usage.json")["styles"]
+        for s_node in lib["styles"]:
+            sid = s_node["style_id"]
+            spec = s_node.get("pip_composition_spec") or {}
+            self.assertTrue(str(spec.get("mode")).startswith("geometry_pip"),
+                            f"{sid} 未按真草稿几何重排：{spec.get('mode')}")
+            truth = usage[sid]["main"]
+            self.assertEqual(spec["main"]["scale"], truth["scale"], f"{sid} 主轨 scale 与真草稿不符")
+            self.assertEqual(spec["main"]["x"], truth["x"], f"{sid} 主轨 x 与真草稿不符")
 
         # 全部 24 套模板蓝图均可渲染出有效透明叠层
         for i in range(1, 25):
@@ -1635,10 +1808,10 @@ class StudioTests(unittest.TestCase):
         # 2) 新替换的 4 套白盒风格（05/12/13/14）均已接入真实白盒构图、动效与转场
         lib = read_json(ASSETS_DIR / "style_spectrum" / "style_spectrum_library.json")
         by_id = {s["style_id"]: s for s in lib["styles"]}
-        self.assertEqual(by_id["style_05"]["pip_composition_spec"]["mode"], "person_behind_giant_text_pip")
-        self.assertEqual(by_id["style_12"]["pip_composition_spec"]["mode"], "none")
-        self.assertEqual(by_id["style_13"]["pip_composition_spec"]["mode"], "top_white_rounded_frame_pip")
-        self.assertEqual(by_id["style_14"]["pip_composition_spec"]["mode"], "black_spotlight_circle_pip")
+        self.assertEqual(by_id["style_05"]["packaging_techniques"]["pip_mode"], "geometry_pip_window")
+        for sid in ("style_05", "style_12", "style_13", "style_14"):
+            self.assertTrue(str(by_id[sid]["pip_composition_spec"]["mode"]).startswith("geometry_pip"),
+                            f"{sid} 未按真草稿几何重排")
         for sid in ("style_05", "style_12", "style_13", "style_14"):
             self.assertTrue(by_id[sid]["whitebox_source"]["is_whitebox_jianying"])
             bp = get_style_blueprint(sid)
@@ -1696,24 +1869,24 @@ class StudioTests(unittest.TestCase):
         from step6_packaging import run_step6
 
         tpls = load_subtitle_templates()
+        # v4：源草稿底框 background_width/height 均为 0（跟随文字自适应），没有任何一套是通栏
         for sid in ("style_02", "style_03", "style_20"):
             tpl = tpls[sid]
-            self.assertTrue(tpl.get("full_width_bar"), f"{sid} must enable full_width_bar")
-            sub_p = self.root / f"sub_fw_{sid}.png"
-            w, h = render_subtitle_png(
-                {"text": "这一句一定要看清底条通栏", "keywords": ["底条通栏"]},
-                tpl,
-                None,
-                sub_p,
-            )
-            self.assertEqual(w, CANVAS_WIDTH, f"{sid} subtitle bar must span full 1080px")
-            px, _py = compute_subtitle_place_xy(w, h, tpl)
-            self.assertEqual(px, 0)
-            with Image.open(sub_p) as im:
-                self.assertEqual(im.width, CANVAS_WIDTH)
-                # 最左与最右边缘均应有不透明通栏底条
-                self.assertGreater(im.getpixel((4, h // 2))[3], 100)
-                self.assertGreater(im.getpixel((CANVAS_WIDTH - 5, h // 2))[3], 100)
+            self.assertFalse(tpl.get("full_width_bar"), f"{sid} must NOT claim a full-width bar")
+        # style_02 是源里唯一带底框的（方角 67%），底框随文字宽度走
+        tpl02 = tpls["style_02"]
+        sub_p = self.root / "sub_box_style_02.png"
+        w, h = render_subtitle_png(
+            {"text": "这一句带方角底框", "keywords": ["方角底框"]},
+            tpl02,
+            None,
+            sub_p,
+        )
+        self.assertLessEqual(w, 848, "底框字幕宽度必须随文字收缩，不得铺满 1080")
+        px, _py = compute_subtitle_place_xy(w, h, tpl02)
+        self.assertEqual(px, (CANVAS_WIDTH - w) // 2)
+        with Image.open(sub_p) as im:
+            self.assertGreater(im.getpixel((6, h // 2))[3], 100, "底框左右边缘应不透明")
 
         # style_02 / 03 / 13 / 20 默认 suppress_top_duplicate_flower=True，不生成顶部冗余重复花字条
         pdir = self.root / "pkg_suppress_dup"
@@ -1763,8 +1936,9 @@ class StudioTests(unittest.TestCase):
         base_mp4 = build_base_video_track(pdir, edl, {"clip_plans": []}, wav_p, manifest={"items": []}, preview=False)
         self.assertTrue(base_mp4.is_file())
         prof = read_json(pdir / "render_profile.json")
-        self.assertEqual(prof.get("xfade_applied"), 1)
-        self.assertEqual(prof.get("xfade_transition"), "zoomin")
+        # v4：源 24/24 转场数为 0，渲染器硬约束不允许开 xfade
+        self.assertEqual(prof.get("xfade_applied"), 0)
+        self.assertEqual(prof.get("xfade_transition"), "none")
         info = ffprobe_media(base_mp4)
         dur = float(info.get("format", {}).get("duration", 0.0))
         self.assertAlmostEqual(dur, 3.0, delta=0.04, msg="xfade 转场后总时长必须 0 帧漂移")
@@ -1774,7 +1948,7 @@ class StudioTests(unittest.TestCase):
         from step4_build_edl import run_step4
 
         lib = read_json(ASSETS_DIR / "style_spectrum" / "style_spectrum_library.json")
-        self.assertEqual(lib.get("version"), "3.2.0")
+        self.assertEqual(lib.get("version"), "4.0.0")
         by_id = {s["style_id"]: s for s in lib["styles"]}
         for sid, s in by_id.items():
             ab = s.get("ab_switch_spec") or {}
@@ -1841,7 +2015,8 @@ class StudioTests(unittest.TestCase):
         write_json(p04 / "03_audio_events.json", ae_doc)
         edl04 = run_step4(p04, track="store", style_id="style_04")
         self.assertGreater(edl10["clip_count"], edl04["clip_count"])
-        self.assertEqual(edl10["keyframe_moves_applied"], edl10["clip_count"])
+        # 已做重点拉近（punch-in）的镜头不再叠 keyframe，允许少量镜头由拉近替代
+        self.assertGreaterEqual(edl10["keyframe_moves_applied"], int(edl10["clip_count"] * 0.8))
 
         # 3) style_05 (depth_hook_then_framed_broll): A-roll 挂 person_behind_giant_text_pip，B-roll 切 blur_bg_center_card_pip
         p05 = self.root / "edl_s05"
@@ -1851,8 +2026,10 @@ class StudioTests(unittest.TestCase):
         edl05 = run_step4(p05, track="store", style_id="style_05")
         a_modes_05 = {(c.get("pip_layout") or {}).get("mode") for c in edl05["clips"] if c["track_role"] == "a_roll"}
         b_modes_05 = {(c.get("pip_layout") or {}).get("mode") for c in edl05["clips"] if c["track_role"] == "b_roll"}
-        self.assertIn("person_behind_giant_text_pip", a_modes_05)
-        self.assertIn("blur_bg_center_card_pip", b_modes_05)
+        # depth 范式只在钩子镜挂框（其余保持全屏），但挂上的必须是真值几何，不能再出现别人的版面
+        self.assertIn("geometry_pip_window", a_modes_05)
+        self.assertTrue(all(m is None or str(m).startswith("geometry_pip") for m in a_modes_05 | b_modes_05),
+                        a_modes_05 | b_modes_05)
 
         # 4) style_07 (cutout_broll_alternating): A-roll 挂 vision_portrait_cutout_pip，纯 B-roll 镜保持全屏无 pip_layout
         p07 = self.root / "edl_s07"
@@ -1861,10 +2038,9 @@ class StudioTests(unittest.TestCase):
         write_json(p07 / "03_audio_events.json", ae_doc)
         edl07 = run_step4(p07, track="store", style_id="style_07")
         for c in edl07["clips"]:
-            if c["track_role"] == "a_roll":
-                self.assertEqual((c.get("pip_layout") or {}).get("mode"), "vision_portrait_cutout_pip")
-            elif c["track_role"] == "b_roll":
-                self.assertIsNone(c.get("pip_layout"), "cutout_broll_alternating 下纯 B-roll 镜应全屏呼吸展示")
+            mode07 = (c.get("pip_layout") or {}).get("mode")
+            self.assertTrue(mode07 is None or str(mode07).startswith("geometry_pip"),
+                            f"style_07 {c['track_role']} 出现非真值几何的画中画模式：{mode07}")
 
         # 5) style_09 (dual_window_broll_switcher): B-roll 镜也必须绑定 swap_main_secondary + speaker_media_path 保左下圆头像真人同步说话
         p09 = self.root / "edl_s09"
@@ -1881,13 +2057,14 @@ class StudioTests(unittest.TestCase):
         from common import ASSETS_DIR, load_subtitle_templates, read_json
         from render_mp4 import _flower_duplicates_subtitle, render_subtitle_png
 
-        # 1) style_21 已补齐 vision_portrait_cutout_pip (outline_px=8)
+        # 1) style_21 按真草稿：主轨推近 1.2 + 叠加窗，几何来自 pip_usage.json
         lib = read_json(ASSETS_DIR / "style_spectrum" / "style_spectrum_library.json")
         s21 = next(s for s in lib["styles"] if s["style_id"] == "style_21")
-        self.assertEqual(s21["pip_composition_spec"]["mode"], "vision_portrait_cutout_pip")
-        self.assertEqual(s21["pip_composition_spec"]["outline_px"], 8)
+        self.assertTrue(str(s21["pip_composition_spec"]["mode"]).startswith("geometry_pip"))
+        self.assertEqual(s21["pip_composition_spec"]["main"]["scale"], 1.2)
+        self.assertTrue(s21["pip_composition_spec"]["windows"], "style_21 真草稿里有叠加窗")
 
-        # 2) style_02 / 03 / 20 启用 dual_line_banner 后，长句自动排为上下双行高厚度大字横幅 (h >= 120px)
+        # 2) dual_line_banner：长句排上下双行（标题厚度 ≥124px），宽度仍在对称安全带内（≤848）
         tpls = load_subtitle_templates()
         for sid in ("style_02", "style_03", "style_20"):
             self.assertTrue(tpls[sid].get("dual_line_banner"))
@@ -1898,13 +2075,457 @@ class StudioTests(unittest.TestCase):
                 None,
                 sub_p,
             )
-            self.assertEqual(w, 1080)
-            self.assertGreaterEqual(h, 128, f"{sid} dual-line banner should be thick two-line banner, got h={h}")
+            self.assertLessEqual(w, 848, f"{sid} 双行字幕不得铺满整屏")
+            self.assertGreaterEqual(h, 124, f"{sid} dual-line banner should be thick two-line banner, got h={h}")
 
         # 3) 同屏花字与底字幕防重互斥
         subs = [{"text": "钱背后藏着定价真相", "start_sec": 0.0, "end_sec": 2.0}]
         self.assertTrue(_flower_duplicates_subtitle("两块钱背后藏", 0.0, 1.8, subs))
         self.assertFalse(_flower_duplicates_subtitle("门店实拍核验", 0.0, 1.8, subs))
+
+
+class ColorGradeCalibrationTests(unittest.TestCase):
+    """调色闭环：曲线必须真的在改画面，且输出分位要落到源片实测分位。"""
+
+    @classmethod
+    def setUpClass(cls):
+        import subprocess
+        from common import find_bin
+        cls.ff = find_bin("ffmpeg")
+        work = Path(tempfile.mkdtemp(prefix="grade_probe_"))
+        cls.clip = work / "ramp.mp4"
+        if cls.ff:
+            # 静态灰阶斜坡：分布固定（不随时间变），才谈得上「贴到目标分位」是可复现的
+            from PIL import Image
+            img = Image.new("RGB", (320, 240))
+            px = img.load()
+            for y in range(240):
+                for x in range(320):
+                    v = int(14 + (236 - 14) * x / 319)
+                    px[x, y] = (v, v, min(255, v + 4))
+            png = work / "ramp.png"
+            img.save(png)
+            subprocess.run(
+                [str(cls.ff), "-v", "error", "-loop", "1", "-i", str(png), "-t", "3", "-r", "24",
+                 "-pix_fmt", "yuv420p", "-c:v", "libx264", "-y", str(cls.clip)],
+                capture_output=True, check=False)
+
+    def test_tone_curve_maps_to_target_and_stays_in_range(self):
+        from step7_color_grade import _resolve_style_color, _tone_curve_filter
+        sc = _resolve_style_color("style_01")
+        vf = _tone_curve_filter(sc, (0.15, 0.52, 0.90), (60 / 255.0, 150 / 255.0, 225 / 255.0))
+        self.assertTrue(vf and vf.startswith("curves=all="), vf)
+        pts = [tuple(float(v) for v in pair.split("/")) for pair in
+               vf.split("'")[1].split()]
+        # 坐标必须是 0–1（剪映/ffmpeg curves 都吃 0–1；写成 0–255 会直接报错或被夹死）
+        for x, y in pts:
+            self.assertGreaterEqual(x, 0.0)
+            self.assertLessEqual(x, 1.0)
+            self.assertGreaterEqual(y, 0.0)
+            self.assertLessEqual(y, 1.0)
+        # 三个源分位必须被搬到目标位置（不是空转的恒等曲线）
+        mapping = {round(x, 3): y for x, y in pts}
+        self.assertAlmostEqual(mapping[0.15], 60 / 255.0, places=2)
+        self.assertAlmostEqual(mapping[0.52], 150 / 255.0, places=2)
+        self.assertAlmostEqual(mapping[0.9], 225 / 255.0, places=2)
+
+    def test_curve_actually_moves_the_picture(self):
+        """回归护栏：曾经曲线坐标写错，滤镜看着在跑但画面几乎没动。"""
+        from step7_color_grade import _probe_with_vf
+        if not self.ff or not Path(self.clip).is_file():
+            self.skipTest("ffmpeg unavailable")
+        base = _probe_with_vf(str(self.clip), "null", 0.0, 2.5)
+        lifted = _probe_with_vf(str(self.clip), "curves=all='0/0 0.18/1 1/1'", 0.0, 2.5)
+        self.assertIsNotNone(base)
+        self.assertIsNotNone(lifted)
+        self.assertGreater((lifted[1] - base[1]) * 255.0, 40.0,
+                           f"曲线没生效：{base} → {lifted}")
+
+    def test_calibration_lands_on_source_percentiles(self):
+        from step7_color_grade import (
+            _resolve_style_color, calibrate_clip_curve, compute_hero_and_shot_correction)
+        if not self.ff or not Path(self.clip).is_file():
+            self.skipTest("ffmpeg unavailable")
+        sc = _resolve_style_color("style_01")
+        stats = {"yavg": 128.0, "uavg": 128.0, "vavg": 128.0}
+        corr = compute_hero_and_shot_correction(
+            stats, hero_stats=stats, is_hero=True, skin_ycbcr=None, style_id="style_01")
+        vf, adj, residual = calibrate_clip_curve(str(self.clip), 0.0, 2.5, corr, sc, None, 0.0, False)
+        self.assertTrue(vf.startswith("eq="), vf)
+        self.assertIsNotNone(residual, "校准没量到素材分位")
+        self.assertLessEqual(max(abs(v) for v in residual), 12.0,
+                             f"调色链没贴到源分位，残差 {residual}")
+
+
+class EffectLayerParityTests(unittest.TestCase):
+    """画面特效只能做源草稿 effect 轨里真有的那几段，且要按时间窗生效。"""
+
+    def test_effects_match_source_effect_track(self):
+        from step7_color_grade import _effects_enabled
+        usage = read_json(ROOT / "forensic" / "effect_usage.json")["styles"]
+        build = __import__("subprocess").run(
+            [sys.executable, str(ROOT / "dev_tools" / "build_effect_usage.py"), "--check"],
+            capture_output=True, text=True)
+        self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+        for sid, node in usage.items():
+            eff = _effects_enabled({"effects": read_json(
+                ASSETS_DIR / "style_spectrum" / "color_effects.json")["styles"][sid]["effects"]})
+            want = {e["source_effect"] for e in node["effects"]
+                    if e["source_effect"] in ("暗角", "模糊", "聚光灯", "不规则黑框", "怀旧边框", "荧幕噪点", "颤抖")}
+            self.assertEqual(len(eff), len(want), f"{sid} 特效数量与源不符：{eff} vs {want}")
+
+    def test_effect_only_fires_inside_source_window(self):
+        from step7_color_grade import _effect_filters
+        color = read_json(ASSETS_DIR / "style_spectrum" / "color_effects.json")["styles"]["style_02"]
+        self.assertTrue(color["effects"]["vignette"], "style_02 源里有暗角")
+        win = color["effects"]["vignette"]["window"]
+        inside = (float(win["start"]) + 0.2, float(win["start"]) + 1.2)
+        outside = (0.0, 1.0)
+        self.assertTrue(any("vignette" in f for f in _effect_filters(color, clip_window=inside)))
+        self.assertFalse(any("vignette" in f for f in _effect_filters(color, clip_window=outside)))
+
+    def test_spotlight_geq_makes_a_real_light_circle(self):
+        """聚光要能真挖出「中间亮、四周暗」，不是整圈渐变。"""
+        import subprocess
+        from common import find_bin
+        from step7_color_grade import _effect_filters
+        ff = find_bin("ffmpeg")
+        if not ff:
+            self.skipTest("ffmpeg unavailable")
+        tmp = Path(tempfile.mkdtemp(prefix="spot_")) / "flat.mp4"
+        subprocess.run([str(ff), "-v", "error", "-f", "lavfi",
+                        "-i", "color=c=0x808080:s=320x480:d=1:r=24",
+                        "-pix_fmt", "yuv420p", "-c:v", "libx264", "-y", str(tmp)],
+                       capture_output=True, check=False)
+        # x/y 用画布（1080×1920）坐标，滤镜内部按相对量换算，换分辨率也成立
+        color = {"effects": {"spotlight": {"angle": 0.63, "x": 540, "y": 960,
+                                           "inner_frac": 0.34, "feather_frac": 0.62}}}
+        vf = ",".join(_effect_filters(color)) or "null"
+        raw = subprocess.run([str(ff), "-v", "error", "-i", str(tmp), "-vf", f"{vf},scale=32:48",
+                              "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
+        import numpy as np
+        arr = np.frombuffer(raw[: 32 * 48 * 3], dtype=np.uint8).reshape(48, 32, 3).astype(float)
+        center = arr[22:26, 14:18].mean()
+        corner = arr[0:3, 0:3].mean()
+        self.assertGreater(center - corner, 25.0,
+                           f"聚光没有形成亮圈：中心 {center:.1f} 角落 {corner:.1f}")
+
+
+class GeometryPipRealizationTests(unittest.TestCase):
+    """真草稿几何画中画必须真的改画面：单源主轴几何、双源窗口都要跑出可测差异。"""
+
+    @classmethod
+    def setUpClass(cls):
+        import subprocess
+        from common import find_bin
+        cls.ff = find_bin("ffmpeg")
+        cls.work = Path(tempfile.mkdtemp(prefix="geom_pip_"))
+        cls.main = cls.work / "main.mp4"
+        cls.sec = cls.work / "sec.mp4"
+        if not cls.ff:
+            return
+        from PIL import Image, ImageDraw
+        a = Image.new("RGB", (1080, 1920), (30, 40, 60))
+        d = ImageDraw.Draw(a)
+        d.rectangle([0, 0, 300, 300], fill=(240, 60, 60))
+        a.save(cls.work / "a.png")
+        b = Image.new("RGB", (1080, 1920), (250, 240, 200))
+        b.save(cls.work / "b.png")
+        for src, dst in ((cls.work / "a.png", cls.main), (cls.work / "b.png", cls.sec)):
+            subprocess.run([str(cls.ff), "-v", "error", "-loop", "1", "-i", str(src), "-t", "2",
+                            "-r", "24", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-y", str(dst)],
+                           capture_output=True, check=False)
+
+    def _frame(self, path: Path) -> "object":
+        import subprocess
+        import numpy as np
+        raw = subprocess.run([str(self.ff), "-v", "error", "-i", str(path), "-frames:v", "1",
+                              "-pix_fmt", "rgb24", "-f", "rawvideo", "-"],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL).stdout
+        return np.frombuffer(raw[: 1080 * 1920 * 3], dtype=np.uint8).reshape(1920, 1080, 3)
+
+    def test_single_source_punch_in_changes_framing(self):
+        import subprocess
+        from render_mp4 import _build_ffmpeg_pip_vf
+        if not self.ff:
+            self.skipTest("ffmpeg unavailable")
+        vf = _build_ffmpeg_pip_vf({"mode": "geometry_pip_main_punch_in", "main": {"x": 0.0, "y": 0.0, "scale": 1.3}})
+        self.assertIsNotNone(vf)
+        self.assertIn("crop=1080:1920", vf)
+        out = self.work / "punch.mp4"
+        r = subprocess.run([str(self.ff), "-v", "error", "-i", str(self.main), "-vf", vf,
+                            "-t", "1", "-pix_fmt", "yuv420p", "-y", str(out)], capture_output=True)
+        self.assertEqual(r.returncode, 0, r.stderr.decode()[:300])
+        base = self._frame(self.main)
+        zom = self._frame(out)
+        self.assertEqual(zom.shape, (1920, 1080, 3))
+        # 推近 1.3：左上角那块红块应被推出画面（或明显变小位移），中心保持不变
+        self.assertGreater(float(abs(base[0:300, 0:300].astype(int) - zom[0:300, 0:300].astype(int)).mean()), 8.0)
+
+    def test_dual_window_places_secondary_into_truth_geometry(self):
+        import subprocess
+        from render_mp4 import _build_dual_pip_cmd
+        if not self.ff:
+            self.skipTest("ffmpeg unavailable")
+        layout = {"mode": "geometry_pip_window", "border_hex": "#FFFFFF", "border_width": 6,
+                  "main": {"x": 0.0, "y": 0.0, "scale": 1.0},
+                  "windows": [{"x": 0.0, "y": 0.0, "scale": 0.4, "segments": 3}]}
+        out = self.work / "dual.mp4"
+        cmd = _build_dual_pip_cmd(str(self.ff), str(self.main), 0.0, 2.0, "format=yuv420p",
+                                  layout, str(self.sec), 0.0, 1.0, 24, 24, out)
+        self.assertIsNotNone(cmd)
+        r = subprocess.run(cmd, capture_output=True)
+        self.assertEqual(r.returncode, 0, r.stderr.decode()[:400])
+        frame = self._frame(out)
+        # 窗口几何 scale=0.4、居中 → 中心 432×768 区域应变成副素材的浅米色
+        center = frame[960 - 200:960 + 200, 540 - 100:540 + 100].reshape(-1, 3).mean(axis=0)
+        corner = frame[10:60, 10:60].reshape(-1, 3).mean(axis=0)
+        # 副素材是米色 (250,240,200)：绿通道高；主素材角落是红块 (240,60,60)：绿通道低
+        self.assertGreater(float(center[1]), 190.0, f"窗口里没有副素材：中心 {center}")
+        self.assertLess(float(corner[1]), 120.0, f"窗口外应保持主素材：角落 {corner}")
+
+
+class DeadKnobWiringTests(unittest.TestCase):
+    """蓝图里的源实测参数必须真的被消费，不许躺在 json 里当装饰。"""
+
+    def test_flower_density_and_giant_count_come_from_source_measurement(self):
+        from step6_packaging import flower_budget_from_source, giant_count_from_source
+
+        # style_15 源草稿实测 88 条花字/分钟、10 条巨字；旧的经验公式只给 18 条
+        self.assertEqual(flower_budget_from_source("style_15", 60.0, 18), 88)
+        self.assertEqual(giant_count_from_source("style_15", 60.0, {}), 10)
+        # 没有实测密度的风格沿用旧预算，不做无依据的加料
+        self.assertEqual(flower_budget_from_source("style_01", 60.0, 18), 18)
+        self.assertEqual(giant_count_from_source("style_01", 60.0, {}), 0)
+        # pkg_tech 显式给了巨字数就听它的
+        self.assertEqual(giant_count_from_source("style_21", 60.0, {"giant_impact_count": 6}), 6)
+
+    def test_letter_spacing_reads_blueprint_value(self):
+        from render_template_overlays import letter_spacing
+
+        self.assertEqual(letter_spacing({}, 5.0), 5.0)
+        self.assertEqual(letter_spacing({"letter_spacing_px": 0}, 5.0), 0.0)
+        self.assertEqual(letter_spacing({"letter_spacing_px": 9}, 5.0), 9.0)
+        self.assertEqual(letter_spacing({"letter_spacing_px": "bad"}, 5.0), 5.0)
+
+    def test_letter_spacing_visibly_widens_the_flower_sprite(self):
+        from common import ASSETS_DIR
+        import render_template_overlays as rto
+
+        font = str(ASSETS_DIR / "fonts" / "SourceHanSerifCN-Heavy.otf")
+        tight = rto._text_sprite("看得见的细节", font, 900, 64, (255, 255, 255, 255), spacing_px=0.0)
+        loose = rto._text_sprite("看得见的细节", font, 900, 64, (255, 255, 255, 255), spacing_px=16.0)
+        self.assertIsNotNone(tight)
+        self.assertIsNotNone(loose)
+        self.assertGreater(loose.size[0], tight.size[0] + 40, (tight.size, loose.size))
+
+
+class FaceFramingTests(unittest.TestCase):
+    """小窗/推近的取景必须以人脸为中心，人不能被切掉。"""
+
+    def test_face_near_left_edge_stays_fully_inside_window(self):
+        from face_framing import crop_rect, face_inside
+
+        anchor = {"cx": 0.12, "cy": 0.42, "w": 0.10, "h": 0.14}
+        rect = crop_rect(anchor, 1080, 1920, 432, 768)
+        self.assertTrue(face_inside(rect, anchor, 1080, 1920, margin=1.0), rect)
+        self.assertLessEqual(rect["x"], int(0.12 * 1080))
+        self.assertGreaterEqual(rect["x"] + rect["w"], int((0.12 + 0.05) * 1080))
+
+    def test_big_close_up_face_zooms_out_instead_of_being_cut(self):
+        from face_framing import crop_rect, face_inside
+
+        # 脸占到画面高度的 45%：方窗里必须退到最大取景才放得下
+        anchor = {"cx": 0.5, "cy": 0.5, "w": 0.40, "h": 0.45}
+        rect = crop_rect(anchor, 1080, 1920, 292, 292)
+        self.assertTrue(face_inside(rect, anchor, 1080, 1920, margin=1.0), rect)
+        self.assertEqual(rect["w"], 1080)
+        # 极端特写（脸高 80% 的源画面塞进方窗）物理上放不下，此时只要求"尽量居中"，
+        # 并且不许假装成功：face_inside 必须如实为 False
+        huge = crop_rect({"cx": 0.5, "cy": 0.5, "w": 0.62, "h": 0.80}, 1080, 1920, 292, 292)
+        self.assertFalse(face_inside(huge, {"cx": 0.5, "cy": 0.5, "w": 0.62, "h": 0.80}, 1080, 1920))
+        self.assertLessEqual(abs((huge["x"] + huge["w"] / 2) - 540), 2)
+
+    def test_face_centered_crop_renders_face_at_window_center(self):
+        """真跑 ffmpeg：左 1/4 处的人被搬进窗口正中，旧的居中裁切则完全丢失。"""
+        import numpy as np
+        from PIL import Image
+        from face_framing import cover_crop_vf
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            src = root / "src.jpg"
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=gray:s=1920x1080:d=1",
+                            "-vf", "drawbox=x=300:y=300:w=200:h=200:color=lime:t=fill", "-frames:v", "1", str(src)],
+                           check=True)
+            anchor = {"cx": (300 + 100) / 1920, "cy": (300 + 100) / 1080, "w": 200 / 1920, "h": 200 / 1080}
+            outs = {}
+            for name, a in (("legacy", None), ("face", anchor)):
+                dst = root / f"{name}.png"
+                subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(src),
+                                "-vf", cover_crop_vf(432, 768, a), "-frames:v", "1", str(dst)], check=True)
+                arr = np.array(Image.open(dst).convert("RGB"))
+                mask = (arr[:, :, 1] > 150) & (arr[:, :, 0] < 120)
+                cols = np.where(mask.any(axis=0))[0] if mask.any() else []
+                outs[name] = (float(mask.mean()), float(cols.mean()) if len(cols) else -1.0)
+            self.assertLess(outs["legacy"][0], 0.02, "旧的居中裁切本来就该丢掉这张脸")
+            self.assertGreater(outs["face"][0], 0.03, "人脸取景必须把小窗里的脸保住")
+            self.assertAlmostEqual(outs["face"][1], 216.0, delta=24.0, msg="脸应落在窗口水平正中")
+
+    def test_no_face_anchor_keeps_legacy_center_crop(self):
+        from face_framing import cover_crop_vf
+
+        self.assertEqual(cover_crop_vf(432, 768, None),
+                         "scale=432:768:force_original_aspect_ratio=increase:flags=lanczos,"
+                         "crop=432:768:(iw-432)/2:(ih-768)/2")
+        self.assertIn("*0.24", cover_crop_vf(432, 768, None, face_bias=True))
+
+
+class WindowFaceFramingRenderTests(unittest.TestCase):
+    """渲染链真的按人脸锚点走：缩窗里的主角必须出现在窗口正中，不是被切开的一半。"""
+
+    def test_shrunk_window_uses_face_anchor_end_to_end(self):
+        import numpy as np
+        from PIL import Image
+        from render_mp4 import build_graded_segment_cmd
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            src = root / "src.mp4"
+            # 已规整的竖屏源（1080x1920），主角（亮绿块）站在画面**上半部** y=90..330 ——
+            # 方窗按画面正中/偏下取景就把他整个切掉，这正是复盘里"人脸被裁掉"的成因
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=gray:s=1080x1920:r=30:d=2",
+                            "-vf", "drawbox=x=390:y=90:w=300:h=240:color=lime:t=fill",
+                            "-c:v", "libx264", "-pix_fmt", "yuv420p", str(src)], check=True)
+            anchor = {"cx": 540 / 1080, "cy": 210 / 1920, "w": 300 / 1080, "h": 240 / 1920}
+            outs = {}
+            for name, a in (("legacy", None), ("face", anchor)):
+                out = root / f"{name}.mp4"
+                clip = {
+                    "clip_id": "c1", "track_role": "b_roll", "media_path": str(src),
+                    "source_in_sec": 0.0, "source_out_sec": 2.0,
+                    "timeline_in_frame": 0, "timeline_out_frame": 60,
+                    "duration_sec": 2.0,
+                    "pip_layout": {"mode": "smooth_orbit_pip", "corner": "tr",
+                                   "radius_px": 146, "center_y": 360,
+                                   "face_anchor": a},
+                }
+                cmd = build_graded_segment_cmd("ffmpeg", clip, None, {}, out, 30)
+                r = subprocess.run(cmd, capture_output=True)
+                self.assertEqual(r.returncode, 0, r.stderr.decode()[:300])
+                subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", "0.3", "-i", str(out),
+                                "-frames:v", "1", str(root / f"{name}.png")], check=True)
+                arr = np.array(Image.open(root / f"{name}.png").convert("RGB"))
+                # 只量圆窗内部（窗在右上角 x=734..1034, y=214..514），背景里的主体不算
+                win = arr[224:504, 744:1024]
+                mask = (win[:, :, 1] > 150) & (win[:, :, 0] < 120)
+                outs[name] = float(mask.mean())
+            # 完整可见时绿块约占窗口的 6.2%；旧逻辑只留下被切掉的一块（≈一半）
+            self.assertLess(float(outs["legacy"]), 0.045, f"旧逻辑应该把人切掉一块：{outs}")
+            # 新逻辑按人脸锚点取景，人完整落在窗口里
+            self.assertGreater(float(outs["face"]), 0.055, f"人脸取景没保住人：{outs}")
+
+
+class BrollSemanticsTests(unittest.TestCase):
+    """外来画面必须能与它压着的那句台词对上；对不上要照实标记，不能靠字面 tag 蒙。"""
+
+    def test_bare_phone_clip_is_reported_as_no_signal_not_fake_match(self):
+        from broll_semantics import relate
+
+        bare = {"filename": "IMG_4821.MOV", "semantic_tags": ["空镜特写"]}
+        rel = relate("清晨市场带回的鲜羊排，成本花了三千块。", bare, ["鲜羊排"])
+        self.assertEqual(rel["verdict"], "none")
+        self.assertEqual(rel["score"], 0.0)
+        self.assertEqual(rel["basis"], [])
+
+    def test_one_line_note_makes_the_same_clip_match_with_evidence(self):
+        from broll_semantics import relate
+
+        noted = {"filename": "IMG_4821.MOV", "semantic_tags": ["空镜特写"],
+                 "description": "后厨现切鲜羊排，刀工特写"}
+        rel = relate("清晨市场带回的鲜羊排，成本花了三千块。", noted, ["鲜羊排"])
+        self.assertGreaterEqual(rel["score"], 0.6)
+        self.assertEqual(rel["verdict"], "hit")
+        self.assertTrue(any("羊排" in b for b in rel["basis"]), rel["basis"])
+
+    def test_media_notes_file_is_parsed_and_becomes_topic_signal(self):
+        from inventory_media import _note_for, load_media_notes
+        from broll_semantics import relate
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "素材说明.txt").write_text(
+                "# 注释行会被跳过\nIMG_4821.MOV 后厨现切鲜羊排\nIMG_4830.MOV  门店门头与大厅\n",
+                encoding="utf-8")
+            notes = load_media_notes(root)
+            self.assertEqual(notes.get("IMG_4821.MOV"), "后厨现切鲜羊排")
+            self.assertEqual(notes.get("IMG_4830.MOV"), "门店门头与大厅")
+            self.assertEqual(_note_for(notes, "IMG_0000.MOV", "sub/IMG_0000.MOV"), "")
+            item = {"filename": "IMG_4821.MOV", "description": _note_for(notes, "IMG_4821.MOV", "IMG_4821.MOV")}
+            self.assertEqual(relate("清晨带回的鲜羊排", item, ["鲜羊排"])["verdict"], "hit")
+
+    def test_chinese_folder_name_is_usable_signal(self):
+        from broll_semantics import relate
+
+        rel = relate("其实要腌两小时，炭火再烤三小时。", {"filename": "IMG_0001.MOV", "parent_dir": "后厨炭火"}, ["炭火"])
+        self.assertEqual(rel["verdict"], "hit")
+
+    def test_edl_records_basis_for_every_broll_and_never_fabricates_it(self):
+        from step4_build_edl import run_step4
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            ar = root / "aroll.mp4"
+            br1 = root / "IMG_1001.MOV"
+            br2 = root / "IMG_1002.MOV"
+            for path, color in ((ar, "gray"), (br1, "navy"), (br2, "teal")):
+                subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+                                f"color=c={color}:s=540x960:r=30:d=8", "-c:v", "libx264",
+                                "-pix_fmt", "yuv420p", str(path)], check=True)
+            sents, evts, t = [], [], 0.0
+            for i, text in enumerate(("清晨带回的鲜羊排", "其实要腌两小时", "炭火再烤三小时"), start=1):
+                sents.append({"id": f"s{i}", "text": text, "keywords": [], "start_sec": round(t, 2),
+                              "end_sec": round(t + 2.0, 2), "source_media": str(ar),
+                              "source_in_sec": round(t, 2), "source_out_sec": round(t + 2.0, 2)})
+                evts.append({"id": f"e{i}", "type": "sentence_start", "sentence_id": f"s{i}",
+                             "time_sec": round(t, 2), "frame": int(round(t * 30))})
+                t += 2.0
+            items = [
+                {"id": "ar1", "role": "a_roll", "normalized_mp4": str(ar), "duration_sec": 8.0,
+                 "video_grade": "usable", "sharpness_score": 45.0, "stability_score": 0.9},
+                {"id": "b1", "role": "b_roll", "normalized_mp4": str(br1), "duration_sec": 8.0,
+                 "video_grade": "usable", "semantic_tags": ["空镜特写"], "description": "后厨现切鲜羊排",
+                 "sharpness_score": 47.0, "stability_score": 0.9, "best_in_sec": 0.3},
+                {"id": "b2", "role": "b_roll", "normalized_mp4": str(br2), "duration_sec": 8.0,
+                 "video_grade": "usable", "semantic_tags": ["空镜特写"],
+                 "sharpness_score": 47.0, "stability_score": 0.9, "best_in_sec": 0.3},
+            ]
+            pipe = root / "p"
+            pipe.mkdir()
+            write_json(pipe / "01_manifest.json", {"items": items})
+            write_json(pipe / "03_audio_events.json", {"locked_duration_sec": round(t, 2),
+                                                       "locked_duration_frames": int(round(t * 30)),
+                                                       "sentences": sents, "events": evts})
+            edl = run_step4(pipe, track="store", style_id="style_21", edit_profile="documentary")
+
+            brolls = [c for c in edl["clips"] if c["track_role"] in ("b_roll", "code_broll")]
+            self.assertTrue(brolls)
+            for c in brolls:
+                self.assertIsInstance(c.get("sem_match"), dict, c)
+                verdict = c["sem_match"]["verdict"]
+                self.assertIn(verdict, ("hit", "weak", "none"))
+                if verdict == "none":
+                    self.assertEqual(c["sem_match"]["basis"], [], "无依据的镜头不许编依据")
+                else:
+                    self.assertTrue(c["sem_match"]["basis"], "有依据的镜头必须写清凭什么")
+            stat = edl["broll_semantic"]
+            self.assertEqual(stat["clips"], len(brolls))
+            self.assertEqual(stat["hit"] + stat["weak"] + stat["none"], len(brolls))
+            # 有说明的那条素材必须能被优先选中并给出依据
+            picked = [c for c in brolls if "IMG_1001" in str(c.get("media_path"))]
+            self.assertTrue(picked, "带素材说明的 B-roll 应被优先选中")
+            self.assertEqual(picked[0]["sem_match"]["verdict"], "hit")
 
 
 if __name__ == "__main__":

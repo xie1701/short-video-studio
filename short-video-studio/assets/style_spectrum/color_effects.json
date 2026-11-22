@@ -1,0 +1,2200 @@
+{
+  "version": "1.0.0",
+  "source": "按 V1 实际占用加权的源片实测（dev_tools/measure_color_zones.py → forensic/color_zones.json）",
+  "notes": [
+    "分段色调曲线锚点、三段分色、LUT 强度、饱和度缩放、对比、暖度全部由源片实测派生，不再用统一 60–72% 常量。",
+    "风格 03/04/08/15/23 的源草稿由一个复合片段主导，采样集中在单个素材，已在 basis_cn 里写明。",
+    "zone_tint 为 colorbalance 归一化偏移（由实测 RGB 相对亮度之差换算，夹在 ±0.35）；原始 RGB 存在 zone_rgb_measured。"
+  ],
+  "defaults": {
+    "tint_clamp": 0.04,
+    "lut_strength_range": [
+      0.45,
+      0.76
+    ],
+    "saturation_range": [
+      0.88,
+      1.14
+    ]
+  },
+  "styles": {
+    "style_01": {
+      "style_name_cn": "门店原生爆款风 · 综艺分拍斜标开场（默认）",
+      "measured": {
+        "y_mean_255": 134.0,
+        "y_p05_255": 48.0,
+        "y_p50_255": 136.9,
+        "y_p95_255": 220.1,
+        "sat_mean_pct": 23.5,
+        "warmth_index": 2.07,
+        "hsl_materials": 19,
+        "rgb_triplets_are_fallback": false,
+        "frames_sampled": 246
+      },
+      "lut_strength": 0.56,
+      "saturation_scale": 1.025,
+      "contrast": 1.023,
+      "warmth": 0.008,
+      "tone_curve": {
+        "curve_weight": 0.49,
+        "anchors": [
+          {
+            "input": 0.05,
+            "output": 0.118,
+            "measured": 48.0
+          },
+          {
+            "input": 0.5,
+            "output": 0.518,
+            "measured": 136.9
+          },
+          {
+            "input": 0.95,
+            "output": 0.907,
+            "measured": 220.1
+          }
+        ]
+      },
+      "zone_tint": {
+        "shadow": [
+          -0.003,
+          -0.001,
+          0.023
+        ],
+        "midtone": [
+          -0.102,
+          0.038,
+          -0.076
+        ],
+        "highlight": [
+          -0.025,
+          0.026,
+          -0.178
+        ]
+      },
+      "effects": {
+        "vignette": false,
+        "blur": false,
+        "spotlight": false,
+        "irregular_black_frame": false,
+        "film_frame": false,
+        "grain": false,
+        "shake": false,
+        "source_effects": [],
+        "evidence_cn": "源草稿 effect 轨为空：本风格不放任何画面特效"
+      },
+      "basis_cn": "源片实测：亮度 p05/p50/p95=48.0/136.9/220.1，饱和 23.5%，暖度 2.07，暗/中/高 RGB=[50.1, 50.3, 54.2]|[113.0, 135.4, 117.2]|[205.5, 213.6, 181.1]（2026-11-11 145630.mov, 2026-11-11 150028.mov, 2026-11-11 145723.mov 共 246 帧）",
+      "zone_rgb_measured": {
+        "shadow": [
+          50.1,
+          50.3,
+          54.2
+        ],
+        "midtone": [
+          113.0,
+          135.4,
+          117.2
+        ],
+        "highlight": [
+          205.5,
+          213.6,
+          181.1
+        ]
+      }
+    },
+    "style_02": {
+      "style_name_cn": "极速跳剪避坑 · 暗灰方角底框荧光绿风",
+      "measured": {
+        "y_mean_255": 81.0,
+        "y_p05_255": 22.9,
+        "y_p50_255": 65.3,
+        "y_p95_255": 204.2,
+        "sat_mean_pct": 26.2,
+        "warmth_index": 10.53,
+        "hsl_materials": 0,
+        "rgb_triplets_are_fallback": false,
+        "frames_sampled": 72
+      },
+      "lut_strength": 0.626,
+      "saturation_scale": 1.037,
+      "contrast": 1.038,
+      "warmth": 0.041,
+      "tone_curve": {
+        "curve_weight": 0.49,
+        "anchors": [
+          {
+            "input": 0.05,
+            "output": 0.07,
+            "measured": 22.9
+          },
+          {
+            "input": 0.5,
+            "output": 0.38,
+            "measured": 65.3
+          },
+          {
+            "input": 0.95,
+            "output": 0.877,
+            "measured": 204.2
+          }
+        ]
+      },
+      "zone_tint": {
+        "shadow": [
+          -0.024,
+          0.011,
+          -0.044
+        ],
+        "midtone": [
+          0.009,
+          0.005,
+          -0.076
+        ],
+        "highlight": [
+          0.146,
+          -0.031,
+          -0.121
+        ]
+      },
+      "effects": {
+        "vignette": {
+          "source_effect": "暗角",
+          "source_params": {
+            "effects_adjust_texture": 1.0
+          },
+          "window": {
+            "start": 11.0,
+            "duration": 5.167
+          },
+          "angle": 1.0,
+          "x": 540,
+          "y": 960
+        },
+        "blur": false,
+        "spotlight": false,
+        "irregular_black_frame": false,
+        "film_frame": false,
+        "grain": false,
+        "shake": false,
+        "source_effects": [
+          "暗角"
+        ],
+        "evidence_cn": "源草稿 effect 轨实测：暗角(11.00s 起 5.17s)"
+      },
+      "basis_cn": "源片实测：亮度 p05/p50/p95=22.9/65.3/204.2，饱和 26.2%，暖度 10.53，暗/中/高 RGB=[43.0, 48.6, 39.8]|[104.2, 103.6, 90.6]|[231.5, 203.2, 188.9]（知识付费素材.mp4, 知识付费素材.MP4 共 72 帧）",
+      "zone_rgb_measured": {
+        "shadow": [
+          43.0,
+          48.6,
+          39.8
+        ],
+        "midtone": [
+          104.2,
+          103.6,
+          90.6
+        ],
+        "highlight": [
+          231.5,
+          203.2,
+          188.9
+        ]
+      }
+    },
+    "style_03": {
+      "style_name_cn": "暗调深度口播 · 顶栏引语卡+巨型浅黄大字风",
+      "measured": {
+        "y_mean_255": 39.5,
+        "y_p05_255": 7.8,
+        "y_p50_255": 26.9,
+        "y_p95_255": 114.3,
+        "sat_mean_pct": 53.1,
+        "warmth_index": 46.26,
+        "hsl_materials": 31,
+        "rgb_triplets_are_fallback": false,
+        "frames_sampled": 198
+      },
+      "lut_strength": 0.698,
+      "saturation_scale": 1.16,
+      "contrast": 0.921,
+      "warmth": 0.181,
+      "tone_curve": {
+        "curve_weight": 0.65,
+        "anchors": [
+          {
+            "input": 0.05,
+            "output": 0.037,
+            "measured": 7.8
+          },
+          {
+            "input": 0.5,
+            "output": 0.244,
+            "measured": 26.9
+          },
+          {
+            "input": 0.95,
+            "output": 0.624,
+            "measured": 114.3
+          }
+        ]
+      },
+      "zone_tint": {
+        "shadow": [
+          0.187,
+          -0.05,
+          -0.052
+        ],
+        "midtone": [
+          0.35,
+          -0.113,
+          -0.15
+        ],
+        "highlight": [
+          0.177,
+          -0.016,
+          -0.35
+        ]
+      },
+      "effects": {
+        "vignette": false,
+        "blur": false,
+        "spotlight": false,
+        "irregular_black_frame": false,
+        "film_frame": false,
+        "grain": false,
+        "shake": false,
+        "source_effects": [],
+        "evidence_cn": "源草稿 effect 轨为空：本风格不放任何画面特效"
+      },
+      "basis_cn": "源片实测：亮度 p05/p50/p95=7.8/26.9/114.3，饱和 53.1%，暖度 46.26，暗/中/高 RGB=[57.4, 19.5, 19.3]|[168.2, 81.2, 75.3]|[250.1, 219.4, 164.3]（2024-04-01 114913.mov 共 198 帧）",
+      "zone_rgb_measured": {
+        "shadow": [
+          57.4,
+          19.5,
+          19.3
+        ],
+        "midtone": [
+          168.2,
+          81.2,
+          75.3
+        ],
+        "highlight": [
+          250.1,
+          219.4,
+          164.3
+        ]
+      }
+    },
+    "style_04": {
+      "style_name_cn": "清冷奶油高光 · 极简轻描边宋体风",
+      "measured": {
+        "y_mean_255": 206.0,
+        "y_p05_255": 123.3,
+        "y_p50_255": 216.4,
+        "y_p95_255": 254.0,
+        "sat_mean_pct": 13.3,
+        "warmth_index": -21.58,
+        "hsl_materials": 0,
+        "rgb_triplets_are_fallback": false,
+        "frames_sampled": 21
+      },
+      "lut_strength": 0.577,
+      "saturation_scale": 0.979,
+      "contrast": 0.959,
+      "warmth": -0.085,
+      "tone_curve": {
+        "curve_weight": 0.53,
+        "anchors": [
+          {
+            "input": 0.05,
+            "output": 0.28,
+            "measured": 123.3
+          },
+          {
+            "input": 0.5,
+            "output": 0.685,
+            "measured": 216.4
+          },
+          {
+            "input": 0.95,
+            "output": 0.974,
+            "measured": 254.0
+          }
+        ]
+      },
+      "zone_tint": {
+        "shadow": [
+          0.004,
+          -0.001,
+          0.002
+        ],
+        "midtone": [
+          0.034,
+          -0.012,
+          0.016
+        ],
+        "highlight": [
+          -0.066,
+          0.009,
+          0.101
+        ]
+      },
+      "effects": {
+        "vignette": false,
+        "blur": false,
+        "spotlight": false,
+        "irregular_black_frame": false,
+        "film_frame": {
+          "source_effect": "怀旧边框",
+          "source_params": {
+            "effects_adjust_vertical_shift": 0.44,
+            "effects_adjust_size": 0.49,
+            "effects_adjust_intensity": 0.5,
+            "effects_adjust_filter": 0.5,
+            "sticker": 0.63
+          },
+          "window": {
+            "start": 15.333,
+            "duration": 4.167
+          },
+          "style": "black_polaroid",
+          "border_frac": 0.037,
+          "color": "0xE9E2D4"
+        },
+        "grain": false,
+        "shake": false,
+        "source_effects": [
+          "怀旧边框"
+        ],
+        "evidence_cn": "源草稿 effect 轨实测：怀旧边框(15.33s 起 4.17s)"
+      },
+      "basis_cn": "源片实测：亮度 p05/p50/p95=123.3/216.4/254.0，饱和 13.3%，暖度 -21.58，暗/中/高 RGB=[41.7, 40.9, 41.5]|[162.3, 155.0, 159.4]|[209.6, 221.6, 236.2]（美业.mp4 共 21 帧）",
+      "zone_rgb_measured": {
+        "shadow": [
+          41.7,
+          40.9,
+          41.5
+        ],
+        "midtone": [
+          162.3,
+          155.0,
+          159.4
+        ],
+        "highlight": [
+          209.6,
+          221.6,
+          236.2
+        ]
+      }
+    },
+    "style_05": {
+      "style_name_cn": "人像前景压巨字 · 三层海报景深风",
+      "measured": {
+        "y_mean_255": 162.7,
+        "y_p05_255": 62.4,
+        "y_p50_255": 179.9,
+        "y_p95_255": 215.2,
+        "sat_mean_pct": 16.0,
+        "warmth_index": 7.75,
+        "hsl_materials": 2,
+        "rgb_triplets_are_fallback": false,
+        "frames_sampled": 54
+      },
+      "lut_strength": 0.573,
+      "saturation_scale": 0.991,
+      "contrast": 0.993,
+      "warmth": 0.03,
+      "tone_curve": {
+        "curve_weight": 0.49,
+        "anchors": [
+          {
+            "input": 0.05,
+            "output": 0.145,
+            "measured": 62.4
+          },
+          {
+            "input": 0.5,
+            "output": 0.601,
+            "measured": 179.9
+          },
+          {
+            "input": 0.95,
+            "output": 0.898,
+            "measured": 215.2
+          }
+        ]
+      },
+      "zone_tint": {
+        "shadow": [
+          -0.033,
+          0.013,
+          -0.035
+        ],
+        "midtone": [
+          -0.023,
+          0.019,
+          -0.118
+        ],
+        "highlight": [
+          0.009,
+          -0.003,
+          0.003
+        ]
+      },
+      "effects": {
+        "vignette": false,
+        "blur": false,
+        "spotlight": false,
+        "irregular_black_frame": false,
+        "film_frame": false,
+        "grain": false,
+        "shake": false,
+        "source_effects": [],
+        "evidence_cn": "源草稿 effect 轨为空：本风格不放任何画面特效"
+      },
+      "basis_cn": "源片实测：亮度 p05/p50/p95=62.4/179.9/215.2，饱和 16.0%，暖度 7.75，暗/中/高 RGB=[41.9, 49.3, 41.6]|[138.4, 145.0, 123.3]|[202.5, 200.5, 201.5]（留学咨询.mp4, 留学咨询.MP4 共 54 帧）",
+      "zone_rgb_measured": {
+        "shadow": [
+          41.9,
+          49.3,
+          41.6
+        ],
+        "midtone": [
+          138.4,
+          145.0,
+          123.3
+        ],
+        "highlight": [
+          202.5,
+          200.5,
+          201.5
+        ]
+      }
+    },
+    "style_06": {
+      "style_name_cn": "黑底拍立得相框 · 顶部毛笔手写金句风",
+      "measured": {
+        "y_mean_255": 157.7,
+        "y_p05_255": 94.8,
+        "y_p50_255": 162.7,
+        "y_p95_255": 199.7,
+        "sat_mean_pct": 13.3,
+        "warmth_index": 18.44,
+        "hsl_materials": 0,
+        "rgb_triplets_are_fallback": false,
+        "frames_sampled": 50
+      },
+      "lut_strength": 0.575,
+      "saturation_scale": 0.979,
+      "contrast": 0.918,
+      "warmth": 0.072,
+      "tone_curve": {
+        "curve_weight": 0.53,
+        "anchors": [
+          {
+            "input": 0.05,
+            "output": 0.221,
+            "measured": 94.8
+          },
+          {
+            "input": 0.5,
+            "output": 0.573,
+            "measured": 162.7
+          },
+          {
+            "input": 0.95,
+            "output": 0.862,
+            "measured": 199.7
+          }
+        ]
+      },
+      "zone_tint": {
+        "shadow": [
+          0.069,
+          -0.017,
+          -0.037
+        ],
+        "midtone": [
+          0.063,
+          -0.01,
+          -0.087
+        ],
+        "highlight": [
+          -0.005,
+          0.004,
+          -0.028
+        ]
+      },
+      "effects": {
+        "vignette": false,
+        "blur": false,
+        "spotlight": false,
+        "irregular_black_frame": false,
+        "film_frame": false,
+        "grain": false,
+        "shake": false,
+        "source_effects": [],
+        "evidence_cn": "源草稿 effect 轨为空：本风格不放任何画面特效"
+      },
+      "basis_cn": "源片实测：亮度 p05/p50/p95=94.8/162.7/199.7，饱和 13.3%，暖度 18.44，暗/中/高 RGB=[55.3, 41.6, 38.4]|[158.7, 147.0, 134.8]|[192.3, 193.8, 188.6]（女性.mp4, 女性-02.mp4, 女性.MP4 共 50 帧）",
+      "zone_rgb_measured": {
+        "shadow": [
+          55.3,
+          41.6,
+          38.4
+        ],
+        "midtone": [
+          158.7,
+          147.0,
+          134.8
+        ],
+        "highlight": [
+          192.3,
+          193.8,
+          188.6
+        ]
+      }
+    },
+    "style_07": {
+      "style_name_cn": "人像真轮廓白边抠像 · 虚化展厅避坑风",
+      "measured": {
+        "y_mean_255": 133.9,
+        "y_p05_255": 39.1,
+        "y_p50_255": 147.1,
+        "y_p95_255": 199.4,
+        "sat_mean_pct": 19.7,
+        "warmth_index": 19.5,
+        "hsl_materials": 0,
+        "rgb_triplets_are_fallback": false,
+        "frames_sampled": 64
+      },
+      "lut_strength": 0.604,
+      "saturation_scale": 1.008,
+      "contrast": 1.005,
+      "warmth": 0.076,
+      "tone_curve": {
+        "curve_weight": 0.44,
+        "anchors": [
+          {
+            "input": 0.05,
+            "output": 0.095,
+            "measured": 39.1
+          },
+          {
+            "input": 0.5,
+            "output": 0.534,
+            "measured": 147.1
+          },
+          {
+            "input": 0.95,
+            "output": 0.876,
+            "measured": 199.4
+          }
+        ]
+      },
+      "zone_tint": {
+        "shadow": [
+          0.131,
+          -0.034,
+          -0.053
+        ],
+        "midtone": [
+          0.103,
+          -0.027,
+          -0.031
+        ],
+        "highlight": [
+          0.04,
+          -0.011,
+          -0.007
+        ]
+      },
+      "effects": {
+        "vignette": false,
+        "blur": false,
+        "spotlight": false,
+        "irregular_black_frame": false,
+        "film_frame": false,
+        "grain": false,
+        "shake": false,
+        "source_effects": [],
+        "evidence_cn": "源草稿 effect 轨为空：本风格不放任何画面特效"
+      },
+      "basis_cn": "源片实测：亮度 p05/p50/p95=39.1/147.1/199.4，饱和 19.7%，暖度 19.5，暗/中/高 RGB=[68.6, 42.4, 39.3]|[153.6, 132.8, 132.2]|[201.1, 193.0, 193.7]（全屋定制.mp4, 全屋定制.MP4 共 64 帧）",
+      "zone_rgb_measured": {
+        "shadow": [
+          68.6,
+          42.4,
+          39.3
+        ],
+        "midtone": [
+          153.6,
+          132.8,
+          132.2
+        ],
+        "highlight": [
+          201.1,
+          193.0,
+          193.7
+        ]
+      }
+    },
+    "style_08": {
+      "style_name_cn": "专家长镜 · 左上角斜杠双色大标风",
+      "measured": {
+        "y_mean_255": 145.3,
+        "y_p05_255": 41.1,
+        "y_p50_255": 160.4,
+        "y_p95_255": 213.5,
+        "sat_mean_pct": 27.6,
+        "warmth_index": 23.01,
+        "hsl_materials": 0,
+        "rgb_triplets_are_fallback": false,
+        "frames_sampled": 183
+      },
+      "lut_strength": 0.643,
+      "saturation_scale": 1.044,
+      "contrast": 1.024,
+      "warmth": 0.09,
+      "tone_curve": {
+        "curve_weight": 0.44,
+        "anchors": [
+          {
+            "input": 0.05,
+            "output": 0.099,
+            "measured": 41.1
+          },
+          {
+            "input": 0.5,
+            "output": 0.557,
+            "measured": 160.4
+          },
+          {
+            "input": 0.95,
+            "output": 0.9,
+            "measured": 213.5
+          }
+        ]
+      },
+      "zone_tint": {
+        "shadow": [
+          0.083,
+          -0.018,
+          -0.07
+        ],
+        "midtone": [
+          0.123,
+          -0.024,
+          -0.123
+        ],
+        "highlight": [
+          -0.035,
+          0.007,
+          0.036
+        ]
+      },
+      "effects": {
+        "vignette": {
+          "source_effect": "暗角",
+          "source_params": {
+            "effects_adjust_texture": 1.0
+          },
+          "window": {
+            "start": 14.633,
+            "duration": 2.0
+          },
+          "angle": 1.0,
+          "x": 540,
+          "y": 960,
+          "extra_windows": [
+            {
+              "start": 38.433,
+              "duration": 4.4
+            }
+          ]
+        },
+        "blur": false,
+        "spotlight": false,
+        "irregular_black_frame": {
+          "source_effect": "不规则黑框",
+          "source_params": {
+            "effects_adjust_background_animation": 1.0
+          },
+          "window": {
+            "start": 18.767,
+            "duration": 4.4
+          },
+          "edges": {
+            "top": 32,
+            "bottom": 38,
+            "left": 28,
+            "right": 28
+          },
+          "color": "0x0B0B0B"
+        },
+        "film_frame": false,
+        "grain": {
+          "source_effect": "荧幕噪点",
+          "source_params": {
+            "effects_adjust_speed": 0.33
+          },
+          "window": {
+            "start": 29.167,
+            "duration": 6.033
+          },
+          "strength": 7,
+          "flags": "t+u"
+        },
+        "shake": false,
+        "source_effects": [
+          "暗角",
+          "不规则黑框",
+          "荧幕噪点"
+        ],
+        "evidence_cn": "源草稿 effect 轨实测：暗角(14.63s 起 2.00s)、不规则黑框(18.77s 起 4.40s)、荧幕噪点(29.17s 起 6.03s)、暗角(38.43s 起 4.40s)"
+      },
+      "basis_cn": "源片实测：亮度 p05/p50/p95=41.1/160.4/213.5，饱和 27.6%，暖度 23.01，暗/中/高 RGB=[58.2, 42.1, 33.8]|[160.2, 136.8, 121.1]|[197.7, 204.4, 209.1]（成交高端客戶簡單到離譜.MP4 共 183 帧）",
+      "zone_rgb_measured": {
+        "shadow": [
+          58.2,
+          42.1,
+          33.8
+        ],
+        "midtone": [
+          160.2,
+          136.8,
+          121.1
+        ],
+        "highlight": [
+          197.7,
+          204.4,
+          209.1
+        ]
+      }
+    },
+    "style_09": {
+      "style_name_cn": "纯黑纪实面板 · 多重圆窗头像+长句纪实字幕风",
+      "measured": {
+        "y_mean_255": 115.5,
+        "y_p05_255": 17.1,
+        "y_p50_255": 122.3,
+        "y_p95_255": 214.0,
+        "sat_mean_pct": 22.4,
+        "warmth_index": 19.23,
+        "hsl_materials": 28,
+        "rgb_triplets_are_fallback": false,
+        "frames_sampled": 406
+      },
+      "lut_strength": 0.546,
+      "saturation_scale": 1.02,
+      "contrast": 1.062,
+      "warmth": 0.075,
+      "tone_curve": {
+        "curve_weight": 0.67,
+        "anchors": [
+          {
+            "input": 0.05,
+            "output": 0.061,
+            "measured": 17.1
+          },
+          {
+            "input": 0.5,
+            "output": 0.486,
+            "measured": 122.3
+          },
+          {
+            "input": 0.95,
+            "output": 0.876,
+            "measured": 214.0
+          }
+        ]
+      },
+      "zone_tint": {
+        "shadow": [
+          0.031,
+          -0.008,
+          -0.009
+        ],
+        "midtone": [
+          0.062,
+          -0.006,
+          -0.127
+        ],
+        "highlight": [
+          -0.0,
+          0.003,
+          -0.028
+        ]
+      },
+      "effects": {
+        "vignette": false,
+        "blur": false,
+        "spotlight": false,
+        "irregular_black_frame": false,
+        "film_frame": false,
+        "grain": false,
+        "shake": false,
+        "source_effects": [],
+        "evidence_cn": "源草稿 effect 轨为空：本风格不放任何画面特效"
+      },
+      "basis_cn": "源片实测：亮度 p05/p50/p95=17.1/122.3/214.0，饱和 22.4%，暖度 19.23，暗/中/高 RGB=[37.6, 31.3, 31.2]|[147.3, 136.5, 117.1]|[216.0, 216.5, 211.6]（律师素材.mp4, 律师素材.MP4, 1.mp4 共 406 帧）",
+      "zone_rgb_measured": {
+        "shadow": [
+          37.6,
+          31.3,
+          31.2
+        ],
+        "midtone": [
+          147.3,
+          136.5,
+          117.1
+        ],
+        "highlight": [
+          216.0,
+          216.5,
+          211.6
+        ]
+      }
+    },
+    "style_10": {
+      "style_name_cn": "高频推拉微距 · 极净全屏职场干货风",
+      "measured": {
+        "y_mean_255": 163.4,
+        "y_p05_255": 64.4,
+        "y_p50_255": 179.7,
+        "y_p95_255": 222.9,
+        "sat_mean_pct": 11.1,
+        "warmth_index": -2.69,
+        "hsl_materials": 0,
+        "rgb_triplets_are_fallback": false,
+        "frames_sampled": 48
+      },
+      "lut_strength": 0.552,
+      "saturation_scale": 0.969,
+      "contrast": 1.002,
+      "warmth": -0.011,
+      "tone_curve": {
+        "curve_weight": 0.47,
+        "anchors": [
+          {
+            "input": 0.05,
+            "output": 0.145,
+            "measured": 64.4
+          },
+          {
+            "input": 0.5,
+            "output": 0.596,
+            "measured": 179.7
+          },
+          {
+            "input": 0.95,
+            "output": 0.914,
+            "measured": 222.9
+          }
+        ]
+      },
+      "zone_tint": {
+        "shadow": [
+          -0.034,
+          0.008,
+          0.022
+        ],
+        "midtone": [
+          -0.003,
+          0.005,
+          -0.037
+        ],
+        "highlight": [
+          -0.044,
+          0.011,
+          0.018
+        ]
+      },
+      "effects": {
+        "vignette": false,
+        "blur": false,
+        "spotlight": false,
+        "irregular_black_frame": false,
+        "film_frame": false,
+        "grain": false,
+        "shake": false,
+        "source_effects": [],
+        "evidence_cn": "源草稿 effect 轨为空：本风格不放任何画面特效"
+      },
+      "basis_cn": "源片实测：亮度 p05/p50/p95=64.4/179.7/222.9，饱和 11.1%，暖度 -2.69，暗/中/高 RGB=[46.3, 52.9, 55.1]|[137.8, 139.1, 132.4]|[196.4, 205.3, 206.4]（职场规划.mp4, 职场规划.MP4 共 48 帧）",
+      "zone_rgb_measured": {
+        "shadow": [
+          46.3,
+          52.9,
+          55.1
+        ],
+        "midtone": [
+          137.8,
+          139.1,
+          132.4
+        ],
+        "highlight": [
+          196.4,
+          205.3,
+          206.4
+        ]
+      }
+    },
+    "style_11": {
+      "style_name_cn": "清亮知性干货 · 无底框通透大字风（博主默认）",
+      "measured": {
+        "y_mean_255": 181.7,
+        "y_p05_255": 80.6,
+        "y_p50_255": 189.3,
+        "y_p95_255": 223.9,
+        "sat_mean_pct": 13.1,
+        "warmth_index": 7.74,
+        "hsl_materials": 0,
+        "rgb_triplets_are_fallback": false,
+        "frames_sampled": 60
+      },
+      "lut_strength": 0.565,
+      "saturation_scale": 0.978,
+      "contrast": 0.978,
+      "warmth": 0.03,
+      "tone_curve": {
+        "curve_weight": 0.5,
+        "anchors": [
+          {
+            "input": 0.05,
+            "output": 0.183,
+            "measured": 80.6
+          },
+          {
+            "input": 0.5,
+            "output": 0.621,
+            "measured": 189.3
+          },
+          {
+            "input": 0.95,
+            "output": 0.914,
+            "measured": 223.9
+          }
+        ]
+      },
+      "zone_tint": {
+        "shadow": [
+          -0.03,
+          0.017,
+          -0.085
+        ],
+        "midtone": [
+          -0.037,
+          0.017,
+          -0.058
+        ],
+        "highlight": [
+          0.005,
+          0.005,
+          -0.061
+        ]
+      },
+      "effects": {
+        "vignette": false,
+        "blur": false,
+        "spotlight": false,
+        "irregular_black_frame": false,
+        "film_frame": false,
+        "grain": false,
+        "shake": false,
+        "source_effects": [],
+        "evidence_cn": "源草稿 effect 轨为空：本风格不放任何画面特效"
+      },
+      "basis_cn": "源片实测：亮度 p05/p50/p95=80.6/189.3/223.9，饱和 13.1%，暖度 7.74，暗/中/高 RGB=[40.2, 47.7, 31.4]|[145.7, 154.3, 142.4]|[210.7, 210.6, 200.1]（知识分享.mp4, 知识分享.MP4 共 60 帧）",
+      "zone_rgb_measured": {
+        "shadow": [
+          40.2,
+          47.7,
+          31.4
+        ],
+        "midtone": [
+          145.7,
+          154.3,
+          142.4
+        ],
+        "highlight": [
+          210.7,
+          210.6,
+          200.1
+        ]
+      }
+    },
+    "style_12": {
+      "style_name_cn": "顶置双色悬念标 · 干货对比口播风",
+      "measured": {
+        "y_mean_255": 170.5,
+        "y_p05_255": 88.9,
+        "y_p50_255": 171.0,
+        "y_p95_255": 240.6,
+        "sat_mean_pct": 13.8,
+        "warmth_index": 13.5,
+        "hsl_materials": 0,
+        "rgb_triplets_are_fallback": false,
+        "frames_sampled": 58
+      },
+      "lut_strength": 0.573,
+      "saturation_scale": 0.981,
+      "contrast": 0.991,
+      "warmth": 0.053,
+      "tone_curve": {
+        "curve_weight": 0.47,
+        "anchors": [
+          {
+            "input": 0.05,
+            "output": 0.19,
+            "measured": 88.9
+          },
+          {
+            "input": 0.5,
+            "output": 0.58,
+            "measured": 171.0
+          },
+          {
+            "input": 0.95,
+            "output": 0.947,
+            "measured": 240.6
+          }
+        ]
+      },
+      "zone_tint": {
+        "shadow": [
+          0.008,
+          0.002,
+          -0.04
+        ],
+        "midtone": [
+          0.041,
+          -0.006,
+          -0.063
+        ],
+        "highlight": [
+          -0.014,
+          0.011,
+          -0.07
+        ]
+      },
+      "effects": {
+        "vignette": false,
+        "blur": false,
+        "spotlight": false,
+        "irregular_black_frame": false,
+        "film_frame": false,
+        "grain": false,
+        "shake": false,
+        "source_effects": [],
+        "evidence_cn": "源草稿 effect 轨为空：本风格不放任何画面特效"
+      },
+      "basis_cn": "源片实测：亮度 p05/p50/p95=88.9/171.0/240.6，饱和 13.8%，暖度 13.5，暗/中/高 RGB=[32.4, 31.4, 24.7]|[158.3, 150.9, 141.8]|[216.1, 220.2, 207.2]（知识博主-2.mp4, 知识博主-2.MP4 共 58 帧）",
+      "zone_rgb_measured": {
+        "shadow": [
+          32.4,
+          31.4,
+          24.7
+        ],
+        "midtone": [
+          158.3,
+          150.9,
+          141.8
+        ],
+        "highlight": [
+          216.1,
+          220.2,
+          207.2
+        ]
+      }
+    },
+    "style_13": {
+      "style_name_cn": "上白圆角画框 · 下纯黑宽幕沉浸风",
+      "measured": {
+        "y_mean_255": 171.5,
+        "y_p05_255": 31.0,
+        "y_p50_255": 212.2,
+        "y_p95_255": 231.6,
+        "sat_mean_pct": 15.7,
+        "warmth_index": 25.14,
+        "hsl_materials": 0,
+        "rgb_triplets_are_fallback": false,
+        "frames_sampled": 70
+      },
+      "lut_strength": 0.591,
+      "saturation_scale": 0.99,
+      "contrast": 1.068,
+      "warmth": 0.099,
+      "tone_curve": {
+        "curve_weight": 0.48,
+        "anchors": [
+          {
+            "input": 0.05,
+            "output": 0.084,
+            "measured": 31.0
+          },
+          {
+            "input": 0.5,
+            "output": 0.659,
+            "measured": 212.2
+          },
+          {
+            "input": 0.95,
+            "output": 0.93,
+            "measured": 231.6
+          }
+        ]
+      },
+      "zone_tint": {
+        "shadow": [
+          0.056,
+          -0.014,
+          -0.024
+        ],
+        "midtone": [
+          0.145,
+          -0.03,
+          -0.125
+        ],
+        "highlight": [
+          0.041,
+          -0.001,
+          -0.115
+        ]
+      },
+      "effects": {
+        "vignette": false,
+        "blur": false,
+        "spotlight": false,
+        "irregular_black_frame": false,
+        "film_frame": false,
+        "grain": false,
+        "shake": false,
+        "source_effects": [],
+        "evidence_cn": "源草稿 effect 轨为空：本风格不放任何画面特效"
+      },
+      "basis_cn": "源片实测：亮度 p05/p50/p95=31.0/212.2/231.6，饱和 15.7%，暖度 25.14，暗/中/高 RGB=[50.8, 39.6, 38.0]|[165.2, 137.3, 122.2]|[227.2, 220.5, 202.3]（银行贷款.mp4, 银行贷款.MP4 共 70 帧）",
+      "zone_rgb_measured": {
+        "shadow": [
+          50.8,
+          39.6,
+          38.0
+        ],
+        "midtone": [
+          165.2,
+          137.3,
+          122.2
+        ],
+        "highlight": [
+          227.2,
+          220.5,
+          202.3
+        ]
+      }
+    },
+    "style_14": {
+      "style_name_cn": "纯黑聚光圆窗 · 极简聚焦口播风",
+      "measured": {
+        "y_mean_255": 162.7,
+        "y_p05_255": 62.4,
+        "y_p50_255": 179.8,
+        "y_p95_255": 215.1,
+        "sat_mean_pct": 16.0,
+        "warmth_index": 7.76,
+        "hsl_materials": 0,
+        "rgb_triplets_are_fallback": false,
+        "frames_sampled": 48
+      },
+      "lut_strength": 0.578,
+      "saturation_scale": 0.991,
+      "contrast": 0.993,
+      "warmth": 0.03,
+      "tone_curve": {
+        "curve_weight": 0.54,
+        "anchors": [
+          {
+            "input": 0.05,
+            "output": 0.155,
+            "measured": 62.4
+          },
+          {
+            "input": 0.5,
+            "output": 0.611,
+            "measured": 179.8
+          },
+          {
+            "input": 0.95,
+            "output": 0.893,
+            "measured": 215.1
+          }
+        ]
+      },
+      "zone_tint": {
+        "shadow": [
+          -0.033,
+          0.013,
+          -0.035
+        ],
+        "midtone": [
+          -0.023,
+          0.019,
+          -0.118
+        ],
+        "highlight": [
+          0.009,
+          -0.003,
+          0.003
+        ]
+      },
+      "effects": {
+        "vignette": false,
+        "blur": false,
+        "spotlight": false,
+        "irregular_black_frame": false,
+        "film_frame": false,
+        "grain": false,
+        "shake": false,
+        "source_effects": [],
+        "evidence_cn": "源草稿 effect 轨为空：本风格不放任何画面特效"
+      },
+      "basis_cn": "源片实测：亮度 p05/p50/p95=62.4/179.8/215.1，饱和 16.0%，暖度 7.76，暗/中/高 RGB=[41.9, 49.3, 41.6]|[138.4, 145.0, 123.3]|[202.5, 200.5, 201.5]（学业规划.mp4, 学业规划.MP4 共 48 帧）",
+      "zone_rgb_measured": {
+        "shadow": [
+          41.9,
+          49.3,
+          41.6
+        ],
+        "midtone": [
+          138.4,
+          145.0,
+          123.3
+        ],
+        "highlight": [
+          202.5,
+          200.5,
+          201.5
+        ]
+      }
+    },
+    "style_15": {
+      "style_name_cn": "实景访谈切片 · 弹性双色花字节奏流",
+      "measured": {
+        "y_mean_255": 87.7,
+        "y_p05_255": 9.6,
+        "y_p50_255": 74.5,
+        "y_p95_255": 206.0,
+        "sat_mean_pct": 28.9,
+        "warmth_index": 17.7,
+        "hsl_materials": 0,
+        "rgb_triplets_are_fallback": false,
+        "frames_sampled": 38
+      },
+      "lut_strength": 0.644,
+      "saturation_scale": 1.05,
+      "contrast": 1.061,
+      "warmth": 0.069,
+      "tone_curve": {
+        "curve_weight": 0.48,
+        "anchors": [
+          {
+            "input": 0.05,
+            "output": 0.044,
+            "measured": 9.6
+          },
+          {
+            "input": 0.5,
+            "output": 0.4,
+            "measured": 74.5
+          },
+          {
+            "input": 0.95,
+            "output": 0.882,
+            "measured": 206.0
+          }
+        ]
+      },
+      "zone_tint": {
+        "shadow": [
+          0.054,
+          -0.012,
+          -0.041
+        ],
+        "midtone": [
+          0.078,
+          -0.017,
+          -0.058
+        ],
+        "highlight": [
+          0.04,
+          -0.008,
+          -0.041
+        ]
+      },
+      "effects": {
+        "vignette": {
+          "source_effect": "暗角",
+          "source_params": {
+            "effects_adjust_texture": 1.0
+          },
+          "window": {
+            "start": 13.867,
+            "duration": 3.333
+          },
+          "angle": 1.0,
+          "x": 540,
+          "y": 960,
+          "extra_windows": [
+            {
+              "start": 24.7,
+              "duration": 1.833
+            }
+          ]
+        },
+        "blur": false,
+        "spotlight": false,
+        "irregular_black_frame": false,
+        "film_frame": false,
+        "grain": false,
+        "shake": false,
+        "source_effects": [
+          "暗角"
+        ],
+        "evidence_cn": "源草稿 effect 轨实测：暗角(13.87s 起 3.33s)、暗角(24.70s 起 1.83s)"
+      },
+      "basis_cn": "源片实测：亮度 p05/p50/p95=9.6/74.5/206.0，饱和 28.9%，暖度 17.7，暗/中/高 RGB=[50.1, 39.6, 35.0]|[123.2, 108.0, 101.5]|[212.7, 205.0, 199.8]（源素材.mp4 共 38 帧）",
+      "zone_rgb_measured": {
+        "shadow": [
+          50.1,
+          39.6,
+          35.0
+        ],
+        "midtone": [
+          123.2,
+          108.0,
+          101.5
+        ],
+        "highlight": [
+          212.7,
+          205.0,
+          199.8
+        ]
+      }
+    },
+    "style_16": {
+      "style_name_cn": "暗黑羽化分屏 · 上窄实景下黑底书摘巨字风",
+      "measured": {
+        "y_mean_255": 68.9,
+        "y_p05_255": 3.8,
+        "y_p50_255": 56.0,
+        "y_p95_255": 182.4,
+        "sat_mean_pct": 36.1,
+        "warmth_index": 20.23,
+        "hsl_materials": 0,
+        "rgb_triplets_are_fallback": false,
+        "frames_sampled": 64
+      },
+      "lut_strength": 0.679,
+      "saturation_scale": 1.082,
+      "contrast": 1.033,
+      "warmth": 0.079,
+      "tone_curve": {
+        "curve_weight": 0.59,
+        "anchors": [
+          {
+            "input": 0.05,
+            "output": 0.029,
+            "measured": 3.8
+          },
+          {
+            "input": 0.5,
+            "output": 0.335,
+            "measured": 56.0
+          },
+          {
+            "input": 0.95,
+            "output": 0.812,
+            "measured": 182.4
+          }
+        ]
+      },
+      "zone_tint": {
+        "shadow": [
+          0.037,
+          -0.009,
+          -0.024
+        ],
+        "midtone": [
+          0.129,
+          -0.028,
+          -0.103
+        ],
+        "highlight": [
+          0.045,
+          -0.011,
+          -0.026
+        ]
+      },
+      "effects": {
+        "vignette": false,
+        "blur": false,
+        "spotlight": false,
+        "irregular_black_frame": false,
+        "film_frame": false,
+        "grain": false,
+        "shake": false,
+        "source_effects": [],
+        "evidence_cn": "源草稿 effect 轨为空：本风格不放任何画面特效"
+      },
+      "basis_cn": "源片实测：亮度 p05/p50/p95=3.8/56.0/182.4，饱和 36.1%，暖度 20.23，暗/中/高 RGB=[34.2, 27.0, 24.6]|[132.3, 107.3, 95.3]|[213.6, 204.8, 202.4]（商业认知.mp4, 商业认知.MP4 共 64 帧）",
+      "zone_rgb_measured": {
+        "shadow": [
+          34.2,
+          27.0,
+          24.6
+        ],
+        "midtone": [
+          132.3,
+          107.3,
+          95.3
+        ],
+        "highlight": [
+          213.6,
+          204.8,
+          202.4
+        ]
+      }
+    },
+    "style_17": {
+      "style_name_cn": "暖金强切探店 · 上下双格金线对比风",
+      "measured": {
+        "y_mean_255": 96.2,
+        "y_p05_255": 11.0,
+        "y_p50_255": 78.5,
+        "y_p95_255": 220.7,
+        "sat_mean_pct": 43.2,
+        "warmth_index": 47.73,
+        "hsl_materials": 0,
+        "rgb_triplets_are_fallback": false,
+        "frames_sampled": 36
+      },
+      "lut_strength": 0.733,
+      "saturation_scale": 1.115,
+      "contrast": 1.082,
+      "warmth": 0.187,
+      "tone_curve": {
+        "curve_weight": 0.46,
+        "anchors": [
+          {
+            "input": 0.05,
+            "output": 0.047,
+            "measured": 11.0
+          },
+          {
+            "input": 0.5,
+            "output": 0.412,
+            "measured": 78.5
+          },
+          {
+            "input": 0.95,
+            "output": 0.911,
+            "measured": 220.7
+          }
+        ]
+      },
+      "zone_tint": {
+        "shadow": [
+          0.065,
+          -0.013,
+          -0.061
+        ],
+        "midtone": [
+          0.245,
+          -0.048,
+          -0.249
+        ],
+        "highlight": [
+          0.137,
+          -0.017,
+          -0.235
+        ]
+      },
+      "effects": {
+        "vignette": false,
+        "blur": false,
+        "spotlight": false,
+        "irregular_black_frame": false,
+        "film_frame": false,
+        "grain": false,
+        "shake": {
+          "source_effect": "颤抖",
+          "source_params": {
+            "effects_adjust_range": 0.09,
+            "effects_adjust_speed": 0.12
+          },
+          "window": {
+            "start": 4.5,
+            "duration": 1.533
+          },
+          "amp_x": 4,
+          "amp_y": 4,
+          "speed": 0.51
+        },
+        "source_effects": [
+          "颤抖"
+        ],
+        "evidence_cn": "源草稿 effect 轨实测：颤抖(4.50s 起 1.53s)"
+      },
+      "basis_cn": "源片实测：亮度 p05/p50/p95=11.0/78.5/220.7，饱和 43.2%，暖度 47.73，暗/中/高 RGB=[43.3, 30.8, 23.1]|[170.4, 123.7, 91.7]|[232.3, 207.7, 173.0]（二手车.mp4, 二手车.MP4 共 36 帧）",
+      "zone_rgb_measured": {
+        "shadow": [
+          43.3,
+          30.8,
+          23.1
+        ],
+        "midtone": [
+          170.4,
+          123.7,
+          91.7
+        ],
+        "highlight": [
+          232.3,
+          207.7,
+          173.0
+        ]
+      }
+    },
+    "style_18": {
+      "style_name_cn": "户外实景探盘 · 3D 金属扫光立体大字风",
+      "measured": {
+        "y_mean_255": 99.0,
+        "y_p05_255": 26.1,
+        "y_p50_255": 99.2,
+        "y_p95_255": 177.0,
+        "sat_mean_pct": 15.8,
+        "warmth_index": -3.53,
+        "hsl_materials": 0,
+        "rgb_triplets_are_fallback": false,
+        "frames_sampled": 135
+      },
+      "lut_strength": 0.574,
+      "saturation_scale": 0.99,
+      "contrast": 0.99,
+      "warmth": -0.014,
+      "tone_curve": {
+        "curve_weight": 0.45,
+        "anchors": [
+          {
+            "input": 0.05,
+            "output": 0.074,
+            "measured": 26.1
+          },
+          {
+            "input": 0.5,
+            "output": 0.45,
+            "measured": 99.2
+          },
+          {
+            "input": 0.95,
+            "output": 0.835,
+            "measured": 177.0
+          }
+        ]
+      },
+      "zone_tint": {
+        "shadow": [
+          -0.012,
+          0.003,
+          0.011
+        ],
+        "midtone": [
+          -0.013,
+          0.001,
+          0.031
+        ],
+        "highlight": [
+          -0.017,
+          0.004,
+          0.007
+        ]
+      },
+      "effects": {
+        "vignette": false,
+        "blur": false,
+        "spotlight": false,
+        "irregular_black_frame": false,
+        "film_frame": false,
+        "grain": false,
+        "shake": false,
+        "source_effects": [],
+        "evidence_cn": "源草稿 effect 轨为空：本风格不放任何画面特效"
+      },
+      "basis_cn": "源片实测：亮度 p05/p50/p95=26.1/99.2/177.0，饱和 15.8%，暖度 -3.53，暗/中/高 RGB=[33.5, 35.9, 37.3]|[123.3, 125.5, 130.3]|[206.3, 209.7, 210.1]（汽车-1.mp4, 房产经纪.mp4, 房产经纪.MP4 共 135 帧）",
+      "zone_rgb_measured": {
+        "shadow": [
+          33.5,
+          35.9,
+          37.3
+        ],
+        "midtone": [
+          123.3,
+          125.5,
+          130.3
+        ],
+        "highlight": [
+          206.3,
+          209.7,
+          210.1
+        ]
+      }
+    },
+    "style_19": {
+      "style_name_cn": "冷峻数据新闻前景 · 人像抠像长句大字风",
+      "measured": {
+        "y_mean_255": 164.8,
+        "y_p05_255": 65.7,
+        "y_p50_255": 181.3,
+        "y_p95_255": 223.9,
+        "sat_mean_pct": 10.7,
+        "warmth_index": -1.85,
+        "hsl_materials": 0,
+        "rgb_triplets_are_fallback": false,
+        "frames_sampled": 86
+      },
+      "lut_strength": 0.55,
+      "saturation_scale": 0.967,
+      "contrast": 1.002,
+      "warmth": -0.007,
+      "tone_curve": {
+        "curve_weight": 0.43,
+        "anchors": [
+          {
+            "input": 0.05,
+            "output": 0.139,
+            "measured": 65.7
+          },
+          {
+            "input": 0.5,
+            "output": 0.591,
+            "measured": 181.3
+          },
+          {
+            "input": 0.95,
+            "output": 0.919,
+            "measured": 223.9
+          }
+        ]
+      },
+      "zone_tint": {
+        "shadow": [
+          -0.032,
+          0.007,
+          0.02
+        ],
+        "midtone": [
+          -0.0,
+          0.004,
+          -0.041
+        ],
+        "highlight": [
+          -0.041,
+          0.011,
+          0.015
+        ]
+      },
+      "effects": {
+        "vignette": false,
+        "blur": false,
+        "spotlight": false,
+        "irregular_black_frame": false,
+        "film_frame": false,
+        "grain": false,
+        "shake": false,
+        "source_effects": [],
+        "evidence_cn": "源草稿 effect 轨为空：本风格不放任何画面特效"
+      },
+      "basis_cn": "源片实测：亮度 p05/p50/p95=65.7/181.3/223.9，饱和 10.7%，暖度 -1.85，暗/中/高 RGB=[46.7, 52.9, 55.0]|[138.3, 139.0, 131.8]|[197.6, 205.9, 206.6]（法律赛道.mp4, 法律赛道.MP4 共 86 帧）",
+      "zone_rgb_measured": {
+        "shadow": [
+          46.7,
+          52.9,
+          55.0
+        ],
+        "midtone": [
+          138.3,
+          139.0,
+          131.8
+        ],
+        "highlight": [
+          197.6,
+          205.9,
+          206.6
+        ]
+      }
+    },
+    "style_20": {
+      "style_name_cn": "国风暖木匠心 · 古字典体大字风",
+      "measured": {
+        "y_mean_255": 95.6,
+        "y_p05_255": 43.4,
+        "y_p50_255": 96.7,
+        "y_p95_255": 163.6,
+        "sat_mean_pct": 65.4,
+        "warmth_index": 93.83,
+        "hsl_materials": 0,
+        "rgb_triplets_are_fallback": false,
+        "frames_sampled": 74
+      },
+      "lut_strength": 0.76,
+      "saturation_scale": 1.2,
+      "contrast": 0.942,
+      "warmth": 0.35,
+      "tone_curve": {
+        "curve_weight": 0.47,
+        "anchors": [
+          {
+            "input": 0.05,
+            "output": 0.106,
+            "measured": 43.4
+          },
+          {
+            "input": 0.5,
+            "output": 0.443,
+            "measured": 96.7
+          },
+          {
+            "input": 0.95,
+            "output": 0.805,
+            "measured": 163.6
+          }
+        ]
+      },
+      "zone_tint": {
+        "shadow": [
+          0.35,
+          -0.097,
+          -0.216
+        ],
+        "midtone": [
+          0.35,
+          -0.094,
+          -0.205
+        ],
+        "highlight": [
+          0.129,
+          -0.028,
+          -0.104
+        ]
+      },
+      "effects": {
+        "vignette": false,
+        "blur": false,
+        "spotlight": {
+          "source_effect": "聚光灯",
+          "source_params": {
+            "effects_adjust_speed": 0.33
+          },
+          "window": {
+            "start": 5.7,
+            "duration": 0.833
+          },
+          "angle": 0.63,
+          "x": 540,
+          "y": 960,
+          "inner_frac": 0.34,
+          "feather_frac": 0.62
+        },
+        "irregular_black_frame": {
+          "source_effect": "不规则黑框",
+          "source_params": {
+            "effects_adjust_background_animation": 1.0
+          },
+          "window": {
+            "start": 0.033,
+            "duration": 2.9
+          },
+          "edges": {
+            "top": 32,
+            "bottom": 38,
+            "left": 28,
+            "right": 28
+          },
+          "color": "0x0B0B0B"
+        },
+        "film_frame": false,
+        "grain": false,
+        "shake": false,
+        "source_effects": [
+          "不规则黑框",
+          "聚光灯"
+        ],
+        "evidence_cn": "源草稿 effect 轨实测：不规则黑框(0.03s 起 2.90s)、聚光灯(5.70s 起 0.83s)"
+      },
+      "basis_cn": "源片实测：亮度 p05/p50/p95=43.4/96.7/163.6，饱和 65.4%，暖度 93.83，暗/中/高 RGB=[118.1, 38.9, 19.9]|[172.0, 95.7, 78.0]|[227.7, 202.7, 190.5]（中医素材.mp4, 中医素材.MP4 共 74 帧）",
+      "zone_rgb_measured": {
+        "shadow": [
+          118.1,
+          38.9,
+          19.9
+        ],
+        "midtone": [
+          172.0,
+          95.7,
+          78.0
+        ],
+        "highlight": [
+          227.7,
+          202.7,
+          190.5
+        ]
+      }
+    },
+    "style_21": {
+      "style_name_cn": "门店工艺快切 · 76% 实拍特写暖黄大字风",
+      "measured": {
+        "y_mean_255": 140.1,
+        "y_p05_255": 32.6,
+        "y_p50_255": 140.2,
+        "y_p95_255": 237.9,
+        "sat_mean_pct": 21.3,
+        "warmth_index": 2.85,
+        "hsl_materials": 0,
+        "rgb_triplets_are_fallback": false,
+        "frames_sampled": 46
+      },
+      "lut_strength": 0.598,
+      "saturation_scale": 1.015,
+      "contrast": 1.075,
+      "warmth": 0.011,
+      "tone_curve": {
+        "curve_weight": 0.45,
+        "anchors": [
+          {
+            "input": 0.05,
+            "output": 0.085,
+            "measured": 32.6
+          },
+          {
+            "input": 0.5,
+            "output": 0.522,
+            "measured": 140.2
+          },
+          {
+            "input": 0.95,
+            "output": 0.942,
+            "measured": 237.9
+          }
+        ]
+      },
+      "zone_tint": {
+        "shadow": [
+          -0.011,
+          0.001,
+          0.023
+        ],
+        "midtone": [
+          0.072,
+          -0.015,
+          -0.059
+        ],
+        "highlight": [
+          -0.016,
+          0.004,
+          0.008
+        ]
+      },
+      "effects": {
+        "vignette": false,
+        "blur": {
+          "source_effect": "模糊",
+          "source_params": {
+            "effects_adjust_blur": null
+          },
+          "window": {
+            "start": 1.667,
+            "duration": 0.167
+          },
+          "sigma": 8.0,
+          "whole_frame": true
+        },
+        "spotlight": false,
+        "irregular_black_frame": false,
+        "film_frame": false,
+        "grain": false,
+        "shake": false,
+        "source_effects": [
+          "模糊"
+        ],
+        "evidence_cn": "源草稿 effect 轨实测：模糊(1.67s 起 0.17s)"
+      },
+      "basis_cn": "源片实测：亮度 p05/p50/p95=32.6/140.2/237.9，饱和 21.3%，暖度 2.85，暗/中/高 RGB=[32.9, 34.7, 38.3]|[141.9, 128.0, 121.1]|[221.4, 224.6, 225.2]（背景视频.mp4, 美业.mp4, 美业.MP4 共 46 帧）",
+      "zone_rgb_measured": {
+        "shadow": [
+          32.9,
+          34.7,
+          38.3
+        ],
+        "midtone": [
+          141.9,
+          128.0,
+          121.1
+        ],
+        "highlight": [
+          221.4,
+          224.6,
+          225.2
+        ]
+      }
+    },
+    "style_22": {
+      "style_name_cn": "例证拆解 · 案例画面轮播风",
+      "measured": {
+        "y_mean_255": 163.9,
+        "y_p05_255": 65.0,
+        "y_p50_255": 180.3,
+        "y_p95_255": 222.3,
+        "sat_mean_pct": 10.7,
+        "warmth_index": -2.9,
+        "hsl_materials": 0,
+        "rgb_triplets_are_fallback": false,
+        "frames_sampled": 56
+      },
+      "lut_strength": 0.55,
+      "saturation_scale": 0.967,
+      "contrast": 1.0,
+      "warmth": -0.011,
+      "tone_curve": {
+        "curve_weight": 0.48,
+        "anchors": [
+          {
+            "input": 0.05,
+            "output": 0.148,
+            "measured": 65.0
+          },
+          {
+            "input": 0.5,
+            "output": 0.599,
+            "measured": 180.3
+          },
+          {
+            "input": 0.95,
+            "output": 0.912,
+            "measured": 222.3
+          }
+        ]
+      },
+      "zone_tint": {
+        "shadow": [
+          -0.027,
+          0.006,
+          0.023
+        ],
+        "midtone": [
+          -0.001,
+          0.004,
+          -0.034
+        ],
+        "highlight": [
+          -0.042,
+          0.01,
+          0.022
+        ]
+      },
+      "effects": {
+        "vignette": false,
+        "blur": false,
+        "spotlight": false,
+        "irregular_black_frame": false,
+        "film_frame": false,
+        "grain": false,
+        "shake": false,
+        "source_effects": [],
+        "evidence_cn": "源草稿 effect 轨为空：本风格不放任何画面特效"
+      },
+      "basis_cn": "源片实测：亮度 p05/p50/p95=65.0/180.3/222.3，饱和 10.7%，暖度 -2.9，暗/中/高 RGB=[47.1, 52.4, 55.2]|[138.0, 138.8, 132.8]|[197.2, 205.6, 207.5]（升学规划.mp4, 升学规划.MP4 共 56 帧）",
+      "zone_rgb_measured": {
+        "shadow": [
+          47.1,
+          52.4,
+          55.2
+        ],
+        "midtone": [
+          138.0,
+          138.8,
+          132.8
+        ],
+        "highlight": [
+          197.2,
+          205.6,
+          207.5
+        ]
+      }
+    },
+    "style_23": {
+      "style_name_cn": "品牌微纪录 · 慢调空镜克制宋体风",
+      "measured": {
+        "y_mean_255": 77.9,
+        "y_p05_255": 36.8,
+        "y_p50_255": 66.5,
+        "y_p95_255": 160.9,
+        "sat_mean_pct": 88.8,
+        "warmth_index": 92.4,
+        "hsl_materials": 0,
+        "rgb_triplets_are_fallback": false,
+        "frames_sampled": 28
+      },
+      "lut_strength": 0.76,
+      "saturation_scale": 1.2,
+      "contrast": 0.948,
+      "warmth": 0.35,
+      "tone_curve": {
+        "curve_weight": 0.48,
+        "anchors": [
+          {
+            "input": 0.05,
+            "output": 0.095,
+            "measured": 36.8
+          },
+          {
+            "input": 0.5,
+            "output": 0.385,
+            "measured": 66.5
+          },
+          {
+            "input": 0.95,
+            "output": 0.797,
+            "measured": 160.9
+          }
+        ]
+      },
+      "zone_tint": {
+        "shadow": [
+          0.159,
+          -0.016,
+          -0.311
+        ],
+        "midtone": [
+          0.227,
+          -0.016,
+          -0.35
+        ],
+        "highlight": [
+          0.147,
+          0.019,
+          -0.35
+        ]
+      },
+      "effects": {
+        "vignette": false,
+        "blur": false,
+        "spotlight": false,
+        "irregular_black_frame": false,
+        "film_frame": false,
+        "grain": false,
+        "shake": false,
+        "source_effects": [],
+        "evidence_cn": "源草稿 effect 轨为空：本风格不放任何画面特效"
+      },
+      "basis_cn": "源片实测：亮度 p05/p50/p95=36.8/66.5/160.9，饱和 88.8%，暖度 92.4，暗/中/高 RGB=[80.6, 52.7, 5.7]|[142.2, 103.5, 24.2]|[223.5, 203.1, 100.1]（难受.mp4 共 28 帧）",
+      "zone_rgb_measured": {
+        "shadow": [
+          80.6,
+          52.7,
+          5.7
+        ],
+        "midtone": [
+          142.2,
+          103.5,
+          24.2
+        ],
+        "highlight": [
+          223.5,
+          203.1,
+          100.1
+        ]
+      }
+    },
+    "style_24": {
+      "style_name_cn": "不露脸混剪 · 炸裂金句高燃踩点风",
+      "measured": {
+        "y_mean_255": 103.6,
+        "y_p05_255": 18.1,
+        "y_p50_255": 91.8,
+        "y_p95_255": 220.9,
+        "sat_mean_pct": 28.5,
+        "warmth_index": 26.81,
+        "hsl_materials": 0,
+        "rgb_triplets_are_fallback": false,
+        "frames_sampled": 101
+      },
+      "lut_strength": 0.65,
+      "saturation_scale": 1.048,
+      "contrast": 1.071,
+      "warmth": 0.105,
+      "tone_curve": {
+        "curve_weight": 0.48,
+        "anchors": [
+          {
+            "input": 0.05,
+            "output": 0.06,
+            "measured": 18.1
+          },
+          {
+            "input": 0.5,
+            "output": 0.433,
+            "measured": 91.8
+          },
+          {
+            "input": 0.95,
+            "output": 0.91,
+            "measured": 220.9
+          }
+        ]
+      },
+      "zone_tint": {
+        "shadow": [
+          0.04,
+          -0.009,
+          -0.026
+        ],
+        "midtone": [
+          0.143,
+          -0.03,
+          -0.122
+        ],
+        "highlight": [
+          0.079,
+          -0.01,
+          -0.131
+        ]
+      },
+      "effects": {
+        "vignette": false,
+        "blur": false,
+        "spotlight": false,
+        "irregular_black_frame": false,
+        "film_frame": false,
+        "grain": false,
+        "shake": false,
+        "source_effects": [],
+        "evidence_cn": "源草稿 effect 轨为空：本风格不放任何画面特效"
+      },
+      "basis_cn": "源片实测：亮度 p05/p50/p95=18.1/91.8/220.9，饱和 28.5%，暖度 26.81，暗/中/高 RGB=[43.9, 36.1, 33.4]|[149.9, 122.2, 107.6]|[225.7, 211.5, 192.3]（汽车销售.mp4, 汽车销售.MP4, 汽车素材-1.mp4 共 101 帧）",
+      "zone_rgb_measured": {
+        "shadow": [
+          43.9,
+          36.1,
+          33.4
+        ],
+        "midtone": [
+          149.9,
+          122.2,
+          107.6
+        ],
+        "highlight": [
+          225.7,
+          211.5,
+          192.3
+        ]
+      }
+    }
+  }
+}

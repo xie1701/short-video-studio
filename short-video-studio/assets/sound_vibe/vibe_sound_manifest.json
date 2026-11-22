@@ -2,95 +2,784 @@
   "styles": {
     "style_01": {
       "bgm_wav": "sound_vibe/bgm/style_01_bgm.m4a",
-      "bpm": 120.0,
+      "bgm_status": "bundled",
+      "source_bgm_names": [
+        "喜剧幽默搞笑古风  eighteen",
+        "Food2"
+      ],
+      "source_sfx_names": [
+        "2026-11-11 145548",
+        "一声响（敲锣）"
+      ],
       "sfx": {
         "transition": "sound_vibe/sfx/style_01_transition.wav",
         "accent": "sound_vibe/sfx/style_01_accent.wav",
-        "ui": "sound_vibe/sfx/style_01_ui.wav"
+        "ui": "sound_vibe/sfx/style_01_ui.wav",
+        "receipt": "sound_vibe/sfx/style_01_receipt.wav"
       },
-      "sfx_min_gap_sec": 7.5,
+      "sfx_source_kinds": {
+        "transition": "2026-11-11 145548",
+        "accent": "一声响（敲锣）",
+        "ui": "2026-11-11 145548",
+        "receipt": "2026-11-11 145548"
+      },
+      "sfx_per_min_source": 1.8,
+      "sfx_min_gap_sec": 6.8,
       "sfx_gain_db": -10.0,
       "bgm_base_db": -12.0,
-      "duck_depth_db": -10.0
+      "duck_depth_db": -10.0,
+      "measured": "forensic/source_manifest.json"
     },
     "style_02": {
       "bgm_wav": "sound_vibe/bgm/style_02_bgm.m4a",
-      "bpm": 90.0,
+      "bgm_status": "bundled",
+      "source_bgm_names": [
+        "Sunrise"
+      ],
+      "source_sfx_names": [
+        "回忆-刷一下",
+        "纸张抖动声",
+        "打字（字幕专用）",
+        "叮~",
+        "气泡弹出",
+        "滴，提示音"
+      ],
       "sfx": {
-        "transition": "sound_vibe/sfx/style_01_transition.wav",
+        "transition": "sound_vibe/sfx/style_02_transition.wav",
         "accent": "sound_vibe/sfx/style_02_accent.wav",
-        "ui": "sound_vibe/sfx/style_02_ui.wav"
+        "ui": "sound_vibe/sfx/style_02_ui.wav",
+        "receipt": "sound_vibe/sfx/style_02_receipt.wav"
       },
-      "sfx_min_gap_sec": 6.0,
+      "sfx_source_kinds": {
+        "transition": "纸张抖动声",
+        "accent": "综艺开头-咚（空旷）",
+        "ui": "打字（字幕专用）",
+        "receipt": "叮~"
+      },
+      "sfx_per_min_source": 40.7,
+      "sfx_min_gap_sec": 1.0,
       "sfx_gain_db": -9.0,
       "bgm_base_db": -11.5,
-      "duck_depth_db": -10.5
+      "duck_depth_db": -10.5,
+      "measured": "forensic/source_manifest.json"
     },
     "style_03": {
       "bgm_wav": "sound_vibe/bgm/style_03_bgm.m4a",
-      "bpm": 110.0,
+      "bgm_status": "bundled",
+      "source_bgm_names": [
+        "IV (抖音原版) （剪辑版）"
+      ],
+      "source_sfx_names": [
+        "“呼”2\t",
+        "一滴水滴声",
+        "高音闪光 (3)",
+        "打字声",
+        "综艺悬疑 不对劲",
+        "综艺悬疑 沙锤长"
+      ],
       "sfx": {
         "transition": "sound_vibe/sfx/style_03_transition.wav",
         "accent": "sound_vibe/sfx/style_03_accent.wav",
-        "ui": "sound_vibe/sfx/style_01_accent.wav"
+        "ui": "sound_vibe/sfx/style_03_ui.wav",
+        "receipt": "sound_vibe/sfx/style_03_receipt.wav"
       },
-      "sfx_min_gap_sec": 6.5,
+      "sfx_source_kinds": {
+        "transition": "“呼”2\t",
+        "accent": "一滴水滴声",
+        "ui": "打字声",
+        "receipt": "一滴水滴声"
+      },
+      "sfx_per_min_source": 25.1,
+      "sfx_min_gap_sec": 1.63,
       "sfx_gain_db": -10.0,
       "bgm_base_db": -12.5,
-      "duck_depth_db": -10.0
+      "duck_depth_db": -10.0,
+      "measured": "forensic/source_manifest.json"
     },
     "style_12": {
       "bgm_wav": "sound_vibe/bgm/style_12_bgm.m4a",
-      "bpm": 75.0,
+      "bgm_status": "bundled",
+      "source_bgm_names": [
+        "Elegant"
+      ],
+      "source_sfx_names": [
+        "“呼”2\t",
+        "综艺紧张噔噔",
+        "综艺 悬疑 轻敲",
+        "一滴水滴声",
+        "咚",
+        "报纸报纸: 折叠或展开"
+      ],
       "sfx": {
-        "transition": "sound_vibe/sfx/style_02_ui.wav",
-        "accent": "sound_vibe/sfx/style_01_ui.wav",
-        "ui": "sound_vibe/sfx/style_12_ui.wav"
+        "transition": "sound_vibe/sfx/style_12_transition.wav",
+        "accent": "sound_vibe/sfx/style_12_accent.wav",
+        "ui": "sound_vibe/sfx/style_12_ui.wav",
+        "receipt": "sound_vibe/sfx/style_12_receipt.wav"
       },
-      "sfx_min_gap_sec": 7.5,
+      "sfx_source_kinds": {
+        "transition": "“呼”2\t",
+        "accent": "综艺 悬疑 轻敲",
+        "ui": " 键盘空格声",
+        "receipt": "一滴水滴声"
+      },
+      "sfx_per_min_source": 36.5,
+      "sfx_min_gap_sec": 1.12,
       "sfx_gain_db": -11.0,
       "bgm_base_db": -13.0,
-      "duck_depth_db": -9.5
+      "duck_depth_db": -9.5,
+      "measured": "forensic/source_manifest.json"
     },
     "style_06": {
       "bgm_wav": "sound_vibe/bgm/style_06_bgm.m4a",
-      "bpm": 92.0,
+      "bgm_status": "bundled",
+      "source_bgm_names": [
+        "美丽的神话 钢琴演奏"
+      ],
+      "source_sfx_names": [
+        "纸张抖动声",
+        "气泡弹出",
+        "星星闪耀转场声",
+        "叮3",
+        "回忆-刷一下",
+        "啵，轻气泡音3"
+      ],
       "sfx": {
-        "transition": "sound_vibe/sfx/style_03_transition.wav",
+        "transition": "sound_vibe/sfx/style_06_transition.wav",
         "accent": "sound_vibe/sfx/style_06_accent.wav",
-        "ui": "sound_vibe/sfx/style_06_ui.wav"
+        "ui": "sound_vibe/sfx/style_06_ui.wav",
+        "receipt": "sound_vibe/sfx/style_06_receipt.wav"
       },
-      "sfx_min_gap_sec": 11.0,
+      "sfx_source_kinds": {
+        "transition": "星星闪耀转场声",
+        "accent": "影视氛围发现咚",
+        "ui": "气泡弹出",
+        "receipt": "钱(money)"
+      },
+      "sfx_per_min_source": 36.0,
+      "sfx_min_gap_sec": 1.13,
       "sfx_gain_db": -13.5,
       "bgm_base_db": -11.5,
-      "duck_depth_db": -11.0
+      "duck_depth_db": -11.0,
+      "measured": "forensic/source_manifest.json"
     },
     "style_05": {
       "bgm_wav": "sound_vibe/bgm/style_05_bgm.m4a",
-      "bpm": 104.0,
+      "bgm_status": "bundled",
+      "source_bgm_names": [
+        "Push Up（剪辑版）"
+      ],
+      "source_sfx_names": [
+        "青蛙呱叫音效",
+        " 键盘空格声",
+        "Tom鼓",
+        "嗖",
+        "啵 综艺",
+        "waooe "
+      ],
       "sfx": {
         "transition": "sound_vibe/sfx/style_05_transition.wav",
-        "accent": "sound_vibe/sfx/style_05_transition.wav",
-        "ui": "sound_vibe/sfx/style_03_accent.wav"
+        "accent": "sound_vibe/sfx/style_05_accent.wav",
+        "ui": "sound_vibe/sfx/style_05_ui.wav",
+        "receipt": "sound_vibe/sfx/style_05_receipt.wav"
       },
-      "sfx_min_gap_sec": 6.5,
+      "sfx_source_kinds": {
+        "transition": "嗖",
+        "accent": "Tom鼓",
+        "ui": " 键盘空格声",
+        "receipt": "一声亮铃清脆迷惑铃音铃铛"
+      },
+      "sfx_per_min_source": 26.7,
+      "sfx_min_gap_sec": 1.53,
       "sfx_gain_db": -9.5,
       "bgm_base_db": -12.5,
-      "duck_depth_db": -10.0
+      "duck_depth_db": -10.0,
+      "measured": "forensic/source_manifest.json"
     },
     "style_15": {
       "bgm_wav": "sound_vibe/bgm/style_15_bgm.m4a",
-      "bpm": 120.0,
+      "bgm_status": "bundled",
+      "source_bgm_names": [
+        "Intro",
+        "Sunrise"
+      ],
+      "source_sfx_names": [
+        "啵1",
+        "打字声",
+        "回忆-刷一下",
+        "纸张抖动声",
+        "翻页",
+        "综艺紧张噔噔"
+      ],
       "sfx": {
-        "transition": "sound_vibe/sfx/style_02_ui.wav",
+        "transition": "sound_vibe/sfx/style_15_transition.wav",
         "accent": "sound_vibe/sfx/style_15_accent.wav",
-        "ui": "sound_vibe/sfx/style_12_ui.wav",
+        "ui": "sound_vibe/sfx/style_15_ui.wav",
         "receipt": "sound_vibe/sfx/style_15_receipt.wav"
       },
-      "sfx_min_gap_sec": 6.5,
+      "sfx_source_kinds": {
+        "transition": "纸张抖动声",
+        "accent": "一滴水滴声",
+        "ui": "打字声",
+        "receipt": "一滴水滴声"
+      },
+      "sfx_per_min_source": 64.8,
+      "sfx_min_gap_sec": 0.63,
       "sfx_gain_db": -10.0,
       "bgm_base_db": -12.5,
-      "duck_depth_db": -10.0
+      "duck_depth_db": -10.0,
+      "measured": "forensic/source_manifest.json"
+    },
+    "style_04": {
+      "bgm_wav": null,
+      "bgm_status": "source_required",
+      "source_bgm_names": [],
+      "source_sfx_names": [
+        "回忆-刷一下",
+        "纸张抖动声",
+        "诡异的滴水声",
+        "“呼”的转场音效",
+        "滴，提示音",
+        "叮，提示音4"
+      ],
+      "sfx": {
+        "transition": "sound_vibe/sfx/style_04_transition.wav",
+        "accent": "sound_vibe/sfx/style_04_accent.wav",
+        "ui": "sound_vibe/sfx/style_04_ui.wav",
+        "receipt": "sound_vibe/sfx/style_04_receipt.wav"
+      },
+      "sfx_source_kinds": {
+        "transition": "“呼”的转场音效",
+        "accent": "哐，撞击轻响",
+        "ui": "打字声",
+        "receipt": "叮，提示音4"
+      },
+      "sfx_per_min_source": 40.0,
+      "sfx_min_gap_sec": 1.02,
+      "sfx_gain_db": -9.0,
+      "bgm_base_db": -12.0,
+      "duck_depth_db": -10.0,
+      "measured": "forensic/source_manifest.json"
+    },
+    "style_07": {
+      "bgm_wav": null,
+      "bgm_status": "source_required",
+      "source_bgm_names": [
+        "Push Up（剪辑版）"
+      ],
+      "source_sfx_names": [
+        "“呼”2\t",
+        "高音闪光转场",
+        "一声响铃",
+        "游戏点击 音效",
+        "叮，收银机提示音1",
+        "发条旋钮转动齿轮"
+      ],
+      "sfx": {
+        "transition": "sound_vibe/sfx/style_07_transition.wav",
+        "accent": "sound_vibe/sfx/style_07_accent.wav",
+        "ui": "sound_vibe/sfx/style_07_ui.wav",
+        "receipt": "sound_vibe/sfx/style_07_receipt.wav"
+      },
+      "sfx_source_kinds": {
+        "transition": "“呼”2\t",
+        "accent": "一声响铃",
+        "ui": " 键盘空格声",
+        "receipt": "一声响铃"
+      },
+      "sfx_per_min_source": 42.7,
+      "sfx_min_gap_sec": 0.96,
+      "sfx_gain_db": -9.0,
+      "bgm_base_db": -12.0,
+      "duck_depth_db": -10.0,
+      "measured": "forensic/source_manifest.json"
+    },
+    "style_08": {
+      "bgm_wav": null,
+      "bgm_status": "source_required",
+      "source_bgm_names": [
+        "Void（Original ）"
+      ],
+      "source_sfx_names": [
+        "综艺紧张噔噔",
+        "钱 到账",
+        "诡异的滴水声",
+        "一滴水滴声",
+        "纸张抖动声",
+        "拔刀 游戏音效 宝剑出鞘"
+      ],
+      "sfx": {
+        "transition": "sound_vibe/sfx/style_08_transition.wav",
+        "accent": "sound_vibe/sfx/style_08_accent.wav",
+        "ui": "sound_vibe/sfx/style_08_ui.wav",
+        "receipt": "sound_vibe/sfx/style_08_receipt.wav"
+      },
+      "sfx_source_kinds": {
+        "transition": "高音闪光转场",
+        "accent": "拔刀 游戏音效 宝剑出鞘",
+        "ui": "综艺紧张噔噔",
+        "receipt": "钱 到账"
+      },
+      "sfx_per_min_source": 29.8,
+      "sfx_min_gap_sec": 1.37,
+      "sfx_gain_db": -9.0,
+      "bgm_base_db": -12.0,
+      "duck_depth_db": -10.0,
+      "measured": "forensic/source_manifest.json"
+    },
+    "style_09": {
+      "bgm_wav": null,
+      "bgm_status": "source_required",
+      "source_bgm_names": [],
+      "source_sfx_names": [
+        "打字声",
+        "“呼”2\t",
+        "一声金属咔哒声",
+        "撞击光1",
+        "综艺开头-咚（空旷）",
+        "发条转动"
+      ],
+      "sfx": {
+        "transition": "sound_vibe/sfx/style_09_transition.wav",
+        "accent": "sound_vibe/sfx/style_09_accent.wav",
+        "ui": "sound_vibe/sfx/style_09_ui.wav",
+        "receipt": "sound_vibe/sfx/style_09_receipt.wav"
+      },
+      "sfx_source_kinds": {
+        "transition": "“呼”2\t",
+        "accent": "撞击光1",
+        "ui": "打字声",
+        "receipt": "钱(money)"
+      },
+      "sfx_per_min_source": 24.0,
+      "sfx_min_gap_sec": 1.7,
+      "sfx_gain_db": -9.0,
+      "bgm_base_db": -12.0,
+      "duck_depth_db": -10.0,
+      "measured": "forensic/source_manifest.json"
+    },
+    "style_10": {
+      "bgm_wav": null,
+      "bgm_status": "source_required",
+      "source_bgm_names": [],
+      "source_sfx_names": [
+        "综艺 悬疑 轻敲",
+        "Q弹",
+        "撞击光1",
+        "whoosh-呼",
+        "综艺清脆敲声",
+        "枪拉栓"
+      ],
+      "sfx": {
+        "transition": "sound_vibe/sfx/style_10_transition.wav",
+        "accent": "sound_vibe/sfx/style_10_accent.wav",
+        "ui": "sound_vibe/sfx/style_10_ui.wav",
+        "receipt": "sound_vibe/sfx/style_10_receipt.wav"
+      },
+      "sfx_source_kinds": {
+        "transition": "whoosh-呼",
+        "accent": "综艺 悬疑 轻敲",
+        "ui": "鼠标单击",
+        "receipt": "Q弹"
+      },
+      "sfx_per_min_source": 47.6,
+      "sfx_min_gap_sec": 0.86,
+      "sfx_gain_db": -9.0,
+      "bgm_base_db": -12.0,
+      "duck_depth_db": -10.0,
+      "measured": "forensic/source_manifest.json"
+    },
+    "style_11": {
+      "bgm_wav": null,
+      "bgm_status": "source_required",
+      "source_bgm_names": [
+        "复合片段1",
+        "Push Up（剪辑版）"
+      ],
+      "source_sfx_names": [
+        "“呼”2\t",
+        "一滴水滴声",
+        "嗖，咻",
+        "一声响铃",
+        "叮咚，提示音1",
+        "开门声"
+      ],
+      "sfx": {
+        "transition": "sound_vibe/sfx/style_11_transition.wav",
+        "accent": "sound_vibe/sfx/style_11_accent.wav",
+        "ui": "sound_vibe/sfx/style_11_ui.wav",
+        "receipt": "sound_vibe/sfx/style_11_receipt.wav"
+      },
+      "sfx_source_kinds": {
+        "transition": "“呼”2\t",
+        "accent": "咚",
+        "ui": "打字声",
+        "receipt": "一滴水滴声"
+      },
+      "sfx_per_min_source": 29.5,
+      "sfx_min_gap_sec": 1.38,
+      "sfx_gain_db": -9.0,
+      "bgm_base_db": -12.0,
+      "duck_depth_db": -10.0,
+      "measured": "forensic/source_manifest.json"
+    },
+    "style_13": {
+      "bgm_wav": null,
+      "bgm_status": "source_required",
+      "source_bgm_names": [],
+      "source_sfx_names": [
+        " 敲击碗 叮的一声",
+        "嗖一声转场",
+        "枪拉栓",
+        "鼠标单击",
+        "发条转动",
+        "叮，收银机提示音1"
+      ],
+      "sfx": {
+        "transition": "sound_vibe/sfx/style_13_transition.wav",
+        "accent": "sound_vibe/sfx/style_13_accent.wav",
+        "ui": "sound_vibe/sfx/style_13_ui.wav",
+        "receipt": "sound_vibe/sfx/style_13_receipt.wav"
+      },
+      "sfx_source_kinds": {
+        "transition": "嗖一声转场",
+        "accent": "枪拉栓",
+        "ui": "鼠标单击",
+        "receipt": " 敲击碗 叮的一声"
+      },
+      "sfx_per_min_source": 33.8,
+      "sfx_min_gap_sec": 1.21,
+      "sfx_gain_db": -9.0,
+      "bgm_base_db": -12.0,
+      "duck_depth_db": -10.0,
+      "measured": "forensic/source_manifest.json"
+    },
+    "style_14": {
+      "bgm_wav": null,
+      "bgm_status": "source_required",
+      "source_bgm_names": [
+        "Veil of Darkness - 黑暗之幕"
+      ],
+      "source_sfx_names": [
+        "综艺悬疑 不对劲",
+        "一滴水滴声",
+        "综艺清脆敲声",
+        "“呼”的转场音效",
+        "拍照声2",
+        "叮咚，提示音2"
+      ],
+      "sfx": {
+        "transition": "sound_vibe/sfx/style_14_transition.wav",
+        "accent": "sound_vibe/sfx/style_14_accent.wav",
+        "ui": "sound_vibe/sfx/style_14_ui.wav",
+        "receipt": "sound_vibe/sfx/style_14_receipt.wav"
+      },
+      "sfx_source_kinds": {
+        "transition": "“呼”的转场音效",
+        "accent": "综艺清脆敲声",
+        "ui": "鼠标单击",
+        "receipt": "一滴水滴声"
+      },
+      "sfx_per_min_source": 28.7,
+      "sfx_min_gap_sec": 1.42,
+      "sfx_gain_db": -9.0,
+      "bgm_base_db": -12.0,
+      "duck_depth_db": -10.0,
+      "measured": "forensic/source_manifest.json"
+    },
+    "style_16": {
+      "bgm_wav": null,
+      "bgm_status": "source_required",
+      "source_bgm_names": [
+        "Melody (Original Mix)"
+      ],
+      "source_sfx_names": [
+        "“呼”2\t",
+        "一声响铃",
+        "超市电子钱柜 结账 ",
+        "报纸报纸: 折叠或展开",
+        "打字声",
+        "敲锣声"
+      ],
+      "sfx": {
+        "transition": "sound_vibe/sfx/style_16_transition.wav",
+        "accent": "sound_vibe/sfx/style_16_accent.wav",
+        "ui": "sound_vibe/sfx/style_16_ui.wav",
+        "receipt": "sound_vibe/sfx/style_16_receipt.wav"
+      },
+      "sfx_source_kinds": {
+        "transition": "“呼”2\t",
+        "accent": "敲锣声",
+        "ui": "打字声",
+        "receipt": "超市电子钱柜 结账 "
+      },
+      "sfx_per_min_source": 27.5,
+      "sfx_min_gap_sec": 1.48,
+      "sfx_gain_db": -9.0,
+      "bgm_base_db": -12.0,
+      "duck_depth_db": -10.0,
+      "measured": "forensic/source_manifest.json"
+    },
+    "style_17": {
+      "bgm_wav": null,
+      "bgm_status": "source_required",
+      "source_bgm_names": [],
+      "source_sfx_names": [
+        "回忆-刷一下",
+        "叮3",
+        "诡异的滴水声",
+        "纸张抖动声",
+        "综艺开头-咚（空旷）",
+        "综艺嘭字幕音效震撼出场"
+      ],
+      "sfx": {
+        "transition": "sound_vibe/sfx/style_17_transition.wav",
+        "accent": "sound_vibe/sfx/style_17_accent.wav",
+        "ui": "sound_vibe/sfx/style_17_ui.wav",
+        "receipt": "sound_vibe/sfx/style_17_receipt.wav"
+      },
+      "sfx_source_kinds": {
+        "transition": "嗖，咻",
+        "accent": "综艺开头-咚（空旷）",
+        "ui": "打字声",
+        "receipt": "叮3"
+      },
+      "sfx_per_min_source": 56.2,
+      "sfx_min_gap_sec": 0.73,
+      "sfx_gain_db": -9.0,
+      "bgm_base_db": -12.0,
+      "duck_depth_db": -10.0,
+      "measured": "forensic/source_manifest.json"
+    },
+    "style_18": {
+      "bgm_wav": null,
+      "bgm_status": "source_required",
+      "source_bgm_names": [
+        "Push Up（剪辑版）"
+      ],
+      "source_sfx_names": [
+        "“呼”2\t",
+        "打字声",
+        "发条旋钮转动齿轮",
+        "叮，提示音4",
+        "一声响铃",
+        "“呼”的转场音效"
+      ],
+      "sfx": {
+        "transition": "sound_vibe/sfx/style_18_transition.wav",
+        "accent": "sound_vibe/sfx/style_18_accent.wav",
+        "ui": "sound_vibe/sfx/style_18_ui.wav",
+        "receipt": "sound_vibe/sfx/style_18_receipt.wav"
+      },
+      "sfx_source_kinds": {
+        "transition": "“呼”2\t",
+        "accent": "叮，提示音4",
+        "ui": "打字声",
+        "receipt": "叮，提示音4"
+      },
+      "sfx_per_min_source": 33.0,
+      "sfx_min_gap_sec": 1.24,
+      "sfx_gain_db": -9.0,
+      "bgm_base_db": -12.0,
+      "duck_depth_db": -10.0,
+      "measured": "forensic/source_manifest.json"
+    },
+    "style_19": {
+      "bgm_wav": null,
+      "bgm_status": "source_required",
+      "source_bgm_names": [
+        "Push Up（剪辑版）"
+      ],
+      "source_sfx_names": [
+        "撞击光1",
+        "单反相机快速拍照快门声音音效",
+        "发条转动",
+        "综艺咚",
+        "综艺嘭字幕音效震撼出场",
+        "刀刺进身体的"
+      ],
+      "sfx": {
+        "transition": "sound_vibe/sfx/style_19_transition.wav",
+        "accent": "sound_vibe/sfx/style_19_accent.wav",
+        "ui": "sound_vibe/sfx/style_19_ui.wav",
+        "receipt": "sound_vibe/sfx/style_19_receipt.wav"
+      },
+      "sfx_source_kinds": {
+        "transition": "“呼”2\t",
+        "accent": "撞击光1",
+        "ui": " 键盘空格声",
+        "receipt": "叮叮"
+      },
+      "sfx_per_min_source": 22.0,
+      "sfx_min_gap_sec": 1.85,
+      "sfx_gain_db": -9.0,
+      "bgm_base_db": -12.0,
+      "duck_depth_db": -10.0,
+      "measured": "forensic/source_manifest.json"
+    },
+    "style_20": {
+      "bgm_wav": null,
+      "bgm_status": "source_required",
+      "source_bgm_names": [
+        "Movie-style piano and attack peen(942566)",
+        "SoCold臭味相投(DJ版)",
+        "千山"
+      ],
+      "source_sfx_names": [
+        "气泡弹出",
+        "纸张抖动声",
+        "打字声",
+        "回忆-刷一下",
+        "一滴水滴声",
+        "诡异的滴水声"
+      ],
+      "sfx": {
+        "transition": "sound_vibe/sfx/style_20_transition.wav",
+        "accent": "sound_vibe/sfx/style_20_accent.wav",
+        "ui": "sound_vibe/sfx/style_20_ui.wav",
+        "receipt": "sound_vibe/sfx/style_20_receipt.wav"
+      },
+      "sfx_source_kinds": {
+        "transition": "纸张抖动声",
+        "accent": "综艺 悬疑 轻敲",
+        "ui": "打字声",
+        "receipt": "超市电子钱柜 结账 "
+      },
+      "sfx_per_min_source": 46.9,
+      "sfx_min_gap_sec": 0.87,
+      "sfx_gain_db": -9.0,
+      "bgm_base_db": -12.0,
+      "duck_depth_db": -10.0,
+      "measured": "forensic/source_manifest.json"
+    },
+    "style_21": {
+      "bgm_wav": null,
+      "bgm_status": "source_required",
+      "source_bgm_names": [
+        "复合片段5",
+        "It is All in Your Imagination"
+      ],
+      "source_sfx_names": [
+        "风铃声",
+        "快速翻页声",
+        " 键盘空格声",
+        "“呼”的转场音效",
+        "哇呜",
+        "一声响铃"
+      ],
+      "sfx": {
+        "transition": "sound_vibe/sfx/style_21_transition.wav",
+        "accent": "sound_vibe/sfx/style_21_accent.wav",
+        "ui": "sound_vibe/sfx/style_21_ui.wav",
+        "receipt": "sound_vibe/sfx/style_21_receipt.wav"
+      },
+      "sfx_source_kinds": {
+        "transition": "“呼”的转场音效",
+        "accent": "风铃声",
+        "ui": " 键盘空格声",
+        "receipt": "风铃声"
+      },
+      "sfx_per_min_source": 46.1,
+      "sfx_min_gap_sec": 0.89,
+      "sfx_gain_db": -9.0,
+      "bgm_base_db": -12.0,
+      "duck_depth_db": -10.0,
+      "measured": "forensic/source_manifest.json"
+    },
+    "style_22": {
+      "bgm_wav": null,
+      "bgm_status": "source_required",
+      "source_bgm_names": [
+        "Push Up（剪辑版）"
+      ],
+      "source_sfx_names": [
+        "打字声",
+        "纸张抖动声",
+        "风铃声",
+        "发条转动",
+        "“呼”2\t",
+        "扫光"
+      ],
+      "sfx": {
+        "transition": "sound_vibe/sfx/style_22_transition.wav",
+        "accent": "sound_vibe/sfx/style_22_accent.wav",
+        "ui": "sound_vibe/sfx/style_22_ui.wav",
+        "receipt": "sound_vibe/sfx/style_22_receipt.wav"
+      },
+      "sfx_source_kinds": {
+        "transition": "“呼”2\t",
+        "accent": "撞击光1",
+        "ui": "打字声",
+        "receipt": "风铃声"
+      },
+      "sfx_per_min_source": 33.2,
+      "sfx_min_gap_sec": 1.23,
+      "sfx_gain_db": -9.0,
+      "bgm_base_db": -12.0,
+      "duck_depth_db": -10.0,
+      "measured": "forensic/source_manifest.json"
+    },
+    "style_23": {
+      "bgm_wav": null,
+      "bgm_status": "source_required",
+      "source_bgm_names": [
+        "柔和的光（柚仔版）"
+      ],
+      "source_sfx_names": [
+        "“呼”2\t",
+        "纸张抖动声",
+        "报纸报纸: 折叠或展开",
+        "气泡弹出",
+        "叮，提示音4"
+      ],
+      "sfx": {
+        "transition": "sound_vibe/sfx/style_23_transition.wav",
+        "accent": "sound_vibe/sfx/style_23_accent.wav",
+        "ui": "sound_vibe/sfx/style_23_ui.wav",
+        "receipt": "sound_vibe/sfx/style_23_receipt.wav"
+      },
+      "sfx_source_kinds": {
+        "transition": "“呼”2\t",
+        "accent": "叮，提示音4",
+        "ui": "气泡弹出",
+        "receipt": "叮，提示音4"
+      },
+      "sfx_per_min_source": 17.2,
+      "sfx_min_gap_sec": 2.37,
+      "sfx_gain_db": -9.0,
+      "bgm_base_db": -12.0,
+      "duck_depth_db": -10.0,
+      "measured": "forensic/source_manifest.json"
+    },
+    "style_24": {
+      "bgm_wav": null,
+      "bgm_status": "source_required",
+      "source_bgm_names": [],
+      "source_sfx_names": [
+        "“呼”2\t",
+        "单反相机快速拍照快门声音音效",
+        "鼠标单击",
+        "off",
+        "影视 咚",
+        "相机快门声"
+      ],
+      "sfx": {
+        "transition": "sound_vibe/sfx/style_24_transition.wav",
+        "accent": "sound_vibe/sfx/style_24_accent.wav",
+        "ui": "sound_vibe/sfx/style_24_ui.wav",
+        "receipt": "sound_vibe/sfx/style_24_receipt.wav"
+      },
+      "sfx_source_kinds": {
+        "transition": "“呼”2\t",
+        "accent": "影视 咚",
+        "ui": "鼠标单击",
+        "receipt": "单反相机快速拍照快门声音音效"
+      },
+      "sfx_per_min_source": 31.3,
+      "sfx_min_gap_sec": 1.3,
+      "sfx_gain_db": -9.0,
+      "bgm_base_db": -12.0,
+      "duck_depth_db": -10.0,
+      "measured": "forensic/source_manifest.json"
     }
   },
   "archetype_fallback": {
@@ -100,5 +789,12 @@
     "arch_04_punch_talking_head": "style_01",
     "arch_05_cinema_slow_space": "style_06",
     "arch_06_paper_stopmotion": "style_05"
+  },
+  "version": "4.0.0",
+  "policy": {
+    "bgm": "源曲目不可随包分发；bundled=随包替代，source_required=需用户按 source_bgm_names 自备",
+    "sfx": "按源草稿出现频率最高的音效类别合成同族拟音；sfx_per_min_source 为实测密度",
+    "min_gap": "由实测 sfx_per_min 反算，不再统一 48 次/分上限",
+    "sfx_align": "音效一律卡在切点/字点（源草稿 sfx_cut_offset_med_ms=0、sfx_text_offset_med_ms=0）"
   }
 }

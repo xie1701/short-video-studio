@@ -12,7 +12,10 @@
 2. 30fps 动态透明 .mov 渲染器 (render_animated_overlay_mov)：
    原生支持 8 种剪映核心动态文字动效（store_stagger_burst / bounce_smash / wipe_reveal /
    typewriter_char / shimmer_3d_gold / ink_bloom / depth_behind_person / number_flip_trio），
-   彻底告别静态整图生硬淡入。
+   并按 overlay_style.anim_primitives 叠加 6 类入场原语 + 缩小/放大子型（overlay_motion.py：
+   弹幕滚动 / 镜像翻转 / 横向模糊 / 快速翻页 / 折叠展开 / 滑动出入），彻底告别静态整图生硬淡入。
+3. 每套风格的花字叠层均为专属版式（无「通用斜体兜底」）：宋体极简 / 白描边抠像 / 极净全屏 /
+   通透大字 / 圆角黑幕 / 双色花字流 / 暖金勾边 / 门店小签 / 克制微纪录 / 高燃混剪。
 """
 
 from __future__ import annotations
@@ -42,11 +45,20 @@ from common import (
     get_cached_font,
     hex_to_rgba,
 )
+from overlay_motion import (
+    MOTION_MODES,
+    MOTION_PAD,
+    make_frame_fn as make_motion_frame_fn,
+    resolve_mode as resolve_anim_mode,
+)
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
 BLUEPRINTS_PATH = ASSETS_DIR / "style_spectrum" / "template_blueprints.json"
+
+# 不参与 anim_primitives 轮换的签名动效（style_01 三拍砸屏 / style_18 3D 金属扫光）
+SIGNATURE_ANIM_MODES = frozenset({"store_stagger_burst", "shimmer_3d_gold"})
 
 
 @lru_cache(maxsize=4)
@@ -85,6 +97,66 @@ def _fit_text(
             return fnt, t + "…", min_fs
         t = t[:-1]
     return fnt, t, min_fs
+
+
+def _hex_rgb(hex_str: Any, default: Tuple[int, int, int] = (255, 255, 255)) -> Tuple[int, int, int]:
+    """把 #RRGGBB / #RRGGBBAA 转成 RGB。"""
+    s = str(hex_str or "").strip().lstrip("#")
+    if len(s) not in (6, 8):
+        return default
+    try:
+        return (int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16))
+    except ValueError:
+        return default
+
+
+def _mix(a: Tuple[int, int, int], b: Tuple[int, int, int], t: float) -> Tuple[int, int, int]:
+    t = max(0.0, min(1.0, float(t)))
+    return tuple(int(round(a[i] + (b[i] - a[i]) * t)) for i in range(3))  # type: ignore[return-value]
+
+
+def _light(c: Tuple[int, int, int], t: float) -> Tuple[int, int, int]:
+    return _mix(c, (255, 255, 255), t)
+
+
+def _shade(c: Tuple[int, int, int], t: float) -> Tuple[int, int, int]:
+    return _mix(c, (0, 0, 0), t)
+
+
+def style_flower_palette(ov_style: Dict[str, Any], style_id: str = "",
+                         preferred_hex: str = "") -> Dict[str, Any]:
+    """花字配色一律从蓝图 overlay_style 读：flower_colors 是源草稿实测色。
+
+    返回 {text, accent, accent2, deep, light, stroke, plate}，其中 light/deep
+    是 accent 的明暗派生，保证与源同色系。蓝图为空时按最保守的白字回退。
+    """
+    raw = [c for c in (ov_style.get("flower_colors") or []) if isinstance(c, str)]
+    rgbs = [_hex_rgb(c) for c in raw]
+    neutral = [c for c in rgbs if max(c) - min(c) <= 12 or min(c) >= 235]
+    accents = [c for c in rgbs if c not in neutral]
+    pref = _hex_rgb(preferred_hex) if preferred_hex else None
+    if pref is not None and not (max(pref) - min(pref) <= 12 or min(pref) >= 235):
+        # 字幕关键词色是源草稿里最可靠的主强调色，优先用它当花字主色
+        accents = [pref] + [c for c in accents if c != pref]
+    accent = accents[0] if accents else (rgbs[0] if rgbs else (255, 191, 23))
+    accent2 = accents[1] if len(accents) > 1 else _shade(accent, 0.25)
+    deepest = accents[2] if len(accents) > 2 else _shade(accent, 0.62)
+    stroke_hex = str(ov_style.get("stroke_color") or "")
+    stroke = _hex_rgb(stroke_hex) if stroke_hex else _shade(accent, 0.80)
+    if min(stroke) >= 235:
+        # 白字 + 白描边会糊成一团（源里「白边」指的是抠像的人像白轮廓，不是字描边）：改用深色描边
+        stroke = _shade(accent, 0.86)
+    return {
+        "text": (255, 255, 255),
+        "accent": accent,
+        "accent2": accent2,
+        "deep": deepest,
+        "light": _light(accent, 0.58),
+        "mist": _light(accent, 0.84),
+        "stroke": stroke,
+        "plate": (0, 0, 0),
+        "source_hex": [c.upper() for c in raw],
+    }
 
 
 def _split_two_lines(text: str, max_first: int = 8) -> Tuple[str, str]:
@@ -203,6 +275,122 @@ def _draw_tilted_stroked_text(
     return img.crop(ink) if ink else img
 
 
+def _text_sprite(
+    text: str,
+    font_path: Optional[str],
+    max_w: int,
+    font_size: int,
+    fill_rgba: Tuple[int, int, int, int],
+    stroke_rgba: Optional[Tuple[int, int, int, int]] = None,
+    stroke_w: int = 0,
+    shadow_rgba: Optional[Tuple[int, int, int, int]] = None,
+    shadow_dy: int = 4,
+    shadow_blur: float = 3.0,
+    spacing_px: float = 0.0,
+    min_fs: int = 24,
+) -> Optional[Image.Image]:
+    """
+    单行文字精灵：按 max_w 自动压字号 / 截断防溢出，可选字距、描边与柔和投影。
+    返回已按实际墨迹裁边的 RGBA 图（透明底）。
+    """
+    t = str(text or "").strip()
+    if not t:
+        return None
+    sw = max(0, int(stroke_w))
+    limit = max(48, int(max_w) - sw * 2)
+    probe = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
+    pd = ImageDraw.Draw(probe)
+    fs = max(int(min_fs), int(font_size))
+    fnt = get_cached_font(font_path, fs)
+    gap_px = max(0.0, float(spacing_px))
+
+    def _span(txt: str, font: Any, gap: float) -> float:
+        return sum(pd.textlength(ch, font=font) for ch in txt) + gap * max(0, len(txt) - 1)
+
+    while fs > min_fs and _span(t, fnt, gap_px) > limit:
+        fs -= 2
+        fnt = get_cached_font(font_path, fs)
+    while len(t) > 2 and _span(t, fnt, gap_px) > limit:
+        t = t[:-1]
+    if gap_px > 0 and _span(t, fnt, gap_px) > limit:
+        gap_px = 0.0
+
+    widths = [pd.textlength(ch, font=fnt) for ch in t]
+    total = sum(widths) + gap_px * max(0, len(t) - 1)
+    ascent, descent = fnt.getmetrics()
+    pad = sw + 8
+    w = int(math.ceil(total)) + pad * 2 + 4
+    h = ascent + descent + pad * 2 + 4
+
+    ink = Image.new("RGBA", (max(8, w), max(8, h)), (0, 0, 0, 0))
+    d = ImageDraw.Draw(ink)
+    x = float(pad)
+    base_y = pad + ascent
+    stroke_fill = stroke_rgba if (sw > 0 and stroke_rgba) else None
+    for ch, cw_px in zip(t, widths):
+        d.text((x, base_y), ch, font=fnt, fill=fill_rgba, anchor="ls", stroke_width=sw, stroke_fill=stroke_fill)
+        x += cw_px + gap_px
+
+    if shadow_rgba is not None and shadow_rgba[3] > 0:
+        alpha = ink.split()[3].point(lambda v: int(v * shadow_rgba[3] / 255.0))
+        shade = Image.new("RGBA", ink.size, (shadow_rgba[0], shadow_rgba[1], shadow_rgba[2], 255))
+        shadow = Image.new("RGBA", ink.size, (0, 0, 0, 0))
+        shadow.paste(shade, (0, 0), alpha)
+        if shadow_blur > 0.2:
+            shadow = shadow.filter(ImageFilter.GaussianBlur(radius=shadow_blur))
+        out = Image.new("RGBA", ink.size, (0, 0, 0, 0))
+        out.alpha_composite(shadow, dest=(0, max(0, int(shadow_dy))))
+        out.alpha_composite(ink)
+        ink = out
+
+    box = ink.getbbox()
+    return ink.crop(box) if box else None
+
+
+def _stack_sprites(
+    layers: List[Optional[Image.Image]],
+    gap: int = 10,
+    pad: int = 8,
+    max_w: int = 940,
+) -> Optional[Image.Image]:
+    """把若干单行精灵按行距垂直居中堆叠为一块透明叠层，超宽自动等比压回 1080 内。"""
+    rows = [l for l in layers if l is not None]
+    if not rows:
+        return None
+    w = max(r.width for r in rows) + pad * 2
+    h = sum(r.height for r in rows) + gap * max(0, len(rows) - 1) + pad * 2
+    img = Image.new("RGBA", (max(8, w), max(8, h)), (0, 0, 0, 0))
+    y = pad
+    for r in rows:
+        img.alpha_composite(r, dest=((w - r.width) // 2, y))
+        y += r.height + gap
+    box = img.getbbox()
+    img = img.crop(box) if box else img
+    if img.width > max_w:
+        k = max_w / float(img.width)
+        img = img.resize((max_w, max(1, int(round(img.height * k)))), Image.Resampling.LANCZOS)
+    return img
+
+
+def _plate_sprite(
+    layer: Image.Image,
+    fill_rgba: Tuple[int, int, int, int],
+    pad_x: int = 26,
+    pad_y: int = 12,
+    radius: int = 0,
+) -> Image.Image:
+    """给一行文字加方角/圆角色块底框（style_17 方角 #000000B2、style_21 门店小签）。"""
+    w, h = layer.width + pad_x * 2, layer.height + pad_y * 2
+    out = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(out)
+    if radius > 0:
+        d.rounded_rectangle([(0, 0), (w - 1, h - 1)], radius=radius, fill=fill_rgba)
+    else:
+        d.rectangle([(0, 0), (w - 1, h - 1)], fill=fill_rgba)
+    out.alpha_composite(layer, dest=(pad_x, pad_y))
+    return out
+
+
 def _build_style01_layers(
     elem: Dict[str, Any],
     sans_font: Optional[str],
@@ -310,6 +498,16 @@ def render_style05_giant_back_png(
     return out_png
 
 
+def letter_spacing(ov_style: Dict[str, Any], default: float) -> float:
+    """蓝图里实测的字距（letter_spacing_px）优先，缺省才用分支的默认值。"""
+    raw = ov_style.get("letter_spacing_px")
+    try:
+        v = float(raw) if raw is not None else None
+    except (TypeError, ValueError):
+        v = None
+    return float(default) if v is None else max(0.0, v)
+
+
 def render_template_packaging_png(
     elem: Dict[str, Any],
     style_id: str = "style_01",
@@ -324,6 +522,8 @@ def render_template_packaging_png(
     ov_style = bp.get("overlay_style") or {}
     if not family:
         return None
+    kw_hex = str((bp.get("subtitle_override") or {}).get("keyword_color") or "")
+    pal = style_flower_palette(ov_style, style_id, kw_hex)
 
     elem_kind = str(elem.get("kind") or elem.get("type") or elem.get("element_type") or "flower_text")
     main_text = str(elem.get("text_or_asset") or elem.get("text") or "").strip()
@@ -336,6 +536,12 @@ def render_template_packaging_png(
     sans_font = find_commercial_font(["AlimamaShuHeiTi-Bold.otf", "SmileySans-Oblique.ttf"]) or font_path
     oblique_font = find_commercial_font(["SmileySans-Oblique.ttf", "AlimamaShuHeiTi-Bold.otf"]) or font_path
     hand_font = find_commercial_font([ov_style.get("handwriting_font") or "MaShanZheng-Regular.ttf", "SourceHanSerifCN-Heavy.otf"]) or serif_font
+    # 各风格实测源字幕字体（不在随仓白名单内时 find_commercial_font 自动回退到最接近的商用字体）
+    douyin_font = find_commercial_font(["DouyinSansBold.otf", "AlimamaShuHeiTi-Bold.otf"]) or sans_font
+    zhixin_font = find_commercial_font(["知新体.ttf", "AlimamaShuHeiTi-Bold.otf"]) or sans_font
+    deyi_font = find_commercial_font(["得意黑.ttf", "SmileySans-Oblique.ttf"]) or sans_font
+    jy_serif_font = find_commercial_font(["造字工房俊雅体.ttf", "SourceHanSerifCN-Bold.otf"]) or serif_font
+    impact_font = find_commercial_font(["FZZJ-JHTJW.ttf", "SmileySans-Oblique.ttf"]) or oblique_font
 
     # 1. style_01（默认门店爆款风）：3 拍错落综艺贴纸
     if family == "store_poster_burst":
@@ -497,8 +703,8 @@ def render_template_packaging_png(
         d.text((w - 50, h // 2 + 12), "言", font=sf, fill=(255, 248, 232, 255), anchor="mm")
         return img
 
-    # 11. style_04 / style_13 / style_23：清冷极简轻阴影思源宋体
-    if family in ("cream_minimal_serif", "top_rounded_black_cinema", "cinema_serif_quiet", "micro_doc_film_serif"):
+    # 11. style_04 / style_13 / style_23 以外的通用轻阴影宋体兜底
+    if family == "cinema_serif_quiet":
         w, h = 760, 110
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
@@ -560,7 +766,313 @@ def render_template_packaging_png(
         d.text((w // 2, h // 2), t1, font=f1, fill=(250, 204, 21, 255), anchor="mm")
         return img
 
-    # 16. 其余风格（style_07/10/11/15/17/21/24）
+    # 16. style_04：清冷奶油高光 · 极简轻描边宋体（留白多、无底框、无贴纸）
+    if family == "cream_minimal_serif":
+        l1, l2 = _split_two_lines(main_text, max_first=8)
+        layers: List[Optional[Image.Image]] = []
+        if elem_kind == "center_burst_title":
+            layers.append(
+                _draw_gradient_3d_text(
+                    l1 or main_text[:8], serif_font, 860, font_size=96,
+                    top_rgb=pal["text"], mid_rgb=pal["light"], bot_rgb=pal["accent"],
+                    extrude_rgb=_mix(pal["accent"], pal["stroke"], 0.52),
+                    stroke_rgb=pal["stroke"], depth_px=3,
+                )
+            )
+        else:
+            layers.append(
+                _text_sprite(
+                    l1 or main_text[:10], serif_font, 820, 78, (*pal["text"], 250),
+                    stroke_rgba=(*pal["stroke"], 160), stroke_w=2,
+                    shadow_rgba=(0, 0, 0, 105), shadow_dy=3, spacing_px=letter_spacing(ov_style, 5.0),
+                )
+            )
+        if l2:
+            layers.append(
+                _text_sprite(
+                    l2, serif_font, 780, 54, (*pal["accent"], 252),
+                    stroke_rgba=(*pal["stroke"], 140), stroke_w=2,
+                    shadow_rgba=(0, 0, 0, 95), shadow_dy=2, spacing_px=letter_spacing(ov_style, 3.0),
+                )
+            )
+        return _stack_sprites(layers, gap=14)
+
+    # 17. style_07：人像真轮廓白边抠像 · 白描边字压虚化实景（字距紧）
+    if family == "white_outline_cutout":
+        l1, l2 = _split_two_lines(main_text, max_first=7)
+        layers = []
+        if elem_kind == "center_burst_title":
+            layers.append(
+                _draw_gradient_3d_text(
+                    l1 or main_text[:6], douyin_font, 860, font_size=104,
+                    top_rgb=pal["text"], mid_rgb=pal["text"], bot_rgb=_light(pal["accent"], 0.45),
+                    extrude_rgb=_mix(pal["accent"], (170, 170, 176), 0.55),
+                    stroke_rgb=pal["text"], depth_px=5,
+                )
+            )
+        else:
+            layers.append(
+                _text_sprite(
+                    l1 or main_text[:8], douyin_font, 800, 84, (*pal["text"], 255),
+                    stroke_rgba=(*pal["stroke"], 255), stroke_w=9,
+                    shadow_rgba=(0, 0, 0, 135), shadow_dy=6, spacing_px=letter_spacing(ov_style, 0.0),
+                )
+            )
+        if l2:
+            layers.append(
+                _text_sprite(
+                    l2, douyin_font, 760, 66, (*pal["accent"], 255),
+                    stroke_rgba=(*pal["stroke"], 255), stroke_w=8,
+                    shadow_rgba=(0, 0, 0, 130), shadow_dy=5, spacing_px=letter_spacing(ov_style, 0.0),
+                )
+            )
+        return _stack_sprites(layers, gap=6)
+
+    # 18. style_10：高频推拉微距 · 极净全屏（无描边无底框，重点词压亮黄）
+    if family == "clean_punch_minimal":
+        l1, l2 = _split_two_lines(main_text, max_first=8)
+        layers = []
+        if elem_kind == "center_burst_title":
+            layers.append(
+                _draw_gradient_3d_text(
+                    l1 or main_text[:8], zhixin_font, 880, font_size=104,
+                    top_rgb=pal["text"], mid_rgb=_light(pal["accent"], 0.45), bot_rgb=pal["accent"],
+                    extrude_rgb=_shade(pal["accent"], 0.66), stroke_rgb=pal["stroke"], depth_px=5,
+                )
+            )
+        else:
+            layers.append(
+                _text_sprite(
+                    l1 or main_text[:11], zhixin_font, 860, 96, (255, 255, 255, 255),
+                    shadow_rgba=(0, 0, 0, 125), shadow_dy=4, spacing_px=letter_spacing(ov_style, 2.0),
+                )
+            )
+        if l2:
+            layers.append(
+                _text_sprite(
+                    l2, zhixin_font, 820, 74, (*pal["accent"], 255),
+                    shadow_rgba=(0, 0, 0, 120), shadow_dy=3, spacing_px=letter_spacing(ov_style, 2.0),
+                )
+            )
+        return _stack_sprites(layers, gap=4)
+
+    # 19. style_11：清亮知性干货 · 无底框通透大字（靠字重与字号分级，重点词压深红）
+    if family == "clean_creator_studio":
+        l1, l2 = _split_two_lines(main_text, max_first=8)
+        layers = []
+        if elem_kind == "center_burst_title":
+            layers.append(
+                _draw_gradient_3d_text(
+                    l1 or main_text[:8], sans_font, 880, font_size=100,
+                    top_rgb=pal["text"], mid_rgb=_light(pal["accent"], 0.90), bot_rgb=_light(pal["accent"], 0.80),
+                    extrude_rgb=_shade(pal["accent"], 0.42), stroke_rgb=_shade(pal["accent"], 0.62), depth_px=4,
+                )
+            )
+        else:
+            layers.append(
+                _text_sprite(
+                    l1 or main_text[:11], sans_font, 860, 92, (255, 255, 255, 255),
+                    shadow_rgba=(0, 0, 0, 110), shadow_dy=3, spacing_px=letter_spacing(ov_style, 1.0),
+                )
+            )
+        if l2:
+            layers.append(
+                _text_sprite(
+                    l2, sans_font, 700, 56, (*pal["accent"], 255),
+                    shadow_rgba=(255, 255, 255, 150), shadow_dy=0, shadow_blur=4.0,
+                    spacing_px=letter_spacing(ov_style, 1.0),
+                )
+            )
+        return _stack_sprites(layers, gap=6)
+
+    # 20. style_13：上白圆角画框 / 下纯黑宽幕 · 下半黑幕只放居中精致白字
+    if family == "top_rounded_black_cinema":
+        is_giant = elem_kind == "center_burst_title"
+        txt = (main_text or "")[:12]
+        line = (
+            _draw_gradient_3d_text(
+                txt, deyi_font, 820, font_size=84,
+                top_rgb=pal["text"], mid_rgb=pal["text"], bot_rgb=_light(pal["accent"], 0.62),
+                extrude_rgb=_mix(pal["accent"], (196, 192, 182), 0.62), stroke_rgb=pal["stroke"], depth_px=3,
+            )
+            if is_giant
+            else _text_sprite(
+                txt, deyi_font, 800, 62, (*pal["text"], 246),
+                shadow_rgba=(0, 0, 0, 120), shadow_dy=3, spacing_px=letter_spacing(ov_style, 6.0),
+            )
+        )
+        if line is None:
+            return None
+        w = max(line.width, 260) + 16
+        h = line.height + 40
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        img.alpha_composite(line, dest=((w - line.width) // 2, 6))
+        d = ImageDraw.Draw(img)
+        rule_w = min(w - 24, max(120, line.width // 2))
+        rx = (w - rule_w) // 2
+        ry = min(h - 12, 6 + line.height + 12)
+        d.line([(rx, ry), (rx + rule_w, ry)], fill=(*pal["accent"], 190), width=2)
+        box = img.getbbox()
+        return img.crop(box) if box else img
+
+    # 21. style_15：实景访谈切片 · 弹性双色花字流（白 + 亮黄 + 黑底小签，位置散布）
+    if family == "interview_flower_flow":
+        l1, l2 = _split_two_lines(main_text, max_first=6)
+        if not l2 and sub_text and sub_text != main_text:
+            l2 = sub_text[:6]
+        a = _text_sprite(
+            l1 or main_text[:6], serif_font, 520, 76, (*pal["text"], 255),
+            stroke_rgba=(0, 0, 0, 255), stroke_w=7, shadow_rgba=(0, 0, 0, 150), shadow_dy=4,
+        )
+        if a is None:
+            return None
+        a = a.rotate(-3.2, resample=Image.Resampling.BICUBIC, expand=True)
+        pieces: List[Tuple[Image.Image, int, int]] = []
+        b = None
+        if l2:
+            b = _text_sprite(
+                l2, serif_font, 520, 68, (*pal["accent"], 255),
+                stroke_rgba=(0, 0, 0, 255), stroke_w=7, shadow_rgba=(0, 0, 0, 150), shadow_dy=4,
+            )
+            if b is not None:
+                b = b.rotate(2.4, resample=Image.Resampling.BICUBIC, expand=True)
+        tag_txt = (sub_text or "实拍实录")[:6]
+        chip_line = _text_sprite(tag_txt, sans_font, 260, 26, (*pal["text"], 250))
+        chip = _plate_sprite(chip_line, (0, 0, 0, 225), pad_x=14, pad_y=6) if chip_line is not None else None
+
+        w = max(a.width, b.width if b else 0, chip.width if chip else 0) + 96
+        h = a.height + (b.height if b else 0) + (chip.height if chip else 0) + 40
+        img = Image.new("RGBA", (max(80, w), max(60, h)), (0, 0, 0, 0))
+        y = 4
+        if chip is not None:
+            img.alpha_composite(chip, dest=(10, y))
+            y += chip.height + 4
+        img.alpha_composite(a, dest=(34, y))
+        y += a.height - 6
+        if b is not None:
+            img.alpha_composite(b, dest=(76, y))
+        box = img.getbbox()
+        return img.crop(box) if box else img
+
+    # 22. style_17：暖金强切探店 · 暖金细线勾边 + 方角深色字幕带（#000000B2）
+    if family == "warm_gold_highlight":
+        l1, l2 = _split_two_lines(main_text, max_first=8)
+        layers = []
+        if elem_kind == "center_burst_title":
+            layers.append(
+                _draw_gradient_3d_text(
+                    l1 or main_text[:8], serif_font, 860, font_size=100,
+                    top_rgb=pal["light"], mid_rgb=pal["accent"], bot_rgb=pal["accent2"],
+                    extrude_rgb=_shade(pal["accent2"], 0.58), stroke_rgb=pal["accent2"], depth_px=5,
+                )
+            )
+        else:
+            layers.append(
+                _text_sprite(
+                    l1 or main_text[:10], serif_font, 840, 84, (*pal["accent"], 255),
+                    stroke_rgba=(*pal["accent2"], 255), stroke_w=2,
+                    shadow_rgba=(0, 0, 0, 150), shadow_dy=4, spacing_px=letter_spacing(ov_style, 2.0),
+                )
+            )
+        if l2:
+            row = _text_sprite(
+                l2, serif_font, 700, 62, (*pal["text"], 255),
+                stroke_rgba=(0, 0, 0, 200), stroke_w=2, spacing_px=letter_spacing(ov_style, 1.0),
+            )
+            if row is not None:
+                layers.append(_plate_sprite(row, (0, 0, 0, 178), pad_x=22, pad_y=9, radius=0))
+        return _stack_sprites(layers, gap=10)
+
+    # 23. style_21：门店工艺快切 · 门店标签式小签 + 暖黄大字（底部安全区内）
+    if family == "high_broll_store_tag":
+        l1, l2 = _split_two_lines(main_text, max_first=8)
+        tag_txt = (sub_text or l2 or "门店实拍")[:8]
+        tag_line = _text_sprite(tag_txt, serif_font, 320, 30, (*pal["text"], 250), spacing_px=letter_spacing(ov_style, 1.5))
+        layers = []
+        if tag_line is not None:
+            tag = _plate_sprite(tag_line, (24, 24, 27, 230), pad_x=34, pad_y=7, radius=6)
+            d = ImageDraw.Draw(tag)
+            d.rounded_rectangle([(8, 7), (16, tag.height - 8)], radius=3, fill=(*pal["accent"], 255))
+            layers.append(tag)
+        if elem_kind == "center_burst_title":
+            layers.append(
+                _draw_gradient_3d_text(
+                    l1 or main_text[:8], serif_font, 860, font_size=104,
+                    top_rgb=pal["text"], mid_rgb=pal["light"], bot_rgb=pal["accent"],
+                    extrude_rgb=_shade(pal["accent"], 0.62), stroke_rgb=_shade(pal["accent"], 0.86), depth_px=6,
+                )
+            )
+        else:
+            layers.append(
+                _text_sprite(
+                    l1 or main_text[:10], serif_font, 860, 88, (*pal["accent"], 255),
+                    stroke_rgba=(*_shade(pal["accent"], 0.90), 210), stroke_w=4,
+                    shadow_rgba=(0, 0, 0, 145), shadow_dy=4, spacing_px=letter_spacing(ov_style, 2.0),
+                )
+            )
+        return _stack_sprites(layers, gap=8)
+
+    # 24. style_23：品牌微纪录 · 克制宋体（字号小、无描边、几乎不动）
+    if family == "micro_doc_film_serif":
+        txt = (main_text or "")[:12]
+        line = (
+            _draw_gradient_3d_text(
+                txt, jy_serif_font, 760, font_size=64,
+                top_rgb=pal["text"], mid_rgb=pal["mist"], bot_rgb=pal["accent"],
+                extrude_rgb=_mix(pal["accent"], (188, 184, 172), 0.58), stroke_rgb=pal["stroke"], depth_px=2,
+            )
+            if elem_kind == "center_burst_title"
+            else _text_sprite(
+                txt, jy_serif_font, 720, 46, (*pal["text"], 238), spacing_px=letter_spacing(ov_style, 5.0),
+            )
+        )
+        if line is None:
+            return None
+        w = max(line.width, 220) + 16
+        h = line.height + 34
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        rule_w = min(w - 24, max(110, line.width // 3))
+        rx = (w - rule_w) // 2
+        d.line([(rx, 4), (rx + rule_w, 4)], fill=(*pal["accent"], 150), width=2)
+        img.alpha_composite(line, dest=((w - line.width) // 2, 16))
+        box = img.getbbox()
+        return img.crop(box) if box else img
+
+    # 25. style_24：不露脸混剪 · 炸裂金句（高燃大字、斜切、黑粗描边、14 字上限）
+    if family == "faceless_kinetic_montage":
+        l1, l2 = _split_two_lines(main_text[:14], max_first=7)
+        layers = []
+        if elem_kind == "center_burst_title":
+            layers.append(
+                _draw_gradient_3d_text(
+                    l1 or main_text[:7], impact_font, 880, font_size=124,
+                    top_rgb=pal["text"], mid_rgb=_light(pal["accent"], 0.36), bot_rgb=pal["accent"],
+                    extrude_rgb=_shade(pal["accent"], 0.80), stroke_rgb=(0, 0, 0), depth_px=9,
+                )
+            )
+        else:
+            layers.append(
+                _text_sprite(
+                    l1 or main_text[:7], impact_font, 860, 110, (*pal["text"], 255),
+                    stroke_rgba=(0, 0, 0, 255), stroke_w=9,
+                    shadow_rgba=(0, 0, 0, 165), shadow_dy=6,
+                )
+            )
+        if l2:
+            layers.append(
+                _text_sprite(
+                    l2, impact_font, 820, 96, (*pal["accent"], 255),
+                    stroke_rgba=(0, 0, 0, 255), stroke_w=8,
+                    shadow_rgba=(0, 0, 0, 160), shadow_dy=5,
+                )
+            )
+        stack = _stack_sprites(layers, gap=2)
+        if stack is None:
+            return None
+        return stack.rotate(-3.0, resample=Image.Resampling.BICUBIC, expand=True)
+
+    # 26. 其余风格（逐层兜底斜体描边字）
     acc = ov_style.get("accent_colors") or ["#FFFFFF", "#FFE14D"]
     fg_c = hex_to_rgba(acc[1] if len(acc) > 1 else acc[0])
     st_c = hex_to_rgba(ov_style.get("stroke_color") or "#0B0B0C")
@@ -675,6 +1187,18 @@ def render_animated_overlay_mov(
     anim_mode = str(ov_style.get("anim_mode") or "bounce_smash")
     family = str(bp.get("template_family") or "")
 
+    # 按 overlay_style.anim_primitives（该风格真实动效前 3 名 → 原语名）顺位轮换；
+    # elem["anim_slot"] 由调用方递增即可让同风格的花字轮着换动效，
+    # elem["anim_primitive"] 可强制指定某一个原语。
+    # 三拍砸屏（style_01）与 3D 金属扫光（style_18）是该风格的签名动效，不参与轮换。
+    prim_list = [str(p) for p in (ov_style.get("anim_primitives") or []) if str(p or "").strip()]
+    raw_prim = str(elem.get("anim_primitive") or "").strip()
+    if raw_prim:
+        anim_mode = resolve_anim_mode(raw_prim, anim_mode)
+    elif prim_list and anim_mode not in SIGNATURE_ANIM_MODES:
+        slot = int(elem.get("anim_slot") or 0)
+        anim_mode = resolve_anim_mode(prim_list[slot % len(prim_list)], anim_mode)
+
     out_mov = Path(out_mov)
     out_mov.parent.mkdir(parents=True, exist_ok=True)
     dur = max(0.35, float(duration_sec))
@@ -739,6 +1263,9 @@ def render_animated_overlay_mov(
             return None
         base_img = base_img.convert("RGBA")
         pad = 24 if anim_mode in ("bounce_smash", "shimmer_3d_gold", "depth_behind_person", "ink_bloom") else 8
+        pad = max(pad, MOTION_PAD.get(anim_mode, 0))
+        # 叠层画布不得超 1080 宽（对称安全区 220-860 居中落位）
+        pad = max(4, min(pad, (CANVAS_WIDTH - base_img.width) // 2))
         cw = (base_img.width + pad * 2 + 1) & ~1
         ch = (base_img.height + pad * 2 + 1) & ~1
         ox = (cw - base_img.width) // 2
@@ -747,7 +1274,12 @@ def render_animated_overlay_mov(
         settled.alpha_composite(base_img, dest=(ox, oy))
         settled_bytes = settled.tobytes()
 
-        if anim_mode == "shimmer_3d_gold":
+        # 6 类新增入场原语 + 缩小/放大细分子型（见 overlay_motion）
+        motion_fn = make_motion_frame_fn(anim_mode, base_img, cw, ch, ox, oy, fps, dur) if anim_mode in MOTION_MODES else None
+        if motion_fn is not None:
+            frame_fn = motion_fn
+
+        elif anim_mode == "shimmer_3d_gold":
             def _render_shimmer(fi: int) -> bytes:
                 t = fi / float(fps)
                 if t < 0.28:

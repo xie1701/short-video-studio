@@ -351,8 +351,44 @@ def resolve_dynamic_pause(
     return round(max(0.10, min(0.32, val)), 3), "tight_narrative_pace"
 
 
-def _resolve_default_bgm(track: str) -> Path:
-    """统一优先使用 CC0 真录 sound_vibe 音库，彻底告别正弦波合成占位音。"""
+def find_source_bgm(style_id: Optional[str]) -> Optional[Path]:
+    """按源模版 BGM 曲名在 sound_vibe/user/<style_id>/ 里找用户自备的原曲。
+
+    匹配规则：文件名包含源曲名（去空格、忽略大小写）即命中。
+    命中即用原曲（像素/听感层面 1:1），否则回落到自带 CC0 音库。
+    """
+    if not style_id:
+        return None
+    user_dir = ASSETS_DIR / "sound_vibe" / "user" / str(style_id)
+    if not user_dir.is_dir():
+        return None
+    try:
+        manifest = read_json(ASSETS_DIR / "sound_vibe" / "vibe_sound_manifest.json")
+    except Exception:
+        return None
+    node = (manifest.get("styles") or {}).get(str(style_id)) or {}
+    names = [str(n) for n in (node.get("source_bgm_names") or []) if str(n).strip()]
+    if not names:
+        return None
+    audio_ext = {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"}
+    files = [p for p in sorted(user_dir.glob("**/*")) if p.is_file() and p.suffix.lower() in audio_ext]
+    for want in names:
+        key = want.replace(" ", "").lower()
+        for f in files:
+            if key and key in f.stem.replace(" ", "").lower():
+                return f
+    return None
+
+
+def _resolve_default_bgm(track: str, style_id: Optional[str] = None) -> Path:
+    """统一优先使用 CC0 真录 sound_vibe 音库，彻底告别正弦波合成占位音。
+
+    若用户把源模版原曲放进 sound_vibe/user/<style_id>/ 且文件名含源曲名，
+    则优先用原曲（听感 1:1），不再用替代乐段。
+    """
+    src = find_source_bgm(style_id)
+    if src is not None:
+        return src
     try:
         from vibe_sound import get_default_sound_profile
         prof = get_default_sound_profile(track)
@@ -430,11 +466,18 @@ def run_step3(
     pipeline_dir: Path,
     track: str = "store",
     bgm_path: Optional[Path] = None,
+    style_id: Optional[str] = None,
     pause_sec: float = 0.20,
     fps: int = DEFAULT_FPS,
     account_profile: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     pause_sec = max(0.14, min(0.32, pause_sec))
+    if not style_id:
+        try:
+            from common import load_style_applied
+            style_id = load_style_applied(Path(pipeline_dir))
+        except Exception:
+            style_id = None
     eff_prof = account_profile if (account_profile and account_profile.get("sample_sufficient") is True) else None
     if eff_prof and "pause_sec" in eff_prof:
         pause_sec = max(0.14, min(0.32, float(eff_prof["pause_sec"])))
@@ -450,7 +493,7 @@ def run_step3(
         return raw_audio_cache[path_str]
 
     if bgm_path is None:
-        bgm_path = _resolve_default_bgm(track)
+        bgm_path = _resolve_default_bgm(track, style_id)
     elif not bgm_path.exists() and bgm_path.with_suffix(".m4a").exists():
         bgm_path = bgm_path.with_suffix(".m4a")
     if not bgm_path.exists():
@@ -987,7 +1030,7 @@ def patch_locked_audio_sentences(
     # 同步调整 BGM 长度至新总长
     bgm_src_file = Path(str((ae.get("bgm") or {}).get("file") or ""))
     if not bgm_src_file.is_file():
-        bgm_src_file = bgm_p if bgm_p.is_file() else _resolve_default_bgm(track)
+        bgm_src_file = bgm_p if bgm_p.is_file() else _resolve_default_bgm(track, style_id)
     bgm_arr, _ = load_stereo_wav_np(bgm_src_file)
     bpm = float((ae.get("bgm") or {}).get("bpm") or 120.0)
     bar_samples = int(round((60.0 / max(40.0, bpm)) * 4.0 * SR))

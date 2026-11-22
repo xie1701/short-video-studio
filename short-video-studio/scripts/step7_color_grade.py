@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """
-[Step 7: 真实肤色矢量掩膜校色 + 切段中点测光 + 24 风格动态适配 + LUT 肤色回测闭环]
+[Step 7: 逐镜三段曲线校色 + 真实肤色矢量掩膜 + 切段中点测光 + 库外特效 + 肤色回测闭环]
 1. 按 EDL 实际切片区间 [source_in_sec, source_out_sec] 中点测光（不拿片头 3s 乱调第 20s 画面）。
 2. 利用 Step 1 映射后的裁切人脸 ROI + BT.709 肤色像素掩膜剔除背景/眼镜/眉毛后测定真实 Cb/Cr。
-3. 肤色矫正作用于中间调 Midtones (rm/bm)，彻底告别用暗部 rs/bs 调肤色；
-   从 style_spectrum_library.json 动态派生全部 24 套风格参数。
-4. 闭环回测：生成 blended LUT 后对 Hero 帧抽样复核套色后肤色是否偏移 common.SKIN_YCBCR_RANGE，若偏移则自动降强度重编。
+3. 调色改为「逐风格三段关系」而不是「一个片源统一混合」：
+   暗部(0.05)/中间调(0.5)/高光(0.95) 三段锚点 → ffmpeg curves 曲线；
+   三段分色 → ffmpeg colorbalance 的 s/m/h 三组通道偏移；
+   实测饱和度 → eq saturation；实测暖度 → 中间调白平衡。
+   参数全部来自 assets/style_spectrum/color_effects.json（库外配置，读库不改库）。
+4. 片源强度逐套给出（24 个显式值），不再用同一个 60–72% 系数。
+5. 源里存在而此前缺失的视觉特效按包裝证据逐套开关：暗角、颗粒、怀旧相框、局部虚化、
+   聚光圆窗、不规则底框、轻微颤抖；开关与参数同样落在 color_effects.json，不开即显式 false。
+6. 闭环回测：生成 blended LUT 后对 Hero 帧抽样复核套色后肤色是否偏移 common.SKIN_YCBCR_RANGE，若偏移则自动降强度重编。
 输出：pipeline/07_color_plan.json (+ pipeline/07_blended_lut.cube)
 """
 
@@ -23,8 +29,13 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from common import (
+    CANVAS_HEIGHT,
+    CANVAS_WIDTH,
+    COLOR_EFFECT_KEYS,
     SKIN_YCBCR_RANGE,
+    ffmpeg_has_filter,
     find_bin,
+    load_color_effects,
     load_style_applied,
     load_style_spectrum_entry,
     maybe_reexec_in_venv,
@@ -32,6 +43,7 @@ from common import (
     read_json,
     resolve_lut_path,
     run_cmd,
+    validate_color_effects,
     write_cube_lut,
     write_json,
 )
@@ -42,66 +54,400 @@ if __name__ == "__main__":
 import numpy as np
 
 
-STYLE_GRADE_PROFILES: Dict[str, Dict[str, float]] = {
-    "style_01": {"b_off": -0.026, "contrast": 1.15, "sat": 0.94, "rm_off": -0.018, "bm_off": 0.028},
-    "style_02": {"b_off": -0.012, "contrast": 1.12, "sat": 1.04, "rm_off": 0.010, "bm_off": -0.008},
-    "style_03": {"b_off": -0.028, "contrast": 1.14, "sat": 1.08, "rm_off": 0.022, "bm_off": -0.020},
-    "style_04": {"b_off": 0.032, "contrast": 1.04, "sat": 0.88, "rm_off": -0.014, "bm_off": 0.018},
-    "style_05": {"b_off": 0.024, "contrast": 1.04, "sat": 0.80, "rm_off": 0.018, "bm_off": -0.018},
-    "style_06": {"b_off": -0.032, "contrast": 1.14, "sat": 0.84, "rm_off": 0.006, "bm_off": -0.004},
-    "style_07": {"b_off": 0.008, "contrast": 1.08, "sat": 1.02, "rm_off": 0.014, "bm_off": -0.012},
-    "style_08": {"b_off": 0.014, "contrast": 1.06, "sat": 1.02, "rm_off": 0.018, "bm_off": -0.016},
-    "style_09": {"b_off": -0.035, "contrast": 1.16, "sat": 0.90, "rm_off": 0.004, "bm_off": 0.006},
-    "style_10": {"b_off": 0.020, "contrast": 1.08, "sat": 0.94, "rm_off": -0.004, "bm_off": 0.006},
-    "style_11": {"b_off": 0.026, "contrast": 1.06, "sat": 0.95, "rm_off": 0.006, "bm_off": -0.004},
-    "style_12": {"b_off": 0.030, "contrast": 1.05, "sat": 0.90, "rm_off": -0.006, "bm_off": 0.010},
-    "style_13": {"b_off": 0.018, "contrast": 1.06, "sat": 0.88, "rm_off": 0.010, "bm_off": -0.008},
-    "style_14": {"b_off": 0.012, "contrast": 1.05, "sat": 1.06, "rm_off": 0.016, "bm_off": -0.014},
-    "style_15": {"b_off": -0.014, "contrast": 1.12, "sat": 1.04, "rm_off": 0.016, "bm_off": -0.014},
-    "style_16": {"b_off": -0.036, "contrast": 1.16, "sat": 0.92, "rm_off": 0.008, "bm_off": -0.004},
-    "style_17": {"b_off": -0.006, "contrast": 1.12, "sat": 1.12, "rm_off": 0.026, "bm_off": -0.024},
-    "style_18": {"b_off": 0.012, "contrast": 1.08, "sat": 0.94, "rm_off": 0.006, "bm_off": -0.004},
-    "style_19": {"b_off": 0.006, "contrast": 1.10, "sat": 0.96, "rm_off": -0.014, "bm_off": 0.018},
-    "style_20": {"b_off": -0.008, "contrast": 1.10, "sat": 1.14, "rm_off": 0.028, "bm_off": -0.026},
-    "style_21": {"b_off": 0.010, "contrast": 1.09, "sat": 1.07, "rm_off": 0.018, "bm_off": -0.014},
-    "style_22": {"b_off": 0.024, "contrast": 1.05, "sat": 0.94, "rm_off": -0.004, "bm_off": 0.008},
-    "style_23": {"b_off": -0.020, "contrast": 1.12, "sat": 0.88, "rm_off": 0.008, "bm_off": 0.010},
-    "style_24": {"b_off": -0.016, "contrast": 1.14, "sat": 1.08, "rm_off": 0.018, "bm_off": -0.016},
-}
+# ── 逐风格调色配置（库外 color_effects.json）：三段曲线 + 三段分色 + 饱和度 + 特效 ──
+# 库内 style_spectrum_library.json 只读：本文件只消费它的 color_and_lut / packaging_techniques 实测值。
+_PLACEHOLDER_SHADOW_RGB = (32.0, 34.0, 38.0)
+_PLACEHOLDER_HIGHLIGHT_RGB = (225.0, 224.0, 220.0)
+_SAT_NEUTRAL_PCT = 20.0
+_COLOR_EFFECTS_DOC: Optional[Dict[str, Any]] = None
+_STYLE_COLOR_CACHE: Dict[str, Dict[str, Any]] = {}
 
 
-def _resolve_style_grade_profile(style_id: Optional[str]) -> Dict[str, float]:
-    """覆盖全 24 套风格：先查调优表，否则从 style_spectrum_library.json 的 color_and_lut & archetype 动态派生。"""
+def _clampf(value: Any, lo: float, hi: float, default: float = 0.0) -> float:
+    try:
+        return max(lo, min(hi, float(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _f4(value: float) -> str:
+    """滤镜参数格式化：四位小数、抹掉 -0.0。"""
+    v = round(float(value), 4)
+    if abs(v) < 1e-9:
+        v = 0.0
+    return f"{v:.4f}"
+
+
+def _load_color_effects_doc() -> Dict[str, Any]:
+    global _COLOR_EFFECTS_DOC
+    if _COLOR_EFFECTS_DOC is None:
+        doc = load_color_effects()
+        issues = validate_color_effects(doc)
+        if issues:
+            print("[WARN] color_effects.json 校验异常：" + "；".join(issues[:6]), file=sys.stderr)
+        _COLOR_EFFECTS_DOC = doc
+    return _COLOR_EFFECTS_DOC
+
+
+def _is_placeholder_triplets(cl: Dict[str, Any]) -> bool:
+    """库内 shadow/midtone/highlight 是否为回退占位值（32/34/38 + 灰度中调 + 225/224/220）。"""
+    sh = cl.get("shadow_rgb") or []
+    md = cl.get("midtone_rgb") or []
+    hl = cl.get("highlight_rgb") or []
+    if len(sh) != 3 or len(md) != 3 or len(hl) != 3:
+        return True
+    return (
+        all(abs(float(sh[i]) - _PLACEHOLDER_SHADOW_RGB[i]) < 1e-6 for i in range(3))
+        and max(md) - min(md) < 1e-6
+        and all(abs(float(hl[i]) - _PLACEHOLDER_HIGHLIGHT_RGB[i]) < 1e-6 for i in range(3))
+    )
+
+
+def _tint_from_rgb(triplet: List[Any], cap: float = 0.03) -> List[float]:
+    """把实测三段 RGB 去亮度后转成纯色倾向，并按最大分量归一到 cap，防止单一风格调色过冲。"""
+    vals = [_clampf(v, 0.0, 255.0) for v in (triplet or [0, 0, 0])][:3]
+    if len(vals) != 3:
+        return [0.0, 0.0, 0.0]
+    mean = sum(vals) / 3.0
+    if mean <= 1e-6:
+        return [0.0, 0.0, 0.0]
+    raw = [v / mean - 1.0 for v in vals]
+    peak = max(abs(x) for x in raw)
+    if peak <= 1e-6:
+        return [0.0, 0.0, 0.0]
+    factor = cap / peak
+    return [round(_clampf(x * factor, -0.04, 0.04), 4) for x in raw]
+
+
+def _derive_style_color(style_id: str) -> Dict[str, Any]:
+    """color_effects.json 缺少该风格时的应变路径：从库内实测值现推同一套参数（公式与配置生成一致）。"""
+    entry = load_style_spectrum_entry(style_id) or {}
+    cl = entry.get("color_and_lut") or {}
+    hsl = int((entry.get("packaging_techniques") or {}).get("hsl_materials") or 0)
+    y = _clampf(cl.get("y_mean_255"), 0.0, 255.0, 128.0)
+    sat = _clampf(cl.get("sat_mean_pct"), 0.0, 100.0, _SAT_NEUTRAL_PCT)
+    warm = _clampf(cl.get("warmth_index"), -100.0, 100.0, 0.0)
+    p05 = _clampf(cl.get("y_p05_255"), 0.0, 255.0, max(0.0, y - 45.0))
+    p50 = _clampf(cl.get("y_p50_255"), 0.0, 255.0, y)
+    p95 = _clampf(cl.get("y_p95_255"), 0.0, 255.0, min(255.0, y + 55.0))
+
+    lut_strength = round(_clampf(0.50 + 0.0045 * sat + 0.0008 * abs(warm) - 0.0025 * hsl, 0.45, 0.76), 2)
+    sat_scale = round(_clampf(0.94 + 0.006 * (sat - _SAT_NEUTRAL_PCT), 0.88, 1.14), 3)
+    contrast = round(_clampf(cl.get("contrast_gain"), 1.0, 1.16, 1.06), 3)
+    extreme = _clampf(abs(y - 128.0) / 128.0, 0.0, 1.0)
+    curve_w = round(_clampf(0.42 + 0.10 * min(hsl / 32.0, 1.0) + 0.18 * extreme, 0.42, 0.78), 2)
+    anchors = []
+    for x, measured in ((0.05, p05), (0.5, p50), (0.95, p95)):
+        target = measured / 255.0
+        anchors.append({"input": x, "output": round(_clampf(x + curve_w * (target - x), 0.0, 1.0), 4), "measured": measured})
+
+    w = _clampf(warm / 90.0, -1.0, 1.0)
+    if not _is_placeholder_triplets(cl):
+        sh_t = _tint_from_rgb(cl.get("shadow_rgb"))
+        md_t = _tint_from_rgb(cl.get("midtone_rgb"))
+        hi_t = _tint_from_rgb(cl.get("highlight_rgb"))
+    else:
+        sh_meas = [_clampf(v, -1.0, 1.0) for v in (cl.get("shadow_tint_rgb") or [0, 0, 0])][:3]
+        hi_meas = [_clampf(v, -1.0, 1.0) for v in (cl.get("highlight_tint_rgb") or [0, 0, 0])][:3]
+        sh_t = [round(_clampf(v * 1.6, -0.04, 0.04), 4) for v in sh_meas] if max(abs(v) for v in sh_meas) > 1e-6 else [
+            round(_clampf(w * 0.010, -0.04, 0.04), 4), 0.0, round(_clampf(-w * 0.010, -0.04, 0.04), 4)]
+        hi_t = [round(_clampf(v * 1.6, -0.04, 0.04), 4) for v in hi_meas] if max(abs(v) for v in hi_meas) > 1e-6 else [
+            round(_clampf(w * 0.009, -0.04, 0.04), 4), 0.0, round(_clampf(-w * 0.007, -0.04, 0.04), 4)]
+        md_t = [round(_clampf(w * 0.013, -0.04, 0.04), 4), 0.0, round(_clampf(-w * 0.013, -0.04, 0.04), 4)]
+
+    return {
+        "style_name_cn": entry.get("style_name_cn") or style_id,
+        "lut_strength": lut_strength,
+        "saturation_scale": sat_scale,
+        "contrast": contrast,
+        "warmth": round(w, 3),
+        "tone_curve": {"curve_weight": curve_w, "anchors": anchors},
+        "zone_tint": {"shadow": sh_t, "midtone": md_t, "highlight": hi_t},
+        "effects": {k: False for k in COLOR_EFFECT_KEYS},
+        "basis_cn": "库内实测现推：y {:.1f}/sat {:.1f}%/warmth {:+.1f}/HSL {} 处".format(y, sat, warm, hsl),
+    }
+
+
+def _resolve_style_color(style_id: Optional[str]) -> Dict[str, Any]:
+    """取该风格的三段曲线、饱和度、白平衡与特效开关（优先库外配置，缺条目时按库内实测现推）。"""
     if not style_id:
         return {}
-    if style_id in STYLE_GRADE_PROFILES:
-        return STYLE_GRADE_PROFILES[style_id]
-    entry = load_style_spectrum_entry(style_id)
-    if not entry:
-        return {}
-    arch = str(entry.get("archetype_id", ""))
-    cl = entry.get("color_and_lut", {}) or {}
-    warm_raw = float(cl.get("warmth_index", cl.get("warm_cool_score", 0.0)))
-    # analyze_style_spectrum 输出的 warmth_index 为 0..255 尺度 (常见 -30..+70)，归一化到 [-1, 1] 防止瞬间打满
-    warm = max(-1.0, min(1.0, warm_raw / 60.0)) if abs(warm_raw) > 1.5 else max(-1.0, min(1.0, warm_raw))
-    if arch == "arch_01_tech_ui_console":
-        return {"b_off": -0.025, "contrast": 1.15, "sat": 0.94, "rm_off": -0.018, "bm_off": 0.028}
-    if arch == "arch_02_high_contrast_story":
-        return {"b_off": 0.0, "contrast": 1.12, "sat": 1.08, "rm_off": 0.020, "bm_off": -0.018}
-    if arch == "arch_03_editorial_matte_depth":
-        return {"b_off": 0.028, "contrast": 1.04, "sat": 0.90, "rm_off": -0.006, "bm_off": 0.010}
-    if arch == "arch_05_cinema_slow_space":
-        return {"b_off": -0.035, "contrast": 1.15, "sat": 0.84, "rm_off": -0.016, "bm_off": 0.026}
-    if arch == "arch_06_paper_stopmotion":
-        return {"b_off": 0.025, "contrast": 1.04, "sat": 0.80, "rm_off": 0.018, "bm_off": -0.018}
-    # arch_04 默认暖人声高饱和口播
-    return {
-        "b_off": 0.010,
-        "contrast": 1.07,
-        "sat": 1.04,
-        "rm_off": round(max(-0.025, min(0.025, warm * 0.02)), 3),
-        "bm_off": round(max(-0.025, min(0.025, -warm * 0.02)), 3),
-    }
+    if style_id in _STYLE_COLOR_CACHE:
+        return _STYLE_COLOR_CACHE[style_id]
+    node = (_load_color_effects_doc().get("styles") or {}).get(style_id)
+    if not isinstance(node, dict):
+        print(f"[WARN] color_effects.json 缺少 {style_id}，按库内实测现推参数", file=sys.stderr)
+        node = _derive_style_color(style_id)
+    _STYLE_COLOR_CACHE[style_id] = node
+    return node
+
+
+_LUMA_PCT_CACHE: Dict[Tuple[str, float, float], Optional[Tuple[float, float, float]]] = {}
+
+
+def probe_luma_percentiles(path_str: str, start_sec: float = 0.0,
+                           dur_sec: float = 0.0, pre_vf: str = "") -> Optional[Tuple[float, float, float]]:
+    """量这一段素材的亮度 p05/p50/p95（0–1）。
+
+    pre_vf 非空时先把该镜的前置链（eq + 三段分色）套上再量，得到「进曲线之前」的真实分位，
+    曲线再用它做输入锚点，才能把本片真正推到目标分位（而不是只推一半）。
+    """
+    key = (str(path_str), round(float(start_sec), 2), round(float(dur_sec), 2), pre_vf)
+    if key in _LUMA_PCT_CACHE:
+        return _LUMA_PCT_CACHE[key]
+    src = Path(str(path_str))
+    ff = find_bin("ffmpeg")
+    if not src.is_file() or not ff:
+        _LUMA_PCT_CACHE[key] = None
+        return None
+    ss = max(0.0, float(start_sec))
+    cmd = [str(ff), "-v", "error"]
+    if ss > 0:
+        cmd += ["-ss", f"{ss:.3f}"]
+    if float(dur_sec) > 0:
+        cmd += ["-t", f"{max(0.2, float(dur_sec)):.3f}"]
+    chain = (pre_vf + "," if pre_vf else "") + "fps=2,scale=64:114"
+    cmd += ["-i", str(src), "-vf", chain, "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
+    try:
+        raw = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False).stdout
+    except Exception:
+        _LUMA_PCT_CACHE[key] = None
+        return None
+    frame_bytes = 64 * 114 * 3
+    n = len(raw) // frame_bytes
+    if n <= 0:
+        _LUMA_PCT_CACHE[key] = None
+        return None
+    arr = np.frombuffer(raw[: n * frame_bytes], dtype=np.uint8).reshape(n, 114, 64, 3).astype(np.float32) / 255.0
+    luma = 0.2126 * arr[..., 0] + 0.7152 * arr[..., 1] + 0.0722 * arr[..., 2]
+    p05, p50, p95 = (float(v) for v in np.percentile(luma, [5, 50, 95]))
+    out = (_clampf(p05, 0.0, 1.0), _clampf(p50, 0.0, 1.0), _clampf(p95, 0.0, 1.0))
+    _LUMA_PCT_CACHE[key] = out
+    return out
+
+
+def _tone_curve_filter(style_color: Dict[str, Any],
+                       src_pct: Optional[Tuple[float, float, float]] = None,
+                       targets: Optional[Tuple[float, float, float]] = None,
+                       black_lift: float = 0.0) -> Optional[str]:
+    """暗部/中间调/高光三段锚点 → ffmpeg curves（单调插值，不产生反转过冲）。
+
+    src_pct 给定该镜自己的 p05/p50/p95 时，输入侧就用实测分位（真分位对齐），输出侧直接压到
+    目标分位——不再用 curve_weight 反推（反推会在目标超出可达范围时把整条曲线顶到饱和）；
+    curve_weight 的“收着改”由闭环校准的残差反馈体现。
+    black_lift > 0 时把 0 点抬起来（片源有死黑、目标暗部却更亮时，只有抬黑位才能到）。
+    """
+    anchors = (style_color.get("tone_curve") or {}).get("anchors") or []
+    if len(anchors) != 3 or not ffmpeg_has_filter("curves"):
+        return None
+    fallback = (0.05, 0.50, 0.95)
+    weight = _clampf(float((style_color.get("tone_curve") or {}).get("curve_weight") or 0.0), 0.15, 1.0)
+    lift = _clampf(float(black_lift), 0.0, 0.6)
+    pts: List[Tuple[float, float]] = [(0.0, lift)]
+    for i, a in enumerate(anchors):
+        measured = (targets[i] * 255.0) if targets is not None else a.get("measured")
+        if src_pct is not None and measured is not None:
+            inx = _clampf(float(src_pct[i]), 0.005, 0.995)
+            outy = _clampf(float(measured) / 255.0, lift, 1.0)
+            pts.append((inx, outy))
+            continue
+        # 没有本镜分位时退回库里的输入/输出锚点，仍按 curve_weight 混一次（近似模式）
+        inx = _clampf(float(a.get("input", fallback[i])), 0.005, 0.995)
+        raw = float(a.get("output", 0.0))
+        outy = _clampf(inx + weight * (raw - inx), lift, 1.0)
+        pts.append((inx, outy))
+    pts.append((1.0, 1.0))
+    # 输入必须严格递增（贴合素材实际分布时三点可能挤在一起）
+    for i in range(1, len(pts)):
+        if pts[i][0] <= pts[i - 1][0]:
+            pts[i] = (min(0.995, pts[i - 1][0] + 0.004), pts[i][1])
+    out_mono: List[Tuple[float, float]] = [pts[0]]
+    for x, y in pts[1:]:
+        out_mono.append((x, max(y, out_mono[-1][1])))
+    return "curves=all='{}':interp=pchip".format(" ".join(f"{_f4(x)}/{_f4(y)}" for x, y in out_mono))
+
+
+def _zone_balance_filter(style_color: Dict[str, Any], corr: Dict[str, Any]) -> Optional[str]:
+    """三段分色：暗部/中间调/高光各自的 R/G/B 偏移，肤色保护与 Hero 锚定叠加到中间调组。"""
+    if not ffmpeg_has_filter("colorbalance"):
+        return None
+    tint = style_color.get("zone_tint") or {}
+
+    def zone(name: str) -> List[float]:
+        vals = [float(v) for v in (tint.get(name) or [0.0, 0.0, 0.0])][:3]
+        if len(vals) != 3:
+            return [0.0, 0.0, 0.0]
+        # colorbalance 只接受 -1..1；配置里若误写 0–255 的三元组，这里按亮度差归一并夹住
+        if max(abs(v) for v in vals) > 1.0:
+            lum = 0.2126 * vals[0] + 0.7152 * vals[1] + 0.0722 * vals[2]
+            vals = [max(-0.35, min(0.35, (v - lum) / 255.0 * 1.6)) for v in vals]
+        return [max(-0.4, min(0.4, v)) for v in vals]
+
+    sh, md, hi = zone("shadow"), zone("midtone"), zone("highlight")
+    md[0] = _clampf(md[0] + float(corr.get("rm", 0.0)), -0.1, 0.1)
+    md[2] = _clampf(md[2] + float(corr.get("bm", 0.0)), -0.1, 0.1)
+    return (
+        f"colorbalance=rs={_f4(sh[0])}:gs={_f4(sh[1])}:bs={_f4(sh[2])}"
+        f":rm={_f4(md[0])}:gm={_f4(md[1])}:bm={_f4(md[2])}"
+        f":rh={_f4(hi[0])}:gh={_f4(hi[1])}:bh={_f4(hi[2])}"
+    )
+
+
+def _film_frame_boxes(spec: Dict[str, Any]) -> List[str]:
+    """怀旧相框：四边压边，拍立得底边更宽（源 black_polaroid_frame 的宽底白/黑框特征）。"""
+    base = min(CANVAS_WIDTH, CANVAS_HEIGHT)
+    bp = max(2, int(round(base * _clampf(spec.get("border_frac"), 0.005, 0.08, 0.02))))
+    color = str(spec.get("color") or "0x0A0A0A")
+    frame_style = str(spec.get("style") or "")
+    bottom = max(bp, int(round(bp * 1.7))) if frame_style == "black_polaroid" else bp
+    boxes = [
+        f"drawbox=x=0:y=0:w=iw:h={bp}:color={color}@1:t=fill",
+        f"drawbox=x=0:y=ih-{bottom}:w=iw:h={bottom}:color={color}@1:t=fill",
+        f"drawbox=x=0:y=0:w={bp}:h=ih:color={color}@1:t=fill",
+        f"drawbox=x=iw-{bp}:y=0:w={bp}:h=ih:color={color}@1:t=fill",
+    ]
+    if frame_style == "white_paper":
+        inset = bp + 3
+        boxes.append(f"drawbox=x={inset}:y={inset}:w=iw-{2 * inset}:h=ih-{2 * inset}:color=0x000000@0.30:t=2")
+    return boxes
+
+
+def _irregular_frame_boxes(spec: Dict[str, Any]) -> List[str]:
+    """不规则黑框：四边不等宽，再用两条错位窄边打散完美直线，近似源里手工贴的底框。"""
+    edges = spec.get("edges") or {}
+    color = str(spec.get("color") or "0x141618")
+    top = max(1, int(edges.get("top", 14)))
+    bottom = max(1, int(edges.get("bottom", 12)))
+    left = max(1, int(edges.get("left", 10)))
+    right = max(1, int(edges.get("right", 18)))
+    return [
+        f"drawbox=x=0:y=0:w=iw:h={top}:color={color}@1:t=fill",
+        f"drawbox=x=0:y=ih-{bottom}:w=iw:h={bottom}:color={color}@1:t=fill",
+        f"drawbox=x=0:y=0:w={left}:h=ih:color={color}@1:t=fill",
+        f"drawbox=x=iw-{right}:y=0:w={right}:h=ih:color={color}@1:t=fill",
+        f"drawbox=x=0:y=0:w=iw/3:h={top + 7}:color={color}@1:t=fill",
+        f"drawbox=x=iw*2/3:y=ih-{bottom + 5}:w=iw/3:h={bottom + 5}:color={color}@1:t=fill",
+    ]
+
+
+def _window_hit(spec: Dict[str, Any], clip_window: Optional[Tuple[float, float]]) -> bool:
+    """特效只在该时间窗内生效：与分镜时间轴的交叠不足较短一方 40% 就算没命中。"""
+    win = spec.get("window")
+    if not isinstance(win, dict) or clip_window is None:
+        return True
+    try:
+        ws = float(win.get("start") or 0.0)
+        wd = float(win.get("duration") or 0.0)
+    except (TypeError, ValueError):
+        return True
+    if wd <= 0.0:
+        return True
+    we = ws + wd
+    cs, ce = float(clip_window[0]), float(clip_window[1])
+    overlap = min(ce, we) - max(cs, ws)
+    if overlap <= 0.0:
+        return False
+    return overlap >= 0.4 * min(ce - cs, wd)
+
+
+def _spotlight_geq(spec: Dict[str, Any]) -> str:
+    """真圆形聚光：径向遮罩直接乘在 YUV 三个平面上（内圈全亮、羽化过渡、外圈压暗）。
+
+    以前用 vignette 顶替，只能整圈渐变、做不出「中间一个亮圈」；geq 是逐像素径向函数，
+    内半径内系数恒为 1、羽化带内线性过渡，等价于剪映「聚光灯」的蒙版半径 + 羽化。
+    半径与圆心用 W/H 的相对量写，换分辨率也成立。
+    """
+    angle = _clampf(spec.get("angle"), 0.2, 1.2, 0.63)
+    fx = _clampf(float(spec.get("x") or CANVAS_WIDTH // 2) / CANVAS_WIDTH, 0.0, 1.0)
+    fy = _clampf(float(spec.get("y") or CANVAS_HEIGHT // 2) / CANVAS_HEIGHT, 0.0, 1.0)
+    inner = _clampf(spec.get("inner_frac"), 0.10, 0.85, 0.34)
+    feather = _clampf(spec.get("feather_frac"), 0.25, 1.20, 0.62)
+    keep = _clampf(1.0 - 0.55 * angle, 0.22, 0.85)
+    cx, cy = f"{fx:.4f}*W", f"{fy:.4f}*H"
+    r_in = f"({inner:.3f}*min(W,H))"
+    r_end = f"({feather:.3f}*0.5*hypot(W,H))"
+    dist = f"hypot(X-{cx},Y-{cy})"
+    m = f"({keep:.4f}+{1.0 - keep:.4f}*clip(({r_end}-{dist})/({r_end}-{r_in}),0,1))"
+    return (f"geq=lum='lum(X,Y)*{m}':"
+            f"cb='128+(cb(X,Y)-128)*{m}':"
+            f"cr='128+(cr(X,Y)-128)*{m}'")
+
+
+def _effect_filters(style_color: Dict[str, Any], is_broll: bool = False,
+                    clip_window: Optional[Tuple[float, float]] = None) -> List[str]:
+    """按风格特效开关生成滤镜：只做源草稿 effect 轨里真有的特效（color_effects.effects）。
+
+    clip_window 给该分镜在成片时间轴上的 (起点, 终点)，特效只在源里的时间窗内生效。
+    """
+    eff = style_color.get("effects") or {}
+
+    def spec(key: str) -> Optional[Dict[str, Any]]:
+        val = eff.get(key)
+        return val if isinstance(val, dict) and _window_hit(val, clip_window) else None
+
+    out: List[str] = []
+
+    # 轻微颤抖放最前：先抖画面再画框/压暗，画框保持不动，像手持机身在固定框内晃
+    shake = spec("shake")
+    if shake and ffmpeg_has_filter("crop"):
+        ax = max(1, int(round(_clampf(shake.get("amp_x"), 1, 8, 2))))
+        ay = max(1, int(round(_clampf(shake.get("amp_y"), 1, 8, 2))))
+        speed = _clampf(shake.get("speed"), 0.2, 4.0, 1.0)
+        out.append(
+            f"crop=w=iw-{2 * ax}:h=ih-{2 * ay}"
+            f":x='{ax}+{ax}*sin(n*{_f4(speed)})':y='{ay}+{ay}*cos(n*{_f4(speed * 0.8)})'"
+        )
+        out.append(f"scale={CANVAS_WIDTH}:{CANVAS_HEIGHT}:flags=bicubic")
+
+    spot = spec("spotlight")
+    if spot and ffmpeg_has_filter("geq"):
+        out.append(_spotlight_geq(spot))
+
+    vig = spec("vignette")
+    if vig and ffmpeg_has_filter("vignette"):
+        angle = _clampf(vig.get("angle"), 0.2, 1.5, 0.9)
+        x0 = int(_clampf(vig.get("x"), 0, CANVAS_WIDTH, CANVAS_WIDTH // 2))
+        y0 = int(_clampf(vig.get("y"), 0, CANVAS_HEIGHT, CANVAS_HEIGHT // 2))
+        out.append(f"vignette=angle={_f4(angle)}:x0={x0}:y0={y0}")
+
+    # 剪映「模糊」是整画面特效（effect 轨挂一个 effects_adjust_blur 参数），不是空间局部虚化
+    blur = spec("blur")
+    if blur and ffmpeg_has_filter("gblur"):
+        sigma = _clampf(blur.get("sigma"), 0.3, 16.0, 4.0)
+        out.append(f"gblur=sigma={_f4(sigma)}:steps=2")
+
+    grain = spec("grain")
+    if grain and ffmpeg_has_filter("noise"):
+        strength = int(round(_clampf(grain.get("strength"), 1, 20, 5)))
+        flags = str(grain.get("flags") or "t+u")
+        out.append(f"noise=alls={strength}:allf={flags}")
+
+    frame = spec("film_frame")
+    if frame and ffmpeg_has_filter("drawbox"):
+        out.extend(_film_frame_boxes(frame))
+    irregular = spec("irregular_black_frame")
+    if irregular and ffmpeg_has_filter("drawbox"):
+        out.extend(_irregular_frame_boxes(irregular))
+
+    return out
+
+
+def _effects_enabled(style_color: Dict[str, Any]) -> List[str]:
+    eff = style_color.get("effects") or {}
+    return [k for k in COLOR_EFFECT_KEYS if isinstance(eff.get(k), dict)]
+
+
+def _applied_effects(style_color: Dict[str, Any], is_broll: bool = False,
+                     clip_window: Optional[Tuple[float, float]] = None) -> List[str]:
+    """本镜真实会执行的特效（与 _effect_filters 完全同一套判定），方便回查每个分镜到底开了什么。"""
+    eff = style_color.get("effects") or {}
+    names: List[str] = []
+    for key in ("shake", "spotlight", "vignette", "blur", "grain", "film_frame", "irregular_black_frame"):
+        val = eff.get(key)
+        if not isinstance(val, dict) or not _window_hit(val, clip_window):
+            continue
+        names.append(str(val.get("source_effect") or key))
+    return names
 
 
 def _escape_lut_filter_path(p: Path) -> str:
@@ -214,8 +560,8 @@ def compute_hero_and_shot_correction(
     skin_ycbcr: Optional[Dict[str, float]],
     style_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """基于 Hero 锚定与中间调皮肤矢量保护计算校色参数（仅作用于 rm/bm 中间调，同时护航含人脸副镜头）。"""
-    prof = _resolve_style_grade_profile(style_id)
+    """基于 Hero 锚定与中间调皮肤矢量保护计算校色参数（肤色纠偏与亮度锚定，三段分色与曲线另走配置）。"""
+    style_color = _resolve_style_color(style_id)
     y, u, v = stats["yavg"], stats["uavg"], stats["vavg"]
 
     skin_bm, skin_rm = 0.0, 0.0
@@ -236,26 +582,26 @@ def compute_hero_and_shot_correction(
             y_corr = (95.0 - y) / 480.0
         elif y > 175.0:
             y_corr = (165.0 - y) / 480.0
-        brightness = round(max(-0.14, min(0.14, y_corr + float(prof.get("b_off", 0.0)))), 3)
-        bm_shift = round(max(-0.08, min(0.08, skin_bm + float(prof.get("bm_off", 0.0)))), 3)
-        rm_shift = round(max(-0.08, min(0.08, skin_rm + float(prof.get("rm_off", 0.0)))), 3)
+        brightness = round(max(-0.14, min(0.14, y_corr)), 3)
+        bm_shift = round(max(-0.08, min(0.08, skin_bm)), 3)
+        rm_shift = round(max(-0.08, min(0.08, skin_rm)), 3)
     else:
         y_diff = hero_stats["yavg"] - y
         u_diff = hero_stats["uavg"] - u
         v_diff = hero_stats["vavg"] - v
-        brightness = round(max(-0.12, min(0.12, (y_diff * 0.45) / 380.0 + float(prof.get("b_off", 0.0)))), 3)
+        brightness = round(max(-0.12, min(0.12, (y_diff * 0.45) / 380.0)), 3)
         bm_base = (u_diff * 0.30) / 420.0
         rm_base = (v_diff * 0.30) / 420.0
         if skin_ycbcr:
             bm_base = bm_base * 0.5 + skin_bm * 0.7
             rm_base = rm_base * 0.5 + skin_rm * 0.7
-        bm_shift = round(max(-0.07, min(0.07, bm_base + float(prof.get("bm_off", 0.0)))), 3)
-        rm_shift = round(max(-0.07, min(0.07, rm_base + float(prof.get("rm_off", 0.0)))), 3)
+        bm_shift = round(max(-0.07, min(0.07, bm_base)), 3)
+        rm_shift = round(max(-0.07, min(0.07, rm_base)), 3)
 
     return {
         "brightness": brightness,
-        "contrast": round(float(prof.get("contrast", 1.05)), 3),
-        "saturation": round(float(prof.get("sat", 1.04)), 3),
+        "contrast": round(_clampf(style_color.get("contrast"), 1.0, 1.16, 1.06), 3),
+        "saturation": round(_clampf(style_color.get("saturation_scale"), 0.5, 1.6, 1.0), 3),
         "rm": rm_shift,
         "bm": bm_shift,
     }
@@ -301,20 +647,130 @@ def build_blended_cube_lut(lut_path: Path, strength: float, out_path: Path) -> t
     return out_path, strength
 
 
-def _build_vf_for_corr(corr: Dict[str, Any], lut_path: Optional[Path], lut_strength: float = 1.0) -> str:
-    base = (
-        f"eq=brightness={corr['brightness']}:contrast={corr['contrast']}:saturation={corr['saturation']},"
-        f"colorbalance=rm={corr['rm']}:bm={corr['bm']}"
-    )
-    if float(lut_strength) <= 0.01 or lut_path is None or not Path(lut_path).is_file():
-        return base
-    lut_escaped = _escape_lut_filter_path(Path(lut_path))
-    return (
-        f"{base},"
-        f"scale=in_color_matrix=bt709:out_color_matrix=bt709,format=rgb24,"
-        f"lut3d='{lut_escaped}',"
-        f"scale=in_color_matrix=bt709:out_color_matrix=bt709,format=yuv420p"
-    )
+def _build_vf_for_corr(
+    corr: Dict[str, Any],
+    lut_path: Optional[Path],
+    lut_strength: float = 1.0,
+    style_color: Optional[Dict[str, Any]] = None,
+    is_broll: bool = False,
+    src_pct: Optional[Tuple[float, float, float]] = None,
+    targets: Optional[Tuple[float, float, float]] = None,
+    black_lift: float = 0.0,
+    include_effects: bool = True,
+    clip_window: Optional[Tuple[float, float]] = None,
+) -> str:
+    """拼单分镜调色链：亮度/对比/饱和 → 三段分色 → 三段曲线 → 片源 → 特效 → BT.709 收口。
+
+    include_effects=False 时不含特效栈：闭环校准要在「特效之前」对齐分位，否则暗角/聚光会把
+    输出分布整体压下去，校准就永远追不上目标（源片实测分位本来就取自未加特效的画面）。
+    """
+    style_color = style_color if style_color is not None else {}
+    parts: List[str] = [
+        f"eq=brightness={corr['brightness']}:contrast={corr['contrast']}:saturation={corr['saturation']}"
+    ]
+    balance = _zone_balance_filter(style_color, corr)
+    if balance:
+        parts.append(balance)
+    tone = _tone_curve_filter(style_color, src_pct, targets, black_lift=black_lift)
+    if tone:
+        parts.append(tone)
+
+    if float(lut_strength) > 0.01 and lut_path is not None and Path(lut_path).is_file():
+        lut_escaped = _escape_lut_filter_path(Path(lut_path))
+        parts.append("scale=in_color_matrix=bt709:out_color_matrix=bt709,format=rgb24")
+        parts.append(f"lut3d='{lut_escaped}'")
+
+    if include_effects:
+        parts.extend(_effect_filters(style_color, is_broll=is_broll, clip_window=clip_window))
+    parts.append("scale=in_color_matrix=bt709:out_color_matrix=bt709,format=yuv420p")
+    return ",".join(parts)
+
+
+def _probe_with_vf(path_str: str, vf: str, start_sec: float, dur_sec: float) -> Optional[Tuple[float, float, float]]:
+    """把整条链套到一小段素材上量输出分位（闭环校准用，代价很小：fps=2 + 64×114）。"""
+    ff = find_bin("ffmpeg")
+    src = Path(str(path_str))
+    if not src.is_file() or not ff:
+        return None
+    cmd = [str(ff), "-v", "error"]
+    if start_sec > 0:
+        cmd += ["-ss", f"{start_sec:.3f}"]
+    if dur_sec > 0:
+        cmd += ["-t", f"{max(0.2, dur_sec):.3f}"]
+    cmd += ["-i", str(src), "-vf", f"{vf},fps=2,scale=64:114",
+            "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]
+    try:
+        raw = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False).stdout
+    except Exception:
+        return None
+    frame_bytes = 64 * 114 * 3
+    n = len(raw) // frame_bytes
+    if n <= 0:
+        return None
+    arr = np.frombuffer(raw[: n * frame_bytes], dtype=np.uint8).reshape(n, 114, 64, 3).astype(np.float32) / 255.0
+    luma = 0.2126 * arr[..., 0] + 0.7152 * arr[..., 1] + 0.0722 * arr[..., 2]
+    return tuple(float(v) for v in np.percentile(luma, [5, 50, 95]))
+
+
+def calibrate_clip_curve(
+    mp: str,
+    c_in: float,
+    c_dur: float,
+    corr: Dict[str, Any],
+    style_color: Dict[str, Any],
+    blended_lut: Optional[Path],
+    eff_strength: float,
+    is_broll: bool,
+    clip_window: Optional[Tuple[float, float]] = None,
+    max_iter: int = 5,
+    tol: float = 0.018,
+) -> Tuple[str, Optional[List[float]], Optional[List[float]]]:
+    """闭环校准：先量前置链后分位，再反复「出片→量输出→回推目标」，直到输出分位贴住源片实测分位。
+
+    返回 (最终 vf, 校准后目标(0–255), 最终残差(0–255))。校准失败（素材无亮度分布）时退回单轮。
+    """
+    pre_chain = f"eq=brightness={corr['brightness']}:contrast={corr['contrast']}:saturation={corr['saturation']}"
+    pre_balance = _zone_balance_filter(style_color, corr)
+    if pre_balance:
+        pre_chain = f"{pre_chain},{pre_balance}"
+    src_pct = probe_luma_percentiles(mp, c_in, c_dur, pre_vf=pre_chain)
+    anchors = (style_color.get("tone_curve") or {}).get("anchors") or []
+    base_targets = tuple(float(a.get("measured") or 0.0) / 255.0 for a in anchors) if len(anchors) == 3 else None
+
+    def probe_vf(adj_targets, lift):
+        # 校准只看「特效之前」的分布：源片实测分位取自未加暗角/聚光的画面
+        return _build_vf_for_corr(corr, blended_lut, lut_strength=eff_strength, style_color=style_color,
+                                  is_broll=is_broll, src_pct=src_pct, targets=adj_targets,
+                                  black_lift=lift, include_effects=False)
+
+    vf = _build_vf_for_corr(corr, blended_lut, lut_strength=eff_strength, style_color=style_color,
+                            is_broll=is_broll, src_pct=src_pct, clip_window=clip_window)
+    if src_pct is None or base_targets is None:
+        return vf, None, None
+
+    adj = list(base_targets)
+    lift = 0.0
+    last_got: Optional[Tuple[float, float, float]] = None
+    for _ in range(max_iter):
+        got = _probe_with_vf(mp, probe_vf(tuple(adj), lift), c_in, c_dur)
+        if got is None:
+            break
+        last_got = got
+        err = [base_targets[i] - got[i] for i in range(3)]
+        if max(abs(e) for e in err) <= tol:
+            break
+        prev_adj = list(adj)
+        adj = [max(0.0, min(1.0, adj[i] + err[i])) for i in range(3)]
+        # 暗部卡在天花板还追不上 → 说明片源有死黑、目标暗部更亮，只能抬黑位
+        if err[0] > tol and prev_adj[0] >= 0.985:
+            lift = _clampf(lift + err[0] * 0.55, 0.0, 0.6)
+    if last_got is None:
+        return vf, None, None
+    residual = [round((last_got[i] - base_targets[i]) * 255.0, 1) for i in range(3)]
+    vf = _build_vf_for_corr(corr, blended_lut, lut_strength=eff_strength, style_color=style_color,
+                            is_broll=is_broll, src_pct=src_pct, targets=tuple(adj),
+                            black_lift=lift, clip_window=clip_window)
+    return vf, [round(v * 255.0, 1) for v in adj], residual
 
 
 def run_step7(
@@ -334,12 +790,17 @@ def run_step7(
     lut_path = resolve_lut_path(lut_name, style_id=style_id)
 
     style_entry = load_style_spectrum_entry(style_id) if style_id else None
+    style_color = _resolve_style_color(style_id)
+    configured_strength = float(style_color.get("lut_strength") or 0.0)
     if lut_strength is None:
-        cfg_str = (style_entry or {}).get("color_and_lut", {}).get("lut_strength")
-        if cfg_str is not None:
-            lut_strength = max(0.0, min(1.0, float(cfg_str)))
+        if configured_strength > 0.0:
+            lut_strength = max(0.0, min(1.0, configured_strength))
         else:
-            lut_strength = 0.72 if style_id in ("style_06", "style_08", "style_13") else 0.60
+            cfg_str = (style_entry or {}).get("color_and_lut", {}).get("lut_strength")
+            if cfg_str is not None:
+                lut_strength = max(0.0, min(1.0, float(cfg_str)))
+            else:
+                lut_strength = 0.60
 
     blended_out_path = pipeline_dir / "07_blended_lut.cube"
     blended_lut, eff_strength = build_blended_cube_lut(lut_path, lut_strength, blended_out_path)
@@ -406,7 +867,7 @@ def run_step7(
         if len(face_verify_targets) >= 4:
             break
 
-    # 闭环 LUT 肤色保护验证：套用建议滤镜回测 Hero 及副镜头人脸肤色是否跌出健康扇区，仅沿严格不增强度阶梯下探
+    # 闭环片源强度回测：套用完整调色链（含特效）回测 Hero 及副镜头人脸肤色是否跌出健康扇区，仅沿严格不增强度阶梯下探
     skin_post_grade: Optional[Dict[str, float]] = None
     if face_verify_targets and eff_strength > 0.01:
         raw_cands = [eff_strength, min(eff_strength, 0.45), min(eff_strength, 0.30), 0.15]
@@ -426,7 +887,7 @@ def run_step7(
             for vp, v_fb, v_at, v_st, v_is_hero in face_verify_targets:
                 v_skin = skin_ycbcr if v_is_hero else _get_clip_skin(str(vp), v_fb, v_at)
                 v_corr = compute_hero_and_shot_correction(v_st, hero_stats, v_is_hero, v_skin, style_id=style_id)
-                test_vf = _build_vf_for_corr(v_corr, cand_lut, lut_strength=cand_eff)
+                test_vf = _build_vf_for_corr(v_corr, cand_lut, lut_strength=cand_eff, style_color=style_color, is_broll=False)
                 pg = probe_face_skin_ycbcr(vp, v_fb, at_sec=v_at, extra_vf=test_vf)
                 if v_is_hero:
                     skin_post_grade = pg
@@ -473,7 +934,13 @@ def run_step7(
             skin_ycbcr=shot_skin,
             style_id=style_id,
         )
-        vf_str = _build_vf_for_corr(corr, blended_lut, lut_strength=eff_strength)
+        is_broll = str(clip.get("track_role") or "") == "b_roll"
+        clip_win = (float(clip.get("timeline_in_sec") or 0.0),
+                    float(clip.get("timeline_in_sec") or 0.0) + c_dur)
+        vf_str, cal_targets, cal_residual = calibrate_clip_curve(
+            mp, c_in, c_dur, corr, style_color, blended_lut, eff_strength, is_broll,
+            clip_window=clip_win,
+        )
         clip_plans.append({
             "clip_id": clip["clip_id"],
             "track_role": clip["track_role"],
@@ -481,6 +948,14 @@ def run_step7(
             "apply_color_grade": True,
             "measured_stats": stats,
             "base_correction": corr,
+            "tone_curve_weight": float((style_color.get("tone_curve") or {}).get("curve_weight") or 0.0),
+            "curve_calibration": {
+                "targets_255": cal_targets,
+                "residual_255": cal_residual,
+                "converged": bool(cal_residual and max(abs(v) for v in cal_residual) <= 6.0),
+                "method": "闭环：出片→量特效前 p05/p50/p95→按残差回推曲线目标（暗部卡顶时抬黑位），最多 5 轮",
+            } if cal_targets else None,
+            "effects_applied": _applied_effects(style_color, is_broll, clip_win),
             "lut_file": str(blended_lut.resolve()) if eff_strength > 0.01 else None,
             "vf_filter": vf_str,
         })
@@ -491,29 +966,43 @@ def run_step7(
         "lut_name": lut_path.name,
         "source_lut_path": str(lut_path.resolve()),
         "lut_strength": round(eff_strength, 2),
+        "lut_strength_configured": round(float(lut_strength), 2),
         "lut_path": str(blended_lut.resolve()),
         "hero_media": hero_mp,
         "hero_stats": hero_stats,
         "skin_tone_measured": skin_ycbcr,
         "skin_tone_post_grade": skin_post_grade,
+        "color_effects": {
+            "config": "assets/style_spectrum/color_effects.json",
+            "saturation_scale": style_color.get("saturation_scale"),
+            "contrast": style_color.get("contrast"),
+            "warmth": style_color.get("warmth"),
+            "tone_curve": style_color.get("tone_curve"),
+            "zone_tint": style_color.get("zone_tint"),
+            "effects_enabled": _effects_enabled(style_color),
+            "effects_evidence_cn": (style_color.get("effects") or {}).get("evidence_cn"),
+            "basis_cn": style_color.get("basis_cn"),
+        },
         "clip_plans": clip_plans,
     }
     write_json(pipeline_dir / "07_color_plan.json", plan)
     graded_cnt = sum(1 for c in clip_plans if c["apply_color_grade"])
+    effects_cn = "、".join(_effects_enabled(style_color)) or "无"
     print(
-        f"[step7] 肤色保护调色方案生成完成：{graded_cnt} 个实拍镜头（Hero锚定 + 强度{eff_strength:.0%}混合 `{lut_path.name}`）-> 07_color_plan.json"
+        f"[step7] 肤色保护调色方案生成完成：{graded_cnt} 个实拍镜头（Hero锚定 + 强度{eff_strength:.0%}混合 `{lut_path.name}` "
+        f"+ 三段曲线/分色 + 特效：{effects_cn}）-> 07_color_plan.json"
     )
     return plan
 
 
 def main() -> None:
     maybe_reexec_in_venv()
-    parser = argparse.ArgumentParser(description="Step 7: 肤色保护基准校色与可控强度 LUT 规划")
+    parser = argparse.ArgumentParser(description="Step 7: 逐镜三段曲线校色 + 肤色保护 + 库外特效 + 逐套片源强度规划")
     parser.add_argument("--pipeline-dir", required=True)
     parser.add_argument("--track", choices=["store", "creator"], default="store")
     parser.add_argument("--style-id", help="绑定风格谱 ID")
     parser.add_argument("--lut", help="LUT 文件名")
-    parser.add_argument("--lut-strength", type=float, default=None, help="LUT 混合强度 0.0~1.0")
+    parser.add_argument("--lut-strength", type=float, default=None, help="手动覆盖片源强度 0.0~1.0（默认取 color_effects.json 的逐套值）")
     args = parser.parse_args()
     run_step7(
         Path(args.pipeline_dir),

@@ -25,6 +25,7 @@ _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
+import face_framing
 from common import (
     ASSETS_DIR,
     CANVAS_HEIGHT,
@@ -117,7 +118,7 @@ def pick_best_cover_frame(
                 ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
                 "-ss", f"{ts:.3f}", "-i", c["media_path"],
                 "-frames:v", "1",
-                "-vf", f"scale={CANVAS_WIDTH}:{CANVAS_HEIGHT}:force_original_aspect_ratio=increase,crop={CANVAS_WIDTH}:{CANVAS_HEIGHT}",
+                "-vf", _cover_vf_with_face(str(c.get("media_path") or ""), ts),
                 str(out_png),
             ], check=False)
             if out_png.exists():
@@ -219,7 +220,7 @@ def pick_best_cover_frame(
             ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
             "-ss", f"{chosen_src_ts:.3f}", "-i", chosen_mp,
             "-frames:v", "1",
-            "-vf", f"{vf_grade},scale={CANVAS_WIDTH}:{CANVAS_HEIGHT}:force_original_aspect_ratio=increase,crop={CANVAS_WIDTH}:{CANVAS_HEIGHT}",
+            "-vf", f"{vf_grade}," + _cover_vf_with_face(str(chosen_mp), chosen_src_ts),
             str(graded_png),
         ], check=False)
         if graded_png.exists():
@@ -233,6 +234,15 @@ def pick_best_cover_frame(
         "graded_matched": bool(vf_grade),
         "detail": best_detail,
     }
+
+
+def _cover_vf_with_face(media_path: str, at_sec: float) -> str:
+    """封面/首帧的裁切同样以人脸为中心：横屏素材居中裁会把头切掉，封面是最贵的一帧。"""
+    try:
+        anchor = face_framing.anchor_for(media_path, float(at_sec), 1.0)
+    except Exception:
+        anchor = None
+    return face_framing.cover_crop_vf(CANVAS_WIDTH, CANVAS_HEIGHT, anchor)
 
 
 def _choose_cover_card_y(face_bbox: Optional[Dict[str, float]], card_h: int = 340) -> int:

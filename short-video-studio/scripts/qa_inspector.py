@@ -450,6 +450,52 @@ def inspect_video(
             f"0.30s≤单镜≤{pacing['max_shot_sec']:.1f}s, 0非预期倒带",
         ))
 
+        # 8b. 外来画面 ↔ 口播文案：只查"有没有说实话"，不替创作者背锅
+        broll_clips = [c for c in edl["clips"] if str(c.get("track_role")) in ("b_roll", "code_broll")]
+        sem_bad = []
+        for c in broll_clips:
+            rel = c.get("sem_match")
+            if not isinstance(rel, dict):
+                sem_bad.append(f"{c.get('clip_id')}:未记录语义依据")
+                continue
+            v = str(rel.get("verdict") or "none")
+            if v not in ("hit", "weak", "none"):
+                sem_bad.append(f"{c.get('clip_id')}:判定非法({v})")
+            elif v != "none" and not (rel.get("basis") or []):
+                sem_bad.append(f"{c.get('clip_id')}:声称对得上却没有任何依据")
+        stat_sem = edl.get("broll_semantic") or {}
+        sem_counts_ok = bool(stat_sem) and int(stat_sem.get("clips", -1)) == len(broll_clips)
+        if broll_clips and not stat_sem:
+            sem_bad.append("EDL 未写 broll_semantic 汇总")
+        checks.append(_mk_check(
+            "broll_semantic_fit",
+            "外来画面与台词对位（有依据才算对得上）",
+            "FAIL" if sem_bad else "PASS",
+            f"{len(broll_clips)} 个外来画面 | 贴合 {stat_sem.get('hit', 0)} / 同场景 {stat_sem.get('weak', 0)} / "
+            f"无依据 {stat_sem.get('none', 0)} | 命中率 {float(stat_sem.get('hit_ratio', 0.0))*100:.0f}%"
+            + (f" | 问题: {sem_bad[:3]}" if sem_bad else ""),
+            "每个外来画面都要写清凭什么对得上；无依据必须标 none，不许编",
+        ))
+
+        # 8c. 画中画小窗人脸构图：会裁切的构图必须交代到底有没有按人脸取景
+        pip_cut_modes = ("geometry_pip_window", "geometry_pip_main_shrunk", "geometry_pip_main_punch_in",
+                         "blur_bg_center_card_pip", "smooth_orbit_pip", "black_polaroid_frame_pip")
+        pip_clips = [c for c in edl["clips"] if isinstance(c.get("pip_layout"), dict)]
+        cut_clips = [c for c in pip_clips if str((c.get("pip_layout") or {}).get("mode") or "") in pip_cut_modes]
+        unaccounted = [
+            str(c.get("clip_id")) for c in cut_clips
+            if str((c.get("pip_layout") or {}).get("face_framing") or "") not in ("face_center", "no_face_center_crop")
+        ]
+        face_centered = sum(1 for c in cut_clips if (c.get("pip_layout") or {}).get("face_framing") == "face_center")
+        checks.append(_mk_check(
+            "pip_face_framing",
+            "画中画小窗人脸构图（不切脸）",
+            "FAIL" if unaccounted else "PASS",
+            f"会裁切的构图 {len(cut_clips)} 个 | 按人脸取景 {face_centered} | 未交代 {len(unaccounted)}"
+            + (f" | 缺: {unaccounted[:3]}" if unaccounted else ""),
+            "每个小窗/缩窗/推近都要标明是按人脸取景还是素材里根本没脸",
+        ))
+
         # 9. 前 3 秒画面变化次数
         first_3s_cuts = [c for c in edl["clips"][1:] if int(c["timeline_in_frame"]) < 3 * fps]
         all_on_events = all(c.get("cut_event_id") in events_by_id for c in first_3s_cuts)
