@@ -1093,15 +1093,18 @@ def run_step4(
     pip_applied_count = explainer_applied_count
     if pip_mode and clips:
         live_brolls = [m for m in broll_pool if m.get("role") == "b_roll"] or list(broll_pool)
-        # 单源画框类：只对当前主镜施加拍立得/毛玻璃/纸卡/笔记卡/顶栏装帧，不需要第二路副镜
+        # 单源画框/景深类：只需当前主镜即可渲染（无需第二路副镜）
         single_source_frame_modes = {
             "black_polaroid_frame_pip",
             "blur_bg_center_card_pip",
             "paper_craft_card_pip",
             "minimal_white_note_card_pip",
             "top_banner_evidence_pip",
+            "person_behind_giant_text_pip",
+            "top_white_rounded_frame_pip",
+            "black_spotlight_circle_pip",
         }
-        # 双源构图类：必须存在异于主镜的真实副镜，严禁“主讲人自己缩小贴在自己右上角”同脸套娃！
+        # 双源构图类（其中 vision_portrait_cutout_pip / data_news_cutout_pip / linear_split_feather_pip 无副镜时也可独立单源成立）
         full_dual_modes = {
             "dark_doc_circle_avatar_pip",
             "linear_split_feather_pip",
@@ -1109,13 +1112,29 @@ def run_step4(
             "vision_portrait_cutout_pip",
             "data_news_cutout_pip",
         }
+        self_sufficient_fallback_modes = {
+            "vision_portrait_cutout_pip",
+            "data_news_cutout_pip",
+            "linear_split_feather_pip",
+            "dark_doc_circle_avatar_pip",
+        }
+        first_kw_back = ""
+        if sentences:
+            s0_kws = [str(k).strip() for k in (sentences[0].get("keywords") or []) if 2 <= len(str(k).strip()) <= 5]
+            first_kw_back = s0_kws[0] if s0_kws else re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", str(sentences[0].get("text") or ""))[:4]
         for c_i, c_obj in enumerate(clips):
             if c_obj.get("track_role") == "code_broll" or c_obj.get("pip_layout"):
                 continue
             main_media = str(c_obj.get("media_path") or "")
             if pip_mode in single_source_frame_modes:
+                extra_cfg: Dict[str, Any] = {}
+                if pip_mode == "person_behind_giant_text_pip":
+                    cur_s = sent_by_id.get(str(c_obj.get("sentence_id") or "")) or {}
+                    c_kws = [str(k).strip() for k in (cur_s.get("keywords") or []) if 2 <= len(str(k).strip()) <= 4]
+                    extra_cfg["giant_back_text"] = c_kws[0] if c_kws else (first_kw_back or "核心真相")
                 c_obj["pip_layout"] = {
                     **pip_spec,
+                    **extra_cfg,
                     "mode": pip_mode,
                     "single_source": True,
                 }
@@ -1158,8 +1177,15 @@ def run_step4(
                         sec_media = str(alt_b.get("normalized_mp4"))
                         sec_in = float(alt_b.get("best_in_sec", 0.0))
 
-            # 严禁同源套娃：找不到异源副镜时绝不把同一个画面缩小贴在自己身上
+            # 严禁同源套娃：无异源副镜时仅允许真抠像/羽化分屏/纯黑面板类单源成立，其余跳过
             if not sec_media or sec_media == main_media:
+                if pip_mode in self_sufficient_fallback_modes:
+                    c_obj["pip_layout"] = {
+                        **pip_spec,
+                        "mode": pip_mode,
+                        "single_source": True,
+                    }
+                    pip_applied_count += 1
                 continue
 
             c_obj["pip_layout"] = {

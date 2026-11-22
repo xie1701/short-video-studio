@@ -33,7 +33,7 @@
 - `short-video-studio/SKILL.md`：Agent Skill 入口与工作流规范。
 - `short-video-studio/references/`：10 篇精简方法论、交互协议、中间文件契约、安全区规范、代码制片/知识动画工艺与商用授权清单。
 - `short-video-studio/scripts/`：全套端到端制片、知识动画、口播增强、导出、质检与复盘脚本。
-- `short-video-studio/assets/`：4 款随仓开源可商用字体、CC0 真实录制 BGM & 物理 SFX（`sound_vibe/`）、知识动画 Canvas 运行时（`canvas_runtime/`）、28 套字幕模板与 24 套风格谱 `17³` LUT。
+- `short-video-studio/assets/`：5 款随仓开源可商用字体（含毛笔手写体 `MaShanZheng-Regular.ttf`）、CC0 真实录制 BGM & 物理 SFX（`sound_vibe/`）、知识动画 Canvas 运行时（`canvas_runtime/`）、28 套字幕模板与 24/24 全白盒剪映风格模板蓝图与 `17³` LUT（支持逐帧 AI 人像前景抠像、30fps 动态文字动效与 `xfade` 镜头转场）。
 - `dev_tools/`：离线样本分析与通用 LUT 重建工具（开发维护用，不随 Skill 分发包打包）。
 - `tests/`：核心流水线与回归测试套件。
 - `BRIEF.md`：项目初版立项设计简报（历史归档）。

@@ -164,16 +164,16 @@ python3 scripts/content_log_review.py --account <账号> --track <store|creator>
 
 ## 六、 风格谱参考包装库与环境初始化
 
-- 已内置 **24 套 v3.0 模板复刻风格库**（`style_01` ~ `style_24`，15 套纯全屏原生模板 + 9 套真实画框/相框/抠像/双格/羽化分屏模板，全部等比无变形、严禁同脸套娃）与 **3 大共享剪辑规则字典**：
-  - **全局/门店获客默认（`style_01`）**：完整复刻门店爆款原生模板——全屏实景出镜、综艺斜标海报开场、居中无底框大号双色暖黄重点字、双段音乐切换；另含白边人像贴纸抠像（`style_07`）、清冷奶油极简宋体（`style_04`）、暖金双格对比（`style_17`）、户外探盘 3D 金属立体大字（`style_18`）、国风暖木黑条粗宋体（`style_20`）、牛皮纸工艺卡（`style_05`）、慢调空间漫游（`style_13`）、高空镜种草（`style_21`）、微纪录慢调（`style_23`）。
-  - **个人账号默认（`style_11`）**：清亮知性通透圆角字幕；另含暗灰底框荧光绿斜体（`style_02`）、深红底条双行大字（`style_03`）、黑底拍立得手写金句+Daily Vlog（`style_06`）、专家长镜左上角斜杠双色标（`style_08`）、纯黑纪实金线双格框+左圆头像（`style_09`）、高频推拉（`style_10`）、极简白底笔记卡（`style_12`）、深色控制台步骤条（`style_14`）、弹性纯花字流（`style_15`）、暗黑羽化分屏书摘巨字（`style_16`）、冷峻数据新闻前景抠像（`style_19`）、九成例证顶栏横幅（`style_22`）、100% 不露脸混剪（`style_24`）。
+- 已内置 **24 套 v3.1 100% 剪映白盒模板复刻风格库**（`style_01` ~ `style_24`，24/24 全白盒真草稿源，涵盖 15 套纯全屏原生模板 + 9 套真 AI 逐帧人像前景抠像/圆角画框/聚光圆窗/双格金线/线性羽化分屏模板，全部等比零变形、严禁同脸套娃，配备 8 种 30fps 动态文字动效与 `xfade` 镜头转场）与 **3 大共享剪辑规则字典**：
+  - **全局/门店获客默认（`style_01`）**：完整复刻门店爆款原生模板——全屏实景出镜、中下部 3 拍错落砸屏综艺斜标开场、居中无底框大号双色暖黄重点字、双段音乐切换；另含真沿发丝肩膀 10px 纯白描边人像抠像（`style_07`）、清冷奶油极简宋体（`style_04`）、暖金上下双格对比（`style_17`）、户外探盘 3D 金属高光扫光立体大字（`style_18`）、国风暖木 1080px 通宽黑条粗宋体（`style_20`）、人像前景压背后巨字三层景深（`style_05`）、上白圆角画框下纯黑宽幕（`style_13`）、高空镜种草（`style_21`）、品牌微纪录慢调（`style_23`）。
+  - **个人账号默认（`style_11`）**：清亮知性通透圆角字幕；另含 1080px 通宽暗灰底框荧光绿斜体（`style_02`）、1080px 通宽深红实心底条大字（`style_03`）、黑底拍立得毛笔手写金句+Daily Vlog（`style_06`）、专家长镜左上角斜杠双色标（`style_08`）、纯黑纪实顶部双格金线分栏+左圆头像（`style_09`）、高频推拉（`style_10`）、顶置双色悬念大标（`style_12`）、纯黑聚光圆窗极简聚焦（`style_14`）、弹性双色花字流（`style_15`）、暗黑 180px 线性羽化分屏书摘巨字（`style_16`）、冷峻动态数据折线演播室背景+人像抠像（`style_19`）、九成例证顶栏横幅（`style_22`）、100% 不露脸混剪（`style_24`）。
   - 完整大白话选用指南见 [assets/style_spectrum/STYLE_SPECTRUM_REPORT.md](assets/style_spectrum/STYLE_SPECTRUM_REPORT.md)。
   ```bash
   python3 scripts/apply_style_spectrum.py --list [--has-aroll no]
   python3 scripts/apply_style_spectrum.py --style-id style_01 --apply-pipeline <项目目录>/pipeline --apply-full --keep-edl
   python3 scripts/apply_style_spectrum.py --style-id style_01 --export-hyperframes <out_dir>
   ```
-- 所有随仓内置的 4 款开源商用字体（阿里妈妈数黑体、得意黑、思源宋体 Bold & Heavy）、CC0 真实录制 BGM、物理 SFX 与 `17³` LUT 授权清单见 [references/assets-attribution.md](references/assets-attribution.md)。
+- 所有随仓内置的 5 款开源商用字体（阿里妈妈数黑体、得意黑、思源宋体 Bold & Heavy、马善政毛笔手写体）、CC0 真实录制 BGM、物理 SFX 与 `17³` LUT 授权清单见 [references/assets-attribution.md](references/assets-attribution.md)。
 - 首次部署或排查依赖/字体/无头浏览器桥时运行：
   ```bash
   python3 scripts/check_and_setup.py --init-fonts --init-assets --install-deps --init-browser

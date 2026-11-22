@@ -1,7 +1,7 @@
 {
-  "version": "3.0.0",
+  "version": "3.1.0",
   "generated_at": "2026-11-22T09:45:00+08:00",
-  "source_dir": "builtin_style_spectrum_v30",
+  "source_dir": "builtin_style_spectrum_v31_100pct_whitebox",
   "total_videos": 24,
   "default_style_id": "style_01",
   "default_creator_style_id": "style_11",
@@ -20,9 +20,9 @@
       "rhythm_signature": "顶部章节步骤条常驻 + 画面内部 UI/卡片高频切换 + 强节拍/事件对齐 (60%~90%)",
       "subtitle_signature": "克制小号居中底字 (36~46px)，重在让渡主视觉区给界面与卡片演示",
       "member_styles": [
-        "style_14",
         "style_09",
         "style_10",
+        "style_14",
         "style_19"
       ],
       "count": 4
@@ -36,11 +36,12 @@
       "subtitle_signature": "常规底部小字兜底 + 情绪/数字爆点处全屏或半屏巨型花字/色块炸裂",
       "member_styles": [
         "style_03",
+        "style_08",
         "style_15",
         "style_16",
         "style_24"
       ],
-      "count": 4
+      "count": 5
     },
     {
       "archetype_id": "arch_03_editorial_matte_depth",
@@ -51,8 +52,8 @@
       "subtitle_signature": "干净双语或粗黑体无底框排版，字距行距克制，严控花哨字体数量 ≤2 种",
       "member_styles": [
         "style_04",
+        "style_05",
         "style_11",
-        "style_12",
         "style_18",
         "style_22"
       ],
@@ -66,13 +67,14 @@
       "rhythm_signature": "口播句间紧剪 + 景别推拉跳剪 + 卡片弹窗音效卡点 (对齐率 79%~92%)",
       "subtitle_signature": "大号粗黑体 (52~76px) + 整句/半句亮黄变色放大，首帧高信息密度大字封面",
       "member_styles": [
+        "style_01",
         "style_02",
         "style_07",
-        "style_01",
+        "style_12",
         "style_17",
         "style_21"
       ],
-      "count": 5
+      "count": 6
     },
     {
       "archetype_id": "arch_05_cinema_slow_space",
@@ -83,31 +85,18 @@
       "subtitle_signature": "思源宋体 (SourceHanSerifCN) 或极简细黑投影，呈现杂志书卷气与高级克制感",
       "member_styles": [
         "style_06",
-        "style_08",
         "style_13",
         "style_20",
         "style_23"
       ],
-      "count": 5
-    },
-    {
-      "archetype_id": "arch_06_paper_stopmotion",
-      "name": "纸张拼贴定格 / 工程图解科普风",
-      "best_for": "收纳改造、家居尺寸科普、产品结构拆解、强动手感实物教程",
-      "color_signature": "低饱和褶皱白纸底纹 (sat=9.1%) + 暖木纹理 + 红线尺寸标尺",
-      "rhythm_signature": "前 3 秒手部模型定格 3 连切，全片依靠纸片元件位移与定格帧节奏驱动",
-      "subtitle_signature": "底部极简白字黑描边，画面主体留给纸雕模型与红色尺寸标注线",
-      "member_styles": [
-        "style_05"
-      ],
-      "count": 1
+      "count": 4
     }
   ],
   "styles": [
     {
       "style_id": "style_01",
       "index": 1,
-      "style_name_cn": "门店原生爆款风 · 居中双字号暖黄高亮（默认）",
+      "style_name_cn": "门店原生爆款风 · 综艺分拍斜标开场（默认）",
       "archetype_id": "arch_04_punch_talking_head",
       "recommended_track": "store",
       "domain_tags": [
@@ -185,7 +174,8 @@
         ],
         "max_chars_per_line": 10,
         "symmetry_center_x": 540,
-        "symmetry_max_width_px": 640
+        "symmetry_max_width_px": 640,
+        "full_width_bar": false
       },
       "color_and_lut": {
         "y_mean_255": 142.8,
@@ -315,7 +305,7 @@
         "stroke_color": "#000000",
         "borderless": true
       },
-      "plain_cn_pitch": "老板门店实景出镜，前三秒定格冲突瞬间并切轻快主音乐，过半画面穿插店内实拍并保留现场动作真声，居中暖黄大字清晰好读。",
+      "plain_cn_pitch": "全屏真实镜头配开场三拍错落斜标综艺大字，正文居中无框大白字配暖黄重点词，实体门店获客默认首选。",
       "commercial_safe_font": "AlimamaShuHeiTi-Bold.otf",
       "source_jianying_font": "新青年体-文跃新青年体",
       "whitebox_source": {
@@ -367,13 +357,16 @@
         "stroke_color": "#0B0B0C",
         "stroke_width": 8,
         "has_sticker_tag": true,
-        "entry_anim": "bounce_pop"
+        "entry_anim": "bounce_pop",
+        "anim_mode": "store_stagger_burst",
+        "transition_style": "zoomin",
+        "suppress_top_duplicate_flower": false
       }
     },
     {
       "style_id": "style_02",
       "index": 2,
-      "style_name_cn": "极速跳剪避坑 · 暗灰底框荧光高亮风",
+      "style_name_cn": "极速跳剪避坑 · 通宽暗灰底框荧光绿风",
       "archetype_id": "arch_04_punch_talking_head",
       "recommended_track": "creator",
       "domain_tags": [
@@ -382,7 +375,7 @@
         "工厂老板账号",
         "知识变现"
       ],
-      "plain_cn_pitch": "一秒一镜快节奏跳剪，配半透明深灰底框和醒目荧光黄绿重点字，适合三十秒避坑干货口播。",
+      "plain_cn_pitch": "一秒一镜快节奏跳剪，下半屏通宽半透明暗灰底条配白字与荧光黄绿双行斜体，适合三十秒干货避坑。",
       "source_filename": "style_02_preset",
       "commercial_safe_font": "SourceHanSerifCN-Bold.otf",
       "source_jianying_font": "思源宋体-Bold",
@@ -486,7 +479,8 @@
         ],
         "max_chars_per_line": 13,
         "symmetry_center_x": 540,
-        "symmetry_max_width_px": 640
+        "symmetry_max_width_px": 640,
+        "full_width_bar": true
       },
       "color_and_lut": {
         "y_mean_255": 76.5,
@@ -645,13 +639,16 @@
         "bg_slab": "rgba(28, 32, 30, 0.84)",
         "stroke_color": "#000000",
         "stroke_width": 4,
-        "entry_anim": "slide_snap"
+        "entry_anim": "slide_snap",
+        "anim_mode": "wipe_reveal",
+        "transition_style": "fadeblack",
+        "suppress_top_duplicate_flower": true
       }
     },
     {
       "style_id": "style_03",
       "index": 3,
-      "style_name_cn": "暗调深度长口播 · 顶栏常驻金句对比风",
+      "style_name_cn": "暗调深度口播 · 通宽深红实心底条大字风",
       "archetype_id": "arch_02_high_contrast_story",
       "recommended_track": "creator",
       "domain_tags": [
@@ -660,7 +657,7 @@
         "观点对比",
         "商业复盘"
       ],
-      "plain_cn_pitch": "沉稳暗调背景，顶部全程挂着主题小标题，配合大号双引号金句和左右对比词，适合一到两分钟深度观点口播。",
+      "plain_cn_pitch": "暗调沉稳画面配下半屏通宽深红实心双行粗白大字，重点句极强视觉抓力，适合深度观点和老板讲故事。",
       "source_filename": "style_03_preset",
       "commercial_safe_font": "SourceHanSerifCN-Heavy.otf",
       "source_jianying_font": "FZCuJinLJW / 特黑体-思源黑体1号",
@@ -765,7 +762,8 @@
         ],
         "max_chars_per_line": 10,
         "symmetry_center_x": 540,
-        "symmetry_max_width_px": 640
+        "symmetry_max_width_px": 640,
+        "full_width_bar": true
       },
       "color_and_lut": {
         "y_mean_255": 32.9,
@@ -926,13 +924,16 @@
         "bg_slab": "#B91C1C",
         "stroke_color": "#140404",
         "stroke_width": 3,
-        "entry_anim": "wipe_in"
+        "entry_anim": "wipe_in",
+        "anim_mode": "wipe_reveal",
+        "transition_style": "dissolve",
+        "suppress_top_duplicate_flower": true
       }
     },
     {
       "style_id": "style_04",
       "index": 4,
-      "style_name_cn": "清冷奶油高光 · 精致主理人慢叙事风",
+      "style_name_cn": "清冷奶油高光 · 极简轻描边宋体风",
       "archetype_id": "arch_03_editorial_matte_depth",
       "recommended_track": "store",
       "domain_tags": [
@@ -941,7 +942,7 @@
         "服装买手",
         "生活美学门店"
       ],
-      "plain_cn_pitch": "画面干净透亮带微冷奶油质感，采用粗宋体配柔和浅黄重点词，适合美业、护肤、女装等讲究审美的门店主理人。",
+      "plain_cn_pitch": "干净透亮奶油质感全屏画面，配居中轻描边思源宋体，无多余杂乱贴纸，适合美业、护肤和精致主理人。",
       "source_filename": "style_04_preset",
       "commercial_safe_font": "SourceHanSerifCN-Heavy.otf",
       "source_jianying_font": "SourceHanSerifCN-Heavy",
@@ -1044,7 +1045,8 @@
         ],
         "max_chars_per_line": 10,
         "symmetry_center_x": 540,
-        "symmetry_max_width_px": 640
+        "symmetry_max_width_px": 640,
+        "full_width_bar": false
       },
       "color_and_lut": {
         "y_mean_255": 205.6,
@@ -1202,20 +1204,23 @@
         ],
         "stroke_color": "#262320",
         "stroke_width": 2,
-        "entry_anim": "fade_up"
+        "entry_anim": "fade_up",
+        "anim_mode": "ink_bloom",
+        "transition_style": "dissolve",
+        "suppress_top_duplicate_flower": false
       }
     },
     {
       "style_id": "style_05",
       "index": 5,
-      "style_name_cn": "牛皮纸拼贴图解 · 工艺结构拆解风",
-      "archetype_id": "arch_06_paper_stopmotion",
-      "recommended_track": "store",
+      "style_name_cn": "人像前景压巨字 · 三层海报景深风",
+      "archetype_id": "arch_03_editorial_matte_depth",
+      "recommended_track": "creator",
       "domain_tags": [
-        "家装工艺",
-        "结构图解",
-        "收纳设计",
-        "产品拆解"
+        "人物压字海报",
+        "知识干货",
+        "深度揭秘",
+        "口播封面感"
       ],
       "source_filename": "style_05_preset",
       "meta": {
@@ -1246,7 +1251,7 @@
         ],
         "min_sec": 0.167,
         "p25_sec": 0.604,
-        "median_sec": 1.65,
+        "median_sec": 1.43,
         "mean_sec": 15.439,
         "p75_sec": 10.417,
         "p90_sec": 52.625,
@@ -1276,7 +1281,7 @@
         "mean_pause_sec": 0.415,
         "sfx_transient_count": 221,
         "sfx_per_min_measured": 78.07,
-        "sfx_per_min_target": 78
+        "sfx_per_min_target": 27
       },
       "subtitle_spec": {
         "font_family": "Alimama ShuHeiTi",
@@ -1287,24 +1292,25 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 50,
-        "keyword_scale": 1.12,
-        "primary_color": "#2A2118",
-        "keyword_color": "#C62828",
-        "stroke_color": "#FFFDF8",
-        "stroke_width": 4,
-        "bg_box_color": "#F5EFE2E0",
-        "bg_radius": 10,
+        "font_size_1080p_px": 58,
+        "keyword_scale": 1.15,
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFD426",
+        "stroke_color": "#000000",
+        "stroke_width": 5,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
         "safe_y_ratio": 0.76,
         "animation": "fade_slide_up",
         "punct_stripped": true,
         "measured_y_center_ratio": 0.787,
         "measured_animation_raw": "smooth_pop_or_fade",
-        "safe_y_px_1080x1920": 1380,
+        "safe_y_px_1080x1920": 1370,
         "safe_y_px_1920x1080": 950,
         "symmetry_center_x": 540,
         "symmetry_max_width_px": 640,
-        "max_chars_per_line": 10
+        "max_chars_per_line": 10,
+        "full_width_bar": false
       },
       "color_and_lut": {
         "y_mean_255": 185.0,
@@ -1395,7 +1401,7 @@
         "max_chars_per_line": 10,
         "vertical_face_avoid_only": true
       },
-      "broll_overlay_ratio_target": 0.52,
+      "broll_overlay_ratio_target": 0.272,
       "broll_ambient_sound_policy": {
         "enabled": true,
         "gain_db": -10.0,
@@ -1430,11 +1436,11 @@
         "stroke_color": "#000000",
         "borderless": false
       },
-      "plain_cn_pitch": "温暖牛皮纸质感配清脆翻纸声和图文标注卡片，适合把复杂的装修工艺、产品用料或尺寸结构讲得一目了然。",
+      "plain_cn_pitch": "人物从背景里抠出来压住身后的巨型亮黄大字，胸前叠高对比纯白提问字，适合重磅干货和观点揭秘。",
       "commercial_safe_font": "AlimamaShuHeiTi-Bold.otf",
       "whitebox_source": {
-        "project_name": "style_05_preset",
-        "is_whitebox_jianying": false,
+        "project_name": "style_05_whitebox_v31",
+        "is_whitebox_jianying": true,
         "rulebook_injected": true,
         "canvas": "1080x1920"
       },
@@ -1451,14 +1457,10 @@
         "giant_mode": "giant_smash_single"
       },
       "pip_composition_spec": {
-        "mode": "paper_craft_card_pip",
-        "frame_x": 76,
-        "frame_y": 320,
-        "frame_w": 928,
-        "frame_h": 928,
-        "bg_hex": "#ECE5D8",
-        "border_hex": "#C8B89E",
-        "border_width": 6,
+        "mode": "person_behind_giant_text_pip",
+        "bg_darken": -0.22,
+        "bg_blur": 8,
+        "giant_color": "#FFD426",
         "single_source": true
       },
       "giant_text_spec": {
@@ -1470,26 +1472,29 @@
         "stroke_width": 9,
         "tag_label": "工艺内幕"
       },
-      "requires_aroll": "optional",
+      "requires_aroll": "required",
       "allow_explainer_pip": false,
       "visual_blueprint": {
-        "opening_mode": "paper_blueprint_header",
-        "flower_mode": "red_ruler_note",
-        "persistent_top_bar": true,
+        "template_family": "person_depth_giant_title",
+        "opening_mode": "person_depth_giant_title",
+        "flower_mode": "depth_front_question",
+        "anim_mode": "depth_behind_person",
+        "transition_style": "fadeblack",
+        "persistent_top_bar": false,
+        "suppress_top_duplicate_flower": false,
         "accent_colors": [
-          "#D93829",
-          "#2D241C",
-          "#EFE6D5"
+          "#FFD426",
+          "#FFFFFF",
+          "#FF4D4F"
         ],
-        "stroke_color": "#2D241C",
-        "stroke_width": 2,
-        "entry_anim": "stamp_in"
+        "stroke_color": "#0A0A0C",
+        "stroke_width": 6
       }
     },
     {
       "style_id": "style_06",
       "index": 6,
-      "style_name_cn": "黑底竖相框留白 · 顶部手写金句治愈风",
+      "style_name_cn": "黑底拍立得相框 · 顶部毛笔手写金句风",
       "archetype_id": "arch_05_cinema_slow_space",
       "recommended_track": "creator",
       "domain_tags": [
@@ -1498,7 +1503,7 @@
         "日常随拍",
         "品牌温度故事"
       ],
-      "plain_cn_pitch": "四周黑底留白把画面框成拍立得竖相框，上方常驻温暖金句、下方配小号双语字幕，适合情感、成长与治愈系随拍。",
+      "plain_cn_pitch": "纯黑留白背景配居中无变形相框、顶部两行毛笔手写白字金句和底部复古英文副标，适合成长故事与情感口播。",
       "source_filename": "style_06_preset",
       "commercial_safe_font": "SourceHanSerifCN-Bold.otf",
       "source_jianying_font": "喜鹊古字典体 / 思源宋体-Bold",
@@ -1601,7 +1606,8 @@
         ],
         "max_chars_per_line": 9,
         "symmetry_center_x": 540,
-        "symmetry_max_width_px": 640
+        "symmetry_max_width_px": 640,
+        "full_width_bar": false
       },
       "color_and_lut": {
         "y_mean_255": 46.5,
@@ -1737,9 +1743,9 @@
       "pip_composition_spec": {
         "mode": "black_polaroid_frame_pip",
         "frame_x": 140,
-        "frame_y": 540,
+        "frame_y": 465,
         "frame_w": 800,
-        "frame_h": 720,
+        "frame_h": 690,
         "bg_hex": "#050506",
         "border_hex": "#FFFFFF",
         "border_width": 0,
@@ -1768,13 +1774,17 @@
         ],
         "stroke_color": "#000000",
         "stroke_width": 0,
-        "entry_anim": "fade_up"
+        "entry_anim": "fade_up",
+        "anim_mode": "typewriter_char",
+        "transition_style": "dissolve",
+        "suppress_top_duplicate_flower": false,
+        "handwriting_font": "MaShanZheng-Regular.ttf"
       }
     },
     {
       "style_id": "style_07",
       "index": 7,
-      "style_name_cn": "人像白边贴纸抠像 · 高密实景避坑风",
+      "style_name_cn": "人像真轮廓白边抠像 · 虚化展厅避坑风",
       "archetype_id": "arch_04_punch_talking_head",
       "recommended_track": "store",
       "domain_tags": [
@@ -1783,7 +1793,7 @@
         "实体避坑",
         "门店展厅"
       ],
-      "plain_cn_pitch": "主讲人带一圈手绘白边贴在实景画面前，六成以上画面穿插车间或展厅实拍特写，配暖琥珀色大字专门讲透行业避坑。",
+      "plain_cn_pitch": "把真人沿轮廓抠出来加上白色手撕剪纸描边，叠在虚化实景展厅或店铺画面前，适合全屋定制、家居和探店避坑。",
       "source_filename": "style_07_preset",
       "commercial_safe_font": "AlimamaShuHeiTi-Bold.otf",
       "source_jianying_font": "DouyinSansBold / Aa研宋",
@@ -1889,7 +1899,8 @@
         ],
         "max_chars_per_line": 10,
         "symmetry_center_x": 540,
-        "symmetry_max_width_px": 640
+        "symmetry_max_width_px": 640,
+        "full_width_bar": false
       },
       "color_and_lut": {
         "y_mean_255": 113.2,
@@ -2051,13 +2062,16 @@
         ],
         "stroke_color": "#111111",
         "stroke_width": 4,
-        "entry_anim": "bounce_pop"
+        "entry_anim": "bounce_pop",
+        "anim_mode": "bounce_smash",
+        "transition_style": "zoomin",
+        "suppress_top_duplicate_flower": false
       }
     },
     {
       "style_id": "style_08",
       "index": 8,
-      "style_name_cn": "毛玻璃虚化画中画 · 圆窗评论与双行巨字对撞风",
+      "style_name_cn": "专家长镜 · 左上角斜杠双色大标风",
       "archetype_id": "arch_02_high_contrast_story",
       "recommended_track": "creator",
       "domain_tags": [
@@ -2066,7 +2080,7 @@
         "商业观点拆解",
         "行业深度辟谣"
       ],
-      "plain_cn_pitch": "底层原画面做毛玻璃高斯虚化，中央悬浮圆角竖屏画中画与圆形评论小窗，搭配顶部常驻话题栏、上下双色对撞巨字与大引号金句卡，观点锋利、信息密度极高。",
+      "plain_cn_pitch": "自然流畅的专家长镜头口播，左上角常驻白字斜杠导语加亮黄粗描边大标题，适合行业专家、咨询顾问与疗愈号。",
       "source_filename": "style_08_preset",
       "commercial_safe_font": "SmileySans-Oblique.ttf",
       "source_jianying_font": "得意黑",
@@ -2173,7 +2187,8 @@
         ],
         "max_chars_per_line": 11,
         "symmetry_center_x": 540,
-        "symmetry_max_width_px": 640
+        "symmetry_max_width_px": 640,
+        "full_width_bar": false
       },
       "color_and_lut": {
         "y_mean_255": 56.6,
@@ -2336,13 +2351,16 @@
         ],
         "stroke_color": "#0F172A",
         "stroke_width": 6,
-        "entry_anim": "slide_snap"
+        "entry_anim": "slide_snap",
+        "anim_mode": "wipe_reveal",
+        "transition_style": "none",
+        "suppress_top_duplicate_flower": false
       }
     },
     {
       "style_id": "style_09",
       "index": 9,
-      "style_name_cn": "暗黑纪实双格框 · 圆窗主讲与顶栏证据窗普法风",
+      "style_name_cn": "纯黑纪实面板 · 顶栏双格金线+左圆头像风",
       "archetype_id": "arch_01_tech_ui_console",
       "recommended_track": "creator",
       "domain_tags": [
@@ -2351,7 +2369,7 @@
         "维权避坑",
         "商业纪实"
       ],
-      "plain_cn_pitch": "纯黑纪实背景搭配上半屏暖金细框双格证据画中画窗，主讲人置于左下/中下圆形头像画中画内，配合鲜红重描边警示巨字与卷宗大引号引语卡，权威感与纪实沉浸感拉满。",
+      "plain_cn_pitch": "纯黑纪实底板上方配左右双格细金线证据窗和案情注记，左下正圆白金边主讲头像配右侧大标题，适合普法与深度案例。",
       "source_filename": "style_09_preset",
       "commercial_safe_font": "SmileySans-Oblique.ttf",
       "source_jianying_font": "得意黑 / SourceHanSerifCN-Heavy",
@@ -2456,7 +2474,8 @@
         ],
         "max_chars_per_line": 10,
         "symmetry_center_x": 540,
-        "symmetry_max_width_px": 640
+        "symmetry_max_width_px": 640,
+        "full_width_bar": false
       },
       "color_and_lut": {
         "y_mean_255": 10.8,
@@ -2603,7 +2622,9 @@
         "border_hex": "#C8A96A",
         "border_width": 3,
         "avatar_border_hex": "#E2D5B5",
-        "single_source": false
+        "single_source": false,
+        "dual_pane_divider": true,
+        "case_caption": "核心现场实录 · 重点拆解"
       },
       "giant_text_spec": {
         "mode": "giant_dual_clash",
@@ -2626,13 +2647,16 @@
         ],
         "stroke_color": "#000000",
         "stroke_width": 2,
-        "entry_anim": "fade_up"
+        "entry_anim": "fade_up",
+        "anim_mode": "typewriter_char",
+        "transition_style": "fadeblack",
+        "suppress_top_duplicate_flower": false
       }
     },
     {
       "style_id": "style_10",
       "index": 10,
-      "style_name_cn": "高能推拉快切 · 密集抠像弹窗种草风",
+      "style_name_cn": "高频推拉微距 · 极净全屏职场干货风",
       "archetype_id": "arch_01_tech_ui_console",
       "recommended_track": "creator",
       "domain_tags": [
@@ -2641,7 +2665,7 @@
         "好物测评",
         "高节奏口播"
       ],
-      "plain_cn_pitch": "每分钟近两百次画面推拉缩放配密集轻敲音效，过半画面叠加示意图与红金大字，牢牢锁住前三秒防划走。",
+      "plain_cn_pitch": "干净全屏高频景别推拉微距，配清亮天蓝高亮重点词，零冗余遮挡，适合职场干货与高效方法论。",
       "source_filename": "style_10_preset",
       "commercial_safe_font": "SmileySans-Oblique.ttf",
       "source_jianying_font": "知新体 / DINNextW1G-Black",
@@ -2746,7 +2770,8 @@
         ],
         "max_chars_per_line": 10,
         "symmetry_center_x": 540,
-        "symmetry_max_width_px": 640
+        "symmetry_max_width_px": 640,
+        "full_width_bar": false
       },
       "color_and_lut": {
         "y_mean_255": 162.9,
@@ -2905,13 +2930,16 @@
         ],
         "stroke_color": "#0F172A",
         "stroke_width": 3,
-        "entry_anim": "fade_up"
+        "entry_anim": "fade_up",
+        "anim_mode": "typewriter_char",
+        "transition_style": "zoomin",
+        "suppress_top_duplicate_flower": false
       }
     },
     {
       "style_id": "style_11",
       "index": 11,
-      "style_name_cn": "清亮通透干货 · 胶囊底框与圆窗例证风（个人默认）",
+      "style_name_cn": "清亮知性干货 · 柔和圆角通透字幕风（博主默认）",
       "archetype_id": "arch_03_editorial_matte_depth",
       "recommended_track": "creator",
       "domain_tags": [
@@ -2920,7 +2948,7 @@
         "咨询顾问",
         "方法论拆解"
       ],
-      "plain_cn_pitch": "画面干净明亮不压抑，圆角底框字幕配圆形弹窗例证和双段背景音乐切换，适合绝大多数个人账号日常干货更新。",
+      "plain_cn_pitch": "自然通透的知性口播画面配柔和半透明圆角底框字幕，讲到数据流程时可轻量切入讲解图解，个人博主默认首选。",
       "source_filename": "style_11_preset",
       "commercial_safe_font": "SmileySans-Oblique.ttf",
       "source_jianying_font": "得意黑 / Aa研宋",
@@ -3023,7 +3051,8 @@
         ],
         "max_chars_per_line": 10,
         "symmetry_center_x": 540,
-        "symmetry_max_width_px": 640
+        "symmetry_max_width_px": 640,
+        "full_width_bar": false
       },
       "color_and_lut": {
         "y_mean_255": 182.5,
@@ -3184,20 +3213,23 @@
         ],
         "stroke_color": "#1E293B",
         "stroke_width": 3,
-        "entry_anim": "fade_up"
+        "entry_anim": "fade_up",
+        "anim_mode": "wipe_reveal",
+        "transition_style": "dissolve",
+        "suppress_top_duplicate_flower": false
       }
     },
     {
       "style_id": "style_12",
       "index": 12,
-      "style_name_cn": "极简白底卡片 · 避坑清单与框架可视化风",
-      "archetype_id": "arch_03_editorial_matte_depth",
+      "style_name_cn": "顶置双色悬念标 · 干货对比口播风",
+      "archetype_id": "arch_04_punch_talking_head",
       "recommended_track": "creator",
       "domain_tags": [
-        "效率方法论",
-        "清单盘点",
-        "产品对比",
-        "轻知识卡片"
+        "价格对比",
+        "避坑拆解",
+        "干货口播",
+        "知识变现"
       ],
       "source_filename": "style_12_preset",
       "meta": {
@@ -3226,7 +3258,7 @@
         ],
         "min_sec": 0.083,
         "p25_sec": 30.052,
-        "median_sec": 1.85,
+        "median_sec": 1.9,
         "mean_sec": 56.198,
         "p75_sec": 91.958,
         "p90_sec": 92.633,
@@ -3256,7 +3288,7 @@
         "mean_pause_sec": 0.19,
         "sfx_transient_count": 114,
         "sfx_per_min_measured": 30.42,
-        "sfx_per_min_target": 40
+        "sfx_per_min_target": 36
       },
       "subtitle_spec": {
         "font_family": "Smiley Sans",
@@ -3267,24 +3299,25 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 50,
-        "keyword_scale": 1.12,
-        "primary_color": "#111827",
-        "keyword_color": "#1D4ED8",
-        "stroke_color": "#FFFFFF",
-        "stroke_width": 3,
-        "bg_box_color": "#FFFFFFEB",
-        "bg_radius": 14,
+        "font_size_1080p_px": 56,
+        "keyword_scale": 1.15,
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFA800",
+        "stroke_color": "#000000",
+        "stroke_width": 4,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
         "safe_y_ratio": 0.76,
         "animation": "hard_cut",
         "punct_stripped": true,
         "measured_y_center_ratio": 0.815,
         "measured_animation_raw": "hard_cut",
-        "safe_y_px_1080x1920": 1370,
+        "safe_y_px_1080x1920": 1310,
         "safe_y_px_1920x1080": 832,
         "symmetry_center_x": 540,
         "symmetry_max_width_px": 640,
-        "max_chars_per_line": 10
+        "max_chars_per_line": 10,
+        "full_width_bar": false
       },
       "color_and_lut": {
         "y_mean_255": 224.7,
@@ -3375,7 +3408,7 @@
         "max_chars_per_line": 10,
         "vertical_face_avoid_only": true
       },
-      "broll_overlay_ratio_target": 0.4,
+      "broll_overlay_ratio_target": 0.051,
       "broll_ambient_sound_policy": {
         "enabled": false,
         "gain_db": -10.0,
@@ -3410,11 +3443,11 @@
         "stroke_color": "#000000",
         "borderless": false
       },
-      "plain_cn_pitch": "清爽浅色卡片背景配人像抠像与气泡提示音，把口播要点变成像笔记卡片一样清晰的分步清单。",
+      "plain_cn_pitch": "顶部跨屏挂出白字配荧光黄绿的双行悬念大标题，底部配干净无底框居中字，适合对比拆解和避坑干货。",
       "commercial_safe_font": "SmileySans-Oblique.ttf",
       "whitebox_source": {
-        "project_name": "style_12_preset",
-        "is_whitebox_jianying": false,
+        "project_name": "style_12_whitebox_v31",
+        "is_whitebox_jianying": true,
         "rulebook_injected": true,
         "canvas": "1080x1920"
       },
@@ -3431,15 +3464,7 @@
         "giant_mode": "giant_smash_single"
       },
       "pip_composition_spec": {
-        "mode": "minimal_white_note_card_pip",
-        "frame_x": 76,
-        "frame_y": 330,
-        "frame_w": 928,
-        "frame_h": 880,
-        "bg_hex": "#F8F8F6",
-        "border_hex": "#18181B",
-        "border_width": 4,
-        "single_source": true
+        "mode": "none"
       },
       "giant_text_spec": {
         "mode": "giant_smash_single",
@@ -3450,32 +3475,36 @@
         "stroke_width": 9,
         "tag_label": "清单必看"
       },
-      "requires_aroll": "optional",
+      "requires_aroll": "required",
       "allow_explainer_pip": true,
       "visual_blueprint": {
-        "opening_mode": "white_note_header",
-        "flower_mode": "ink_underline_note",
+        "template_family": "top_dual_color_hook_header",
+        "opening_mode": "top_dual_color_hook_header",
+        "flower_mode": "dual_color_hook_pop",
+        "anim_mode": "typewriter_char",
+        "transition_style": "wipeleft",
         "persistent_top_bar": true,
+        "suppress_top_duplicate_flower": false,
         "accent_colors": [
-          "#111827",
-          "#2563EB"
+          "#FFFFFF",
+          "#C6FF00",
+          "#FFA800"
         ],
-        "stroke_color": "#FFFFFF",
-        "stroke_width": 2,
-        "entry_anim": "fade_up"
+        "stroke_color": "#111111",
+        "stroke_width": 6
       }
     },
     {
       "style_id": "style_13",
       "index": 13,
-      "style_name_cn": "慢调空间漫游 · 展厅民宿氛围纪实风",
+      "style_name_cn": "上白圆角画框 · 下纯黑宽幕沉浸风",
       "archetype_id": "arch_05_cinema_slow_space",
       "recommended_track": "store",
       "domain_tags": [
-        "设计师展厅",
-        "美学民宿",
-        "高端餐饮空间",
-        "家居漫游"
+        "高客单主理人",
+        "案例复盘",
+        "沉浸故事",
+        "专业顾问"
       ],
       "source_filename": "style_13_preset",
       "meta": {
@@ -3502,7 +3531,7 @@
         "first_3s_cut_times_sec": [],
         "min_sec": 0.667,
         "p25_sec": 1.533,
-        "median_sec": 4.08,
+        "median_sec": 1.46,
         "mean_sec": 13.925,
         "p75_sec": 14.592,
         "p90_sec": 40.747,
@@ -3532,7 +3561,7 @@
         "mean_pause_sec": 0.205,
         "sfx_transient_count": 607,
         "sfx_per_min_measured": 76.94,
-        "sfx_per_min_target": 20
+        "sfx_per_min_target": 34
       },
       "subtitle_spec": {
         "font_family": "Source Han Serif CN",
@@ -3543,11 +3572,11 @@
         ],
         "font_weight": "Regular",
         "bilingual": false,
-        "font_size_1080p_px": 48,
-        "keyword_scale": 1.06,
-        "primary_color": "#FBF8F1",
-        "keyword_color": "#E6C792",
-        "stroke_color": "#1C1917",
+        "font_size_1080p_px": 50,
+        "keyword_scale": 1.12,
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFBF17",
+        "stroke_color": "#000000",
         "stroke_width": 2,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
@@ -3556,11 +3585,12 @@
         "punct_stripped": true,
         "measured_y_center_ratio": 0.693,
         "measured_animation_raw": "hard_cut",
-        "safe_y_px_1080x1920": 1375,
+        "safe_y_px_1080x1920": 1245,
         "safe_y_px_1920x1080": 778,
         "symmetry_center_x": 540,
         "symmetry_max_width_px": 640,
-        "max_chars_per_line": 10
+        "max_chars_per_line": 10,
+        "full_width_bar": false
       },
       "color_and_lut": {
         "y_mean_255": 95.9,
@@ -3648,7 +3678,7 @@
         "max_chars_per_line": 10,
         "vertical_face_avoid_only": true
       },
-      "broll_overlay_ratio_target": 0.65,
+      "broll_overlay_ratio_target": 0.383,
       "broll_ambient_sound_policy": {
         "enabled": true,
         "gain_db": -10.0,
@@ -3683,11 +3713,11 @@
         "stroke_color": "#000000",
         "borderless": false
       },
-      "plain_cn_pitch": "四秒以上舒缓大空镜充分展示空间光影与陈设细节，配克制优雅的宋体小字和轻音乐，适合讲究品位的门店环境展示。",
+      "plain_cn_pitch": "画面上方是圆角柔和画框，下半屏大面积纯黑留白只放居中精致白字，高级聚焦零视觉干扰。",
       "commercial_safe_font": "SourceHanSerifCN-Bold.otf",
       "whitebox_source": {
-        "project_name": "style_13_preset",
-        "is_whitebox_jianying": false,
+        "project_name": "style_13_whitebox_v31",
+        "is_whitebox_jianying": true,
         "rulebook_injected": true,
         "canvas": "1080x1920"
       },
@@ -3704,7 +3734,14 @@
         "giant_mode": "giant_vertical_seal"
       },
       "pip_composition_spec": {
-        "mode": "none"
+        "mode": "top_white_rounded_frame_pip",
+        "frame_x": 40,
+        "frame_y": 210,
+        "frame_w": 1000,
+        "frame_h": 920,
+        "corner_radius": 38,
+        "bg_hex": "#050506",
+        "single_source": true
       },
       "giant_text_spec": {
         "mode": "giant_vertical_seal",
@@ -3718,29 +3755,32 @@
       "requires_aroll": "optional",
       "allow_explainer_pip": false,
       "visual_blueprint": {
+        "template_family": "top_rounded_black_cinema",
         "opening_mode": "cinema_serif_title",
         "flower_mode": "minimal_serif_caption",
+        "anim_mode": "ink_bloom",
+        "transition_style": "dissolve",
         "persistent_top_bar": false,
+        "suppress_top_duplicate_flower": true,
         "accent_colors": [
-          "#F8F5EE",
-          "#E2C799"
+          "#FFFFFF",
+          "#FFE066"
         ],
-        "stroke_color": "#1A1816",
-        "stroke_width": 2,
-        "entry_anim": "fade_up"
+        "stroke_color": "#000000",
+        "stroke_width": 2
       }
     },
     {
       "style_id": "style_14",
       "index": 14,
-      "style_name_cn": "深色控制台界面 · 工具与流程演示风",
+      "style_name_cn": "纯黑聚光圆窗 · 极简聚焦口播风",
       "archetype_id": "arch_01_tech_ui_console",
       "recommended_track": "creator",
       "domain_tags": [
-        "AI工具演示",
-        "软件教程",
-        "代码图解",
-        "流程拆解"
+        "极简聚焦",
+        "单人口播",
+        "热点问答",
+        "干货分享"
       ],
       "source_filename": "style_14_preset",
       "meta": {
@@ -3767,7 +3807,7 @@
         "first_3s_cut_times_sec": [],
         "min_sec": 1.0,
         "p25_sec": 2.408,
-        "median_sec": 2.4,
+        "median_sec": 1.78,
         "mean_sec": 9.371,
         "p75_sec": 13.317,
         "p90_sec": 21.017,
@@ -3797,7 +3837,7 @@
         "mean_pause_sec": 0.173,
         "sfx_transient_count": 149,
         "sfx_per_min_measured": 59.62,
-        "sfx_per_min_target": 60
+        "sfx_per_min_target": 29
       },
       "subtitle_spec": {
         "font_family": "Alimama ShuHeiTi",
@@ -3808,25 +3848,26 @@
         ],
         "font_weight": "Medium",
         "bilingual": true,
-        "font_size_1080p_px": 46,
+        "font_size_1080p_px": 52,
         "english_font_size_px": 22,
-        "keyword_scale": 1.1,
-        "primary_color": "#F8FAFC",
-        "keyword_color": "#FBBF24",
-        "stroke_color": "#09090B",
-        "stroke_width": 2,
-        "bg_box_color": "#09090BC4",
-        "bg_radius": 10,
+        "keyword_scale": 1.14,
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFBF17",
+        "stroke_color": "#000000",
+        "stroke_width": 3,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
         "safe_y_ratio": 0.76,
         "animation": "fade_slide_up",
         "punct_stripped": false,
         "measured_y_center_ratio": 0.638,
         "measured_animation_raw": "smooth_pop_or_fade",
-        "safe_y_px_1080x1920": 1390,
+        "safe_y_px_1080x1920": 1350,
         "safe_y_px_1920x1080": 864,
         "symmetry_center_x": 540,
         "symmetry_max_width_px": 640,
-        "max_chars_per_line": 10
+        "max_chars_per_line": 10,
+        "full_width_bar": false
       },
       "color_and_lut": {
         "y_mean_255": 43.7,
@@ -3918,7 +3959,7 @@
         "max_chars_per_line": 10,
         "vertical_face_avoid_only": true
       },
-      "broll_overlay_ratio_target": 0.45,
+      "broll_overlay_ratio_target": 0.15,
       "broll_ambient_sound_policy": {
         "enabled": false,
         "gain_db": -10.0,
@@ -3953,11 +3994,11 @@
         "stroke_color": "#000000",
         "borderless": false
       },
-      "plain_cn_pitch": "深色清爽界面配顶部步骤条和键盘打字声，适合软件操作、工具演示和流程图解。",
+      "plain_cn_pitch": "全屏纯黑极简背景配居中上方正圆聚光人物窗口，视线一键锁死主角与下方暖黄重点字。",
       "commercial_safe_font": "AlimamaShuHeiTi-Bold.otf",
       "whitebox_source": {
-        "project_name": "style_14_preset",
-        "is_whitebox_jianying": false,
+        "project_name": "style_14_whitebox_v31",
+        "is_whitebox_jianying": true,
         "rulebook_injected": true,
         "canvas": "1080x1920"
       },
@@ -3974,7 +4015,13 @@
         "giant_mode": "giant_smash_single"
       },
       "pip_composition_spec": {
-        "mode": "none"
+        "mode": "black_spotlight_circle_pip",
+        "circle_cx": 540,
+        "circle_cy": 560,
+        "circle_r": 295,
+        "bg_hex": "#040405",
+        "border_hex": "#2A2D36",
+        "single_source": true
       },
       "giant_text_spec": {
         "mode": "giant_smash_single",
@@ -3986,25 +4033,27 @@
         "tag_label": "核心拆解"
       },
       "requires_aroll": "optional",
-      "allow_explainer_pip": true,
+      "allow_explainer_pip": false,
       "visual_blueprint": {
-        "opening_mode": "console_step_header",
-        "flower_mode": "amber_tech_card",
-        "persistent_top_bar": true,
+        "template_family": "black_spotlight_focus",
+        "opening_mode": "spotlight_focus_caption",
+        "flower_mode": "spotlight_gold_callout",
+        "anim_mode": "typewriter_char",
+        "transition_style": "fadeblack",
+        "persistent_top_bar": false,
+        "suppress_top_duplicate_flower": false,
         "accent_colors": [
-          "#F59E0B",
-          "#38BDF8",
-          "#F8FAFC"
+          "#FFFFFF",
+          "#FFBF17"
         ],
-        "stroke_color": "#09090B",
-        "stroke_width": 2,
-        "entry_anim": "slide_snap"
+        "stroke_color": "#000000",
+        "stroke_width": 3
       }
     },
     {
       "style_id": "style_15",
       "index": 15,
-      "style_name_cn": "实景访谈切片 · 全屏高密动效大字流",
+      "style_name_cn": "实景访谈切片 · 弹性双色花字节奏流",
       "archetype_id": "arch_02_high_contrast_story",
       "recommended_track": "creator",
       "domain_tags": [
@@ -4013,7 +4062,7 @@
         "金句切片",
         "创业故事"
       ],
-      "plain_cn_pitch": "弱化传统呆板底字幕，随说话节奏在画面各处密集弹出粗宋体与粗黑金句大字，配双段音乐与清脆打字气泡声。",
+      "plain_cn_pitch": "自然真实的实景访谈全屏画面，依靠富有弹性的双色大字花字卡点推进，适合创始人访谈与创业实录。",
       "source_filename": "style_15_preset",
       "commercial_safe_font": "SourceHanSerifCN-Bold.otf",
       "source_jianying_font": "思源宋体-Bold / DouyinSansBold",
@@ -4117,7 +4166,8 @@
         ],
         "max_chars_per_line": 10,
         "symmetry_center_x": 540,
-        "symmetry_max_width_px": 640
+        "symmetry_max_width_px": 640,
+        "full_width_bar": false
       },
       "color_and_lut": {
         "y_mean_255": 87.9,
@@ -4276,13 +4326,16 @@
         ],
         "stroke_color": "#111111",
         "stroke_width": 5,
-        "entry_anim": "bounce_pop"
+        "entry_anim": "bounce_pop",
+        "anim_mode": "bounce_smash",
+        "transition_style": "fadeblack",
+        "suppress_top_duplicate_flower": false
       }
     },
     {
       "style_id": "style_16",
       "index": 16,
-      "style_name_cn": "暗黑悬疑开篇 · 巨型数字三连跳与线性分屏书摘风",
+      "style_name_cn": "暗黑羽化分屏 · 上窄实景下黑底书摘巨字风",
       "archetype_id": "arch_02_high_contrast_story",
       "recommended_track": "creator",
       "domain_tags": [
@@ -4291,7 +4344,7 @@
         "读书拆解",
         "企业家分享"
       ],
-      "plain_cn_pitch": "暗调高反差悬疑开场，顶部 164px 巨型数字/核心字三连跳配合收银机叮咚音效，上半屏线性羽化分屏切入实景与方框书摘画中画，中段弹出打字机名人引语卡与三阶复利关键词。",
+      "plain_cn_pitch": "上方实景画面经柔和羽化渐变溶入下半纯黑书摘区，居中浮现巨型白金三格金句与数字，适合商业认知和深度拆解。",
       "source_filename": "style_16_preset",
       "commercial_safe_font": "AlimamaShuHeiTi-Bold.otf",
       "source_jianying_font": "特黑体-思源黑体1号",
@@ -4397,7 +4450,8 @@
         ],
         "max_chars_per_line": 12,
         "symmetry_center_x": 540,
-        "symmetry_max_width_px": 640
+        "symmetry_max_width_px": 640,
+        "full_width_bar": false
       },
       "color_and_lut": {
         "y_mean_255": 9.4,
@@ -4535,8 +4589,8 @@
       },
       "pip_composition_spec": {
         "mode": "linear_split_feather_pip",
-        "top_h": 620,
-        "feather_px": 140,
+        "top_h": 680,
+        "feather_px": 180,
         "bg_hex": "#050507",
         "single_source": false
       },
@@ -4561,13 +4615,16 @@
         ],
         "stroke_color": "#000000",
         "stroke_width": 2,
-        "entry_anim": "fade_up"
+        "entry_anim": "fade_up",
+        "anim_mode": "number_flip_trio",
+        "transition_style": "fadeblack",
+        "suppress_top_duplicate_flower": false
       }
     },
     {
       "style_id": "style_17",
       "index": 17,
-      "style_name_cn": "暖金硬核实拍 · 多框拼贴强音效带看风",
+      "style_name_cn": "暖金强切探店 · 上下双格金线对比风",
       "archetype_id": "arch_04_punch_talking_head",
       "recommended_track": "store",
       "domain_tags": [
@@ -4576,7 +4633,7 @@
         "餐饮后厨",
         "硬核实体带看"
       ],
-      "plain_cn_pitch": "浓郁暖金色调配多画面分屏遮罩和每分钟五十多次密集转场提示音，最适合车行、工厂、餐饮后厨等讲求硬核现场感的实体门店。",
+      "plain_cn_pitch": "暖金高对比质感画面，双镜对比时呈现上下暖金细线双格框，单镜时干净全屏强切，适合汽车、实体探店与改造对比。",
       "source_filename": "style_17_preset",
       "commercial_safe_font": "SourceHanSerifCN-Heavy.otf",
       "source_jianying_font": "SourceHanSerifCN-Heavy / DouyinSansBold",
@@ -4680,7 +4737,8 @@
         ],
         "max_chars_per_line": 10,
         "symmetry_center_x": 540,
-        "symmetry_max_width_px": 640
+        "symmetry_max_width_px": 640,
+        "full_width_bar": false
       },
       "color_and_lut": {
         "y_mean_255": 101.5,
@@ -4846,13 +4904,16 @@
         ],
         "stroke_color": "#1C1408",
         "stroke_width": 5,
-        "entry_anim": "bounce_pop"
+        "entry_anim": "bounce_pop",
+        "anim_mode": "shimmer_3d_gold",
+        "transition_style": "zoomin",
+        "suppress_top_duplicate_flower": false
       }
     },
     {
       "style_id": "style_18",
       "index": 18,
-      "style_name_cn": "户外实景探盘 · 巨型立体字冲击带看风",
+      "style_name_cn": "户外实景探盘 · 3D 金属扫光立体大字风",
       "archetype_id": "arch_03_editorial_matte_depth",
       "recommended_track": "store",
       "domain_tags": [
@@ -4861,7 +4922,7 @@
         "同城探店",
         "户外实拍"
       ],
-      "plain_cn_pitch": "专为户外走动实拍打造，超四成画面切换楼盘或街景实况，重点价格与地段用超大号红黄立体字直接砸在画面中央。",
+      "plain_cn_pitch": "户外实景走动口播配厚重 3D 金黄金属渐变立体大字与流动扫光，视觉冲击力极强，适合房产带看、户外探店与大促。",
       "source_filename": "style_18_preset",
       "commercial_safe_font": "SmileySans-Oblique.ttf",
       "source_jianying_font": "得意黑 / 造字工房俊雅体",
@@ -4964,7 +5025,8 @@
         ],
         "max_chars_per_line": 10,
         "symmetry_center_x": 540,
-        "symmetry_max_width_px": 640
+        "symmetry_max_width_px": 640,
+        "full_width_bar": false
       },
       "color_and_lut": {
         "y_mean_255": 147.1,
@@ -5123,13 +5185,16 @@
         ],
         "stroke_color": "#451A03",
         "stroke_width": 6,
-        "entry_anim": "zoom_smash"
+        "entry_anim": "zoom_smash",
+        "anim_mode": "shimmer_3d_gold",
+        "transition_style": "zoomin",
+        "suppress_top_duplicate_flower": false
       }
     },
     {
       "style_id": "style_19",
       "index": 19,
-      "style_name_cn": "冷峻专业抠像 · 资讯数据动态背景背书风",
+      "style_name_cn": "冷峻数据新闻前景 · 人像抠像白条字幕风",
       "archetype_id": "arch_01_tech_ui_console",
       "recommended_track": "creator",
       "domain_tags": [
@@ -5138,7 +5203,7 @@
         "宏观解读",
         "专业顾问"
       ],
-      "plain_cn_pitch": "冷静蓝灰专业色调，将主讲人抠像置于行情图表或新闻报道背景前，配合法条出处卡片与快门音效，凸显专业权威。",
+      "plain_cn_pitch": "把主讲人精准抠出叠加在冷峻动态数据曲线新闻背景前，居中配精悍纯白新闻字幕条，适合律师、财经与硬核分析。",
       "source_filename": "style_19_preset",
       "commercial_safe_font": "SmileySans-Oblique.ttf",
       "source_jianying_font": "得意黑 / 造字工房俊雅体",
@@ -5242,7 +5307,8 @@
         ],
         "max_chars_per_line": 10,
         "symmetry_center_x": 540,
-        "symmetry_max_width_px": 640
+        "symmetry_max_width_px": 640,
+        "full_width_bar": false
       },
       "color_and_lut": {
         "y_mean_255": 135.9,
@@ -5404,13 +5470,16 @@
         ],
         "stroke_color": "#0F172A",
         "stroke_width": 2,
-        "entry_anim": "wipe_in"
+        "entry_anim": "wipe_in",
+        "anim_mode": "wipe_reveal",
+        "transition_style": "fadeblack",
+        "suppress_top_duplicate_flower": false
       }
     },
     {
       "style_id": "style_20",
       "index": 20,
-      "style_name_cn": "国风暖木高饱和 · 水墨晕开双段配乐风",
+      "style_name_cn": "国风暖木匠心 · 通宽黑条双行粗宋体风",
       "archetype_id": "arch_05_cinema_slow_space",
       "recommended_track": "store",
       "domain_tags": [
@@ -5419,7 +5488,7 @@
         "非遗手作",
         "餐饮老字号"
       ],
-      "plain_cn_pitch": "温暖厚重的中式木质色调，文字采用重宋体配水墨晕开入场动画与双段国风配乐，专为中医养生、茶馆及传统老字号打造。",
+      "plain_cn_pitch": "暖木高级质感全屏配下半屏通宽半透明黑带与居中两行米白粗宋体，水墨柔和浮现配双段配乐，适合养生、茶饮与匠心门店。",
       "source_filename": "style_20_preset",
       "commercial_safe_font": "SourceHanSerifCN-Heavy.otf",
       "source_jianying_font": "喜鹊古字典体 / FZCuJinLJW",
@@ -5523,7 +5592,8 @@
         ],
         "max_chars_per_line": 10,
         "symmetry_center_x": 540,
-        "symmetry_max_width_px": 640
+        "symmetry_max_width_px": 640,
+        "full_width_bar": true
       },
       "color_and_lut": {
         "y_mean_255": 95.9,
@@ -5682,13 +5752,16 @@
         "bg_slab": "rgba(18, 14, 12, 0.72)",
         "stroke_color": "#1A120B",
         "stroke_width": 2,
-        "entry_anim": "fade_up"
+        "entry_anim": "fade_up",
+        "anim_mode": "ink_bloom",
+        "transition_style": "dissolve",
+        "suppress_top_duplicate_flower": true
       }
     },
     {
       "style_id": "style_21",
       "index": 21,
-      "style_name_cn": "门店工艺快切 · 85%特写实拍踩点风",
+      "style_name_cn": "门店工艺快切 · 85% 实拍特写暖黄大字风",
       "archetype_id": "arch_04_punch_talking_head",
       "recommended_track": "store",
       "domain_tags": [
@@ -5697,7 +5770,7 @@
         "工厂车间",
         "全特写探店"
       ],
-      "plain_cn_pitch": "片头老板露脸两秒定调，其余八成半以上全程切换店内环境、手作细节与成品特写快剪，并保留滋啦切菜等现场真实动作声。",
+      "plain_cn_pitch": "以门店工艺和细节特写为主的高密度实拍快切，配底部醒目白字暖黄高亮，适合少出镜或不爱露脸的实体商家。",
       "source_filename": "style_21_preset",
       "commercial_safe_font": "AlimamaShuHeiTi-Bold.otf",
       "source_jianying_font": "Alimama ShuHeiTi",
@@ -5800,7 +5873,8 @@
         ],
         "max_chars_per_line": 10,
         "symmetry_center_x": 540,
-        "symmetry_max_width_px": 640
+        "symmetry_max_width_px": 640,
+        "full_width_bar": false
       },
       "color_and_lut": {
         "y_mean_255": 146.0,
@@ -5961,13 +6035,16 @@
         ],
         "stroke_color": "#18181B",
         "stroke_width": 4,
-        "entry_anim": "bounce_pop"
+        "entry_anim": "bounce_pop",
+        "anim_mode": "bounce_smash",
+        "transition_style": "zoomin",
+        "suppress_top_duplicate_flower": false
       }
     },
     {
       "style_id": "style_22",
       "index": 22,
-      "style_name_cn": "画面叙事干货 · 90%例证图解拆解风",
+      "style_name_cn": "九成例证拆解 · 顶栏常驻主题横幅风",
       "archetype_id": "arch_03_editorial_matte_depth",
       "recommended_track": "creator",
       "domain_tags": [
@@ -5976,7 +6053,7 @@
         "图解干货",
         "轻出镜教学"
       ],
-      "plain_cn_pitch": "主讲人仅短暂出镜，九成以上全屏展示案例照片、账单截图与图表变化，顶部常驻主题小标语配胶囊底框字幕，极适合讲透复杂案例。",
+      "plain_cn_pitch": "顶部常驻深底醒目主题横幅条，下方全宽轮播大量真实案例和过程特写画面，适合案例盘点与教程拆解。",
       "source_filename": "style_22_preset",
       "commercial_safe_font": "SmileySans-Oblique.ttf",
       "source_jianying_font": "Smiley Sans",
@@ -6079,7 +6156,8 @@
         ],
         "max_chars_per_line": 10,
         "symmetry_center_x": 540,
-        "symmetry_max_width_px": 640
+        "symmetry_max_width_px": 640,
+        "full_width_bar": false
       },
       "color_and_lut": {
         "y_mean_255": 172.0,
@@ -6240,13 +6318,16 @@
         ],
         "stroke_color": "#0B0D12",
         "stroke_width": 3,
-        "entry_anim": "slide_snap"
+        "entry_anim": "slide_snap",
+        "anim_mode": "wipe_reveal",
+        "transition_style": "wipeleft",
+        "suppress_top_duplicate_flower": false
       }
     },
     {
       "style_id": "style_23",
       "index": 23,
-      "style_name_cn": "品牌微纪录片 · 95%慢调空镜旁白风",
+      "style_name_cn": "品牌微纪录 · 95% 慢调空镜克制宋体风",
       "archetype_id": "arch_05_cinema_slow_space",
       "recommended_track": "store",
       "domain_tags": [
@@ -6255,7 +6336,7 @@
         "匠人故事",
         "门店环境大片"
       ],
-      "plain_cn_pitch": "几乎全程用舒缓的空镜画面、光影与工作侧拍串联，配温暖克制的宋体旁白字和双段情绪音乐，最适合讲品牌理念与慢生活空间。",
+      "plain_cn_pitch": "大片真实环境与过程空镜缓推，搭配克制的居中思源宋体旁白，几乎零花字打扰，适合品牌故事和人文微纪录。",
       "source_filename": "style_23_preset",
       "commercial_safe_font": "SourceHanSerifCN-Bold.otf",
       "source_jianying_font": "Source Han Serif CN",
@@ -6358,7 +6439,8 @@
         ],
         "max_chars_per_line": 11,
         "symmetry_center_x": 540,
-        "symmetry_max_width_px": 640
+        "symmetry_max_width_px": 640,
+        "full_width_bar": false
       },
       "color_and_lut": {
         "y_mean_255": 162.0,
@@ -6515,13 +6597,16 @@
         ],
         "stroke_color": "#0C0A09",
         "stroke_width": 2,
-        "entry_anim": "fade_up"
+        "entry_anim": "fade_up",
+        "anim_mode": "ink_bloom",
+        "transition_style": "dissolve",
+        "suppress_top_duplicate_flower": false
       }
     },
     {
       "style_id": "style_24",
       "index": 24,
-      "style_name_cn": "全画面高燃卡点 · 100%无出镜混剪风",
+      "style_name_cn": "100% 不露脸混剪 · 炸裂金句高燃踩点风",
       "archetype_id": "arch_02_high_contrast_story",
       "recommended_track": "creator",
       "domain_tags": [
@@ -6530,7 +6615,7 @@
         "产品快闪",
         "高燃视觉流"
       ],
-      "plain_cn_pitch": "全程不用老板或博主出镜，百分之百由产品细节、现场实景与图解快切画面撑满全片，每秒都在变化，配高频卡点音效防划走。",
+      "plain_cn_pitch": "全程无需真人出镜，纯靠高密实拍画面踩点切换和强反差炸裂金句大字推进，适合纯空镜和社恐不露脸账号。",
       "source_filename": "style_24_preset",
       "commercial_safe_font": "SourceHanSerifCN-Heavy.otf",
       "source_jianying_font": "Source Han Serif CN Heavy",
@@ -6633,7 +6718,8 @@
         ],
         "max_chars_per_line": 10,
         "symmetry_center_x": 540,
-        "symmetry_max_width_px": 640
+        "symmetry_max_width_px": 640,
+        "full_width_bar": false
       },
       "color_and_lut": {
         "y_mean_255": 92.0,
@@ -6792,7 +6878,10 @@
         ],
         "stroke_color": "#000000",
         "stroke_width": 6,
-        "entry_anim": "zoom_smash"
+        "entry_anim": "zoom_smash",
+        "anim_mode": "bounce_smash",
+        "transition_style": "fadeblack",
+        "suppress_top_duplicate_flower": false
       }
     }
   ]

@@ -420,7 +420,7 @@ class StudioTests(unittest.TestCase):
         self.assertIsNone(re.search(r"/(?:Users|home)/[A-Za-z0-9._-]+", raw_lib_text))
         self.assertNotIn("com." + "lveditor.draft", raw_lib_text)
         lib = read_json(lib_path)
-        self.assertEqual(lib.get("version"), "3.0.0")
+        self.assertEqual(lib.get("version"), "3.1.0")
         self.assertEqual(lib.get("default_style_id"), "style_01")
         styles = lib.get("styles") or []
         self.assertEqual(len(styles), 24)
@@ -468,8 +468,9 @@ class StudioTests(unittest.TestCase):
                 "dark_doc_circle_avatar_pip",
                 "linear_split_feather_pip",
                 "black_polaroid_frame_pip",
-                "paper_craft_card_pip",
-                "minimal_white_note_card_pip",
+                "person_behind_giant_text_pip",
+                "top_white_rounded_frame_pip",
+                "black_spotlight_circle_pip",
                 "top_banner_evidence_pip",
                 "dual_gold_frame_pip",
                 "vision_portrait_cutout_pip",
@@ -482,14 +483,14 @@ class StudioTests(unittest.TestCase):
                 "giant_vertical_seal",
             }, f"Invalid giant_text_spec on {sid}")
             self.assertGreaterEqual(int(giant_spec.get("font_size_px") or 0), 120, f"Giant text too small on {sid}")
-        self.assertEqual(whitebox_cnt, 20)
+        self.assertEqual(whitebox_cnt, 24)
         self.assertEqual(
             high_broll_targets,
             {"style_21": 0.85, "style_22": 0.90, "style_23": 0.95, "style_24": 1.00},
         )
 
     def test_pip_giant_text_and_template_packaging_rendering(self):
-        from render_mp4 import _build_dual_pip_cmd, _build_ffmpeg_pip_vf, render_packaging_png
+        from render_mp4 import _build_dual_pip_cmd, _build_ffmpeg_pip_vf, _build_single_masked_pip_cmd, render_packaging_png
 
         # 单源画框模式全部走等比无变形缩放裁切；mode="none" 返回 None 保持纯净全屏
         self.assertIsNone(_build_ffmpeg_pip_vf({"mode": "none"}))
@@ -506,12 +507,36 @@ class StudioTests(unittest.TestCase):
             self.assertIn("force_original_aspect_ratio=increase", vf_str)
             self.assertIn("overlay=", vf_str)
 
+        # 验证单源 Alpha 蒙版高级画框（style_13 圆角 / style_14 聚光圆窗 / style_16 真羽化 / style_09 单源双格金线）
+        for smode, expected_in in (
+            ("top_white_rounded_frame_pip", 2),
+            ("black_spotlight_circle_pip", 2),
+            ("linear_split_feather_pip", 2),
+            ("dark_doc_circle_avatar_pip", 4),
+        ):
+            cmd_sm = _build_single_masked_pip_cmd(
+                "ffmpeg",
+                str(self.root / "pip_main.mp4"),
+                0.0,
+                5.0,
+                "scale=1080:1920",
+                {"mode": smode, "border_hex": "#C8A96A"},
+                60,
+                30,
+                self.root / f"seg_sm_{smode}.mp4",
+            )
+            self.assertIsNotNone(cmd_sm, f"Single masked PIP returned None: {smode}")
+            self.assertEqual(cmd_sm.count("-i"), expected_in)
+            fc_s = cmd_sm[cmd_sm.index("-filter_complex") + 1]
+            self.assertIn("alphamerge", fc_s)
+            self.assertIn("force_original_aspect_ratio=increase", fc_s)
+
         # 验证双源 PIP 命令路由：secondary_media_path 异于主镜时走多路 -i + -filter_complex 且等比无变形
         for dmode, expected_inputs in (
             ("smooth_orbit_pip", 4),
-            ("dark_doc_circle_avatar_pip", 4),
+            ("dark_doc_circle_avatar_pip", 5),
             ("dual_gold_frame_pip", 2),
-            ("linear_split_feather_pip", 2),
+            ("linear_split_feather_pip", 3),
             ("vision_portrait_cutout_pip", 2),
             ("data_news_cutout_pip", 2),
         ):
@@ -727,6 +752,10 @@ class StudioTests(unittest.TestCase):
             "jianying_project_" + "1114",
             "39-" + "知识付费",
             "45-" + "知识付费",
+            "57-" + "留学",
+            "31-" + "知识付费",
+            "37-" + "银行贷款",
+            "61-" + "升学规划",
             "33-" + "全屋定制",
             "24-" + "美业",
             "58-" + "汽车销售",
@@ -1592,6 +1621,153 @@ class StudioTests(unittest.TestCase):
         eta = estimate_task_eta("full_edit", duration_sec=45.0, clip_count=8)
         self.assertTrue(eta["eta_cn"])
         self.assertGreater(eta["estimated_sec"], 10)
+
+    def test_v31_all_24_whitebox_new_four_styles_and_handwriting_font(self):
+        from common import ASSETS_DIR, find_commercial_font, is_verified_commercial_font, read_json
+        from render_template_overlays import get_style_blueprint, render_style05_giant_back_png
+
+        # 1) 随仓第 5 款开源商用毛笔手写体 MaShanZheng-Regular.ttf 落盘且通过商用白名单
+        msz = ASSETS_DIR / "fonts" / "MaShanZheng-Regular.ttf"
+        self.assertTrue(msz.is_file() and msz.stat().st_size > 1_000_000)
+        self.assertTrue(is_verified_commercial_font(str(msz)))
+        self.assertIn("MaShanZheng", str(find_commercial_font(["MaShanZheng-Regular.ttf"])))
+
+        # 2) 新替换的 4 套白盒风格（05/12/13/14）均已接入真实白盒构图、动效与转场
+        lib = read_json(ASSETS_DIR / "style_spectrum" / "style_spectrum_library.json")
+        by_id = {s["style_id"]: s for s in lib["styles"]}
+        self.assertEqual(by_id["style_05"]["pip_composition_spec"]["mode"], "person_behind_giant_text_pip")
+        self.assertEqual(by_id["style_12"]["pip_composition_spec"]["mode"], "none")
+        self.assertEqual(by_id["style_13"]["pip_composition_spec"]["mode"], "top_white_rounded_frame_pip")
+        self.assertEqual(by_id["style_14"]["pip_composition_spec"]["mode"], "black_spotlight_circle_pip")
+        for sid in ("style_05", "style_12", "style_13", "style_14"):
+            self.assertTrue(by_id[sid]["whitebox_source"]["is_whitebox_jianying"])
+            bp = get_style_blueprint(sid)
+            self.assertTrue((bp.get("overlay_style") or {}).get("anim_mode"))
+        self.assertEqual(get_style_blueprint("style_06")["overlay_style"].get("handwriting_font"), "MaShanZheng-Regular.ttf")
+
+        # 3) style_05 背后 256px 亮黄巨字透明图层生成
+        g_png = self.root / "s05_back.png"
+        render_style05_giant_back_png("真实真相", g_png)
+        self.assertTrue(g_png.is_file())
+
+    def test_v31_person_matting_engine_and_data_news_bg(self):
+        import platform
+        from person_matting import ensure_macos_vision_matte_bin, render_cool_data_news_bg_mp4
+
+        if platform.system() == "Darwin" and shutil.which("swiftc"):
+            bp = ensure_macos_vision_matte_bin()
+            self.assertIsNotNone(bp)
+            self.assertTrue(bp.is_file())
+        if shutil.which("ffmpeg"):
+            bg_mp4 = self.root / "s19_bg.mp4"
+            render_cool_data_news_bg_mp4(bg_mp4, duration_sec=0.8, fps=30, width=540, height=960)
+            self.assertTrue(bg_mp4.is_file() and bg_mp4.stat().st_size > 10_000)
+
+    def test_v31_animated_30fps_overlay_mov_all_8_modes(self):
+        from common import ffprobe_media
+        from render_template_overlays import render_animated_overlay_mov
+
+        if not shutil.which("ffmpeg"):
+            return
+        # 覆盖全部 8 种动效模式：01/07/02/06/18/04/05/16
+        for sid in ("style_01", "style_07", "style_02", "style_06", "style_18", "style_04", "style_05", "style_16"):
+            out_mov = self.root / f"anim_{sid}.mov"
+            res = render_animated_overlay_mov(
+                {"kind": "center_burst_title", "text_or_asset": "大杯只贵两块", "subtext": "门店实拍"},
+                out_mov,
+                style_id=sid,
+                duration_sec=0.7,
+                fps=30,
+            )
+            self.assertIsNotNone(res, f"Animated overlay failed for {sid}")
+            mov_p, cw, ch = res
+            self.assertTrue(mov_p.is_file() and mov_p.stat().st_size > 2000)
+            self.assertEqual(cw % 2, 0)
+            self.assertEqual(ch % 2, 0)
+            info = ffprobe_media(mov_p)
+            v_streams = [s for s in info.get("streams", []) if s.get("codec_type") == "video"]
+            self.assertEqual(len(v_streams), 1)
+            self.assertEqual(v_streams[0].get("codec_name"), "qtrle")
+
+    def test_v31_full_width_subtitle_bar_and_suppress_duplicate_flower(self):
+        from PIL import Image
+        from common import CANVAS_WIDTH, load_subtitle_templates
+        from render_mp4 import compute_subtitle_place_xy, render_subtitle_png
+        from step6_packaging import run_step6
+
+        tpls = load_subtitle_templates()
+        for sid in ("style_02", "style_03", "style_20"):
+            tpl = tpls[sid]
+            self.assertTrue(tpl.get("full_width_bar"), f"{sid} must enable full_width_bar")
+            sub_p = self.root / f"sub_fw_{sid}.png"
+            w, h = render_subtitle_png(
+                {"text": "这一句一定要看清底条通栏", "keywords": ["底条通栏"]},
+                tpl,
+                None,
+                sub_p,
+            )
+            self.assertEqual(w, CANVAS_WIDTH, f"{sid} subtitle bar must span full 1080px")
+            px, _py = compute_subtitle_place_xy(w, h, tpl)
+            self.assertEqual(px, 0)
+            with Image.open(sub_p) as im:
+                self.assertEqual(im.width, CANVAS_WIDTH)
+                # 最左与最右边缘均应有不透明通栏底条
+                self.assertGreater(im.getpixel((4, h // 2))[3], 100)
+                self.assertGreater(im.getpixel((CANVAS_WIDTH - 5, h // 2))[3], 100)
+
+        # style_02 / 03 / 13 / 20 默认 suppress_top_duplicate_flower=True，不生成顶部冗余重复花字条
+        pdir = self.root / "pkg_suppress_dup"
+        pdir.mkdir()
+        write_json(pdir / "03_audio_events.json", {
+            "locked_duration_sec": 6.0,
+            "sentences": [{"id": "s1", "text": "底条字幕本身就是主视觉", "keywords": ["主视觉"], "start_sec": 0.0, "end_sec": 3.0, "start_frame": 0, "end_frame": 90, "emotion_or_info": "hook"}],
+            "events": [{"id": "e1", "type": "sentence_start", "time_sec": 0.0, "frame": 0, "sentence_id": "s1"}],
+        })
+        write_json(pdir / "04_edl.json", {
+            "style_id": "style_03",
+            "clips": [{"clip_id": "c1", "track_role": "a_roll", "media_path": "", "timeline_in_sec": 0.0, "timeline_out_sec": 6.0, "timeline_in_frame": 0, "timeline_out_frame": 180, "cut_event_frame": 0, "cut_event_id": "e1"}],
+        })
+        res_s03 = run_step6(pdir, style_id="style_03")
+        self.assertEqual(len(res_s03["visual_elements"]), 0)
+
+    def test_v31_xfade_transition_zero_frame_drift(self):
+        import wave
+        from common import ffprobe_media, find_bin
+        from render_mp4 import build_base_video_track
+
+        ffmpeg = find_bin("ffmpeg")
+        if not ffmpeg:
+            return
+        pdir = self.root / "xfade_pipe"
+        pdir.mkdir()
+        c1_p = pdir / "c1.mp4"
+        c2_p = pdir / "c2.mp4"
+        subprocess.run([ffmpeg, "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=#1E293B:s=1080x1920:r=30:d=3.0",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p", str(c1_p)], check=True)
+        subprocess.run([ffmpeg, "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=#7C2D12:s=1080x1920:r=30:d=3.0",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p", str(c2_p)], check=True)
+        wav_p = pdir / "master.wav"
+        with wave.open(str(wav_p), "wb") as wf:
+            wf.setparams((2, 2, 48000, 0, "NONE", "not compressed"))
+            wf.writeframes(b"\0\0\0\0" * (48000 * 3))  # 精确 3.000s = 90 帧
+        edl = {
+            "fps": 30,
+            "style_id": "style_01",
+            "clips": [
+                {"clip_id": "c1", "track_role": "a_roll", "media_path": str(c1_p), "source_in_sec": 0.0, "source_out_sec": 1.5,
+                 "timeline_in_frame": 0, "timeline_out_frame": 45, "duration_sec": 1.5},
+                {"clip_id": "c2", "track_role": "b_roll", "media_path": str(c2_p), "source_in_sec": 0.0, "source_out_sec": 1.5,
+                 "timeline_in_frame": 45, "timeline_out_frame": 90, "duration_sec": 1.5},
+            ],
+        }
+        base_mp4 = build_base_video_track(pdir, edl, {"clip_plans": []}, wav_p, manifest={"items": []}, preview=False)
+        self.assertTrue(base_mp4.is_file())
+        prof = read_json(pdir / "render_profile.json")
+        self.assertEqual(prof.get("xfade_applied"), 1)
+        self.assertEqual(prof.get("xfade_transition"), "zoomin")
+        info = ffprobe_media(base_mp4)
+        dur = float(info.get("format", {}).get("duration", 0.0))
+        self.assertAlmostEqual(dur, 3.0, delta=0.04, msg="xfade 转场后总时长必须 0 帧漂移")
 
 
 if __name__ == "__main__":

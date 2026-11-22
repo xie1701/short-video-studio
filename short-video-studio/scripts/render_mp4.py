@@ -93,11 +93,14 @@ def _char_is_tofu(font_key: str, font_size: int, ch: str) -> bool:
 
 
 def compute_subtitle_place_xy(img_w: int, img_h: int, tpl: Dict[str, Any]) -> Tuple[int, int]:
-    """按画布绝对水平正中 x=540px 居中放置字幕（对称安全带 [220, 860]），垂直默认对齐黄金水位 1310px。"""
+    """按画布绝对水平正中 x=540px 居中放置字幕（通宽底条模式贴满 0..1080，其余严守对称安全带 [220, 860]）。"""
     y_center = int(tpl.get("safe_y_center", tpl.get("y_center", 1310)))
-    px = SUBTITLE_CENTER_X - img_w // 2
-    if img_w > SUBTITLE_SYMMETRIC_MAX_W:
-        px = max(SUBTITLE_SAFE_ZONE["x_min"], min(px, SUBTITLE_SAFE_ZONE["x_max"] - img_w))
+    if bool(tpl.get("full_width_bar")) and img_w >= CANVAS_WIDTH - 4:
+        px = 0
+    else:
+        px = SUBTITLE_CENTER_X - img_w // 2
+        if img_w > SUBTITLE_SYMMETRIC_MAX_W:
+            px = max(SUBTITLE_SAFE_ZONE["x_min"], min(px, SUBTITLE_SAFE_ZONE["x_max"] - img_w))
     py = max(SUBTITLE_SAFE_ZONE["y_min"], min(y_center - img_h // 2, SUBTITLE_SAFE_ZONE["y_max"] - img_h))
     return int(px), int(py)
 
@@ -274,18 +277,32 @@ def render_subtitle_png(
 
     line_gap = 10 if len(rendered_lines) > 1 else 0
     max_ink_w = max((im.width for im in rendered_lines), default=60)
-    total_w = max(80, min(SUBTITLE_SYMMETRIC_MAX_W, max_ink_w + pad_x * 2))
-    # 保证偶数宽以便 (CANVAS_WIDTH - total_w) // 2 精准对称无 0.5px 抖动
-    if total_w % 2 == 1 and total_w < SUBTITLE_SYMMETRIC_MAX_W:
-        total_w += 1
-    total_h = max(48, sum(im.height for im in rendered_lines) + line_gap * max(0, len(rendered_lines) - 1) + pad_y * 2)
+    is_full_width_bar = bool(tpl.get("full_width_bar")) and has_bg
+    if is_full_width_bar:
+        total_w = CANVAS_WIDTH
+        pad_y_eff = max(24, pad_y + 6)
+        total_h = max(64, sum(im.height for im in rendered_lines) + line_gap * max(0, len(rendered_lines) - 1) + pad_y_eff * 2)
+    else:
+        total_w = max(80, min(SUBTITLE_SYMMETRIC_MAX_W, max_ink_w + pad_x * 2))
+        if total_w % 2 == 1 and total_w < SUBTITLE_SYMMETRIC_MAX_W:
+            total_w += 1
+        pad_y_eff = pad_y
+        total_h = max(48, sum(im.height for im in rendered_lines) + line_gap * max(0, len(rendered_lines) - 1) + pad_y_eff * 2)
 
     canvas = Image.new("RGBA", (total_w, total_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
     if has_bg:
-        draw.rounded_rectangle([(0, 0), (total_w - 1, total_h - 1)], radius=bg_radius, fill=bg_rgba)
+        if is_full_width_bar:
+            # 1080px 通栏横贯全屏底条（复刻 style_02 暗灰 / style_03 深红 / style_20 国风暖黑通栏）
+            draw.rectangle([(0, 0), (total_w - 1, total_h - 1)], fill=bg_rgba)
+            if bg_radius <= 6 and bg_rgba[0] < 45 and bg_rgba[1] < 40:
+                # 国风暖黑通栏：上下 2px 雅金细线勾边
+                draw.line([(0, 3), (total_w, 3)], fill=(200, 155, 84, 165), width=2)
+                draw.line([(0, total_h - 4), (total_w, total_h - 4)], fill=(200, 155, 84, 165), width=2)
+        else:
+            draw.rounded_rectangle([(0, 0), (total_w - 1, total_h - 1)], radius=bg_radius, fill=bg_rgba)
 
-    cur_y = pad_y
+    cur_y = pad_y_eff
     for im_ln in rendered_lines:
         paste_x = (total_w - im_ln.width) // 2
         canvas.alpha_composite(im_ln, dest=(paste_x, cur_y))
@@ -614,6 +631,67 @@ def _ensure_circle_ring_png(cache_dir: Path, radius_px: int, border_hex: str = "
     return ring_p
 
 
+def _ensure_rounded_rect_mask_png(cache_dir: Path, width: int, height: int, radius: int = 38) -> Path:
+    """预烘焙抗锯齿圆角矩形灰度 Alpha 蒙版 PNG（供 style_13 上白圆角画框高速 alphamerge）。"""
+    w = max(32, int(width) & ~1)
+    h = max(32, int(height) & ~1)
+    r = max(4, min(int(radius), min(w, h) // 3))
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    mask_p = cache_dir / f"_pip_round_mask_{w}x{h}_r{r}.png"
+    if not mask_p.is_file():
+        # 2x 超采样抗锯齿绘制圆角蒙版
+        hi = Image.new("L", (w * 2, h * 2), 0)
+        ImageDraw.Draw(hi).rounded_rectangle([(0, 0), (w * 2 - 1, h * 2 - 1)], radius=r * 2, fill=255)
+        hi.resize((w, h), Image.Resampling.LANCZOS).save(mask_p)
+    return mask_p
+
+
+def _ensure_feather_bottom_mask_png(cache_dir: Path, width: int, height: int, feather_px: int = 180) -> Path:
+    """预烘焙底部平滑线性羽化渐变（255 -> 0）Alpha 蒙版 PNG（供 style_16 上窄实景平滑溶入下纯黑书摘区）。"""
+    import numpy as np
+
+    w = max(32, int(width) & ~1)
+    h = max(32, int(height) & ~1)
+    fp = max(16, min(h - 16, int(feather_px)))
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    mask_p = cache_dir / f"_pip_feather_bot_{w}x{h}_f{fp}.png"
+    if not mask_p.is_file():
+        col = np.full((h, 1), 255, dtype=np.uint8)
+        y_start = h - fp
+        # 余弦平滑过渡比硬折线更接近剪映线性蒙版真实观感
+        t = np.linspace(0.0, 1.0, fp, dtype=np.float32)
+        fade = (0.5 * (1.0 + np.cos(np.pi * t)) * 255.0).clip(0, 255).astype(np.uint8)
+        col[y_start:, 0] = fade
+        arr = np.repeat(col, w, axis=1)
+        Image.fromarray(arr, mode="L").save(mask_p)
+    return mask_p
+
+
+def _ensure_dual_gold_divider_png(
+    cache_dir: Path,
+    w: int,
+    h: int,
+    border_hex: str = "#C8A96A",
+    border_w: int = 3,
+    dual_divider: bool = True,
+) -> Path:
+    """为 style_09 预烘焙顶部细金线外框 + 居中竖向双格分栏金线透明叠加图。"""
+    safe_hex = re.sub(r"[^0-9A-Fa-f]", "", str(border_hex or "C8A96A"))[:6] or "C8A96A"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    p = cache_dir / f"_pip_gold_frame_{w}x{h}_{safe_hex}_d{int(dual_divider)}.png"
+    if not p.is_file():
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        d = ImageDraw.Draw(img)
+        col = parse_hex_rgba(f"#{safe_hex}")
+        bw = max(2, int(border_w))
+        d.rectangle([(0, 0), (w - 1, h - 1)], outline=col, width=bw)
+        if dual_divider:
+            mx = w // 2
+            d.line([(mx, bw), (mx, h - bw)], fill=col, width=max(2, bw))
+        img.save(p)
+    return p
+
+
 def _rects_overlap(a: Tuple[int, int, int, int], b: Tuple[int, int, int, int]) -> bool:
     return not (a[2] <= b[0] or a[0] >= b[2] or a[3] <= b[1] or a[1] >= b[3])
 
@@ -712,7 +790,7 @@ def _compute_base_cache_key(
     eye_by_mp4: Dict[str, Any],
 ) -> str:
     payload = {
-        "version": 3,
+        "version": 4,
         "edl": edl,
         "color_plan": color_plan,
         "sources": source_hashes,
@@ -890,12 +968,13 @@ def _build_dual_pip_cmd(
         ]
 
     if mode == "dark_doc_circle_avatar_pip":
-        # style_09：纯黑纪实底 + 顶部细金线框无变形证据窗 + 左下正圆白金边主讲人头像
+        # style_09：纯黑纪实底 + 顶部双格细金线无变形证据窗 + 左下正圆白金边主讲人头像
         tf_x = int(pip_layout.get("top_frame_x") or 76)
         tf_y = int(pip_layout.get("top_frame_y") or 290)
         tf_w = int(pip_layout.get("top_frame_w") or 928)
         tf_h = int(pip_layout.get("top_frame_h") or 540)
         bw = int(pip_layout.get("border_width") or 3)
+        dual_div = bool(pip_layout.get("dual_pane_divider", True))
         av_r = int(pip_layout.get("avatar_r") or 122)
         av_d = av_r * 2
         av_x = int(pip_layout.get("avatar_cx") or 215) - av_r
@@ -904,24 +983,44 @@ def _build_dual_pip_cmd(
         av_bd = str(pip_layout.get("avatar_border_hex") or "#E2D5B5")[:7]
         mask_p = _ensure_circle_mask_png(out_mp4.parent, av_r)
         ring_p = _ensure_circle_ring_png(out_mp4.parent, av_r, av_bd)
-        fc = (
-            f"[0:v]{base_vf_chain},split=2[p_bg_src][p_av_src];"
-            f"[p_bg_src]drawbox=x=0:y=0:w=iw:h=ih:color={bg_c}:t=fill[p_bg];"
-            f"[1:v]{sec_trim},{_cover_crop_vf(tf_w - bw * 2, tf_h - bw * 2, face_bias=False)},"
-            f"pad={tf_w}:{tf_h}:{bw}:{bw}:color={bd_hex}[p_ev];"
-            f"[p_av_src]{_cover_crop_vf(av_d, av_d, face_bias=True)},format=rgba[p_av_raw];"
-            f"[2:v]format=gray[p_mask];"
-            f"[p_av_raw][p_mask]alphamerge[p_av];"
-            f"[p_bg][p_ev]overlay=x={tf_x}:y={tf_y}:shortest=1[p_m1];"
-            f"[p_m1][p_av]overlay=x={av_x}:y={av_y}:shortest=1[p_m2];"
-            f"[p_m2][3:v]overlay=x={av_x - 14}:y={av_y - 14}:shortest=1,{tail_str}[vout]"
-        )
+        frame_p = _ensure_dual_gold_divider_png(out_mp4.parent, tf_w, tf_h, bd_hex, bw, dual_divider=dual_div)
+        if dual_div:
+            half_w = (tf_w - bw * 3) // 2
+            inner_h = tf_h - bw * 2
+            fc = (
+                f"[0:v]{base_vf_chain},split=3[p_bg_src][p_av_src][p_ev_r];"
+                f"[p_bg_src]drawbox=x=0:y=0:w=iw:h=ih:color={bg_c}:t=fill[p_bg];"
+                f"[1:v]{sec_trim},{_cover_crop_vf(half_w, inner_h, face_bias=False)}[p_left];"
+                f"[p_ev_r]{_cover_crop_vf(tf_w - bw * 2 - half_w, inner_h, face_bias=True)}[p_right];"
+                f"[p_bg][p_left]overlay=x={tf_x + bw}:y={tf_y + bw}:shortest=1[p_m0];"
+                f"[p_m0][p_right]overlay=x={tf_x + bw + half_w}:y={tf_y + bw}:shortest=1[p_m0b];"
+                f"[p_m0b][4:v]overlay=x={tf_x}:y={tf_y}:shortest=1[p_m1];"
+                f"[p_av_src]{_cover_crop_vf(av_d, av_d, face_bias=True)},format=rgba[p_av_raw];"
+                f"[2:v]format=gray[p_mask];"
+                f"[p_av_raw][p_mask]alphamerge[p_av];"
+                f"[p_m1][p_av]overlay=x={av_x}:y={av_y}:shortest=1[p_m2];"
+                f"[p_m2][3:v]overlay=x={av_x - 14}:y={av_y - 14}:shortest=1,{tail_str}[vout]"
+            )
+        else:
+            fc = (
+                f"[0:v]{base_vf_chain},split=2[p_bg_src][p_av_src];"
+                f"[p_bg_src]drawbox=x=0:y=0:w=iw:h=ih:color={bg_c}:t=fill[p_bg];"
+                f"[1:v]{sec_trim},{_cover_crop_vf(tf_w - bw * 2, tf_h - bw * 2, face_bias=False)}[p_ev];"
+                f"[p_bg][p_ev]overlay=x={tf_x + bw}:y={tf_y + bw}:shortest=1[p_m0];"
+                f"[p_m0][4:v]overlay=x={tf_x}:y={tf_y}:shortest=1[p_m1];"
+                f"[p_av_src]{_cover_crop_vf(av_d, av_d, face_bias=True)},format=rgba[p_av_raw];"
+                f"[2:v]format=gray[p_mask];"
+                f"[p_av_raw][p_mask]alphamerge[p_av];"
+                f"[p_m1][p_av]overlay=x={av_x}:y={av_y}:shortest=1[p_m2];"
+                f"[p_m2][3:v]overlay=x={av_x - 14}:y={av_y - 14}:shortest=1,{tail_str}[vout]"
+            )
         return [
             ffmpeg_bin, "-y",
             "-ss", f"{src_in:.4f}", "-t", f"{src_avail + 0.1:.4f}", "-i", media_path,
             "-ss", f"{sec_in:.4f}", "-t", f"{clip_dur + 0.2:.4f}", "-i", sec_media,
             "-loop", "1", "-framerate", str(fps), "-i", str(mask_p),
             "-loop", "1", "-framerate", str(fps), "-i", str(ring_p),
+            "-loop", "1", "-framerate", str(fps), "-i", str(frame_p),
             "-an", "-filter_complex", fc, "-map", "[vout]",
             "-frames:v", str(clip_frames), "-c:v", "libx264", "-preset", "medium", "-crf", "15",
             "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS, str(out_mp4),
@@ -952,25 +1051,30 @@ def _build_dual_pip_cmd(
         ]
 
     if mode == "linear_split_feather_pip":
-        # style_16：上窄实景等比铺满 + 下半纯黑书摘区（副镜作为上方细节带）
-        top_h = int(pip_layout.get("top_h") or 620)
+        # style_16：上窄实景等比铺满 + 底部 180px 平滑线性羽化渐变溶入下半纯黑书摘区
+        top_h = int(pip_layout.get("top_h") or 680)
+        feather_px = int(pip_layout.get("feather_px") or 180)
         bg_c = str(pip_layout.get("bg_hex") or "#050507")[:7]
+        fmask_p = _ensure_feather_bottom_mask_png(out_mp4.parent, CANVAS_WIDTH, top_h, feather_px)
         fc = (
             f"[0:v]{base_vf_chain},drawbox=x=0:y=0:w=iw:h=ih:color={bg_c}:t=fill[p_bg];"
-            f"[1:v]{sec_trim},{_cover_crop_vf(CANVAS_WIDTH, top_h, face_bias=True)}[p_top];"
+            f"[1:v]{sec_trim},{_cover_crop_vf(CANVAS_WIDTH, top_h, face_bias=True)},format=rgba[p_top_raw];"
+            f"[2:v]format=gray[p_fmask];"
+            f"[p_top_raw][p_fmask]alphamerge[p_top];"
             f"[p_bg][p_top]overlay=x=0:y=0:shortest=1,{tail_str}[vout]"
         )
         return [
             ffmpeg_bin, "-y",
             "-ss", f"{src_in:.4f}", "-t", f"{src_avail + 0.1:.4f}", "-i", media_path,
             "-ss", f"{sec_in:.4f}", "-t", f"{clip_dur + 0.2:.4f}", "-i", sec_media,
+            "-loop", "1", "-framerate", str(fps), "-i", str(fmask_p),
             "-an", "-filter_complex", fc, "-map", "[vout]",
             "-frames:v", str(clip_frames), "-c:v", "libx264", "-preset", "medium", "-crf", "15",
             "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS, str(out_mp4),
         ]
 
     if mode in ("vision_portrait_cutout_pip", "data_news_cutout_pip"):
-        # style_07（白边贴纸前景）/ style_19（冷峻新闻数据背景+前景人像）
+        # 当 AI 逐帧抠像未激活（非 macOS 或无人物画面）时的平滑圆角降级方案
         is_white = (mode == "vision_portrait_cutout_pip")
         pad_c = "#FFFFFF" if is_white else "#38BDF8"
         pad_w = 10 if is_white else 4
@@ -992,6 +1096,336 @@ def _build_dual_pip_cmd(
         ]
 
     return None
+
+
+def _build_single_masked_pip_cmd(
+    ffmpeg_bin: str,
+    media_path: str,
+    src_in: float,
+    src_avail: float,
+    base_vf_chain: str,
+    pip_layout: Dict[str, Any],
+    clip_frames: int,
+    fps: int,
+    out_mp4: Path,
+) -> Optional[List[str]]:
+    """单源带 Alpha 预烘焙蒙版的高保真画框合成器（style_13 上白圆角 / style_14 纯黑聚光圆窗 / style_16 真羽化 / style_09 单源面板）。"""
+    mode = str(pip_layout.get("mode") or "none").strip()
+    tail_str = ",".join(BT709_VF_SUFFIX)
+
+    if mode == "top_white_rounded_frame_pip":
+        # style_13：纯黑底 + 上白圆角画框 (1000x920, r=38) + 下纯黑留白
+        fw = int(pip_layout.get("frame_w") or 1000)
+        fh = int(pip_layout.get("frame_h") or 920)
+        fx = int(pip_layout.get("frame_x") or 40)
+        fy = int(pip_layout.get("frame_y") or 210)
+        rad = int(pip_layout.get("corner_radius") or 38)
+        bg_c = str(pip_layout.get("bg_hex") or "#050506")[:7]
+        rmask_p = _ensure_rounded_rect_mask_png(out_mp4.parent, fw, fh, rad)
+        fc = (
+            f"[0:v]{base_vf_chain},split=2[p_bg_s][p_fg_s];"
+            f"[p_bg_s]drawbox=x=0:y=0:w=iw:h=ih:color={bg_c}:t=fill[p_bg];"
+            f"[p_fg_s]{_cover_crop_vf(fw, fh, face_bias=True)},format=rgba[p_fg_raw];"
+            f"[1:v]format=gray[p_rmask];"
+            f"[p_fg_raw][p_rmask]alphamerge[p_fg];"
+            f"[p_bg][p_fg]overlay=x={fx}:y={fy}:shortest=1,{tail_str}[vout]"
+        )
+        return [
+            ffmpeg_bin, "-y",
+            "-ss", f"{src_in:.4f}", "-t", f"{src_avail + 0.1:.4f}", "-i", media_path,
+            "-loop", "1", "-framerate", str(fps), "-i", str(rmask_p),
+            "-an", "-filter_complex", fc, "-map", "[vout]",
+            "-frames:v", str(clip_frames), "-c:v", "libx264", "-preset", "medium", "-crf", "15",
+            "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS, str(out_mp4),
+        ]
+
+    if mode == "black_spotlight_circle_pip":
+        # style_14：纯黑全屏背景 + 居中 r=295 抗锯齿圆形聚光窗
+        cx = int(pip_layout.get("circle_cx") or 540)
+        cy = int(pip_layout.get("circle_cy") or 560)
+        cr = int(pip_layout.get("circle_r") or 295)
+        diam = cr * 2
+        bg_c = str(pip_layout.get("bg_hex") or "#040405")[:7]
+        cmask_p = _ensure_circle_mask_png(out_mp4.parent, cr)
+        fc = (
+            f"[0:v]{base_vf_chain},split=2[p_bg_s][p_fg_s];"
+            f"[p_bg_s]drawbox=x=0:y=0:w=iw:h=ih:color={bg_c}:t=fill[p_bg];"
+            f"[p_fg_s]{_cover_crop_vf(diam, diam, face_bias=True)},format=rgba[p_fg_raw];"
+            f"[1:v]format=gray[p_cmask];"
+            f"[p_fg_raw][p_cmask]alphamerge[p_fg];"
+            f"[p_bg][p_fg]overlay=x={cx - cr}:y={cy - cr}:shortest=1,{tail_str}[vout]"
+        )
+        return [
+            ffmpeg_bin, "-y",
+            "-ss", f"{src_in:.4f}", "-t", f"{src_avail + 0.1:.4f}", "-i", media_path,
+            "-loop", "1", "-framerate", str(fps), "-i", str(cmask_p),
+            "-an", "-filter_complex", fc, "-map", "[vout]",
+            "-frames:v", str(clip_frames), "-c:v", "libx264", "-preset", "medium", "-crf", "15",
+            "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS, str(out_mp4),
+        ]
+
+    if mode == "linear_split_feather_pip":
+        # style_16 单源版：上窄实景 + 底部 180px 平滑羽化渐变溶入下半纯黑书摘区
+        top_h = int(pip_layout.get("top_h") or 680)
+        feather_px = int(pip_layout.get("feather_px") or 180)
+        bg_c = str(pip_layout.get("bg_hex") or "#050507")[:7]
+        fmask_p = _ensure_feather_bottom_mask_png(out_mp4.parent, CANVAS_WIDTH, top_h, feather_px)
+        fc = (
+            f"[0:v]{base_vf_chain},split=2[p_bg_s][p_top_s];"
+            f"[p_bg_s]drawbox=x=0:y=0:w=iw:h=ih:color={bg_c}:t=fill[p_bg];"
+            f"[p_top_s]{_cover_crop_vf(CANVAS_WIDTH, top_h, face_bias=True)},format=rgba[p_top_raw];"
+            f"[1:v]format=gray[p_fmask];"
+            f"[p_top_raw][p_fmask]alphamerge[p_top];"
+            f"[p_bg][p_top]overlay=x=0:y=0:shortest=1,{tail_str}[vout]"
+        )
+        return [
+            ffmpeg_bin, "-y",
+            "-ss", f"{src_in:.4f}", "-t", f"{src_avail + 0.1:.4f}", "-i", media_path,
+            "-loop", "1", "-framerate", str(fps), "-i", str(fmask_p),
+            "-an", "-filter_complex", fc, "-map", "[vout]",
+            "-frames:v", str(clip_frames), "-c:v", "libx264", "-preset", "medium", "-crf", "15",
+            "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS, str(out_mp4),
+        ]
+
+    if mode == "dark_doc_circle_avatar_pip":
+        # style_09 单源版：纯黑纪实底 + 顶部双格细金线画框 + 左下正圆头像
+        tf_x = int(pip_layout.get("top_frame_x") or 76)
+        tf_y = int(pip_layout.get("top_frame_y") or 290)
+        tf_w = int(pip_layout.get("top_frame_w") or 928)
+        tf_h = int(pip_layout.get("top_frame_h") or 540)
+        bw = int(pip_layout.get("border_width") or 3)
+        bd_hex = str(pip_layout.get("border_hex") or "#C8A96A")[:7]
+        av_r = int(pip_layout.get("avatar_r") or 122)
+        av_d = av_r * 2
+        av_x = int(pip_layout.get("avatar_cx") or 215) - av_r
+        av_y = int(pip_layout.get("avatar_cy") or 1030) - av_r
+        bg_c = str(pip_layout.get("bg_hex") or "#060608")[:7]
+        av_bd = str(pip_layout.get("avatar_border_hex") or "#E2D5B5")[:7]
+        mask_p = _ensure_circle_mask_png(out_mp4.parent, av_r)
+        ring_p = _ensure_circle_ring_png(out_mp4.parent, av_r, av_bd)
+        frame_p = _ensure_dual_gold_divider_png(out_mp4.parent, tf_w, tf_h, bd_hex, bw, dual_divider=bool(pip_layout.get("dual_pane_divider", True)))
+        fc = (
+            f"[0:v]{base_vf_chain},split=3[p_bg_s][p_ev_s][p_av_s];"
+            f"[p_bg_s]drawbox=x=0:y=0:w=iw:h=ih:color={bg_c}:t=fill[p_bg];"
+            f"[p_ev_s]{_cover_crop_vf(tf_w - bw * 2, tf_h - bw * 2, face_bias=True)}[p_ev];"
+            f"[p_bg][p_ev]overlay=x={tf_x + bw}:y={tf_y + bw}:shortest=1[p_m0];"
+            f"[p_m0][3:v]overlay=x={tf_x}:y={tf_y}:shortest=1[p_m1];"
+            f"[p_av_s]{_cover_crop_vf(av_d, av_d, face_bias=True)},format=rgba[p_av_raw];"
+            f"[1:v]format=gray[p_mask];"
+            f"[p_av_raw][p_mask]alphamerge[p_av];"
+            f"[p_m1][p_av]overlay=x={av_x}:y={av_y}:shortest=1[p_m2];"
+            f"[p_m2][2:v]overlay=x={av_x - 14}:y={av_y - 14}:shortest=1,{tail_str}[vout]"
+        )
+        return [
+            ffmpeg_bin, "-y",
+            "-ss", f"{src_in:.4f}", "-t", f"{src_avail + 0.1:.4f}", "-i", media_path,
+            "-loop", "1", "-framerate", str(fps), "-i", str(mask_p),
+            "-loop", "1", "-framerate", str(fps), "-i", str(ring_p),
+            "-loop", "1", "-framerate", str(fps), "-i", str(frame_p),
+            "-an", "-filter_complex", fc, "-map", "[vout]",
+            "-frames:v", str(clip_frames), "-c:v", "libx264", "-preset", "medium", "-crf", "15",
+            "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS, str(out_mp4),
+        ]
+
+    return None
+
+
+_AI_MATTING_MODES = {
+    "person_behind_giant_text_pip",
+    "vision_portrait_cutout_pip",
+    "data_news_cutout_pip",
+}
+
+
+def _render_ai_person_matting_segment(
+    ffmpeg_bin: str,
+    clip: Dict[str, Any],
+    color_vf: Optional[str],
+    eye_by_mp4: Dict[str, Dict[str, Any]],
+    out_mp4: Path,
+    fps: int,
+    clip_frames: int,
+    geom_cache: Optional[Dict[str, Tuple[int, int]]] = None,
+) -> bool:
+    """
+    真·逐帧 AI 人像前景抠像合成器：
+    - style_05 (person_behind_giant_text_pip): [微虚暗调背景] -> [背后 256px 亮黄巨字] -> [抠出前景真人]
+    - style_07 (vision_portrait_cutout_pip):   [虚化实景/副镜背景] -> [10px 沿发丝肩膀纯白描边] -> [抠出前景真人]
+    - style_19 (data_news_cutout_pip):         [冷峻动态数据折线背景/副镜] -> [抠出前景真人]
+    成功合成返回 True；若非 macOS/无模型或画面无真人，返回 False 交回普通命令平滑降级。
+    """
+    pip_cfg = clip.get("pip_layout") or {}
+    mode = str(pip_cfg.get("mode") or "")
+    if mode not in _AI_MATTING_MODES:
+        return False
+
+    try:
+        from person_matting import generate_person_matte_video, render_cool_data_news_bg_mp4
+        from render_template_overlays import render_style05_giant_back_png
+    except Exception:
+        return False
+
+    work_dir = out_mp4.parent
+    stem = out_mp4.stem
+    fg_clean = work_dir / f"{stem}_fgclean.mp4"
+    matte_mp4 = work_dir / f"{stem}_matte.mp4"
+    outline_mp4 = (work_dir / f"{stem}_outline.mp4") if mode == "vision_portrait_cutout_pip" else None
+
+    clip_plain = dict(clip)
+    clip_plain.pop("pip_layout", None)
+    clip_plain["timeline_in_frame"] = 0
+    clip_plain["timeline_out_frame"] = clip_frames
+    clean_cmd = build_graded_segment_cmd(
+        ffmpeg_bin, clip_plain, color_vf, eye_by_mp4, fg_clean, fps,
+        tw=CANVAS_WIDTH, th=CANVAS_HEIGHT, preview=False, geom_cache=geom_cache,
+    )
+    run_cmd(clean_cmd)
+
+    outline_px = int(pip_cfg.get("outline_px") or 10) if mode == "vision_portrait_cutout_pip" else 0
+    meta = generate_person_matte_video(
+        fg_clean,
+        matte_mp4,
+        out_outline_mp4=outline_mp4,
+        outline_px=outline_px,
+        quality="balanced",
+        fps=fps,
+    )
+    if not meta or not meta.get("has_person") or not matte_mp4.is_file():
+        fg_clean.unlink(missing_ok=True)
+        matte_mp4.unlink(missing_ok=True)
+        if outline_mp4:
+            outline_mp4.unlink(missing_ok=True)
+        return False
+
+    tail_str = ",".join(BT709_VF_SUFFIX)
+    clip_dur = frames_to_sec(clip_frames, fps)
+    sec_media = str(pip_cfg.get("secondary_media_path") or "")
+    sec_in = max(0.0, float(pip_cfg.get("secondary_in_sec", 0.0)))
+    has_sec = bool(sec_media and Path(sec_media).is_file() and str(Path(sec_media).resolve()) != str(Path(str(clip.get("media_path") or "")).resolve()))
+
+    try:
+        if mode == "person_behind_giant_text_pip":
+            back_txt = str(pip_cfg.get("giant_back_text") or "核心真相")
+            giant_col = str(pip_cfg.get("giant_color") or "#FFD426")
+            bg_dark = float(pip_cfg.get("bg_darken") or -0.20)
+            bg_blur = max(2, int(pip_cfg.get("bg_blur") or 8))
+            giant_png = work_dir / f"{stem}_s05_giant_back.png"
+            render_style05_giant_back_png(back_txt, giant_png, accent_hex=giant_col)
+            fc = (
+                f"[0:v]boxblur={bg_blur}:1,eq=brightness={bg_dark:.2f}[bg_dim];"
+                f"[bg_dim][2:v]overlay=0:0:shortest=1[bg_txt];"
+                f"[0:v]format=rgba[fg_raw];"
+                f"[1:v]format=gray[m_gray];"
+                f"[fg_raw][m_gray]alphamerge[fg_cut];"
+                f"[bg_txt][fg_cut]overlay=0:0:shortest=1,{tail_str}[vout]"
+            )
+            run_cmd([
+                ffmpeg_bin, "-y",
+                "-i", str(fg_clean),
+                "-i", str(matte_mp4),
+                "-loop", "1", "-framerate", str(fps), "-i", str(giant_png),
+                "-an", "-filter_complex", fc, "-map", "[vout]",
+                "-frames:v", str(clip_frames), "-c:v", "libx264", "-preset", "medium", "-crf", "15",
+                "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS, str(out_mp4),
+            ])
+            return out_mp4.is_file()
+
+        if mode == "vision_portrait_cutout_pip":
+            blur_s = max(6, int(pip_cfg.get("bg_blur_sigma") or 12))
+            out_hex = str(pip_cfg.get("outline_hex") or "#FFFFFF")[:7]
+            if has_sec and outline_mp4 and outline_mp4.is_file():
+                sec_trim = f"fps=fps={fps},trim=duration={clip_dur:.4f},setpts=PTS-STARTPTS"
+                fc = (
+                    f"[3:v]{sec_trim},{_cover_crop_vf(CANVAS_WIDTH, CANVAS_HEIGHT, face_bias=False)},boxblur={blur_s}:2,eq=brightness=-0.08[bg];"
+                    f"color=c={out_hex}:s={CANVAS_WIDTH}x{CANVAS_HEIGHT}:r={fps}:d={clip_dur + 0.2:.4f},format=rgba[wc];"
+                    f"[2:v]format=gray[om];"
+                    f"[wc][om]alphamerge[white_outline];"
+                    f"[0:v]format=rgba[fg_raw];"
+                    f"[1:v]format=gray[mm];"
+                    f"[fg_raw][mm]alphamerge[fg_cut];"
+                    f"[bg][white_outline]overlay=0:0:shortest=1[m1];"
+                    f"[m1][fg_cut]overlay=0:0:shortest=1,{tail_str}[vout]"
+                )
+                run_cmd([
+                    ffmpeg_bin, "-y",
+                    "-i", str(fg_clean),
+                    "-i", str(matte_mp4),
+                    "-i", str(outline_mp4),
+                    "-ss", f"{sec_in:.4f}", "-t", f"{clip_dur + 0.2:.4f}", "-i", sec_media,
+                    "-an", "-filter_complex", fc, "-map", "[vout]",
+                    "-frames:v", str(clip_frames), "-c:v", "libx264", "-preset", "medium", "-crf", "15",
+                    "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS, str(out_mp4),
+                ])
+                return out_mp4.is_file()
+            elif outline_mp4 and outline_mp4.is_file():
+                fc = (
+                    f"[0:v]boxblur={blur_s + 4}:2,eq=brightness=-0.10:saturation=0.85[bg];"
+                    f"color=c={out_hex}:s={CANVAS_WIDTH}x{CANVAS_HEIGHT}:r={fps}:d={clip_dur + 0.2:.4f},format=rgba[wc];"
+                    f"[2:v]format=gray[om];"
+                    f"[wc][om]alphamerge[white_outline];"
+                    f"[0:v]format=rgba[fg_raw];"
+                    f"[1:v]format=gray[mm];"
+                    f"[fg_raw][mm]alphamerge[fg_cut];"
+                    f"[bg][white_outline]overlay=0:0:shortest=1[m1];"
+                    f"[m1][fg_cut]overlay=0:0:shortest=1,{tail_str}[vout]"
+                )
+                run_cmd([
+                    ffmpeg_bin, "-y",
+                    "-i", str(fg_clean),
+                    "-i", str(matte_mp4),
+                    "-i", str(outline_mp4),
+                    "-an", "-filter_complex", fc, "-map", "[vout]",
+                    "-frames:v", str(clip_frames), "-c:v", "libx264", "-preset", "medium", "-crf", "15",
+                    "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS, str(out_mp4),
+                ])
+                return out_mp4.is_file()
+
+        if mode == "data_news_cutout_pip":
+            if has_sec:
+                sec_trim = f"fps=fps={fps},trim=duration={clip_dur:.4f},setpts=PTS-STARTPTS"
+                fc = (
+                    f"[2:v]{sec_trim},{_cover_crop_vf(CANVAS_WIDTH, CANVAS_HEIGHT, face_bias=False)},boxblur=6:1,eq=saturation=0.52:contrast=1.10:brightness=-0.12[bg];"
+                    f"[0:v]format=rgba[fg_raw];"
+                    f"[1:v]format=gray[mm];"
+                    f"[fg_raw][mm]alphamerge[fg_cut];"
+                    f"[bg][fg_cut]overlay=0:0:shortest=1,{tail_str}[vout]"
+                )
+                run_cmd([
+                    ffmpeg_bin, "-y",
+                    "-i", str(fg_clean),
+                    "-i", str(matte_mp4),
+                    "-ss", f"{sec_in:.4f}", "-t", f"{clip_dur + 0.2:.4f}", "-i", sec_media,
+                    "-an", "-filter_complex", fc, "-map", "[vout]",
+                    "-frames:v", str(clip_frames), "-c:v", "libx264", "-preset", "medium", "-crf", "15",
+                    "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS, str(out_mp4),
+                ])
+                return out_mp4.is_file()
+            else:
+                data_bg = work_dir / f"_s19_data_bg_{clip_frames}f.mp4"
+                if not data_bg.is_file():
+                    render_cool_data_news_bg_mp4(data_bg, max(0.6, clip_dur + 0.1), fps=fps)
+                fc = (
+                    f"[0:v]format=rgba[fg_raw];"
+                    f"[1:v]format=gray[mm];"
+                    f"[fg_raw][mm]alphamerge[fg_cut];"
+                    f"[2:v][fg_cut]overlay=0:0:shortest=1,{tail_str}[vout]"
+                )
+                run_cmd([
+                    ffmpeg_bin, "-y",
+                    "-i", str(fg_clean),
+                    "-i", str(matte_mp4),
+                    "-i", str(data_bg),
+                    "-an", "-filter_complex", fc, "-map", "[vout]",
+                    "-frames:v", str(clip_frames), "-c:v", "libx264", "-preset", "medium", "-crf", "15",
+                    "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS, str(out_mp4),
+                ])
+                return out_mp4.is_file()
+    finally:
+        fg_clean.unlink(missing_ok=True)
+        matte_mp4.unlink(missing_ok=True)
+        if outline_mp4:
+            outline_mp4.unlink(missing_ok=True)
+    return False
 
 
 def build_graded_segment_cmd(
@@ -1095,6 +1529,19 @@ def build_graded_segment_cmd(
             )
             if dual_cmd:
                 return dual_cmd
+        single_masked_cmd = _build_single_masked_pip_cmd(
+            ffmpeg_bin=ffmpeg_bin,
+            media_path=media_path,
+            src_in=src_in,
+            src_avail=src_avail,
+            base_vf_chain=",".join(vf_parts),
+            pip_layout=pip_cfg,
+            clip_frames=clip_frames,
+            fps=fps,
+            out_mp4=out_mp4,
+        )
+        if single_masked_cmd:
+            return single_masked_cmd
         pip_vf = _build_ffmpeg_pip_vf(pip_cfg, tw=tw, th=th)
         if pip_vf:
             vf_parts.append(pip_vf)
@@ -1122,6 +1569,16 @@ def build_graded_segment_cmd(
     ]
 
 
+_XFADE_STYLE_MAP = {
+    "zoomin": "zoomin",
+    "fadeblack": "fadeblack",
+    "dissolve": "dissolve",
+    "wipeleft": "wipeleft",
+    "smoothleft": "smoothleft",
+    "fade": "fade",
+}
+
+
 def build_base_video_track(
     pipeline_dir: Path,
     edl: Dict[str, Any],
@@ -1130,7 +1587,7 @@ def build_base_video_track(
     manifest: Optional[Dict[str, Any]] = None,
     preview: bool = False,
 ) -> Path:
-    """按 EDL 分镜精确裁切、单次高质量 Ken Burns / 锁眼推拉 + 调色 + 严防尾帧泄漏地拼接底轨。"""
+    """按 EDL 分镜精确裁切、单次高质量 Ken Burns / 锁眼推拉 + AI 真抠像 + 调色 + 镜头间 xfade 真实转场拼接底轨。"""
     started = perf_counter()
     ffmpeg_bin = find_bin("ffmpeg")
     if not ffmpeg_bin:
@@ -1154,10 +1611,44 @@ def build_base_video_track(
     suffix = "p" if preview else "f"
     expected_segments = [work_dir / f"seg_{index:03d}_{suffix}.mp4" for index in range(len(clips))]
 
+    # 读取当前风格专属转场风格（仅正式渲染且非单镜时启用，确保 0 帧总时长漂移）
+    style_id = str(edl.get("style_id") or load_style_applied(pipeline_dir) or "style_01")
+    xf_type = ""
+    if not preview and len(clips) >= 2:
+        try:
+            from render_template_overlays import get_style_blueprint
+            raw_tr = str((get_style_blueprint(style_id).get("overlay_style") or {}).get("transition_style") or "none").strip()
+            xf_type = _XFADE_STYLE_MAP.get(raw_tr, "")
+        except Exception:
+            xf_type = ""
+
+    xf_frames = 5 if xf_type else 0  # 5 帧 ≈ 0.167s
+    xf_dur = frames_to_sec(xf_frames, fps)
+    # 判断每个相邻边界 (i -> i+1) 是否应用 xfade（要求两侧时长均 >= 1.0s 且至少一侧为 b_roll/code_broll 或非紧口型对切）
+    xf_edges: List[bool] = []
+    clip_nom_frames: List[int] = []
+    for c_item in clips:
+        if c_item.get("timeline_out_frame") is not None and c_item.get("timeline_in_frame") is not None:
+            cf_n = max(1, int(c_item["timeline_out_frame"]) - int(c_item["timeline_in_frame"]))
+        else:
+            cf_n = max(1, sec_to_frames(float(c_item.get("duration_sec", 1.0)), fps))
+        clip_nom_frames.append(cf_n)
+    if xf_type and len(clips) >= 2:
+        for i_e in range(len(clips) - 1):
+            c_a, c_b = clips[i_e], clips[i_e + 1]
+            long_enough = clip_nom_frames[i_e] >= int(0.95 * fps) and clip_nom_frames[i_e + 1] >= int(0.95 * fps)
+            non_tight_lip = (c_a.get("track_role") != "a_roll") or (c_b.get("track_role") != "a_roll")
+            xf_edges.append(bool(long_enough and non_tight_lip))
+    else:
+        xf_edges = [False] * max(0, len(clips) - 1)
+    use_xfade = any(xf_edges)
+
     def profile(base_hit: bool, reused: int) -> None:
         write_json(pipeline_dir / "render_profile.json", {
             "preview": preview, "base_cache_hit": base_hit, "segments_reused": reused,
-            "segments_rendered": len(clips) - reused, "base_elapsed_sec": round(perf_counter() - started, 4),
+            "segments_rendered": len(clips) - reused, "xfade_applied": sum(1 for e in xf_edges if e),
+            "xfade_transition": xf_type if use_xfade else "none",
+            "base_elapsed_sec": round(perf_counter() - started, 4),
         })
 
     if (base_mp4.is_file() and cache_flag.is_file()
@@ -1171,7 +1662,7 @@ def build_base_video_track(
     seg_files: List[Path] = []
     geom_cache: Dict[str, Tuple[int, int]] = {}
     reused = 0
-    render_jobs: List[Tuple[List[str], Path, Path, Path, str]] = []
+    render_jobs: List[Tuple[Dict[str, Any], Optional[str], int, List[str], Path, Path, Path, str]] = []
 
     for idx, clip in enumerate(clips):
         seg_out = expected_segments[idx]
@@ -1180,14 +1671,29 @@ def build_base_video_track(
             raise FileNotFoundError(f"EDL 镜头素材不存在: {media_path}")
         cf = _build_color_filter_for_clip(clip, color_plan)
         staged_seg = seg_out.with_suffix(".part.mp4")
+
+        # 若本镜尾部参与 xfade，提前多裁 xf_frames 帧用于过渡重叠，确保拼接后总时长 0 帧漂移
+        extra_xf = xf_frames if (idx < len(xf_edges) and xf_edges[idx]) else 0
+        seg_frames = clip_nom_frames[idx] + extra_xf
+        clip_eff = dict(clip)
+        if extra_xf > 0:
+            clip_eff["timeline_in_frame"] = 0
+            clip_eff["timeline_out_frame"] = seg_frames
+            clip_eff["source_out_sec"] = float(clip.get("source_out_sec", 0.0)) + frames_to_sec(extra_xf, fps)
+
         cmd = build_graded_segment_cmd(
-            ffmpeg_bin, clip, cf, eye_by_mp4, staged_seg, fps,
+            ffmpeg_bin, clip_eff, cf, eye_by_mp4, staged_seg, fps,
             tw=tw, th=th, preview=preview, geom_cache=geom_cache,
         )
         sec_p = str((clip.get("pip_layout") or {}).get("secondary_media_path") or "")
         sec_hash = sha256_file(Path(sec_p)) if sec_p and Path(sec_p).is_file() else ""
+        pip_mode_k = str((clip.get("pip_layout") or {}).get("mode") or "")
         seg_key = compute_segment_cache_key({
+            "ver": 4,
             "cmd": cmd[:-1],
+            "pip_layout": clip.get("pip_layout"),
+            "pip_mode": pip_mode_k,
+            "seg_frames": seg_frames,
             "source_hash": source_hashes[media_path],
             "sec_hash": sec_hash,
             "lut_hash": source_hashes.get(lut_path),
@@ -1198,14 +1704,28 @@ def build_base_video_track(
         if seg_out.is_file() and seg_flag.is_file() and seg_flag.read_text(encoding="utf-8") == seg_key:
             reused += 1
         else:
-            render_jobs.append((cmd, staged_seg, seg_out, seg_flag, seg_key))
+            render_jobs.append((clip_eff, cf, seg_frames, cmd, staged_seg, seg_out, seg_flag, seg_key))
         seg_files.append(seg_out)
 
     if render_jobs:
-        def _exec_seg(job: Tuple[List[str], Path, Path, Path, str]) -> None:
-            j_cmd, j_staged, j_out, j_flag, j_key = job
+        def _exec_seg(job: Tuple[Dict[str, Any], Optional[str], int, List[str], Path, Path, Path, str]) -> None:
+            j_clip, j_cf, j_frames, j_cmd, j_staged, j_out, j_flag, j_key = job
             try:
-                run_cmd(j_cmd)
+                pip_m = str((j_clip.get("pip_layout") or {}).get("mode") or "")
+                mat_ok = False
+                if (not preview) and (pip_m in _AI_MATTING_MODES):
+                    mat_ok = _render_ai_person_matting_segment(
+                        ffmpeg_bin=ffmpeg_bin,
+                        clip=j_clip,
+                        color_vf=j_cf,
+                        eye_by_mp4=eye_by_mp4,
+                        out_mp4=j_staged,
+                        fps=fps,
+                        clip_frames=j_frames,
+                        geom_cache=geom_cache,
+                    )
+                if not mat_ok:
+                    run_cmd(j_cmd)
                 j_staged.replace(j_out)
             finally:
                 j_staged.unlink(missing_ok=True)
@@ -1217,22 +1737,56 @@ def build_base_video_track(
             with ThreadPoolExecutor(max_workers=min(2, len(render_jobs))) as pool:
                 list(pool.map(_exec_seg, render_jobs))
 
-    concat_txt = work_dir / f"concat_{'p' if preview else 'f'}.txt"
-    def _ff_concat_line(p: Path) -> str:
-        escaped = p.resolve().as_posix().replace("'", r"'\''")
-        return f"file '{escaped}'"
-    concat_txt.write_text(
-        "\n".join(_ff_concat_line(p) for p in seg_files) + "\n",
-        encoding="utf-8",
-    )
     exact_dur = frames_to_sec(target_frames, fps)
-    run_cmd([
-        ffmpeg_bin, "-y",
-        "-f", "concat", "-safe", "0", "-i", str(concat_txt),
-        "-c", "copy",
-        "-t", f"{exact_dur:.4f}",
-        str(base_mp4),
-    ])
+    if use_xfade and len(seg_files) >= 2:
+        # 使用 FFmpeg xfade 拼接相邻镜头（非转场边界采用 0.034s/1帧极短过渡或分段拼接，严格保证 0 帧漂移）
+        xf_cmd: List[str] = [ffmpeg_bin, "-y"]
+        for sf_p in seg_files:
+            xf_cmd.extend(["-i", str(sf_p)])
+        fc_parts: List[str] = []
+        for si in range(len(seg_files)):
+            fc_parts.append(f"[{si}:v]settb=AVTB,fps=fps={fps},format=yuv420p[xs{si}]")
+        cur_lbl = "[xs0]"
+        acc_frames = clip_nom_frames[0]
+        for edge_i in range(len(seg_files) - 1):
+            nxt_lbl = f"[xs{edge_i + 1}]"
+            out_lbl = "[vxf_raw]" if edge_i == len(seg_files) - 2 else f"[xm{edge_i}]"
+            if xf_edges[edge_i]:
+                # 前镜多预留了 xf_frames，在名义终点 acc_frames 处开启 xf_dur 过渡
+                off_sec = max(0.0, frames_to_sec(acc_frames, fps))
+                fc_parts.append(
+                    f"{cur_lbl}{nxt_lbl}xfade=transition={xf_type}:duration={xf_dur:.4f}:offset={off_sec:.4f}{out_lbl}"
+                )
+            else:
+                fc_parts.append(f"{cur_lbl}{nxt_lbl}concat=n=2:v=1:a=0{out_lbl}")
+            cur_lbl = out_lbl
+            acc_frames += clip_nom_frames[edge_i + 1]
+        fc_parts.append(f"[vxf_raw]{','.join(BT709_VF_SUFFIX)}[vxf_out]")
+        xf_cmd.extend([
+            "-an", "-filter_complex", ";".join(fc_parts),
+            "-map", "[vxf_out]",
+            "-frames:v", str(target_frames),
+            "-c:v", "libx264", "-preset", "medium", "-crf", "15",
+            "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS,
+            str(base_mp4),
+        ])
+        run_cmd(xf_cmd)
+    else:
+        concat_txt = work_dir / f"concat_{'p' if preview else 'f'}.txt"
+        def _ff_concat_line(p: Path) -> str:
+            escaped = p.resolve().as_posix().replace("'", r"'\''")
+            return f"file '{escaped}'"
+        concat_txt.write_text(
+            "\n".join(_ff_concat_line(p) for p in seg_files) + "\n",
+            encoding="utf-8",
+        )
+        run_cmd([
+            ffmpeg_bin, "-y",
+            "-f", "concat", "-safe", "0", "-i", str(concat_txt),
+            "-c", "copy",
+            "-t", f"{exact_dur:.4f}",
+            str(base_mp4),
+        ])
     cache_flag.write_text(cache_key, encoding="utf-8")
     profile(False, reused)
     return base_mp4
@@ -1254,7 +1808,7 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
 
     work_dir = pipeline_dir / "_render_final"
     work_dir.mkdir(parents=True, exist_ok=True)
-    for stale in list(work_dir.glob("pkg_*.png")) + list(work_dir.glob("sub_*.png")):
+    for stale in list(work_dir.glob("pkg_*.png")) + list(work_dir.glob("pkg_*.mov")) + list(work_dir.glob("sub_*.png")):
         stale.unlink(missing_ok=True)
 
     fps = int(edl.get("fps") or DEFAULT_FPS)
@@ -1279,7 +1833,8 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
     font_path = subs_data.get("font_path") or find_commercial_font(tpl.get("font_candidates"))
     style_id = pkg_data.get("style_id") or load_style_applied(pipeline_dir) or "style_01"
 
-    overlays: List[Tuple[Path, int, int, float, float, Optional[Tuple[int, int, int, int]], bool]] = []
+    # (path, px, py, s_t, e_t, blur_rect, fade_in, is_video_ov)
+    overlays: List[Tuple[Path, int, int, float, float, Optional[Tuple[int, int, int, int]], bool, bool]] = []
 
     def _scale_png_for_preview(src_p: Path, tag: str) -> Path:
         if not preview:
@@ -1299,8 +1854,20 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
             with Image.open(ft_p) as imf:
                 fw_f, fh_f = imf.size
             fx_f = (CANVAS_WIDTH - fw_f) // 2
-            fy_f = 1280
-            overlays.append((_scale_png_for_preview(ft_p, "ft"), int(round(fx_f * scale_k)), int(round(fy_f * scale_k)), 0.0, exact_dur, None, False))
+            fy_f = 1175
+            overlays.append((_scale_png_for_preview(ft_p, "ft"), int(round(fx_f * scale_k)), int(round(fy_f * scale_k)), 0.0, exact_dur, None, False, False))
+        except Exception:
+            pass
+
+    # style_09 纯黑纪实双格金线：顶部画框正下方居中案情注记小字
+    if style_id == "style_09":
+        try:
+            from render_template_overlays import build_style09_case_caption_png, get_style_blueprint
+            cap_txt = str((get_style_blueprint("style_09").get("pip_spec") or {}).get("case_caption") or "核心现场实录 · 重点拆解")
+            cap_p = build_style09_case_caption_png(work_dir, caption=cap_txt)
+            with Image.open(cap_p) as imc:
+                cw_c, _ch_c = imc.size
+            overlays.append((_scale_png_for_preview(cap_p, "cap9"), int(round(((CANVAS_WIDTH - cw_c) // 2) * scale_k)), int(round(842 * scale_k)), 0.0, exact_dur, None, False, False))
         except Exception:
             pass
 
@@ -1309,39 +1876,77 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
         e_t = min(exact_dur, frames_to_sec(int(elem.get("end_frame", 0)), fps))
         if e_t <= s_t:
             continue
-        png_path = resolve_packaging_source(
-            elem, pipeline_dir, idx,
-            style_id=style_id, color_plan=color_plan, font_candidates=tpl.get("font_candidates"),
-        )
-        with Image.open(png_path) as im:
-            pw, ph = im.size
-        # 模板专属精准落位：style_08 左上角斜杠标 / style_06 顶部手写金句区 / style_09 左圆头像右侧 / style_16 下半黑底书摘区
-        if style_id == "style_08":
+        ov_path: Path
+        is_video_ov = False
+        pw, ph = 400, 120
+
+        # 正式渲染默认启用 30fps 动态透明 .mov 动效引擎（8 种剪映核心动态文字动效）
+        if not preview:
+            try:
+                from render_template_overlays import render_animated_overlay_mov
+                mov_p = work_dir / f"pkg_{idx:03d}.mov"
+                fallback_img = render_packaging_png(elem, style_id=style_id, color_plan=color_plan, font_candidates=tpl.get("font_candidates"))
+                anim_res = render_animated_overlay_mov(
+                    elem=elem,
+                    out_mov=mov_p,
+                    style_id=style_id,
+                    duration_sec=max(0.4, e_t - s_t),
+                    fps=fps,
+                    font_candidates=tpl.get("font_candidates"),
+                    fallback_static_img=fallback_img,
+                )
+                if anim_res is not None and anim_res[0].is_file():
+                    ov_path, pw, ph = anim_res
+                    is_video_ov = True
+            except Exception:
+                is_video_ov = False
+
+        if not is_video_ov:
+            png_path = resolve_packaging_source(
+                elem, pipeline_dir, idx,
+                style_id=style_id, color_plan=color_plan, font_candidates=tpl.get("font_candidates"),
+            )
+            with Image.open(png_path) as im:
+                pw, ph = im.size
+            ov_path = _scale_png_for_preview(png_path, f"p{idx}")
+
+        # 24 套剪映模板专属精准落位（避脸安全带 + 严守主字幕硬隔离）
+        elem_kind_s = str(elem.get("kind") or elem.get("type") or "")
+        if style_id == "style_01" and elem_kind_s == "center_burst_title":
+            # style_01 开场综艺斜标移至中下部避脸安全区（不遮额头五官）
+            px = max(40, (CANVAS_WIDTH - pw) // 2)
+            py = max(720, min(860, 1110 - ph))
+        elif style_id == "style_05":
+            # style_05 第 4 层胸前高对比白字提问（前景压巨字）
+            px = max(60, (CANVAS_WIDTH - pw) // 2)
+            py = max(840, min(950, 1120 - ph))
+        elif style_id == "style_08":
             px, py = 72, 230
         elif style_id == "style_06":
-            px, py = max(80, (CANVAS_WIDTH - pw) // 2), 255
+            px, py = max(60, (CANVAS_WIDTH - pw) // 2), 235
         elif style_id == "style_09":
             px, py = 375, 960
-        elif style_id in ("style_05", "style_12"):
-            px, py = max(80, (CANVAS_WIDTH - pw) // 2), 182
+        elif style_id == "style_12":
+            px, py = max(40, (CANVAS_WIDTH - pw) // 2), 188
+        elif style_id == "style_14":
+            px, py = max(60, (CANVAS_WIDTH - pw) // 2), 915
         elif style_id == "style_16":
-            px, py = max(80, (CANVAS_WIDTH - pw) // 2), 780
+            px, py = max(60, (CANVAS_WIDTH - pw) // 2), 775
         elif style_id == "style_22":
             px, py = max(40, (CANVAS_WIDTH - pw) // 2), 62
         else:
             def_x = max(SAFE_ZONE["x_min"], (CANVAS_WIDTH - pw) // 2)
             def_y = SAFE_ZONE["y_min"] + 40
             px, py = _place_from_final_bbox(elem, pw, ph, SAFE_ZONE, (def_x, def_y), _faces_at_time(s_t))
-        # 硬隔离主字幕安全带 (y + ph <= 1120)，style_09 右侧面板除外
-        if style_id not in ("style_09", "style_20") and (py + ph) > 1120:
-            py = max(140, 1120 - ph)
+        if style_id not in ("style_09", "style_20") and (py + ph) > 1130:
+            py = max(140, 1130 - ph)
         blur_rect = (px, py, pw, ph) if (not preview and elem.get("overlay_mode") == "focus_blur") else None
-        fade_in = bool(not preview and int(elem.get("start_frame", 0)) > 0)
+        fade_in = bool((not preview) and (not is_video_ov) and int(elem.get("start_frame", 0)) > 0)
         overlays.append((
-            _scale_png_for_preview(png_path, f"p{idx}"),
+            ov_path,
             int(round(px * scale_k)),
             int(round(py * scale_k)),
-            s_t, e_t, blur_rect, fade_in,
+            s_t, e_t, blur_rect, fade_in, is_video_ov,
         ))
 
     for idx, sub in enumerate(subs_data.get("entries") or []):
@@ -1362,14 +1967,17 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
         })
         (work_dir / f"sub_{idx:03d}.key").write_text(sub_cache_key, encoding="utf-8")
         def_x, def_y = compute_subtitle_place_xy(sw_px, sh_px, tpl)
-        px, py = _place_from_final_bbox(sub, sw_px, sh_px, SUBTITLE_SAFE_ZONE, (def_x, def_y), _faces_at_time(s_t))
-        if sw_px <= SUBTITLE_SYMMETRIC_MAX_W:
-            px = SUBTITLE_CENTER_X - sw_px // 2
+        if bool(tpl.get("full_width_bar")) and sw_px >= CANVAS_WIDTH - 4:
+            px, py = 0, def_y
+        else:
+            px, py = _place_from_final_bbox(sub, sw_px, sh_px, SUBTITLE_SAFE_ZONE, (def_x, def_y), _faces_at_time(s_t))
+            if sw_px <= SUBTITLE_SYMMETRIC_MAX_W:
+                px = SUBTITLE_CENTER_X - sw_px // 2
         overlays.append((
             _scale_png_for_preview(sub_png, f"s{idx}"),
             int(round(px * scale_k)),
             int(round(py * scale_k)),
-            s_t, e_t, None, False,
+            s_t, e_t, None, False, False,
         ))
 
     if not overlays:
@@ -1387,16 +1995,18 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
         return out_mp4
 
     cmd = [ffmpeg_bin, "-y", "-i", str(base_mp4), "-i", str(master_wav)]
-    for png_p, _px, _py, s_t, e_t, _blur_rect, fade_in in overlays:
-        if fade_in:
-            cmd.extend(["-loop", "1", "-framerate", str(fps), "-t", f"{max(0.1, e_t - s_t + 0.05):.4f}", "-i", str(png_p)])
+    for ov_p, _px, _py, s_t, e_t, _blur_rect, fade_in, is_video_ov in overlays:
+        if is_video_ov:
+            cmd.extend(["-i", str(ov_p)])
+        elif fade_in:
+            cmd.extend(["-loop", "1", "-framerate", str(fps), "-t", f"{max(0.1, e_t - s_t + 0.05):.4f}", "-i", str(ov_p)])
         else:
-            cmd.extend(["-i", str(png_p)])
+            cmd.extend(["-i", str(ov_p)])
 
     filter_chains: List[str] = []
     cur_label = "[0:v]"
     step_idx = 0
-    for i, (_, px, py, s_t, e_t, blur_rect, fade_in) in enumerate(overlays):
+    for i, (_, px, py, s_t, e_t, blur_rect, fade_in, is_video_ov) in enumerate(overlays):
         in_idx = i + 2
         if blur_rect is not None:
             bx, by, bw, bh = blur_rect
@@ -1416,7 +2026,14 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
             )
             cur_label = blur_merged
 
-        if fade_in:
+        if is_video_ov:
+            prep_lbl = f"[ovm_{step_idx}]"
+            filter_chains.append(
+                f"[{in_idx}:v]format=rgba,setpts=PTS-STARTPTS+{s_t:.4f}/TB{prep_lbl}"
+            )
+            ov_in = prep_lbl
+            eof_mode = "pass"
+        elif fade_in:
             prep_lbl = f"[ovf_{step_idx}]"
             filter_chains.append(
                 f"[{in_idx}:v]format=rgba,fade=t=in:st=0:d=0.133:alpha=1,setpts=PTS+{s_t:.4f}/TB{prep_lbl}"

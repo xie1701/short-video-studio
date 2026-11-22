@@ -515,7 +515,15 @@ def run_step6(
     top_ef = min(int(min(4.2, total_dur * 0.45) * fps), int(total_dur * fps))
     hook_ef = min(int(2.2 * fps), int(total_dur * fps))
 
-    if no_flower_text:
+    suppress_top_dup = False
+    try:
+        from render_template_overlays import get_style_blueprint
+        bp_ov = (get_style_blueprint(style_id).get("overlay_style") or {})
+        suppress_top_dup = bool(bp_ov.get("suppress_top_duplicate_flower", False))
+    except Exception:
+        suppress_top_dup = False
+
+    if no_flower_text or (suppress_top_dup and not (keep_manual_texts and prev_visuals)):
         visual_elements = []
     elif keep_manual_texts and prev_visuals:
         # --keep-edl 换风格时：完整保留已有花字文案与起止帧，只按新风格更新配色与视觉参数
@@ -572,7 +580,7 @@ def run_step6(
             hook_w = min(SUBTITLE_SYMMETRIC_MAX_W, max(360, _measure_pkg_badge_width(hook_label, pkg_font_path, SUBTITLE_SYMMETRIC_MAX_W, target_fs=96, min_w=360)))
             hook_x = SUBTITLE_CENTER_X - hook_w // 2
             hook_h = 152 if giant_mode in ("giant_dual_clash", "giant_numeric_trio") else 142
-            init_giant_y = 224 if use_top_bar else 178
+            init_giant_y = 780 if style_id == "style_01" else (224 if use_top_bar else 178)
             active_faces_0 = []
             for c in edl.get("clips", []):
                 if int(c["timeline_in_frame"]) < hook_ef and int(c["timeline_out_frame"]) > 0:
@@ -584,6 +592,8 @@ def run_step6(
                 hook_bbox["y"] = max(162, 1120 - hook_bbox["h"])
             safe_ok, _ = check_bbox_in_safe_zone(hook_bbox)
             sec_kw = (first_sent.get("keywords") or [None, None])[1] if len(first_sent.get("keywords") or []) >= 2 else ""
+            if not sec_kw and style_id == "style_01":
+                sec_kw = giant_tag if giant_tag and giant_tag != "核心重点" else "门店实拍"
             visual_elements.append({
                 "id": f"pkg_{len(visual_elements)+1:03d}",
                 "kind": "center_burst_title",

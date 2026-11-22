@@ -14,6 +14,7 @@
 | `assets/fonts/SmileySans-Oblique.ttf` | **得意黑 (Smiley Sans)** | SIL OFL 1.1 | atelier-anchor 开源发布（约 2.5 MB） |
 | `assets/fonts/SourceHanSerifCN-Bold.otf` | **思源宋体粗体 (Source Han Serif CN Bold)** | SIL OFL 1.1 | Adobe & Google 开源发布（约 11 MB） |
 | `assets/fonts/SourceHanSerifCN-Heavy.otf` | **思源宋体特粗 (Source Han Serif CN Heavy)** | SIL OFL 1.1 | Adobe & Google 开源发布（约 11 MB） |
+| `assets/fonts/MaShanZheng-Regular.ttf` | **马善政毛笔楷书 (Ma Shan Zheng)** | SIL OFL 1.1 | Google Fonts 开源毛笔手写体，全平台免费商用（约 5.6 MB） |
 
 > 注：
 > 1. 所有导出与 `#22` 质检均通过 `common.is_verified_commercial_font()` **严格拦截无商用授权的系统私有字体（如苹方/华文黑体/微软雅黑）**；若用户本机额外合法安装了思源黑体（Source Han Sans CN / Noto Sans CJK SC，SIL OFL 1.1），系统也会按白名单识别放行（该字体未随仓打包以控制体积）。
