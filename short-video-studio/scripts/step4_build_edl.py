@@ -830,6 +830,47 @@ def run_step4(
     broll_actual_dur = sum(float(c["duration_sec"]) for c in clips if c.get("track_role") != "a_roll")
     broll_ratio_actual = round(broll_actual_dur / max(0.1, total_dur), 3)
 
+    # 按风格谱 pip_composition_spec 为分镜挂载真·画中画构图参数 (pip_layout)
+    pip_spec = (style_entry or {}).get("pip_composition_spec") or {}
+    pip_mode = str(pip_spec.get("mode") or "")
+    pip_applied_count = 0
+    if pip_mode and clips:
+        live_brolls = [m for m in broll_pool if m.get("role") == "b_roll"] or list(broll_pool)
+        full_frame_modes = {
+            "black_polaroid_frame_pip",
+            "blur_bg_center_card_pip",
+            "dark_doc_circle_avatar_pip",
+            "linear_split_feather_pip",
+        }
+        for c_i, c_obj in enumerate(clips):
+            if c_obj.get("track_role") == "code_broll":
+                continue
+            should_apply = (
+                pip_mode in full_frame_modes
+                or c_i == 0
+                or c_obj.get("track_role") == "b_roll"
+                or (c_i % 2 == 0)
+            )
+            if not should_apply:
+                continue
+            sec_media = str(c_obj.get("media_path") or "")
+            sec_in = float(c_obj.get("source_in_sec", 0.0))
+            if c_obj.get("track_role") == "a_roll" and live_brolls:
+                pick_m = live_brolls[c_i % len(live_brolls)]
+                sec_media = str(pick_m.get("normalized_mp4") or sec_media)
+                sec_in = float(pick_m.get("best_in_sec", 0.0))
+            elif c_obj.get("track_role") != "a_roll" and usable_arolls:
+                pick_a = usable_arolls[c_i % len(usable_arolls)]
+                sec_media = str(pick_a.get("normalized_mp4") or sec_media)
+                sec_in = 0.0
+            c_obj["pip_layout"] = {
+                **pip_spec,
+                "secondary_media_path": sec_media,
+                "secondary_in_sec": round(max(0.0, sec_in), 4),
+                "secondary_out_sec": round(max(0.0, sec_in) + float(c_obj.get("duration_sec", 1.5)), 4),
+            }
+            pip_applied_count += 1
+
     # 真实测算首帧视觉密度：文件存在且非废画、且非低对比死黑
     first_c = clips[0] if clips else {}
     first_item = next((m for m in manifest.get("items", []) if m.get("normalized_mp4") == first_c.get("media_path")), {})
@@ -853,6 +894,8 @@ def run_step4(
         "j_cut_applied_count": jcut_real_count,
         "l_cut_applied_count": lcut_real_count,
         "punch_in_count": punch_in_count,
+        "pip_mode": pip_mode or "none",
+        "pip_applied_count": pip_applied_count,
         "shot_duration_cv": shot_cv,
         "code_broll_ratio": code_ratio,
         "broll_ratio_target": round(broll_target_ratio, 3),

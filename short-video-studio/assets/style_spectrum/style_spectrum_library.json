@@ -342,7 +342,32 @@
         "quote_citation_card": false,
         "giant_impact_count": 2,
         "capsule_bg_subtitle": true,
-        "black_polaroid_frame": false
+        "black_polaroid_frame": false,
+        "pip_mode": "corner_circle_evidence_pip",
+        "giant_mode": "giant_smash_single"
+      },
+      "pip_composition_spec": {
+        "mode": "corner_circle_evidence_pip",
+        "window_bbox": {
+          "x": 692,
+          "y": 236,
+          "w": 288,
+          "h": 288
+        },
+        "mask_shape": "circle",
+        "border_hex": "#38BDF8",
+        "border_width": 5,
+        "tag_text": "实操画面",
+        "apply_on": "all_clips"
+      },
+      "giant_text_spec": {
+        "mode": "giant_smash_single",
+        "font_size_px": 130,
+        "fg_hex": "#38BDF8",
+        "accent_hex": "#FFF589",
+        "stroke_hex": "#0B0F19",
+        "stroke_width": 9,
+        "tag_label": "核心拆解"
       }
     },
     {
@@ -375,14 +400,17 @@
         "ai_matting_cutout": 3,
         "white_paper_outline": false,
         "mask_shapes": {
-          "镜面": 1
+          "镜面": 1,
+          "矩形": 2
         },
         "persistent_top_bar": false,
         "quote_citation_card": false,
-        "giant_impact_count": 0,
+        "giant_impact_count": 3,
         "capsule_bg_subtitle": true,
         "black_polaroid_frame": false,
-        "pure_kinetic_flower_flow": false
+        "pure_kinetic_flower_flow": false,
+        "pip_mode": "dual_rect_grid_pip",
+        "giant_mode": "giant_dual_clash"
       },
       "meta": {
         "width": 1080,
@@ -587,9 +615,32 @@
         "stamp_color": "#B71C1C",
         "end_card_color": "#FFBF17",
         "stroke_color": "#000000",
-        "borderless": false,
+        "borderless": true,
         "persistent_top_bar": false,
         "quote_citation_card": false
+      },
+      "pip_composition_spec": {
+        "mode": "dual_rect_grid_pip",
+        "window_bbox": {
+          "x": 84,
+          "y": 238,
+          "w": 912,
+          "h": 440
+        },
+        "mask_shape": "rounded_rect",
+        "border_hex": "#BCFF00",
+        "border_width": 4,
+        "tag_text": "对比直击",
+        "apply_on": "all_clips"
+      },
+      "giant_text_spec": {
+        "mode": "giant_dual_clash",
+        "font_size_px": 134,
+        "fg_hex": "#BCFF00",
+        "accent_hex": "#FF2438",
+        "stroke_hex": "#000000",
+        "stroke_width": 10,
+        "tag_label": "避坑真相"
       }
     },
     {
@@ -631,7 +682,9 @@
         "giant_impact_count": 10,
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
-        "pure_kinetic_flower_flow": false
+        "pure_kinetic_flower_flow": false,
+        "pip_mode": "linear_split_feather_pip",
+        "giant_mode": "giant_smash_single"
       },
       "meta": {
         "width": 1080,
@@ -841,6 +894,35 @@
         "borderless": true,
         "persistent_top_bar": true,
         "quote_citation_card": true
+      },
+      "pip_composition_spec": {
+        "mode": "linear_split_feather_pip",
+        "window_bbox": {
+          "x": 0,
+          "y": 140,
+          "w": 1080,
+          "h": 680
+        },
+        "book_card_bbox": {
+          "x": 150,
+          "y": 248,
+          "w": 780,
+          "h": 440
+        },
+        "mask_shape": "linear_feather",
+        "border_hex": "#FFF589",
+        "border_width": 3,
+        "tag_text": "深度例证",
+        "apply_on": "all_clips"
+      },
+      "giant_text_spec": {
+        "mode": "giant_smash_single",
+        "font_size_px": 146,
+        "fg_hex": "#FFF589",
+        "accent_hex": "#FF4D4F",
+        "stroke_hex": "#000000",
+        "stroke_width": 10,
+        "tag_label": "深度洞察"
       }
     },
     {
@@ -880,7 +962,9 @@
         "giant_impact_count": 4,
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
-        "pure_kinetic_flower_flow": false
+        "pure_kinetic_flower_flow": false,
+        "pip_mode": "black_polaroid_frame_pip",
+        "giant_mode": "giant_vertical_seal"
       },
       "meta": {
         "width": 1080,
@@ -1089,6 +1173,30 @@
         "borderless": true,
         "persistent_top_bar": false,
         "quote_citation_card": false
+      },
+      "pip_composition_spec": {
+        "mode": "black_polaroid_frame_pip",
+        "frame_bg_hex": "#1B1917",
+        "window_bbox": {
+          "x": 72,
+          "y": 252,
+          "w": 936,
+          "h": 1220
+        },
+        "mask_shape": "rounded_rect",
+        "border_hex": "#E6DEC8",
+        "border_width": 4,
+        "tag_text": "美学实景",
+        "apply_on": "all_clips"
+      },
+      "giant_text_spec": {
+        "mode": "giant_vertical_seal",
+        "font_size_px": 134,
+        "fg_hex": "#FFFFFF",
+        "accent_hex": "#E2B887",
+        "stroke_hex": "#1E1B18",
+        "stroke_width": 8,
+        "tag_label": "主理人手记"
       }
     },
     {
@@ -1332,7 +1440,32 @@
         "quote_citation_card": false,
         "giant_impact_count": 2,
         "capsule_bg_subtitle": false,
-        "black_polaroid_frame": false
+        "black_polaroid_frame": false,
+        "pip_mode": "white_outline_cutout_pip",
+        "giant_mode": "giant_smash_single"
+      },
+      "pip_composition_spec": {
+        "mode": "white_outline_cutout_pip",
+        "window_bbox": {
+          "x": 664,
+          "y": 236,
+          "w": 320,
+          "h": 412
+        },
+        "mask_shape": "white_outline_cutout",
+        "border_hex": "#FFF8E7",
+        "border_width": 8,
+        "tag_text": "结构特写",
+        "apply_on": "all_clips"
+      },
+      "giant_text_spec": {
+        "mode": "giant_smash_single",
+        "font_size_px": 130,
+        "fg_hex": "#FFE066",
+        "accent_hex": "#FF6B35",
+        "stroke_hex": "#1A1412",
+        "stroke_width": 9,
+        "tag_label": "工艺内幕"
       }
     },
     {
@@ -1372,7 +1505,9 @@
         "giant_impact_count": 0,
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": true,
-        "pure_kinetic_flower_flow": false
+        "pure_kinetic_flower_flow": false,
+        "pip_mode": "black_polaroid_frame_pip",
+        "giant_mode": "giant_vertical_seal"
       },
       "meta": {
         "width": 1080,
@@ -1580,6 +1715,30 @@
         "borderless": true,
         "persistent_top_bar": true,
         "quote_citation_card": false
+      },
+      "pip_composition_spec": {
+        "mode": "black_polaroid_frame_pip",
+        "frame_bg_hex": "#07090D",
+        "window_bbox": {
+          "x": 74,
+          "y": 284,
+          "w": 932,
+          "h": 1190
+        },
+        "mask_shape": "rounded_rect",
+        "border_hex": "#EAD4A6",
+        "border_width": 3,
+        "tag_text": "慢调纪实",
+        "apply_on": "all_clips"
+      },
+      "giant_text_spec": {
+        "mode": "giant_vertical_seal",
+        "font_size_px": 128,
+        "fg_hex": "#FFF589",
+        "accent_hex": "#FFFFFF",
+        "stroke_hex": "#000000",
+        "stroke_width": 8,
+        "tag_label": "内心独白"
       }
     },
     {
@@ -1622,7 +1781,9 @@
         "giant_impact_count": 3,
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
-        "pure_kinetic_flower_flow": false
+        "pure_kinetic_flower_flow": false,
+        "pip_mode": "white_outline_cutout_pip",
+        "giant_mode": "giant_smash_single"
       },
       "meta": {
         "width": 1080,
@@ -1831,113 +1992,144 @@
         "borderless": true,
         "persistent_top_bar": false,
         "quote_citation_card": false
+      },
+      "pip_composition_spec": {
+        "mode": "white_outline_cutout_pip",
+        "window_bbox": {
+          "x": 656,
+          "y": 232,
+          "w": 332,
+          "h": 428
+        },
+        "mask_shape": "white_outline_cutout",
+        "border_hex": "#FFFFFF",
+        "border_width": 9,
+        "tag_text": "人像贴纸解说",
+        "apply_on": "all_clips"
+      },
+      "giant_text_spec": {
+        "mode": "giant_smash_single",
+        "font_size_px": 144,
+        "fg_hex": "#FFBF17",
+        "accent_hex": "#FF2438",
+        "stroke_hex": "#000000",
+        "stroke_width": 10,
+        "tag_label": "避坑警告"
       }
     },
     {
       "style_id": "style_08",
       "index": 8,
-      "style_name_cn": "专家稳镜长谈 · 顶栏斜杠金句与圆角底框风",
-      "archetype_id": "arch_05_cinema_slow_space",
+      "style_name_cn": "毛玻璃虚化画中画 · 圆窗评论与双行巨字对撞风",
+      "archetype_id": "arch_02_high_contrast_story",
       "recommended_track": "creator",
       "domain_tags": [
-        "心理疗愈",
-        "家庭教育",
-        "高客单咨询",
-        "专家访谈"
+        "社会热点评论",
+        "影视文化锐评",
+        "商业观点拆解",
+        "行业深度辟谣"
       ],
-      "plain_cn_pitch": "不搞眼花缭乱的碎切，用超稳镜头展现专家松弛感，顶部挂明黄斜杠主标题、底部配圆角底框字幕，极易建立高客单信任。",
+      "plain_cn_pitch": "底层原画面做毛玻璃高斯虚化，中央悬浮圆角竖屏画中画与圆形评论小窗，搭配顶部常驻话题栏、上下双色对撞巨字与大引号金句卡，观点锋利、信息密度极高。",
       "source_filename": "style_08_preset",
-      "commercial_safe_font": "AlimamaShuHeiTi-Bold.otf",
-      "source_jianying_font": "方正超粗黑繁体",
+      "commercial_safe_font": "SmileySans-Oblique.ttf",
+      "source_jianying_font": "得意黑",
       "whitebox_source": {
         "project_name": "style_08_preset",
         "is_whitebox_jianying": true,
         "high_broll_variant": false,
         "canvas": "1080x1920",
-        "total_tracks": 11,
-        "duration_sec": 58.47,
-        "keyframe_per_min": 34.9,
-        "vip_asset_ratio": 0.006
+        "total_tracks": 12,
+        "duration_sec": 23.53,
+        "keyframe_per_min": 20.4,
+        "vip_asset_ratio": 0.048
       },
       "packaging_techniques": {
-        "ai_matting_cutout": 0,
+        "ai_matting_cutout": 1,
         "white_paper_outline": false,
-        "mask_shapes": {},
+        "mask_shapes": {
+          "圆形": 4,
+          "矩形": 1
+        },
         "persistent_top_bar": true,
-        "quote_citation_card": false,
-        "giant_impact_count": 2,
-        "capsule_bg_subtitle": true,
+        "quote_citation_card": true,
+        "giant_impact_count": 3,
+        "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
-        "pure_kinetic_flower_flow": false
+        "pure_kinetic_flower_flow": false,
+        "blur_bg_center_pip": true,
+        "multi_tag_burst": true,
+        "pip_mode": "blur_bg_center_card_pip",
+        "giant_mode": "giant_dual_clash"
       },
       "meta": {
         "width": 1080,
         "height": 1920,
         "aspect": "9:16",
         "fps": 30.0,
-        "duration_sec": 58.47,
+        "duration_sec": 23.53,
         "benchmark_source": "builtin_preset_style_08"
       },
       "shot_distribution": {
-        "total_shots": 2,
-        "hard_cuts": 2,
-        "jump_cuts": 1,
-        "broll_overlays": 0,
-        "median_sec": 29.23,
-        "aroll_median_sec": 29.23,
-        "broll_coverage_ratio": 0.3,
-        "fast_cuts_under_1s_ratio": 0.18
+        "total_shots": 14,
+        "hard_cuts": 14,
+        "jump_cuts": 7,
+        "broll_overlays": 3,
+        "median_sec": 1.48,
+        "aroll_median_sec": 1.45,
+        "broll_coverage_ratio": 0.2,
+        "fast_cuts_under_1s_ratio": 0.29
       },
       "beat_alignment": {
-        "estimated_bpm": 92.0,
-        "beat_strength_score": 0.045,
+        "estimated_bpm": 118.0,
+        "beat_strength_score": 0.082,
         "bgm_presence": "continuous_bgm_bed",
-        "cut_beat_align_2f_pct": 52.0,
-        "cut_event_align_1f_pct": 92.0,
-        "cut_event_align_3f_pct": 98.0,
-        "j_cut_detected_pct": 0.0,
-        "j_cut_median_lead_frames": 0.0,
+        "cut_beat_align_2f_pct": 68.0,
+        "cut_event_align_1f_pct": 94.0,
+        "cut_event_align_3f_pct": 99.0,
+        "j_cut_detected_pct": 21.4,
+        "j_cut_median_lead_frames": 3.0,
         "recommended_j_cut_frames": 3
       },
       "audio_and_sfx": {
         "integrated_lufs": -14.0,
-        "sfx_per_min_measured": 29.8,
-        "sfx_per_min_target": 29.8,
+        "sfx_per_min_measured": 30.6,
+        "sfx_per_min_target": 30.6,
         "voice_bgm_snr_target_db": 11.5,
         "dual_bgm_enabled": false,
         "sfx_cut_offset_ms": 0.0,
         "signature_jianying_sfx": [
-          "综艺紧张噔噔",
-          "钱 到账",
-          "诡异的滴水声"
+          "枪拉栓",
+          "综艺悬疑 不对劲",
+          "亮一下",
+          "打字（字幕专用）"
         ]
       },
       "subtitle_spec": {
-        "font_family": "Alimama ShuHeiTi",
+        "font_family": "Smiley Sans",
         "font_candidates": [
-          "AlimamaShuHeiTi-Bold.otf",
-          "SourceHanSerifCN-Bold.otf",
-          "SmileySans-Oblique.ttf"
+          "SmileySans-Oblique.ttf",
+          "SourceHanSerifCN-Heavy.otf",
+          "AlimamaShuHeiTi-Bold.otf"
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 58,
-        "keyword_scale": 1.12,
+        "font_size_1080p_px": 62,
+        "keyword_scale": 1.18,
         "primary_color": "#FFFFFF",
-        "keyword_color": "#FFDE00",
+        "keyword_color": "#FFF589",
         "stroke_color": "#000000",
-        "stroke_width": 3,
-        "bg_box_color": "#1E2229CC",
-        "bg_radius": 18,
-        "safe_y_ratio": 0.693,
-        "animation": "in:缩小",
+        "stroke_width": 5,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
+        "safe_y_ratio": 0.695,
+        "animation": "in:折叠",
         "punct_stripped": true,
-        "measured_y_center_ratio": 0.693,
-        "measured_animation_raw": "in:缩小/in:跃进/in:向右缓入",
-        "safe_y_px_1080x1920": 1331,
+        "measured_y_center_ratio": 0.695,
+        "measured_animation_raw": "in:折叠/in:缩小/in:发光模糊/in:打字光标",
+        "safe_y_px_1080x1920": 1334,
         "safe_y_px_1920x1080": 800,
         "shadow": true,
-        "shadow_color": "#000000C8",
+        "shadow_color": "#000000D8",
         "shadow_offset": [
           2,
           3
@@ -1947,85 +2139,89 @@
         "symmetry_max_width_px": 640
       },
       "color_and_lut": {
-        "y_mean_255": 145.0,
-        "y_p05_255": 80.0,
-        "y_p50_255": 145.0,
-        "y_p95_255": 213.0,
-        "dynamic_range_255": 149.0,
-        "dark_ratio_pct": 10.3,
-        "bright_ratio_pct": 16.4,
-        "sat_mean_pct": 27.2,
-        "warmth_index": 24.4,
-        "tone_mood": "均衡自然通透调",
+        "y_mean_255": 56.6,
+        "y_p05_255": 14.0,
+        "y_p50_255": 56.6,
+        "y_p95_255": 176.0,
+        "dynamic_range_255": 162.0,
+        "dark_ratio_pct": 54.0,
+        "bright_ratio_pct": 6.2,
+        "sat_mean_pct": 45.6,
+        "warmth_index": 9.5,
+        "tone_mood": "电影感冷暗虚化底与高反差暖黄焦点",
         "shadow_rgb": [
-          32.0,
-          34.0,
-          38.0
+          22.0,
+          20.0,
+          24.0
         ],
         "midtone_rgb": [
-          145.0,
-          145.0,
-          145.0
+          68.0,
+          58.0,
+          54.0
         ],
         "highlight_rgb": [
-          225.0,
-          224.0,
-          220.0
+          236.0,
+          228.0,
+          208.0
         ],
         "top5_palette_hex": [
-          "#B2AFA8",
-          "#533D2F",
-          "#B8CBDE",
-          "#837A74",
-          "#C08159"
+          "#181418",
+          "#5A2418",
+          "#FFF589",
+          "#FF1837",
+          "#D8D2C8"
         ],
         "lut_file": "style_08.cube",
         "lut_size": 17,
-        "lut_strength": 0.62,
-        "contrast_gain": 1.109,
-        "sat_scale": 1.03,
+        "lut_strength": 0.64,
+        "contrast_gain": 1.12,
+        "sat_scale": 1.06,
         "shadow_tint_rgb": [
-          0.0,
-          0.0,
-          0.0
+          -0.02,
+          -0.01,
+          0.02
         ],
         "highlight_tint_rgb": [
-          0.0,
-          0.0,
-          0.0
+          0.03,
+          0.02,
+          -0.01
         ],
-        "css_filter_approx": "brightness(1.014) contrast(1.109) saturate(1.03)",
+        "css_filter_approx": "brightness(0.96) contrast(1.12) saturate(1.06)",
         "lut_relative_path": "assets/style_spectrum/luts/style_08.cube"
       },
       "opening_structure": {
-        "0_to_3s_pattern": "前3秒完成 2 次切镜 + 0ms 咬合入场音效(综艺紧张噔噔) + 高反差核心词(#FFDE00)直接亮明观点",
-        "hook_formula": "高频疑问/反常识开篇 + 0ms音画同帧爆点 + 视觉分层花字",
-        "first_frame_density": "高（主体清晰 + 顶部或中区核心关键词 + 0帧零延迟上屏）",
+        "0_to_3s_pattern": "前3秒毛玻璃虚化底+中央悬浮竖屏画中画开场，2.37s 切入圆形蒙版画中画并上下对撞砸出 140px 双色巨字，0ms 咬合悬疑音效",
+        "hook_formula": "虚化底悬浮画中画证据卡 + 上下双行巨字对撞 + 顶栏常驻争议话题",
+        "first_frame_density": "极高（毛玻璃虚化底 + 中央悬浮画中画窗 + 顶部常驻栏 + 0帧强描边字幕）",
         "first_3s_cuts_count": 2,
-        "hook_intro_sec": 3.2
+        "hook_intro_sec": 2.37
       },
       "title_cover_layout": {
         "layout_id": "top_giant_bottom_sub",
-        "layout_name": "专家稳镜长谈 · 顶栏斜杠金句与圆角底框风",
+        "layout_name": "毛玻璃虚化画中画 · 圆窗评论与双行巨字对撞风",
         "grid_desc": "严格遵循内置 3:4 封面安全区构图（top_giant_bottom_sub），主次字号比 >= 1.8",
-        "main_sub_ratio": 1.85,
-        "highlight_style": "主色 #FFFFFF + 强调色 #FFDE00 + 高反差描边"
+        "main_sub_ratio": 1.88,
+        "highlight_style": "主色 #FFFFFF + 柠檬黄 #FFF589 + 警示红 #FF1837 + 10px 纯黑重描边"
       },
       "transition_and_packaging": {
-        "ui_cadence": "不搞眼花缭乱的碎切，用超稳镜头展现专家松弛感，顶部挂明黄斜杠主标题、底部配圆角底框字幕，极易建立高客单信任。",
+        "ui_cadence": "底层画面高斯虚化托底，中央悬浮圆角竖屏画中画与左下圆形评论画中画交替切入，顶部常驻争议话题条，中段三连拉栓弹卡与大引号金句卡，结尾超大巨字一锤定音。",
         "transitions": [
           "零缝硬切",
-          "关键帧推拉",
-          "实景叠层切入"
+          "画中画浮窗切入",
+          "圆形蒙版缩放"
         ],
         "elements": [
+          "毛玻璃虚化底+中央画中画",
+          "蒙版:圆形x4",
+          "AI抠像x1",
           "顶部常驻标题栏",
-          "巨字冲击x2",
-          "胶囊底框字幕"
+          "双行对撞巨字x3",
+          "大引号金句引语卡",
+          "三连拉栓弹卡"
         ],
-        "sfx_per_min_target": 30,
-        "visual_per_min_target": 31,
-        "broll_overlay_ratio_target": 0.3
+        "sfx_per_min_target": 31,
+        "visual_per_min_target": 43,
+        "broll_overlay_ratio_target": 0.2
       },
       "assets": {
         "lut_cube": "luts/style_08.cube"
@@ -2040,7 +2236,7 @@
       },
       "is_default_store_style": false,
       "is_default_creator_style": false,
-      "broll_overlay_ratio_target": 0.3,
+      "broll_overlay_ratio_target": 0.2,
       "broll_ambient_sound_policy": {
         "enabled": false,
         "gain_db": -10.0,
@@ -2068,20 +2264,52 @@
         "main_fade_out_sec": 1.0
       },
       "multi_zone_flower_spec": {
-        "center_burst_color": "#FFDE00",
-        "flank_color": "#FFF589",
-        "stamp_color": "#B71C1C",
-        "end_card_color": "#FFBF17",
+        "center_burst_color": "#FFF589",
+        "flank_color": "#FF1837",
+        "stamp_color": "#FF1837",
+        "end_card_color": "#FFF589",
         "stroke_color": "#000000",
-        "borderless": false,
+        "borderless": true,
         "persistent_top_bar": true,
-        "quote_citation_card": false
+        "quote_citation_card": true,
+        "multi_tag_burst": true
+      },
+      "pip_composition_spec": {
+        "mode": "blur_bg_center_card_pip",
+        "window_bbox": {
+          "x": 154,
+          "y": 244,
+          "w": 772,
+          "h": 910
+        },
+        "circle_window_bbox": {
+          "x": 112,
+          "y": 824,
+          "w": 304,
+          "h": 304
+        },
+        "mask_shape": "rounded_rect",
+        "border_hex": "#FFF589",
+        "border_width": 4,
+        "bg_blur_sigma": 22,
+        "tag_text": "热点现场",
+        "apply_on": "all_clips"
+      },
+      "giant_text_spec": {
+        "mode": "giant_dual_clash",
+        "font_size_px": 142,
+        "fg_hex": "#FFFFFF",
+        "accent_hex": "#FFF589",
+        "danger_hex": "#FF1837",
+        "stroke_hex": "#000000",
+        "stroke_width": 10,
+        "tag_label": "深度锐评"
       }
     },
     {
       "style_id": "style_09",
       "index": 9,
-      "style_name_cn": "暗黑纪实双格框 · 圆窗证据弹窗普法风",
+      "style_name_cn": "暗黑纪实双格框 · 圆窗主讲与顶栏证据窗普法风",
       "archetype_id": "arch_01_tech_ui_console",
       "recommended_track": "creator",
       "domain_tags": [
@@ -2090,7 +2318,7 @@
         "维权避坑",
         "商业纪实"
       ],
-      "plain_cn_pitch": "新闻纪实感黑底细金线分栏，主讲人置于圆形头像窗内，上方展示证据图与鲜红警示词，适合普法、辟谣与案件解读。",
+      "plain_cn_pitch": "纯黑纪实背景搭配上半屏暖金细框双格证据画中画窗，主讲人置于左下/中下圆形头像画中画内，配合鲜红重描边警示巨字与卷宗大引号引语卡，权威感与纪实沉浸感拉满。",
       "source_filename": "style_09_preset",
       "commercial_safe_font": "SmileySans-Oblique.ttf",
       "source_jianying_font": "得意黑 / SourceHanSerifCN-Heavy",
@@ -2113,10 +2341,13 @@
         },
         "persistent_top_bar": false,
         "quote_citation_card": true,
-        "giant_impact_count": 2,
+        "giant_impact_count": 3,
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
-        "pure_kinetic_flower_flow": false
+        "pure_kinetic_flower_flow": false,
+        "dark_doc_dual_grid_pip": true,
+        "pip_mode": "dark_doc_circle_avatar_pip",
+        "giant_mode": "giant_dual_clash"
       },
       "meta": {
         "width": 1080,
@@ -2317,13 +2548,45 @@
       },
       "multi_zone_flower_spec": {
         "center_burst_color": "#FF1837",
-        "flank_color": "#FFF589",
-        "stamp_color": "#B71C1C",
+        "flank_color": "#FFBF17",
+        "stamp_color": "#FF1837",
         "end_card_color": "#FFBF17",
         "stroke_color": "#000000",
         "borderless": true,
         "persistent_top_bar": false,
-        "quote_citation_card": true
+        "quote_citation_card": true,
+        "multi_tag_burst": true
+      },
+      "pip_composition_spec": {
+        "mode": "dark_doc_circle_avatar_pip",
+        "frame_bg_hex": "#05060A",
+        "evidence_bbox": {
+          "x": 74,
+          "y": 224,
+          "w": 932,
+          "h": 508
+        },
+        "avatar_circle_bbox": {
+          "x": 116,
+          "y": 808,
+          "w": 328,
+          "h": 328
+        },
+        "mask_shape": "circle",
+        "border_hex": "#EAD4A6",
+        "border_width": 4,
+        "dual_grid_split": true,
+        "tag_text": "卷宗物证画面",
+        "apply_on": "all_clips"
+      },
+      "giant_text_spec": {
+        "mode": "giant_dual_clash",
+        "font_size_px": 140,
+        "fg_hex": "#FF1837",
+        "accent_hex": "#FFBF17",
+        "stroke_hex": "#000000",
+        "stroke_width": 10,
+        "tag_label": "案情焦点"
       }
     },
     {
@@ -2365,7 +2628,9 @@
         "giant_impact_count": 7,
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
-        "pure_kinetic_flower_flow": false
+        "pure_kinetic_flower_flow": false,
+        "pip_mode": "white_outline_cutout_pip",
+        "giant_mode": "giant_smash_single"
       },
       "meta": {
         "width": 1080,
@@ -2575,6 +2840,29 @@
         "borderless": true,
         "persistent_top_bar": false,
         "quote_citation_card": false
+      },
+      "pip_composition_spec": {
+        "mode": "white_outline_cutout_pip",
+        "window_bbox": {
+          "x": 100,
+          "y": 238,
+          "w": 324,
+          "h": 416
+        },
+        "mask_shape": "white_outline_cutout",
+        "border_hex": "#FFE28A",
+        "border_width": 8,
+        "tag_text": "重点抠像",
+        "apply_on": "all_clips"
+      },
+      "giant_text_spec": {
+        "mode": "giant_smash_single",
+        "font_size_px": 146,
+        "fg_hex": "#FFF589",
+        "accent_hex": "#FF2438",
+        "stroke_hex": "#000000",
+        "stroke_width": 10,
+        "tag_label": "核心干货"
       }
     },
     {
@@ -2614,7 +2902,9 @@
         "giant_impact_count": 4,
         "capsule_bg_subtitle": true,
         "black_polaroid_frame": false,
-        "pure_kinetic_flower_flow": false
+        "pure_kinetic_flower_flow": false,
+        "pip_mode": "corner_circle_evidence_pip",
+        "giant_mode": "giant_numeric_trio"
       },
       "meta": {
         "width": 1080,
@@ -2825,6 +3115,29 @@
         "borderless": false,
         "persistent_top_bar": false,
         "quote_citation_card": true
+      },
+      "pip_composition_spec": {
+        "mode": "corner_circle_evidence_pip",
+        "window_bbox": {
+          "x": 684,
+          "y": 234,
+          "w": 296,
+          "h": 296
+        },
+        "mask_shape": "circle",
+        "border_hex": "#FFE28A",
+        "border_width": 5,
+        "tag_text": "圆窗例证",
+        "apply_on": "all_clips"
+      },
+      "giant_text_spec": {
+        "mode": "giant_numeric_trio",
+        "font_size_px": 138,
+        "fg_hex": "#FFE28A",
+        "accent_hex": "#FF4D4F",
+        "stroke_hex": "#000000",
+        "stroke_width": 9,
+        "tag_label": "关键法则"
       }
     },
     {
@@ -3066,7 +3379,32 @@
         "quote_citation_card": false,
         "giant_impact_count": 2,
         "capsule_bg_subtitle": true,
-        "black_polaroid_frame": false
+        "black_polaroid_frame": false,
+        "pip_mode": "dual_rect_grid_pip",
+        "giant_mode": "giant_smash_single"
+      },
+      "pip_composition_spec": {
+        "mode": "dual_rect_grid_pip",
+        "window_bbox": {
+          "x": 86,
+          "y": 236,
+          "w": 908,
+          "h": 440
+        },
+        "mask_shape": "rounded_rect",
+        "border_hex": "#38BDF8",
+        "border_width": 4,
+        "tag_text": "清单图解",
+        "apply_on": "all_clips"
+      },
+      "giant_text_spec": {
+        "mode": "giant_smash_single",
+        "font_size_px": 130,
+        "fg_hex": "#FFE066",
+        "accent_hex": "#38BDF8",
+        "stroke_hex": "#0F172A",
+        "stroke_width": 9,
+        "tag_label": "清单必看"
       }
     },
     {
@@ -3303,7 +3641,33 @@
         "quote_citation_card": true,
         "giant_impact_count": 2,
         "capsule_bg_subtitle": false,
-        "black_polaroid_frame": false
+        "black_polaroid_frame": false,
+        "pip_mode": "black_polaroid_frame_pip",
+        "giant_mode": "giant_vertical_seal"
+      },
+      "pip_composition_spec": {
+        "mode": "black_polaroid_frame_pip",
+        "frame_bg_hex": "#0B0E12",
+        "window_bbox": {
+          "x": 68,
+          "y": 258,
+          "w": 944,
+          "h": 1210
+        },
+        "mask_shape": "rounded_rect",
+        "border_hex": "#D4B483",
+        "border_width": 3,
+        "tag_text": "空间实景",
+        "apply_on": "all_clips"
+      },
+      "giant_text_spec": {
+        "mode": "giant_vertical_seal",
+        "font_size_px": 130,
+        "fg_hex": "#F3D8A4",
+        "accent_hex": "#FFFFFF",
+        "stroke_hex": "#0B0E12",
+        "stroke_width": 8,
+        "tag_label": "空间美学"
       }
     },
     {
@@ -3537,9 +3901,34 @@
         "quote_citation_card": false,
         "giant_impact_count": 4,
         "capsule_bg_subtitle": false,
-        "black_polaroid_frame": false
+        "black_polaroid_frame": false,
+        "pip_mode": "white_outline_cutout_pip",
+        "giant_mode": "giant_smash_single"
       },
-      "benchmark_reference": "builtin_store_default_preset"
+      "benchmark_reference": "builtin_store_default_preset",
+      "pip_composition_spec": {
+        "mode": "white_outline_cutout_pip",
+        "window_bbox": {
+          "x": 664,
+          "y": 240,
+          "w": 324,
+          "h": 420
+        },
+        "mask_shape": "white_outline_cutout",
+        "border_hex": "#FFFFFF",
+        "border_width": 8,
+        "tag_text": "门店实拍",
+        "apply_on": "all_clips"
+      },
+      "giant_text_spec": {
+        "mode": "giant_smash_single",
+        "font_size_px": 142,
+        "fg_hex": "#FFE066",
+        "accent_hex": "#FF3B30",
+        "stroke_hex": "#000000",
+        "stroke_width": 10,
+        "tag_label": "门店招牌"
+      }
     },
     {
       "style_id": "style_15",
@@ -3579,7 +3968,9 @@
         "giant_impact_count": 10,
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
-        "pure_kinetic_flower_flow": true
+        "pure_kinetic_flower_flow": true,
+        "pip_mode": "dual_rect_grid_pip",
+        "giant_mode": "giant_smash_single"
       },
       "meta": {
         "width": 1080,
@@ -3788,12 +4179,35 @@
         "borderless": true,
         "persistent_top_bar": false,
         "quote_citation_card": false
+      },
+      "pip_composition_spec": {
+        "mode": "dual_rect_grid_pip",
+        "window_bbox": {
+          "x": 84,
+          "y": 240,
+          "w": 912,
+          "h": 456
+        },
+        "mask_shape": "rounded_rect",
+        "border_hex": "#FFBF17",
+        "border_width": 4,
+        "tag_text": "访谈特写",
+        "apply_on": "all_clips"
+      },
+      "giant_text_spec": {
+        "mode": "giant_smash_single",
+        "font_size_px": 152,
+        "fg_hex": "#FFBF17",
+        "accent_hex": "#FFFFFF",
+        "stroke_hex": "#000000",
+        "stroke_width": 10,
+        "tag_label": "高能金句"
       }
     },
     {
       "style_id": "style_16",
       "index": 16,
-      "style_name_cn": "暗黑悬疑开篇 · 巨型数字与书摘引语卡风",
+      "style_name_cn": "暗黑悬疑开篇 · 巨型数字三连跳与线性分屏书摘风",
       "archetype_id": "arch_02_high_contrast_story",
       "recommended_track": "creator",
       "domain_tags": [
@@ -3802,7 +4216,7 @@
         "读书拆解",
         "企业家分享"
       ],
-      "plain_cn_pitch": "纯黑高反差悬疑开场，顶部逐字跳出超大号数字，中段切入名人书摘引语卡片与过半实景素材，权威感极强。",
+      "plain_cn_pitch": "暗调高反差悬疑开场，顶部 164px 巨型数字/核心字三连跳配合收银机叮咚音效，上半屏线性羽化分屏切入实景与方框书摘画中画，中段弹出打字机名人引语卡与三阶复利关键词。",
       "source_filename": "style_16_preset",
       "commercial_safe_font": "AlimamaShuHeiTi-Bold.otf",
       "source_jianying_font": "特黑体-思源黑体1号",
@@ -3820,14 +4234,19 @@
         "ai_matting_cutout": 5,
         "white_paper_outline": false,
         "mask_shapes": {
-          "线性": 2
+          "线性": 2,
+          "矩形": 1
         },
         "persistent_top_bar": false,
         "quote_citation_card": true,
         "giant_impact_count": 6,
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
-        "pure_kinetic_flower_flow": false
+        "pure_kinetic_flower_flow": false,
+        "linear_feather_split_pip": true,
+        "multi_tag_burst": true,
+        "pip_mode": "linear_split_feather_pip",
+        "giant_mode": "giant_numeric_trio"
       },
       "meta": {
         "width": 1080,
@@ -4036,7 +4455,37 @@
         "stroke_color": "#000000",
         "borderless": true,
         "persistent_top_bar": false,
-        "quote_citation_card": true
+        "quote_citation_card": true,
+        "multi_tag_burst": true
+      },
+      "pip_composition_spec": {
+        "mode": "linear_split_feather_pip",
+        "window_bbox": {
+          "x": 0,
+          "y": 140,
+          "w": 1080,
+          "h": 720
+        },
+        "book_card_bbox": {
+          "x": 144,
+          "y": 248,
+          "w": 792,
+          "h": 468
+        },
+        "mask_shape": "linear_feather",
+        "border_hex": "#D4AF37",
+        "border_width": 4,
+        "tag_text": "书摘与实证",
+        "apply_on": "all_clips"
+      },
+      "giant_text_spec": {
+        "mode": "giant_numeric_trio",
+        "font_size_px": 164,
+        "fg_hex": "#FF4D4F",
+        "accent_hex": "#FFF589",
+        "stroke_hex": "#000000",
+        "stroke_width": 11,
+        "tag_label": "底层逻辑"
       }
     },
     {
@@ -4077,7 +4526,9 @@
         "giant_impact_count": 4,
         "capsule_bg_subtitle": true,
         "black_polaroid_frame": false,
-        "pure_kinetic_flower_flow": false
+        "pure_kinetic_flower_flow": false,
+        "pip_mode": "dual_rect_grid_pip",
+        "giant_mode": "giant_dual_clash"
       },
       "meta": {
         "width": 1080,
@@ -4285,6 +4736,29 @@
         "borderless": false,
         "persistent_top_bar": false,
         "quote_citation_card": false
+      },
+      "pip_composition_spec": {
+        "mode": "dual_rect_grid_pip",
+        "window_bbox": {
+          "x": 76,
+          "y": 230,
+          "w": 928,
+          "h": 476
+        },
+        "mask_shape": "rounded_rect",
+        "border_hex": "#FFBF17",
+        "border_width": 5,
+        "tag_text": "多框细节",
+        "apply_on": "all_clips"
+      },
+      "giant_text_spec": {
+        "mode": "giant_dual_clash",
+        "font_size_px": 140,
+        "fg_hex": "#FFBF17",
+        "accent_hex": "#FFFFFF",
+        "stroke_hex": "#000000",
+        "stroke_width": 10,
+        "tag_label": "实测硬核"
       }
     },
     {
@@ -4324,7 +4798,9 @@
         "giant_impact_count": 7,
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
-        "pure_kinetic_flower_flow": false
+        "pure_kinetic_flower_flow": false,
+        "pip_mode": "blur_bg_center_card_pip",
+        "giant_mode": "giant_smash_single"
       },
       "meta": {
         "width": 1080,
@@ -4533,6 +5009,30 @@
         "borderless": true,
         "persistent_top_bar": false,
         "quote_citation_card": true
+      },
+      "pip_composition_spec": {
+        "mode": "blur_bg_center_card_pip",
+        "window_bbox": {
+          "x": 148,
+          "y": 246,
+          "w": 784,
+          "h": 896
+        },
+        "mask_shape": "rounded_rect",
+        "border_hex": "#FFE28A",
+        "border_width": 4,
+        "bg_blur_sigma": 18,
+        "tag_text": "实景带看",
+        "apply_on": "all_clips"
+      },
+      "giant_text_spec": {
+        "mode": "giant_smash_single",
+        "font_size_px": 154,
+        "fg_hex": "#FFE28A",
+        "accent_hex": "#FF2438",
+        "stroke_hex": "#000000",
+        "stroke_width": 11,
+        "tag_label": "实景探访"
       }
     },
     {
@@ -4573,7 +5073,9 @@
         "giant_impact_count": 5,
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
-        "pure_kinetic_flower_flow": false
+        "pure_kinetic_flower_flow": false,
+        "pip_mode": "dark_doc_circle_avatar_pip",
+        "giant_mode": "giant_dual_clash"
       },
       "meta": {
         "width": 1080,
@@ -4782,6 +5284,37 @@
         "borderless": true,
         "persistent_top_bar": false,
         "quote_citation_card": true
+      },
+      "pip_composition_spec": {
+        "mode": "dark_doc_circle_avatar_pip",
+        "frame_bg_hex": "#080D16",
+        "evidence_bbox": {
+          "x": 78,
+          "y": 228,
+          "w": 924,
+          "h": 496
+        },
+        "avatar_circle_bbox": {
+          "x": 636,
+          "y": 808,
+          "w": 324,
+          "h": 324
+        },
+        "mask_shape": "circle",
+        "border_hex": "#60A5FA",
+        "border_width": 4,
+        "dual_grid_split": false,
+        "tag_text": "数据背书",
+        "apply_on": "all_clips"
+      },
+      "giant_text_spec": {
+        "mode": "giant_dual_clash",
+        "font_size_px": 144,
+        "fg_hex": "#FFF589",
+        "accent_hex": "#FF2438",
+        "stroke_hex": "#000000",
+        "stroke_width": 10,
+        "tag_label": "专业解读"
       }
     },
     {
@@ -4822,7 +5355,9 @@
         "giant_impact_count": 4,
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
-        "pure_kinetic_flower_flow": false
+        "pure_kinetic_flower_flow": false,
+        "pip_mode": "dual_rect_grid_pip",
+        "giant_mode": "giant_vertical_seal"
       },
       "meta": {
         "width": 1080,
@@ -5030,6 +5565,29 @@
         "borderless": true,
         "persistent_top_bar": false,
         "quote_citation_card": false
+      },
+      "pip_composition_spec": {
+        "mode": "dual_rect_grid_pip",
+        "window_bbox": {
+          "x": 84,
+          "y": 240,
+          "w": 912,
+          "h": 460
+        },
+        "mask_shape": "rounded_rect",
+        "border_hex": "#D4A359",
+        "border_width": 4,
+        "tag_text": "古法细节",
+        "apply_on": "all_clips"
+      },
+      "giant_text_spec": {
+        "mode": "giant_vertical_seal",
+        "font_size_px": 138,
+        "fg_hex": "#FFE28A",
+        "accent_hex": "#C82829",
+        "stroke_hex": "#1B120C",
+        "stroke_width": 9,
+        "tag_label": "传统智慧"
       }
     },
     {
@@ -5069,7 +5627,9 @@
         "giant_impact_count": 4,
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
-        "pure_kinetic_flower_flow": false
+        "pure_kinetic_flower_flow": false,
+        "pip_mode": "white_outline_cutout_pip",
+        "giant_mode": "giant_smash_single"
       },
       "meta": {
         "width": 1080,
@@ -5280,6 +5840,29 @@
         "borderless": true,
         "persistent_top_bar": false,
         "quote_citation_card": false
+      },
+      "pip_composition_spec": {
+        "mode": "white_outline_cutout_pip",
+        "window_bbox": {
+          "x": 664,
+          "y": 238,
+          "w": 324,
+          "h": 416
+        },
+        "mask_shape": "white_outline_cutout",
+        "border_hex": "#FFFFFF",
+        "border_width": 8,
+        "tag_text": "工艺特写",
+        "apply_on": "all_clips"
+      },
+      "giant_text_spec": {
+        "mode": "giant_smash_single",
+        "font_size_px": 142,
+        "fg_hex": "#FFF589",
+        "accent_hex": "#FF4D4F",
+        "stroke_hex": "#000000",
+        "stroke_width": 10,
+        "tag_label": "实战特写"
       }
     },
     {
@@ -5319,7 +5902,9 @@
         "giant_impact_count": 4,
         "capsule_bg_subtitle": true,
         "black_polaroid_frame": false,
-        "pure_kinetic_flower_flow": false
+        "pure_kinetic_flower_flow": false,
+        "pip_mode": "corner_circle_evidence_pip",
+        "giant_mode": "giant_numeric_trio"
       },
       "meta": {
         "width": 1080,
@@ -5527,6 +6112,29 @@
         "borderless": false,
         "persistent_top_bar": true,
         "quote_citation_card": true
+      },
+      "pip_composition_spec": {
+        "mode": "corner_circle_evidence_pip",
+        "window_bbox": {
+          "x": 98,
+          "y": 242,
+          "w": 292,
+          "h": 292
+        },
+        "mask_shape": "circle",
+        "border_hex": "#FFF589",
+        "border_width": 5,
+        "tag_text": "图解例证",
+        "apply_on": "all_clips"
+      },
+      "giant_text_spec": {
+        "mode": "giant_numeric_trio",
+        "font_size_px": 142,
+        "fg_hex": "#FFF589",
+        "accent_hex": "#FF2438",
+        "stroke_hex": "#000000",
+        "stroke_width": 10,
+        "tag_label": "例证拆解"
       }
     },
     {
@@ -5566,7 +6174,9 @@
         "giant_impact_count": 1,
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
-        "pure_kinetic_flower_flow": false
+        "pure_kinetic_flower_flow": false,
+        "pip_mode": "black_polaroid_frame_pip",
+        "giant_mode": "giant_vertical_seal"
       },
       "meta": {
         "width": 1080,
@@ -5774,6 +6384,30 @@
         "borderless": true,
         "persistent_top_bar": false,
         "quote_citation_card": true
+      },
+      "pip_composition_spec": {
+        "mode": "black_polaroid_frame_pip",
+        "frame_bg_hex": "#0A0C10",
+        "window_bbox": {
+          "x": 72,
+          "y": 264,
+          "w": 936,
+          "h": 1196
+        },
+        "mask_shape": "rounded_rect",
+        "border_hex": "#E2C799",
+        "border_width": 3,
+        "tag_text": "纪实画框",
+        "apply_on": "all_clips"
+      },
+      "giant_text_spec": {
+        "mode": "giant_vertical_seal",
+        "font_size_px": 148,
+        "fg_hex": "#FFFFFF",
+        "accent_hex": "#E2C799",
+        "stroke_hex": "#000000",
+        "stroke_width": 9,
+        "tag_label": "深度旁白"
       }
     },
     {
@@ -5813,7 +6447,9 @@
         "giant_impact_count": 3,
         "capsule_bg_subtitle": true,
         "black_polaroid_frame": false,
-        "pure_kinetic_flower_flow": false
+        "pure_kinetic_flower_flow": false,
+        "pip_mode": "corner_circle_evidence_pip",
+        "giant_mode": "giant_smash_single"
       },
       "meta": {
         "width": 1080,
@@ -6022,6 +6658,29 @@
         "borderless": false,
         "persistent_top_bar": true,
         "quote_citation_card": false
+      },
+      "pip_composition_spec": {
+        "mode": "corner_circle_evidence_pip",
+        "window_bbox": {
+          "x": 688,
+          "y": 240,
+          "w": 292,
+          "h": 292
+        },
+        "mask_shape": "circle",
+        "border_hex": "#FFBF17",
+        "border_width": 5,
+        "tag_text": "高燃特写",
+        "apply_on": "all_clips"
+      },
+      "giant_text_spec": {
+        "mode": "giant_smash_single",
+        "font_size_px": 148,
+        "fg_hex": "#FFBF17",
+        "accent_hex": "#FF1837",
+        "stroke_hex": "#000000",
+        "stroke_width": 10,
+        "tag_label": "高燃盘点"
       }
     }
   ]

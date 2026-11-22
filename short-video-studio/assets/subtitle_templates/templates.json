@@ -361,35 +361,35 @@
       "max_chars_per_line": 10
     },
     "style_08": {
-      "name": "[style_08] 专家稳镜长谈 · 顶栏斜杠金句与圆角底框风",
+      "name": "[style_08] 毛玻璃虚化画中画 · 圆窗评论与双行巨字对撞风",
       "recommended_track": "creator",
-      "archetype_id": "arch_05_cinema_slow_space",
+      "archetype_id": "arch_02_high_contrast_story",
       "font_candidates": [
-        "AlimamaShuHeiTi-Bold.otf",
-        "SourceHanSerifCN-Bold.otf",
-        "SmileySans-Oblique.ttf"
+        "SmileySans-Oblique.ttf",
+        "SourceHanSerifCN-Heavy.otf",
+        "AlimamaShuHeiTi-Bold.otf"
       ],
-      "license": "SIL OFL 1.1 / 阿里妈妈免费商用开源字体链",
-      "font_size": 58,
-      "keyword_scale": 1.12,
+      "license": "SIL OFL 1.1 / 得意黑与思源免费商用开源字体链",
+      "font_size": 62,
+      "keyword_scale": 1.18,
       "primary_color": "#FFFFFF",
-      "keyword_color": "#FFDE00",
+      "keyword_color": "#FFF589",
       "stroke_color": "#000000",
-      "stroke_width": 3,
-      "bg_box_color": "#1E2229CC",
-      "bg_radius": 18,
-      "safe_y_center": 1331,
+      "stroke_width": 5,
+      "bg_box_color": "#00000000",
+      "bg_radius": 0,
+      "safe_y_center": 1334,
       "safe_x_min": 220,
       "safe_x_max": 860,
       "bilingual": false,
-      "animation": "in:缩小",
+      "animation": "in:折叠",
       "punct_stripped": true,
       "lut_cube": "assets/style_spectrum/luts/style_08.cube",
-      "ass_style": "Style: Default,Alimama ShuHeiTi,58,&H00FFFFFF,&H0000DEFF,&H00000000,&HFF000000,-1,0,0,0,100,100,1,0,1,3,2,2,220,220,460,1",
+      "ass_style": "Style: Default,Smiley Sans,62,&H00FFFFFF,&H0089F5FF,&H00000000,&HFF000000,-1,0,0,0,100,100,1,0,1,5,2,2,220,220,460,1",
       "symmetry_center_x": 540,
       "symmetry_max_width_px": 640,
       "shadow": true,
-      "shadow_color": "#000000C8",
+      "shadow_color": "#000000D8",
       "shadow_offset": [
         2,
         3
@@ -397,7 +397,7 @@
       "max_chars_per_line": 11
     },
     "style_09": {
-      "name": "[style_09] 暗黑纪实双格框 · 圆窗证据弹窗普法风",
+      "name": "[style_09] 暗黑纪实双格框 · 圆窗主讲与顶栏证据窗普法风",
       "recommended_track": "creator",
       "archetype_id": "arch_01_tech_ui_console",
       "font_candidates": [
@@ -649,7 +649,7 @@
       "max_chars_per_line": 10
     },
     "style_16": {
-      "name": "[style_16] 暗黑悬疑开篇 · 巨型数字与书摘引语卡风",
+      "name": "[style_16] 暗黑悬疑开篇 · 巨型数字三连跳与线性分屏书摘风",
       "recommended_track": "creator",
       "archetype_id": "arch_02_high_contrast_story",
       "font_candidates": [

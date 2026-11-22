@@ -45,6 +45,7 @@ from common import (
     get_wav_duration_sec,
     hex_to_rgba,
     load_style_applied,
+    load_style_spectrum_entry,
     load_subtitle_templates,
     maybe_reexec_in_venv,
     parse_manifest_faces,
@@ -61,7 +62,7 @@ if __name__ == "__main__":
 
 from generate_code_broll import resolve_style_palette
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 
 def parse_hex_rgba(hex_str: str, default_alpha: int = 255) -> Tuple[int, int, int, int]:
@@ -336,27 +337,175 @@ def render_packaging_png(
             fg_rgba = (255, 245, 137, 255)
         probe = Image.new("RGBA", (8, 8), (0, 0, 0, 0))
         pdraw = ImageDraw.Draw(probe)
-        fnt, fitted = _fit_line(pdraw, text, font_path, SUBTITLE_SYMMETRIC_MAX_W - 48, 36, 22)
+        fnt, fitted = _fit_line(pdraw, text, font_path, SUBTITLE_SYMMETRIC_MAX_W - 48, 34, 22)
         bb = pdraw.textbbox((0, 0), fitted, font=fnt)
-        tw, th = max(40, bb[2] - bb[0]), max(24, bb[3] - bb[1])
+        tw, th = max(40, bb[2] - bb[0]), max(22, bb[3] - bb[1])
         w = min(SUBTITLE_SYMMETRIC_MAX_W, tw + 56)
-        h = max(62, th + 26)
+        h = max(56, th + 24)
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
-        draw.rounded_rectangle([(0, 0), (w - 1, h - 1)], radius=h // 2, fill=(18, 22, 28, 218), outline=fg_rgba, width=2)
+        draw.rounded_rectangle([(0, 0), (w - 1, h - 1)], radius=h // 2, fill=(16, 20, 28, 228), outline=fg_rgba, width=3)
         draw.text((w // 2, h // 2), fitted, font=fnt, fill=fg_rgba, anchor="mm")
         return img
 
-    if elem_kind in ("center_burst_title", "stamp_tag", "end_card_cta", "quote_citation_card"):
-        # 原生无底框高冲击描边花字与双引号金句卡
-        fg_rgba = parse_hex_rgba(elem.get("fg_hex") or ("#FF4C2C" if elem_kind == "center_burst_title" else "#FFE28A"))
+    if elem_kind == "quote_citation_card":
+        # 模版级大引号毛玻璃金句引语卡（适用于 style_08 / style_09 / style_16 等）
+        raw_quote = (main_text or "“核心实证观点”").strip().strip("“”\"'")
+        sub_txt = str(elem.get("subtext") or "—— 核心观点实证").strip()
+        fg_rgba = parse_hex_rgba(elem.get("fg_hex") or "#FFF589")
+        acc_rgba = parse_hex_rgba(elem.get("accent_hex") or "#FF4D4F")
+        card_bg = (14, 18, 26, 232)
+        if contrast_ratio(fg_rgba[:3], card_bg[:3]) < 4.5:
+            fg_rgba = (255, 245, 137, 255)
+        w = min(SUBTITLE_SYMMETRIC_MAX_W, 608)
+        h = 136
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        draw.rounded_rectangle([(2, 4), (w - 3, h - 2)], radius=20, fill=card_bg, outline=fg_rgba, width=3)
+        draw.rounded_rectangle([(14, 18), (24, h - 18)], radius=5, fill=acc_rgba)
+        q_fnt = get_cached_font(font_path, 58)
+        draw.text((34, 6), "“", font=q_fnt, fill=acc_rgba, stroke_width=2, stroke_fill=(0, 0, 0, 240))
+        draw.text((w - 58, h - 68), "”", font=q_fnt, fill=acc_rgba, stroke_width=2, stroke_fill=(0, 0, 0, 240))
+        main_fnt, fitted_q = _fit_line(draw, raw_quote, font_path, w - 124, 46, 26)
+        draw.text((w // 2 + 6, 52), fitted_q, font=main_fnt, fill=fg_rgba, anchor="mm", stroke_width=4, stroke_fill=(0, 0, 0, 245))
+        sub_fnt, fitted_sub = _fit_line(draw, sub_txt, font_path, w - 140, 24, 18)
+        draw.line([(48, 92), (w - 64, 92)], fill=(255, 245, 137, 110), width=1)
+        draw.text((w // 2 + 6, 112), fitted_sub, font=sub_fnt, fill=(240, 244, 250, 245), anchor="mm", stroke_width=2, stroke_fill=(0, 0, 0, 220))
+        return img
+
+    burst_tags = [str(t).strip() for t in (elem.get("burst_tags") or []) if str(t).strip()]
+    if elem_kind in ("stamp_tag", "flower_text") and len(burst_tags) >= 2:
+        # 三连弹卡 / 三阶复利词条（适用于 style_08 / style_09 / style_16 等）
+        tags = burst_tags[:3]
+        fg_rgba = parse_hex_rgba(elem.get("fg_hex") or "#FFF589")
+        acc_rgba = parse_hex_rgba(elem.get("accent_hex") or "#FF1837")
+        w = min(SUBTITLE_SYMMETRIC_MAX_W, 616)
+        h = 98
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        n_t = len(tags)
+        gap = 12
+        cell_w = (w - gap * (n_t - 1)) // n_t
+        for ti, tg in enumerate(tags):
+            cx0 = ti * (cell_w + gap)
+            cx1 = cx0 + cell_w - 1
+            is_hi = (ti == n_t - 1)
+            bg_c = (180, 24, 38, 238) if is_hi else (18, 22, 30, 232)
+            bd_c = fg_rgba if is_hi else acc_rgba
+            tx_c = (255, 245, 137, 255) if is_hi else (255, 255, 255, 255)
+            draw.rounded_rectangle([(cx0, 8), (cx1, h - 8)], radius=16, fill=bg_c, outline=bd_c, width=3)
+            tfnt, tfit = _fit_line(draw, tg[:5], font_path, cell_w - 22, 38, 22)
+            draw.text(((cx0 + cx1) // 2, h // 2), tfit, font=tfnt, fill=tx_c, anchor="mm", stroke_width=3, stroke_fill=(0, 0, 0, 240))
+        return img
+
+    if elem_kind == "center_burst_title":
+        # 真·巨字冲击引擎（126px–164px 四大剪映爆款巨字排版）
+        giant_mode = str(elem.get("giant_mode") or "giant_smash_single")
+        req_fs = max(112, min(168, int(elem.get("font_size_px") or 140)))
+        fg_rgba = parse_hex_rgba(elem.get("fg_hex") or "#FFE28A")
+        acc_rgba = parse_hex_rgba(elem.get("accent_hex") or "#FF2438")
+        st_rgba = parse_hex_rgba(elem.get("stroke_hex") or "#000000")
+        if contrast_ratio(fg_rgba[:3], (12, 16, 22)) < 4.5:
+            fg_rgba = (255, 245, 137, 255)
+        if contrast_ratio(acc_rgba[:3], (12, 16, 22)) < 3.8:
+            acc_rgba = (255, 77, 79, 255)
+        tag_label = str(elem.get("tag_label") or "核心重点").strip()[:6]
+        raw_txt = (main_text or "核心重点").strip().strip("“”\"'")[:6]
+        max_w_cap = SUBTITLE_SYMMETRIC_MAX_W  # 640px
+
+        if giant_mode == "giant_numeric_trio":
+            # style_16, 11, 22：三格巨型数字/核心字连跳砸屏 (138px–164px)
+            chars = list(raw_txt[:3]) if len(raw_txt) >= 3 else list((raw_txt + "100")[:3])
+            w, h = max_w_cap, 164
+            img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(img)
+            # 顶部导语横签
+            tag_fnt = get_cached_font(font_path, 22)
+            draw.rounded_rectangle([(w // 2 - 96, 2), (w // 2 + 96, 32)], radius=14, fill=(18, 22, 30, 235), outline=fg_rgba, width=2)
+            draw.text((w // 2, 17), f"★ {tag_label} ★", font=tag_fnt, fill=fg_rgba, anchor="mm")
+            cell_w = 178
+            gap = 18
+            total_cw = cell_w * 3 + gap * 2
+            x_start = (w - total_cw) // 2
+            c_fnt = get_cached_font(font_path, min(104, req_fs - 36))
+            for ci, ch in enumerate(chars):
+                cx0 = x_start + ci * (cell_w + gap)
+                cx1 = cx0 + cell_w
+                c_bg = (178, 24, 36, 236) if ci == 0 else (20, 24, 34, 232)
+                c_bd = fg_rgba if ci == 0 else acc_rgba
+                c_fg = (255, 245, 137, 255) if ci > 0 else (255, 255, 255, 255)
+                draw.rounded_rectangle([(cx0, 38), (cx1, h - 10)], radius=20, fill=c_bg, outline=c_bd, width=4)
+                draw.text(((cx0 + cx1) // 2 + 3, 98 + 4), ch, font=c_fnt, fill=(0, 0, 0, 230), anchor="mm", stroke_width=8, stroke_fill=(0, 0, 0, 230))
+                draw.text(((cx0 + cx1) // 2, 98), ch, font=c_fnt, fill=c_fg, anchor="mm", stroke_width=8, stroke_fill=st_rgba)
+            return img
+
+        if giant_mode == "giant_dual_clash":
+            # style_02, 08, 09, 17, 19：左右/上下双色对撞巨字 (124px–144px)
+            mid = max(1, len(raw_txt) // 2) if len(raw_txt) >= 2 else 1
+            left_t = raw_txt[:mid]
+            right_t = raw_txt[mid:] or tag_label[:2]
+            w, h = max_w_cap, 158
+            img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(img)
+            # 背板斜切警示撞色条
+            draw.rounded_rectangle([(18, 22), (w - 18, h - 14)], radius=22, fill=(14, 18, 26, 216), outline=fg_rgba, width=3)
+            draw.polygon([(w // 2 + 10, 24), (w - 22, 24), (w - 22, h - 16), (w // 2 - 18, h - 16)], fill=(185, 22, 36, 228))
+            f_left, l_fit = _fit_line(draw, left_t, font_path, w // 2 - 36, min(112, req_fs - 24), 48)
+            f_right, r_fit = _fit_line(draw, right_t, font_path, w // 2 - 36, min(112, req_fs - 24), 48)
+            lx, ly = w // 4 + 6, h // 2 - 2
+            rx, ry = (w * 3) // 4 - 4, h // 2 + 6
+            draw.text((lx + 4, ly + 5), l_fit, font=f_left, fill=(0, 0, 0, 235), anchor="mm", stroke_width=9, stroke_fill=(0, 0, 0, 235))
+            draw.text((lx, ly), l_fit, font=f_left, fill=(255, 255, 255, 255), anchor="mm", stroke_width=9, stroke_fill=st_rgba)
+            draw.text((rx + 4, ry + 5), r_fit, font=f_right, fill=(0, 0, 0, 235), anchor="mm", stroke_width=9, stroke_fill=(0, 0, 0, 235))
+            draw.text((rx, ry), r_fit, font=f_right, fill=fg_rgba, anchor="mm", stroke_width=9, stroke_fill=st_rgba)
+            # 顶部角标
+            t_fnt = get_cached_font(font_path, 20)
+            draw.rounded_rectangle([(28, 4), (176, 32)], radius=10, fill=fg_rgba, outline=(0, 0, 0, 255), width=2)
+            draw.text((102, 18), tag_label[:4], font=t_fnt, fill=(12, 16, 22, 255), anchor="mm")
+            return img
+
+        if giant_mode == "giant_vertical_seal":
+            # style_04, 06, 13, 20, 23：130px–148px 粗宋大字 + 朱红古风方印章
+            w, h = max_w_cap, 154
+            img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(img)
+            f_main, m_fit = _fit_line(draw, raw_txt, font_path, w - 148, min(118, req_fs - 18), 54)
+            mx = (w - 76) // 2
+            my = h // 2 + 4
+            draw.text((mx + 4, my + 5), m_fit, font=f_main, fill=(0, 0, 0, 230), anchor="mm", stroke_width=9, stroke_fill=(0, 0, 0, 230))
+            draw.text((mx, my), m_fit, font=f_main, fill=fg_rgba, anchor="mm", stroke_width=9, stroke_fill=st_rgba)
+            # 右侧朱红印章签
+            sx0, sy0, sx1, sy1 = w - 122, 22, w - 30, h - 22
+            draw.rounded_rectangle([(sx0, sy0), (sx1, sy1)], radius=12, fill=(184, 28, 34, 242), outline=(255, 232, 168, 255), width=3)
+            s_fnt = get_cached_font(font_path, 24)
+            seal_t = tag_label[:4] if len(tag_label) >= 4 else (tag_label + "精选")[:4]
+            draw.text(((sx0 + sx1) // 2, sy0 + 32), seal_t[:2], font=s_fnt, fill=(255, 248, 230, 255), anchor="mm")
+            draw.text(((sx0 + sx1) // 2, sy0 + 72), seal_t[2:4], font=s_fnt, fill=(255, 248, 230, 255), anchor="mm")
+            return img
+
+        # 默认 giant_smash_single：130px–156px 超粗重描边砸屏巨字 + 顶部微导语签
+        w, h = max_w_cap, 156
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(img)
+        t_fnt = get_cached_font(font_path, 22)
+        draw.rounded_rectangle([(w // 2 - 104, 2), (w // 2 + 104, 34)], radius=14, fill=(185, 24, 38, 238), outline=fg_rgba, width=2)
+        draw.text((w // 2, 18), f"⚡ {tag_label} ⚡", font=t_fnt, fill=(255, 255, 255, 255), anchor="mm")
+        f_main, m_fit = _fit_line(draw, raw_txt, font_path, w - 36, min(122, req_fs - 18), 56)
+        mx, my = w // 2, 96
+        draw.text((mx + 5, my + 6), m_fit, font=f_main, fill=(0, 0, 0, 235), anchor="mm", stroke_width=10, stroke_fill=(0, 0, 0, 235))
+        draw.text((mx, my), m_fit, font=f_main, fill=fg_rgba, anchor="mm", stroke_width=10, stroke_fill=st_rgba)
+        return img
+
+    if elem_kind in ("stamp_tag", "end_card_cta"):
+        # 原生无底框高冲击描边花字与片尾召唤卡
+        fg_rgba = parse_hex_rgba(elem.get("fg_hex") or "#FFE28A")
         st_rgba = parse_hex_rgba(elem.get("stroke_hex") or "#000000")
         sh_rgba = (0, 0, 0, 210)
         max_w_cap = SUBTITLE_SYMMETRIC_MAX_W
-        target_fs = 74 if elem_kind == "center_burst_title" else (58 if elem_kind in ("end_card_cta", "quote_citation_card") else 56)
-        sw_draw = 6 if elem_kind == "center_burst_title" else 5
+        target_fs = 64 if elem_kind == "end_card_cta" else 62
+        sw_draw = 6
         text = main_text or "核心重点"
-        sub_txt = str(elem.get("subtext") or "").strip() if elem_kind in ("end_card_cta", "quote_citation_card") else ""
+        sub_txt = str(elem.get("subtext") or "").strip() if elem_kind == "end_card_cta" else ""
 
         tmp = Image.new("RGBA", (max_w_cap + 120, 260), (0, 0, 0, 0))
         td = ImageDraw.Draw(tmp)
@@ -421,6 +570,284 @@ def resolve_packaging_source(
     img = render_packaging_png(elem, style_id=style_id, color_plan=color_plan, font_candidates=font_candidates)
     img.save(out_png)
     return out_png
+
+
+def _crop_aspect_fill(src: Image.Image, target_w: int, target_h: int, cx_norm: float = 0.50, cy_norm: float = 0.42, zoom: float = 1.0) -> Image.Image:
+    sw, sh = src.size
+    scale = max(target_w / max(1.0, float(sw)), target_h / max(1.0, float(sh))) * max(1.0, float(zoom))
+    nw = max(target_w, int(round(sw * scale)))
+    nh = max(target_h, int(round(sh * scale)))
+    resized = src.resize((nw, nh), Image.Resampling.LANCZOS)
+    x0 = max(0, min(nw - target_w, int(round(cx_norm * nw - target_w * 0.5))))
+    y0 = max(0, min(nh - target_h, int(round(cy_norm * nh - target_h * 0.42))))
+    return resized.crop((x0, y0, x0 + target_w, y0 + target_h))
+
+
+def _paste_rounded_window(
+    canvas: Image.Image,
+    win_img: Image.Image,
+    x: int,
+    y: int,
+    radius: int = 24,
+    border_rgba: Tuple[int, int, int, int] = (255, 245, 137, 255),
+    border_w: int = 4,
+    shadow: bool = True,
+) -> None:
+    w, h = win_img.size
+    if shadow:
+        sh_layer = Image.new("RGBA", (w + 32, h + 32), (0, 0, 0, 0))
+        sdraw = ImageDraw.Draw(sh_layer)
+        sdraw.rounded_rectangle([(12, 14), (w + 18, h + 20)], radius=radius + 4, fill=(0, 0, 0, 165))
+        sh_layer = sh_layer.filter(ImageFilter.GaussianBlur(8))
+        canvas.alpha_composite(sh_layer, dest=(max(0, x - 14), max(0, y - 12)))
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).rounded_rectangle([(0, 0), (w - 1, h - 1)], radius=radius, fill=255)
+    rgba_win = win_img.convert("RGBA")
+    rgba_win.putalpha(mask)
+    canvas.alpha_composite(rgba_win, dest=(x, y))
+    if border_w > 0:
+        draw = ImageDraw.Draw(canvas)
+        draw.rounded_rectangle([(x, y), (x + w - 1, y + h - 1)], radius=radius, outline=border_rgba, width=border_w)
+
+
+def _paste_circle_window(
+    canvas: Image.Image,
+    win_img: Image.Image,
+    x: int,
+    y: int,
+    border_rgba: Tuple[int, int, int, int] = (234, 212, 166, 255),
+    border_w: int = 5,
+    outer_ring_rgba: Optional[Tuple[int, int, int, int]] = None,
+) -> None:
+    w, h = win_img.size
+    sh_layer = Image.new("RGBA", (w + 28, h + 28), (0, 0, 0, 0))
+    ImageDraw.Draw(sh_layer).ellipse([(10, 12), (w + 18, h + 20)], fill=(0, 0, 0, 170))
+    sh_layer = sh_layer.filter(ImageFilter.GaussianBlur(7))
+    canvas.alpha_composite(sh_layer, dest=(max(0, x - 12), max(0, y - 10)))
+
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).ellipse([(2, 2), (w - 3, h - 3)], fill=255)
+    rgba_win = win_img.convert("RGBA")
+    rgba_win.putalpha(mask)
+    canvas.alpha_composite(rgba_win, dest=(x, y))
+    draw = ImageDraw.Draw(canvas)
+    if outer_ring_rgba:
+        draw.ellipse([(x - 4, y - 4), (x + w + 3, y + h + 3)], outline=outer_ring_rgba, width=3)
+    if border_w > 0:
+        draw.ellipse([(x, y), (x + w - 1, y + h - 1)], outline=border_rgba, width=border_w)
+
+
+def compose_pip_frame_pil(
+    base_img: Image.Image,
+    style_id: str = "style_14",
+    secondary_img: Optional[Image.Image] = None,
+    pip_spec: Optional[Dict[str, Any]] = None,
+    font_candidates: Optional[List[str]] = None,
+    face_boxes_px: Optional[List[Dict[str, int]]] = None,
+) -> Tuple[Image.Image, List[Dict[str, int]]]:
+    """权威 7 模式剪映原生画中画（PIP）高分合成器：支持毛玻璃竖框浮窗、暗黑纪实金框双格+圆窗主讲、线性羽化分屏+书摘卡、黑底竖相框、角落圆窗例证、人像白纸边贴纸与多框拼贴。"""
+    if pip_spec is None:
+        st_entry = load_style_spectrum_entry(style_id) or {}
+        pip_spec = st_entry.get("pip_composition_spec") or {}
+    mode = str((pip_spec or {}).get("mode") or "")
+    base_rgba = base_img.convert("RGBA")
+    if base_rgba.size != (CANVAS_WIDTH, CANVAS_HEIGHT):
+        base_rgba = base_rgba.resize((CANVAS_WIDTH, CANVAS_HEIGHT), Image.Resampling.LANCZOS)
+    sec_rgba = (secondary_img.convert("RGBA") if secondary_img is not None else base_rgba)
+    font_path = find_commercial_font(font_candidates)
+    border_rgba = parse_hex_rgba(str(pip_spec.get("border_hex") or "#FFF589"))
+    border_w = max(2, int(pip_spec.get("border_width") or 4))
+    tag_text = str(pip_spec.get("tag_text") or "实证画面").strip()[:8]
+    raw_faces = list(face_boxes_px or [{"x": 380, "y": 480, "w": 320, "h": 390}])
+    f0 = raw_faces[0]
+    fcx = (f0["x"] + f0["w"] * 0.5) / float(CANVAS_WIDTH)
+    fcy = (f0["y"] + f0["h"] * 0.5) / float(CANVAS_HEIGHT)
+
+    if mode == "blur_bg_center_card_pip":
+        # style_08 / style_18：毛玻璃虚化底 + 中央悬浮圆角竖屏画中画 + 右下圆窗评论画中画
+        bg = _crop_aspect_fill(base_rgba, CANVAS_WIDTH, CANVAS_HEIGHT, fcx, fcy, zoom=1.12)
+        bg = bg.filter(ImageFilter.GaussianBlur(int(pip_spec.get("bg_blur_sigma") or 20)))
+        dark_ov = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (10, 12, 18, 96))
+        bg.alpha_composite(dark_ov)
+
+        wx, wy, ww, wh = 154, 386, 772, 810
+        fg_card = _crop_aspect_fill(base_rgba, ww, wh, fcx, fcy, zoom=1.02)
+        _paste_rounded_window(bg, fg_card, wx, wy, radius=26, border_rgba=border_rgba, border_w=border_w)
+
+        # 右下圆窗细节画中画（圆形蒙版）
+        cw = 216
+        cx_p, cy_p = wx + ww - cw + 24, wy + wh - cw - 12
+        detail_crop = _crop_aspect_fill(sec_rgba, cw, cw, 0.52, 0.62, zoom=1.35)
+        _paste_circle_window(bg, detail_crop, cx_p, cy_p, border_rgba=border_rgba, border_w=4, outer_ring_rgba=(255, 24, 55, 240))
+
+        # 浮窗左上角标
+        draw = ImageDraw.Draw(bg)
+        tfnt = get_cached_font(font_path, 22)
+        draw.rounded_rectangle([(wx + 18, wy + 16), (wx + 168, wy + 52)], radius=12, fill=(18, 22, 30, 232), outline=border_rgba, width=2)
+        draw.text((wx + 93, wy + 34), f"● {tag_text}", font=tfnt, fill=border_rgba, anchor="mm")
+        eff_faces = [{"x": wx + int(ww * 0.25), "y": wy + int(wh * 0.10), "w": int(ww * 0.50), "h": int(wh * 0.44)}]
+        return bg.convert("RGB"), eff_faces
+
+    if mode == "dark_doc_circle_avatar_pip":
+        # style_09 / style_19：纯黑纪实底 + 顶部暖金双格/圆角证据画中画 + 下部圆形主讲人画中画 + 卷宗摘要栏
+        bg = _crop_aspect_fill(base_rgba, CANVAS_WIDTH, CANVAS_HEIGHT, fcx, fcy, zoom=1.18)
+        bg = bg.filter(ImageFilter.GaussianBlur(24))
+        bg.alpha_composite(Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (8, 10, 16, 210)))
+        draw = ImageDraw.Draw(bg)
+
+        # 上半屏暖金双格证据窗 (y=344..744)
+        ex, ey, ew, eh = 74, 344, 932, 400
+        ev_img = Image.new("RGBA", (ew, eh), (14, 18, 26, 255))
+        if pip_spec.get("dual_grid_split", True):
+            half_w = ew // 2 - 2
+            left_pane = _crop_aspect_fill(sec_rgba, half_w, eh, 0.46, 0.48, zoom=1.12)
+            right_pane = _crop_aspect_fill(base_rgba, ew - half_w, eh, 0.56, 0.64, zoom=1.36)
+            ev_img.paste(left_pane, (0, 0))
+            ev_img.paste(right_pane, (half_w + 2, 0))
+            edraw = ImageDraw.Draw(ev_img)
+            edraw.line([(half_w, 0), (half_w, eh)], fill=border_rgba, width=4)
+        else:
+            ev_img = _crop_aspect_fill(sec_rgba, ew, eh, 0.50, 0.45, zoom=1.16)
+        _paste_rounded_window(bg, ev_img, ex, ey, radius=22, border_rgba=border_rgba, border_w=4)
+
+        # 证据框底部图注条
+        cap_fnt = get_cached_font(font_path, 22)
+        draw.rounded_rectangle([(310, ey + eh + 8), (770, ey + eh + 42)], radius=10, fill=(14, 18, 26, 230), outline=border_rgba, width=1)
+        draw.text((540, ey + eh + 25), f"“{tag_text}” · 实证核验现场", font=cap_fnt, fill=(245, 245, 245, 255), anchor="mm")
+
+        # 中下部圆形主讲人头像画中画 (y=802..1142, 直径 340px)
+        av_cfg = pip_spec.get("avatar_circle_bbox") or {"x": 112, "y": 804, "w": 336, "h": 336}
+        ax = int(av_cfg.get("x", 112))
+        ay = 804
+        aw = 336
+        avatar_crop = _crop_aspect_fill(base_rgba, aw, aw, fcx, max(0.28, fcy - 0.04), zoom=1.15)
+        _paste_circle_window(bg, avatar_crop, ax, ay, border_rgba=border_rgba, border_w=5, outer_ring_rgba=(255, 24, 55, 210))
+
+        # 圆窗对侧纪实卷宗信息栏（避开圆形人像，填补黑底留白）
+        dx0 = 478 if ax < 400 else 88
+        dx1 = 994 if ax < 400 else 604
+        dy0, dy1 = 836, 1112
+        draw.rounded_rectangle([(dx0, dy0), (dx1, dy1)], radius=18, fill=(16, 20, 30, 224), outline=border_rgba, width=2)
+        draw.rounded_rectangle([(dx0 + 14, dy0 + 22), (dx0 + 22, dy1 - 22)], radius=4, fill=(255, 24, 55, 255))
+        dfnt1 = get_cached_font(font_path, 28)
+        dfnt2 = get_cached_font(font_path, 22)
+        draw.text((dx0 + 40, dy0 + 52), "核心事实与关键证据", font=dfnt1, fill=border_rgba, anchor="lm")
+        draw.line([(dx0 + 40, dy0 + 84), (dx1 - 28, dy0 + 84)], fill=(234, 212, 166, 95), width=1)
+        draw.text((dx0 + 40, dy0 + 124), "▸ 逐项核对关键时间线与细节", font=dfnt2, fill=(240, 244, 250, 245), anchor="lm")
+        draw.text((dx0 + 40, dy0 + 168), "▸ 拒绝主观臆断，只看真实凭据", font=dfnt2, fill=(255, 245, 137, 245), anchor="lm")
+        draw.text((dx0 + 40, dy0 + 212), "▸ 重点条款与避坑红线对照", font=dfnt2, fill=(210, 218, 230, 235), anchor="lm")
+
+        eff_faces = [{"x": ax + 48, "y": ay + 36, "w": aw - 96, "h": aw - 84}]
+        return bg.convert("RGB"), eff_faces
+
+    if mode == "linear_split_feather_pip":
+        # style_16 / style_03：线性羽化分屏 + 居中方框书摘/实证画中画卡
+        # 将主讲人底画面轻微下移，使人脸落在 y=680..1040，把上半屏 y=340..630 留给线性羽化分屏与书摘图卡
+        bg = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (12, 15, 22, 255))
+        shifted_main = _crop_aspect_fill(base_rgba, CANVAS_WIDTH, CANVAS_HEIGHT - 160, fcx, max(0.24, fcy - 0.08), zoom=1.04)
+        bg.paste(shifted_main, (0, 160))
+
+        # 上半屏线性羽化蒙版层 (y=0..630, feather ramp 460..630)
+        top_split = _crop_aspect_fill(sec_rgba, CANVAS_WIDTH, 630, 0.50, 0.55, zoom=1.22).filter(ImageFilter.GaussianBlur(10))
+        top_split.alpha_composite(Image.new("RGBA", (CANVAS_WIDTH, 630), (10, 12, 18, 148)))
+        grad_l = Image.new("L", (1, 630), 255)
+        for gy in range(440, 630):
+            alpha_v = int(round(255 * (1.0 - (gy - 440) / 190.0)))
+            grad_l.putpixel((0, gy), max(0, min(255, alpha_v)))
+        top_split.putalpha(grad_l.resize((CANVAS_WIDTH, 630), Image.Resampling.BILINEAR))
+        bg.alpha_composite(top_split, dest=(0, 0))
+
+        # 居中暗金方框书摘/实证画中画卡片 (y=382..634)
+        bx, by, bw, bh = 134, 382, 812, 252
+        book_card = Image.new("RGBA", (bw, bh), (16, 20, 28, 236))
+        thumb_pip = _crop_aspect_fill(sec_rgba, 236, bh - 28, 0.52, 0.52, zoom=1.28)
+        _paste_rounded_window(book_card, thumb_pip, 14, 14, radius=14, border_rgba=border_rgba, border_w=2, shadow=False)
+        bdraw = ImageDraw.Draw(book_card)
+        bfnt1 = get_cached_font(font_path, 26)
+        bfnt2 = get_cached_font(font_path, 21)
+        bdraw.rounded_rectangle([(272, 18), (446, 50)], radius=8, fill=border_rgba)
+        bdraw.text((359, 34), f"📖 {tag_text}", font=bfnt2, fill=(14, 18, 26, 255), anchor="mm")
+        bdraw.text((272, 86), "“真正决定结果的往往不是表面蛮干，", font=bfnt1, fill=(255, 255, 255, 255), anchor="lm")
+        bdraw.text((272, 128), " 而是选对可复制、高复利的核心杠杆。”", font=bfnt1, fill=(255, 245, 137, 255), anchor="lm")
+        bdraw.line([(272, 168), (bw - 28, 168)], fill=(212, 175, 55, 120), width=2)
+        bdraw.text((272, 200), "—— 经典认知书摘 · 底层模型拆解", font=bfnt2, fill=(205, 214, 228, 240), anchor="lm")
+        _paste_rounded_window(bg, book_card, bx, by, radius=20, border_rgba=border_rgba, border_w=4)
+
+        eff_faces = [{"x": f0["x"], "y": min(1120, f0["y"] + 160), "w": f0["w"], "h": f0["h"]}]
+        return bg.convert("RGB"), eff_faces
+
+    if mode == "black_polaroid_frame_pip":
+        # style_06 / style_04 / style_13 / style_23：黑底竖相框拍立得留白画中画
+        frame_rgba = parse_hex_rgba(str(pip_spec.get("frame_bg_hex") or "#0E1117"))
+        # 保持画框底色亮度 >= 18，既呈现深邃拍立得黑框又绝不误触 blackdetect
+        safe_frame = (max(18, frame_rgba[0]), max(18, frame_rgba[1]), max(22, frame_rgba[2]), 255)
+        bg = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), safe_frame)
+        wx, wy, ww, wh = 74, 352, 932, 1136
+        inner_img = _crop_aspect_fill(base_rgba, ww, wh, fcx, fcy, zoom=1.02)
+        _paste_rounded_window(bg, inner_img, wx, wy, radius=26, border_rgba=border_rgba, border_w=border_w)
+        draw = ImageDraw.Draw(bg)
+        tfnt = get_cached_font(font_path, 20)
+        draw.text((wx + 24, wy + wh + 26), f"FILM 35MM · {tag_text}", font=tfnt, fill=border_rgba, anchor="lm")
+        draw.text((wx + ww - 24, wy + wh + 26), "1080P STUDIO FRAME", font=tfnt, fill=(180, 186, 198, 220), anchor="rm")
+        eff_faces = [{"x": wx + int((f0["x"] / float(CANVAS_WIDTH)) * ww), "y": wy + int((f0["y"] / float(CANVAS_HEIGHT)) * wh), "w": int(f0["w"] * 0.86), "h": int(f0["h"] * 0.86)}]
+        return bg.convert("RGB"), eff_faces
+
+    if mode == "corner_circle_evidence_pip":
+        # style_11 / style_01 / style_22 / style_24：圆窗例证画中画弹窗（自动选人脸对侧角）
+        bg = base_rgba.copy()
+        cw = 264
+        place_left = (fcx > 0.54) or (style_id == "style_22")
+        cx_p = 94 if place_left else (CANVAS_WIDTH - 94 - cw)
+        cy_p = 386
+        circle_crop = _crop_aspect_fill(sec_rgba, cw, cw, 0.50, 0.58, zoom=1.35)
+        _paste_circle_window(bg, circle_crop, cx_p, cy_p, border_rgba=border_rgba, border_w=5, outer_ring_rgba=(18, 22, 30, 230))
+        draw = ImageDraw.Draw(bg)
+        tfnt = get_cached_font(font_path, 21)
+        px0, px1 = cx_p + 28, cx_p + cw - 28
+        draw.rounded_rectangle([(px0, cy_p + cw - 24), (px1, cy_p + cw + 14)], radius=14, fill=(16, 20, 28, 238), outline=border_rgba, width=2)
+        draw.text(((px0 + px1) // 2, cy_p + cw - 5), f"● {tag_text}", font=tfnt, fill=border_rgba, anchor="mm")
+        return bg.convert("RGB"), raw_faces
+
+    if mode == "white_outline_cutout_pip":
+        # style_07 / 05 / 10 / 14 / 21：白纸边贴纸抠像画中画
+        bg = base_rgba.copy()
+        cw, ch = 292, 360
+        place_left = (fcx > 0.54) or (style_id == "style_10")
+        wx = 92 if place_left else (CANVAS_WIDTH - 92 - cw)
+        wy = 386
+        sticker_crop = _crop_aspect_fill(sec_rgba, cw, ch, fcx, max(0.32, fcy), zoom=1.28)
+        # 先画 10px 纯白纸质外轮廓贴纸底板 + 投影，再嵌内层金色细框
+        _paste_rounded_window(bg, sticker_crop, wx, wy, radius=28, border_rgba=(255, 255, 255, 255), border_w=10, shadow=True)
+        draw = ImageDraw.Draw(bg)
+        draw.rounded_rectangle([(wx + 8, wy + 8), (wx + cw - 9, wy + ch - 9)], radius=20, outline=(255, 191, 23, 245), width=3)
+        tfnt = get_cached_font(font_path, 21)
+        draw.rounded_rectangle([(wx + 24, wy + ch - 26), (wx + cw - 24, wy + ch + 14)], radius=12, fill=(255, 255, 255, 248), outline=(18, 22, 30, 255), width=2)
+        draw.text((wx + cw // 2, wy + ch - 6), f"✂ {tag_text}", font=tfnt, fill=(18, 22, 30, 255), anchor="mm")
+        return bg.convert("RGB"), raw_faces
+
+    if mode == "dual_rect_grid_pip":
+        # style_17 / 02 / 12 / 15 / 20：上下双格拼贴画中画框
+        bg = base_rgba.copy()
+        cw, ch = 304, 368
+        place_left = (fcx > 0.54)
+        wx = 92 if place_left else (CANVAS_WIDTH - 92 - cw)
+        wy = 386
+        grid_card = Image.new("RGBA", (cw, ch), (16, 20, 28, 245))
+        half_h = ch // 2 - 2
+        top_g = _crop_aspect_fill(sec_rgba, cw, half_h, 0.45, 0.45, zoom=1.26)
+        bot_g = _crop_aspect_fill(base_rgba, cw, ch - half_h, 0.55, 0.68, zoom=1.42)
+        grid_card.paste(top_g, (0, 0))
+        grid_card.paste(bot_g, (0, half_h + 2))
+        gdraw = ImageDraw.Draw(grid_card)
+        gdraw.line([(0, half_h), (cw, half_h)], fill=border_rgba, width=4)
+        _paste_rounded_window(bg, grid_card, wx, wy, radius=20, border_rgba=border_rgba, border_w=5, shadow=True)
+        draw = ImageDraw.Draw(bg)
+        tfnt = get_cached_font(font_path, 21)
+        draw.rounded_rectangle([(wx + 26, wy - 16), (wx + cw - 26, wy + 20)], radius=10, fill=(16, 20, 28, 242), outline=border_rgba, width=2)
+        draw.text((wx + cw // 2, wy + 2), f"▣ {tag_text}", font=tfnt, fill=border_rgba, anchor="mm")
+        return bg.convert("RGB"), raw_faces
+
+    return base_rgba.convert("RGB"), raw_faces
 
 
 def _rects_overlap(a: Tuple[int, int, int, int], b: Tuple[int, int, int, int]) -> bool:
@@ -532,6 +959,59 @@ def _compute_base_cache_key(
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def _build_ffmpeg_pip_vf(pip_layout: Optional[Dict[str, Any]], tw: int = CANVAS_WIDTH, th: int = CANVAS_HEIGHT) -> Optional[str]:
+    """生成 30fps 动态视频画中画 FFmpeg 滤镜链（供 render_mp4 / export_jianying / export_hyperframes 同源分镜共享）。"""
+    if not isinstance(pip_layout, dict) or tw != CANVAS_WIDTH or th != CANVAS_HEIGHT:
+        return None
+    mode = str(pip_layout.get("mode") or "")
+    bd_hex = str(pip_layout.get("border_hex") or "#FFF589")
+    if not bd_hex.startswith("#") or len(bd_hex) not in (7, 9):
+        bd_hex = "#FFF589"
+    bd_hex = bd_hex[:7]
+
+    if mode == "blur_bg_center_card_pip":
+        return (
+            f"split=2[pip_bg][pip_fg];"
+            f"[pip_bg]boxblur=16:2,eq=brightness=-0.10[pip_bg_b];"
+            f"[pip_fg]scale=764:802,pad=772:810:4:4:color={bd_hex}[pip_fg_p];"
+            f"[pip_bg_b][pip_fg_p]overlay=x=154:y=386"
+        )
+    if mode == "black_polaroid_frame_pip":
+        return (
+            f"split=2[pip_bg][pip_fg];"
+            f"[pip_bg]drawbox=x=0:y=0:w=iw:h=ih:color=#141720:t=fill[pip_bg_b];"
+            f"[pip_fg]scale=924:1128,pad=932:1136:4:4:color={bd_hex}[pip_fg_p];"
+            f"[pip_bg_b][pip_fg_p]overlay=x=74:y=352"
+        )
+    if mode == "dark_doc_circle_avatar_pip":
+        av_x = int((pip_layout.get("avatar_circle_bbox") or {}).get("x", 112))
+        return (
+            f"split=3[pip_bg][pip_ev][pip_av];"
+            f"[pip_bg]boxblur=18:2,eq=brightness=-0.20[pip_bg_b];"
+            f"[pip_ev]crop=iw:ih*0.46:0:ih*0.18,scale=924:392,pad=932:400:4:4:color={bd_hex}[pip_ev_p];"
+            f"[pip_av]crop=iw*0.62:iw*0.62:iw*0.19:ih*0.16,scale=328:328,pad=336:336:4:4:color={bd_hex}[pip_av_p];"
+            f"[pip_bg_b][pip_ev_p]overlay=x=74:y=344[pip_m1];"
+            f"[pip_m1][pip_av_p]overlay=x={av_x}:y=804"
+        )
+    if mode == "linear_split_feather_pip":
+        return (
+            f"split=2[pip_bg][pip_fg];"
+            f"[pip_fg]crop=iw*0.86:ih*0.32:iw*0.07:ih*0.20,scale=804:256,pad=812:264:4:4:color={bd_hex}[pip_fg_p];"
+            f"[pip_bg][pip_fg_p]overlay=x=134:y=346"
+        )
+    if mode in ("corner_circle_evidence_pip", "white_outline_cutout_pip", "dual_rect_grid_pip"):
+        pad_c = "#FFFFFF" if mode == "white_outline_cutout_pip" else bd_hex
+        pad_w = 8 if mode == "white_outline_cutout_pip" else 4
+        in_w = 296 - pad_w * 2
+        in_h = 340 - pad_w * 2
+        return (
+            f"split=2[pip_bg][pip_fg];"
+            f"[pip_fg]crop=iw*0.64:ih*0.44:iw*0.18:ih*0.20,scale={in_w}:{in_h},pad=296:340:{pad_w}:{pad_w}:color={pad_c}[pip_fg_p];"
+            f"[pip_bg][pip_fg_p]overlay=x=692:y=356"
+        )
+    return None
+
+
 def build_graded_segment_cmd(
     ffmpeg_bin: str,
     clip: Dict[str, Any],
@@ -608,6 +1088,9 @@ def build_graded_segment_cmd(
 
     if color_vf and not preview:
         vf_parts.append(color_vf)
+    pip_vf = _build_ffmpeg_pip_vf(clip.get("pip_layout"), tw=tw, th=th) if not preview else None
+    if pip_vf:
+        vf_parts.append(pip_vf)
     if src_avail < clip_dur - 0.01:
         pad_sec = (clip_dur - src_avail) + 0.3
         vf_parts.append(f"tpad=stop_mode=clone:stop_duration={pad_sec:.4f}")

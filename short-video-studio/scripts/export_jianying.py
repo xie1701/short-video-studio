@@ -317,7 +317,7 @@ def _stage_media_assets(
         src_avail = max(0.1, float(clip.get("source_out_sec", src_in + clip_dur)) - src_in)
         needs_pad = src_avail < clip_dur - 0.01
 
-        needs_bake = bool(color_vf or has_kb or has_vf_extra or needs_pad)
+        needs_bake = bool(color_vf or has_kb or has_vf_extra or needs_pad or isinstance(clip.get("pip_layout"), dict))
         prebaked_seg = render_work_dir / f"seg_{c_idx:03d}_f.mp4"
 
         if needs_bake and ffmpeg_bin:

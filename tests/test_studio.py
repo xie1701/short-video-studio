@@ -459,11 +459,83 @@ class StudioTests(unittest.TestCase):
                 whitebox_cnt += 1
             if sid in ("style_21", "style_22", "style_23", "style_24"):
                 high_broll_targets[sid] = round(float(s.get("broll_overlay_ratio_target", -1.0)), 2)
+            pip_spec = s.get("pip_composition_spec") or {}
+            giant_spec = s.get("giant_text_spec") or {}
+            self.assertIn(pip_spec.get("mode"), {
+                "blur_bg_center_card_pip",
+                "dark_doc_circle_avatar_pip",
+                "linear_split_feather_pip",
+                "black_polaroid_frame_pip",
+                "corner_circle_evidence_pip",
+                "white_outline_cutout_pip",
+                "dual_rect_grid_pip",
+            }, f"Invalid pip_composition_spec on {sid}")
+            self.assertIn(giant_spec.get("mode"), {
+                "giant_smash_single",
+                "giant_dual_clash",
+                "giant_numeric_trio",
+                "giant_vertical_seal",
+            }, f"Invalid giant_text_spec on {sid}")
+            self.assertGreaterEqual(int(giant_spec.get("font_size_px") or 0), 120, f"Giant text too small on {sid}")
         self.assertEqual(whitebox_cnt, 20)
         self.assertEqual(
             high_broll_targets,
             {"style_21": 0.85, "style_22": 0.90, "style_23": 0.95, "style_24": 1.00},
         )
+
+    def test_pip_giant_text_and_template_packaging_rendering(self):
+        from PIL import Image
+        from render_mp4 import _build_ffmpeg_pip_vf, compose_pip_frame_pil, render_packaging_png
+
+        base = Image.new("RGB", (1080, 1920), (110, 125, 140))
+        for sid, expected_mode in (
+            ("style_06", "black_polaroid_frame_pip"),
+            ("style_07", "white_outline_cutout_pip"),
+            ("style_08", "blur_bg_center_card_pip"),
+            ("style_09", "dark_doc_circle_avatar_pip"),
+            ("style_11", "corner_circle_evidence_pip"),
+            ("style_16", "linear_split_feather_pip"),
+            ("style_17", "dual_rect_grid_pip"),
+        ):
+            out_im, eff_faces = compose_pip_frame_pil(base, style_id=sid)
+            self.assertEqual(out_im.size, (1080, 1920))
+            self.assertTrue(len(eff_faces) >= 1)
+            vf_str = _build_ffmpeg_pip_vf({"mode": expected_mode, "border_hex": "#FFF589"})
+            self.assertIsNotNone(vf_str)
+            self.assertIn("overlay=", vf_str)
+
+        for gmode in ("giant_smash_single", "giant_dual_clash", "giant_numeric_trio", "giant_vertical_seal"):
+            im_g = render_packaging_png({
+                "kind": "center_burst_title",
+                "giant_mode": gmode,
+                "font_size_px": 148,
+                "tag_label": "深度锐评",
+                "text_or_asset": "三万块",
+                "fg_hex": "#FFF589",
+                "accent_hex": "#FF1837",
+            }, style_id="style_08")
+            self.assertLessEqual(im_g.width, 640)
+            self.assertGreaterEqual(im_g.height, 130)
+
+        im_q = render_packaging_png({
+            "kind": "quote_citation_card",
+            "text_or_asset": "“看清关键条款”",
+            "subtext": "—— 案情焦点 · 核心实证",
+            "fg_hex": "#FFF589",
+            "accent_hex": "#FF1837",
+        }, style_id="style_09")
+        self.assertLessEqual(im_q.width, 640)
+        self.assertEqual(im_q.height, 136)
+
+        im_b = render_packaging_png({
+            "kind": "stamp_tag",
+            "text_or_asset": "高复利",
+            "burst_tags": ["可复制", "高复利", "可持续"],
+            "fg_hex": "#FFF589",
+            "accent_hex": "#FF1837",
+        }, style_id="style_16")
+        self.assertLessEqual(im_b.width, 640)
+        self.assertEqual(im_b.height, 98)
 
     @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg required")
     def test_high_broll_edl_and_qa_styles_21_to_24(self):
@@ -627,6 +699,12 @@ class StudioTests(unittest.TestCase):
             "33-" + "全屋定制",
             "24-" + "美业",
             "58-" + "汽车销售",
+            "42-" + "社会评论",
+            "25-" + "法律",
+            "64-" + "商业认知",
+            "16-" + "疗愈",
+            "余华" + "英",
+            "哪" + "吒",
             "1-1-" + "文字",
             "2-1-" + "文字",
             "3-1-" + "封面",

@@ -194,7 +194,8 @@ def _build_video_clips(pipeline: Path, draft: Path, edl: dict, fps: int, total: 
         trim = max(0.0, float(shot.get("source_in_sec", 0)))
         source_length = float(shot.get("source_out_sec", trim + length)) - trim
         vf = shot.get("color_filter") or by_clip.get(cid)
-        needs_bake = bool(vf or shot.get("ken_burns") or shot.get("vf_extra") or source_length < length - 0.01)
+        pip_cfg = shot.get("pip_layout") if isinstance(shot.get("pip_layout"), dict) else None
+        needs_bake = bool(vf or shot.get("ken_burns") or shot.get("vf_extra") or pip_cfg or source_length < length - 0.01)
         original_url = sources.get(media_path)
         if not original_url and source.is_file():
             original = draft / "media" / "sources" / f"source_{len(sources) + 1:03d}{source.suffix.lower()}"
@@ -254,13 +255,15 @@ def _build_video_clips(pipeline: Path, draft: Path, edl: dict, fps: int, total: 
             active, media_start = original_url, trim
 
         label = f"分镜 {index:02d}"
+        pip_mode_str = str((pip_cfg or {}).get("mode") or "none")
         attrs = _attrs(id=stable_id, class_="clip picture", src=active, data_start=f"{start:.4f}",
                        data_duration=f"{length:.4f}", data_media_start=f"{media_start:.4f}",
-                       data_track_index=0, data_label=label)
+                       data_track_index=0, data_label=label, data_pip_mode=pip_mode_str)
         clips.append(f"    <video {attrs} muted playsinline preload=\"metadata\"></video>")
         items.append({"id": stable_id, "label": label, "src": active, "original_src": original_url,
                       "original_in_sec": trim, "original_out_sec": shot.get("source_out_sec"),
-                      "start_sec": start, "duration_sec": length, "baked_picture": needs_bake})
+                      "start_sec": start, "duration_sec": length, "baked_picture": needs_bake,
+                      "pip_mode": pip_mode_str})
     if not clips:
         raise ValueError("HyperFrames 工程没有视频分镜")
     return clips, items
@@ -323,24 +326,28 @@ def _build_graphics(draft: Path, package: dict, fps: int, total: float, style_id
             native_text += 1
             continue
         bare = kind in ("center_burst_title", "stamp_tag", "end_card_cta", "quote_citation_card") or elem.get("overlay_mode") == "borderless"
-        target_sz = 66 if kind == "center_burst_title" else (58 if kind in ("end_card_cta", "quote_citation_card") else (50 if bare else 40))
-        word_size = max(24, min(target_sz, int((width - 20) / max(1, len(text)))))
+        req_giant_fs = int(elem.get("font_size_px") or 136) if kind == "center_burst_title" else 66
+        target_sz = min(148, max(88, req_giant_fs)) if kind == "center_burst_title" else (62 if kind in ("end_card_cta", "quote_citation_card") else (54 if bare else 42))
+        word_size = max(24, min(target_sz, int((width - 20) / max(1, min(6, len(text))))))
         raw_fg = str(elem.get("fg_hex") or color("text"))
         if not bare and contrast_ratio(hex_to_rgba(raw_fg, 255)[:3], pal["bg"][:3]) < 4.5:
             raw_fg = color("text")
         elif bare and contrast_ratio(hex_to_rgba(raw_fg, 255)[:3], (16, 20, 28)) < 4.5:
             raw_fg = "#FFE28A"
-        stroke_css_w = 12 if bare else 0
+        stroke_css_w = (16 if kind == "center_burst_title" else 12) if bare else 0
         paint = (f"font-size:{word_size}px;color:{raw_fg};"
                  f"paint-order:stroke fill;-webkit-text-stroke:{stroke_css_w}px {elem.get('stroke_hex') or '#000'};"
-                 + ("text-shadow:3px 4px 8px rgba(0,0,0,0.82);" if bare else ""))
+                 + ("text-shadow:4px 5px 10px rgba(0,0,0,0.88);" if bare else ""))
         fill = ""
-        if not bare:
+        if kind == "quote_citation_card":
+            fill = f"background:rgba(14,18,26,0.90);border:3px solid {raw_fg};border-left:10px solid {elem.get('accent_hex') or '#FF4D4F'};border-radius:20px;padding:10px 22px;"
+        elif not bare:
             fill = f"background:{color('bg')};border:2px solid {color('border')};border-left:9px solid {color('accent')};border-radius:18px;"
             if elem.get("overlay_mode") == "focus_blur":
                 fill += "backdrop-filter:blur(10px);"
         sub = _escape_subtext(elem.get("subtext"))
-        built.append(f'    <div {attrs} class="clip graphic-text" style="{html.escape(pos + paint + fill, quote=True)}">'
+        extra_attrs = f' data-giant-mode="{html.escape(str(elem.get("giant_mode") or ""))}"' if elem.get("giant_mode") else ""
+        built.append(f'    <div {attrs}{extra_attrs} class="clip graphic-text" style="{html.escape(pos + paint + fill, quote=True)}">'
                      f'<span id="{cid}-text">{html.escape(text)}</span>{sub}</div>')
         native_text += 1
     return built, native_text
