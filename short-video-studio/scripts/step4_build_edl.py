@@ -12,6 +12,7 @@ v5 升级：
 from __future__ import annotations
 
 import argparse
+import re
 import statistics
 import sys
 from pathlib import Path
@@ -39,6 +40,65 @@ PROP_SHOW_CUES = ("睇下", "看下", "看一下", "给大家看", "给你看", 
 DEICTIC_CUES = ("这张图", "四张图", "两张图", "三张图", "效果图", "平面图", "明细表", "账单", "发票", "检测单", "看这里", "看这个", "你看这", "对比一下")
 POSITIVE_PRAISE_CUES = ("招牌", "正宗", "干净", "舒服", "鲜嫩", "多汁", "放心", "透明", "美味", "好吃", "靓", "靠谱", "新鲜", "卫生", "环境好")
 HARD_TABOO_ALWAYS = {"crew_leak", "kitchen_trash", "construction_trash"}
+
+
+_EXPLAINER_WINDOW_RE = re.compile(
+    r"(\d+(?:\.\d+)?\s*[%％倍万亿元块度小时分钟秒天年个次]|第一|第二|第三|步骤|流程|原理|本质|对比|差距|成本|利润|占比|比例|真相|其实)"
+)
+
+
+def detect_explainer_broll_windows(
+    sentences: List[Dict[str, Any]],
+    lead_sec: float = 0.08,
+    min_dur_sec: float = 1.6,
+) -> List[Dict[str, Any]]:
+    """
+    口播动态讲解画面（B-roll）插入窗口探测：
+    依据“新信息/数字对比/步骤拆解/原理机制”而非固定秒数，在关键词起音前 0.08s 定位最适合切入
+    动态图解 + 平滑圆环人像画中画的时间窗；无解释价值的观点/过渡句保留真人全屏。
+    """
+    windows: List[Dict[str, Any]] = []
+    for idx, sent in enumerate(sentences or []):
+        txt = str(sent.get("text") or "").strip()
+        if not txt or sent.get("emotion_or_info") in ("cta", "filler"):
+            continue
+        m = _EXPLAINER_WINDOW_RE.search(txt)
+        if not m:
+            continue
+        s_start = float(sent.get("start_sec", 0.0))
+        s_end = float(sent.get("end_sec", s_start + 2.0))
+        if (s_end - s_start) < min_dur_sec:
+            continue
+        hit_tok = m.group(1)
+        # 优先对齐触发关键词的真实逐字起音时间
+        kw_start = s_start
+        for w in (sent.get("words") or []):
+            wt = str(w.get("word") or "")
+            if wt and (wt in hit_tok or hit_tok.startswith(wt)):
+                kw_start = float(w.get("start_sec", s_start))
+                break
+        win_in = round(max(0.0, kw_start - lead_sec), 3)
+        win_out = round(s_end, 3)
+        if (win_out - win_in) < min_dur_sec:
+            win_in = round(max(0.0, s_start), 3)
+
+        mode_hint = (
+            "data_chart" if re.search(r"[%％倍元块万亿]", hit_tok)
+            else ("flow_diagram" if re.search(r"第一|第二|第三|步骤|流程", hit_tok)
+            else ("versus" if re.search(r"对比|差距|其实|真相", hit_tok) else "kinetic_text"))
+        )
+        windows.append({
+            "window_id": f"exp_win_{len(windows) + 1:02d}",
+            "sentence_id": sent.get("id", f"sent_{idx + 1:03d}"),
+            "trigger_cue": hit_tok,
+            "start_sec": win_in,
+            "end_sec": win_out,
+            "duration_sec": round(win_out - win_in, 3),
+            "suggested_mode": mode_hint,
+            "presenter_pip_mode": "smooth_orbit_pip",
+            "sentence_text": txt,
+        })
+    return windows
 
 
 def pick_first_3s_events(events: List[Dict[str, Any]], fps: int, count: int = 2) -> List[Dict[str, Any]]:
@@ -896,6 +956,7 @@ def run_step4(
         "punch_in_count": punch_in_count,
         "pip_mode": pip_mode or "none",
         "pip_applied_count": pip_applied_count,
+        "explainer_broll_windows": detect_explainer_broll_windows(sentences),
         "shot_duration_cv": shot_cv,
         "code_broll_ratio": code_ratio,
         "broll_ratio_target": round(broll_target_ratio, 3),

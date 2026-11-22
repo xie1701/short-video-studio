@@ -1645,6 +1645,105 @@ def run_step2(
     return transcript
 
 
+def detect_speech_islands(
+    y16: np.ndarray,
+    sr: int = 16000,
+    thr_db: float = -40.0,
+    min_sil_sec: float = 0.18,
+    hop_sec: float = 0.010,
+    min_island_sec: float = 0.06,
+) -> List[Dict[str, float]]:
+    """
+    10ms 语音能量岛检测：定位每段真实发声物理边界，用于精剪口播、防止误切轻声尾字，
+    并精准揪出 0.3–0.6s 孤立短岛（2–4 字残留起句）。
+    """
+    if len(y16) == 0:
+        return []
+    hop_n = max(1, int(round(hop_sec * sr)))
+    n_frames = len(y16) // hop_n
+    if n_frames <= 0:
+        return []
+    trimmed = y16[: n_frames * hop_n].reshape(n_frames, hop_n)
+    rms = np.sqrt(np.mean(trimmed ** 2, axis=1) + 1e-12)
+    db = 20.0 * np.log10(rms)
+    active = db > float(thr_db)
+
+    islands: List[Dict[str, float]] = []
+    start_t: Optional[float] = None
+    last_on_t: Optional[float] = None
+    for idx, is_on in enumerate(active):
+        t = idx * hop_sec
+        if is_on:
+            if start_t is None:
+                start_t = t
+            last_on_t = t
+        elif start_t is not None and last_on_t is not None and (t - last_on_t) > min_sil_sec:
+            dur = (last_on_t + hop_sec) - start_t
+            if dur >= min_island_sec:
+                islands.append({
+                    "start_sec": round(start_t, 4),
+                    "end_sec": round(last_on_t + hop_sec, 4),
+                    "duration_sec": round(dur, 4),
+                    "is_short_orphan_candidate": 0.20 <= dur <= 0.65,
+                })
+            start_t = None
+            last_on_t = None
+    if start_t is not None and last_on_t is not None:
+        dur = (last_on_t + hop_sec) - start_t
+        if dur >= min_island_sec:
+            islands.append({
+                "start_sec": round(start_t, 4),
+                "end_sec": round(last_on_t + hop_sec, 4),
+                "duration_sec": round(dur, 4),
+                "is_short_orphan_candidate": 0.20 <= dur <= 0.65,
+            })
+    return islands
+
+
+def probe_overlap_windows(
+    wav_path: Path,
+    win_sec: float = 5.0,
+    hop_sec: float = 2.5,
+    whisper_model: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    重叠短窗口复核转写（不带文案 prompt、禁用前文条件依赖）：
+    专门暴露长句整段转写中容易被语言模型“顺滑合并吞掉”的重复起句与半截重说。
+    """
+    y16, sr = load_wav_16k_mono(wav_path)
+    total_sec = len(y16) / float(sr) if sr > 0 else 0.0
+    if total_sec < 0.4:
+        return []
+    model = get_cached_whisper_model(whisper_model or "small")
+    if model is None:
+        return []
+
+    rows: List[Dict[str, Any]] = []
+    t = 0.0
+    while t < total_sec:
+        s0 = int(t * sr)
+        s1 = int(min(t + win_sec, total_sec) * sr)
+        if s1 - s0 < int(sr * 0.4):
+            break
+        seg_audio = y16[s0:s1].astype(np.float32)
+        segs, _ = model.transcribe(
+            seg_audio,
+            language="zh",
+            condition_on_previous_text=False,
+            temperature=0.0,
+            initial_prompt="以下是普通话口播，使用简体中文。",
+            word_timestamps=True,
+        )
+        txt = "".join(str(sg.text or "").strip() for sg in segs).strip()
+        rows.append({
+            "win_start_sec": round(t, 2),
+            "win_end_sec": round(min(t + win_sec, total_sec), 2),
+            "text": txt,
+        })
+        t += max(0.5, float(hop_sec))
+    return rows
+
+
 def main() -> None:
     maybe_reexec_in_venv(("faster_whisper",))
     parser = argparse.ArgumentParser(description="Step 2: 语音转写、声学强制对齐、向量化指纹去画外音与 NG 择优")

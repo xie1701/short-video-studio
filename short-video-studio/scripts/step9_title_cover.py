@@ -11,6 +11,11 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -21,11 +26,14 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from common import (
+    ASSETS_DIR,
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
     SAFE_ZONE,
+    SCRIPTS_DIR,
     bbox_iou,
     contrast_ratio,
+    detect_browser_renderer,
     find_bin,
     find_commercial_font,
     fit_text_line,
@@ -263,7 +271,213 @@ def _render_ui_safe_preview(composed: Image.Image, out_path: Path) -> None:
     Image.alpha_composite(composed.convert("RGBA"), ov).convert("RGB").save(out_path, quality=88)
 
 
-def run_step9(pipeline_dir: Path, track: str = "store", style_id: Optional[str] = None) -> Dict[str, Any]:
+def build_publish_copy_pack(
+    pipeline_dir: Path,
+    title_seed: str,
+    hook_text: str,
+    sentences: List[Dict[str, Any]],
+    keywords: List[str],
+    track: str = "store",
+    cover_main: str = "",
+    cover_sub: str = "",
+    has_4k_covers: bool = False,
+) -> Dict[str, Any]:
+    """
+    生成分平台差异化发布文案交付包（09_publish_copy_pack.md/.json）：
+    同一份素材按不同平台消费场景重写标题钩子、正文节奏与互动引导，绝不一键群发同质文案。
+    """
+    clean_hook = re.sub(r"[。！？!?]+$", "", str(hook_text or title_seed or "真实拆解")).strip()
+    top_kw = keywords[0] if keywords else clean_hook[:6]
+    sec_kw = keywords[1] if len(keywords) > 1 else top_kw
+    summary_pts = [
+        re.sub(r"[。！？!?]+$", "", str(s.get("text") or "").strip())
+        for s in (sentences or [])[:4]
+        if str(s.get("text") or "").strip()
+    ]
+    core_line = summary_pts[1] if len(summary_pts) > 1 else clean_hook
+
+    dy_titles = [
+        clean_hook[:28],
+        f"别猜了，把「{top_kw[:6]}」和「{sec_kw[:6]}」摆在一起看"[:28],
+        f"为什么大家总在「{top_kw[:6]}」上吃亏？看完就明白"[:28],
+    ]
+    xhs_titles = [
+        f"收藏备用｜{top_kw[:8]}一次看懂"[:20],
+        f"关于{top_kw[:6]}，没人告诉你这步"[:20],
+        f"{clean_hook[:18]}（附核对清单）"[:20],
+    ]
+    bili_titles = [
+        f"【深度拆解】{clean_hook[:26]}？从原理到真实细节讲透"[:40],
+        f"为什么「{top_kw[:8]}」和直觉相反？用可核验的细节还原真相"[:40],
+        f"{title_seed[:24]}：完整过程、关键对比与常见误区"[:40],
+    ]
+
+    dy_body = f"{clean_hook[:38]}。{core_line[:44]}。你平时遇到过类似情况吗？评论区聊聊。"[:100]
+    xhs_paragraphs = [
+        f"很多人问过「{top_kw}」到底怎么判断，今天直接把最关键的细节拆开讲清楚。",
+        f"1️⃣ 先看核心现象：{clean_hook}。",
+        f"2️⃣ 再看容易忽略的细节：{core_line}。",
+        "建议先收藏，下次真用到的时候照着核对一遍，不容易走弯路。",
+    ]
+    bili_desc = (
+        f"{clean_hook}。本期视频按真实细节逐层拆解「{top_kw}」与「{sec_kw}」背后的关键差别，"
+        f"并附上可直接核对的实操要点。如果你有不同看法或补充案例，欢迎在评论区讨论。"
+    )
+    bili_pinned = f"置顶互动：你对「{top_kw}」最在意哪一点？在评论区告诉我，下期优先拆解。"
+
+    tags_dy = "#真实记录 #实用干货 #细节拆解 #日常避坑" if track == "creator" else "#同城探店 #实体店日常 #本地生活 #真实记录"
+    tags_xhs = "#涨知识 #实用经验 #生活技巧 #避坑指南 #干货收藏" if track == "creator" else "#本地好店 #同城推荐 #实体店实拍 #门店日常 #真实测评"
+    tags_bili = f"#{top_kw} #知识科普 #深度拆解 #实用技巧 #真实体验 #逻辑思维 #避坑指南 #细节控"
+
+    pack = {
+        "preferred_title": dy_titles[0],
+        "preferred_reason": "第一句直接抛出反常识或具体问题，不绕弯子，信息密度最高且正文可直接兑现。",
+        "platforms": {
+            "douyin_shipinhao": {"titles": dy_titles, "copy": dy_body, "hashtags": tags_dy, "limit_note": "标题 <=28字，正文 <=100字"},
+            "xiaohongshu": {"titles": xhs_titles, "paragraphs": xhs_paragraphs, "hashtags": tags_xhs, "limit_note": "标题 <=20字，分段易收藏"},
+            "bilibili": {
+                "titles": bili_titles,
+                "description": bili_desc,
+                "pinned_comment": bili_pinned,
+                "category_hint": "知识 / 生活实录" if track == "creator" else "生活 / 探店纪实",
+                "hashtags": tags_bili,
+                "limit_note": "标题 <=40字，信息+悬念完整兑现",
+            },
+        },
+        "cover_summary": {
+            "main_text": cover_main.replace("\n", " / "),
+            "sub_text": cover_sub,
+            "has_dual_4k_code_covers": has_4k_covers,
+        },
+        "fact_checklist": [
+            "标题、封面字与视频正文承诺完全一致，没有夸大或标题党",
+            "片中出现的数字、价格、时间、出处均已核对准确",
+            "示意图或类比已照实说明，未冒充实测结论",
+            "已清除其他平台残留词（如小红书不带小黄车口令）",
+        ],
+    }
+
+    md_lines = [
+        f"# 分平台发布文案与封面交付包",
+        "",
+        f"> **首选推荐标题**：`{pack['preferred_title']}`",
+        f"> **推荐理由**：{pack['preferred_reason']}",
+        "",
+        "## 一、分平台备选标题（按字数上限与场景差异化定制）",
+        "",
+        "| 平台 | 备选标题 | 规则提示 |",
+        "| :--- | :--- | :--- |",
+        *[f"| 抖音 / 视频号 | {i}. {t} | ≤28 字，口语直接 |" for i, t in enumerate(dy_titles, 1)],
+        *[f"| 小红书 | {i}. {t} | ≤20 字，强调收藏实用 |" for i, t in enumerate(xhs_titles, 1)],
+        *[f"| B 站 | {i}. {t} | ≤40 字，信息 + 悬念 |" for i, t in enumerate(bili_titles, 1)],
+        "",
+        "## 二、各平台可直接复制的发布正文",
+        "",
+        "### 1. 抖音 / 视频号",
+        dy_body,
+        "",
+        f"**话题**：{tags_dy}",
+        "",
+        "### 2. 小红书",
+        "\n\n".join(xhs_paragraphs),
+        "",
+        f"**话题**：{tags_xhs}",
+        "",
+        "### 3. B 站",
+        f"**简介**：{bili_desc}",
+        "",
+        f"**标签**：{tags_bili}",
+        f"**建议分区**：{pack['platforms']['bilibili']['category_hint']}",
+        f"**置顶评论**：{bili_pinned}",
+        "",
+        "## 三、封面说明与发布前事实核对",
+        f"- **封面主大字**：`{pack['cover_summary']['main_text']}` | **副标签**：`{cover_sub}`",
+        (
+            "- **4K 代码封面**：`09_cover_land_4k.png`（3840×2160 横版，核心锁中央 4:3）& `09_cover_port_4k.png`（2160×2880 竖版 3:4）"
+            if has_4k_covers
+            else "- **标准封面**：`09_cover.jpg`（9:16 首帧）& `09_cover_3x4.jpg`（3:4 主页卡片）"
+        ),
+        "",
+        *[f"- [ ] {chk}" for chk in pack["fact_checklist"]],
+        "",
+    ]
+    (pipeline_dir / "09_publish_copy_pack.md").write_text("\n".join(md_lines), encoding="utf-8")
+    write_json(pipeline_dir / "09_publish_copy_pack.json", pack)
+    return pack
+
+
+def render_dual_4k_code_covers(
+    out_dir: Path,
+    kicker: str,
+    hero_lines: List[str],
+    title: str,
+    palette: Optional[Dict[str, str]] = None,
+    font_mode: str = "serif",
+    with_guides: bool = True,
+) -> Dict[str, Any]:
+    """用单源码 cover_4k.html + 无头浏览器 2x 缩放渲染横版 4K (3840×2160，核心锁中央 4:3) + 竖版 4K (2160×2880)。"""
+    br = detect_browser_renderer()
+    runtime_dir = ASSETS_DIR / "canvas_runtime"
+    if not br.get("available") or not (runtime_dir / "cover_4k.html").is_file():
+        return {"ok": False, "reason": "browser_or_runtime_unavailable", "outputs": []}
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    check_dir = out_dir / "work_checks"
+    with tempfile.TemporaryDirectory(prefix="svs_cover4k_") as td:
+        tdp = Path(td)
+        for fn in ("stage_clock.js", "visual_kit.js", "cover_4k.html"):
+            shutil.copy2(runtime_dir / fn, tdp / fn)
+        cov_data = {
+            "kicker": str(kicker or "")[:16],
+            "hero_lines": [str(x)[:8] for x in (hero_lines or [title[:6]])[:2]],
+            "title": str(title or "")[:14],
+            "font_mode": font_mode,
+            "palette": palette or {
+                "bg": "#040711",
+                "ink": "#f1f5f9",
+                "sub": "#94a3b8",
+                "accent": "#5ce1e6",
+                "accent2": "#f59e0b",
+                "alert": "#ff6b57",
+            },
+        }
+        (tdp / "cover_data.js").write_text(
+            "window.SVS_COVER_DATA = " + json.dumps(cov_data, ensure_ascii=False, indent=2) + ";\n",
+            encoding="utf-8",
+        )
+        cmd = [
+            str(br["node_bin"]),
+            str(SCRIPTS_DIR / "capture_html_video.mjs"),
+            str(tdp),
+            "--cover-4k",
+            "--page", "cover_4k.html",
+            "--out-dir", str(out_dir.resolve()),
+            "--name", "09_cover",
+            "--check-dir", str(check_dir.resolve()),
+        ]
+        if with_guides:
+            cmd.append("--guides")
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if proc.returncode != 0:
+            return {"ok": False, "reason": (proc.stderr or proc.stdout)[-300:], "outputs": []}
+        try:
+            return json.loads(proc.stdout)
+        except Exception:
+            return {
+                "ok": (out_dir / "09_cover_land_4k.png").is_file() and (out_dir / "09_cover_port_4k.png").is_file(),
+                "outputs": [
+                    str((out_dir / "09_cover_land_4k.png").resolve()),
+                    str((out_dir / "09_cover_port_4k.png").resolve()),
+                ],
+            }
+
+
+def run_step9(
+    pipeline_dir: Path,
+    track: str = "store",
+    style_id: Optional[str] = None,
+    code_cover_4k: bool = False,
+) -> Dict[str, Any]:
     audio_events = read_json(pipeline_dir / "03_audio_events.json")
     edl = read_json(pipeline_dir / "04_edl.json")
     color_p = pipeline_dir / "07_color_plan.json"
@@ -687,6 +901,35 @@ def run_step9(pipeline_dir: Path, track: str = "store", style_id: Optional[str] 
         "",
     ])
     (pipeline_dir / "09_title_cover.md").write_text(md_content, encoding="utf-8")
+    dual_4k_res: Optional[Dict[str, Any]] = None
+    if code_cover_4k:
+        dual_4k_res = render_dual_4k_code_covers(
+            pipeline_dir,
+            kicker=fit_sub,
+            hero_lines=[cover_main_l1, cover_main_l2],
+            title=titles[0][:12] if titles else cover_main_l1,
+            palette={
+                "bg": "#05070d",
+                "ink": "#f1f5f9",
+                "sub": "#94a3b8",
+                "accent": pal.get("accent_hex", "#5ce1e6"),
+                "accent2": "#f59e0b",
+                "alert": "#ff6b57",
+            },
+        )
+    has_4k = bool(dual_4k_res and dual_4k_res.get("ok"))
+    copy_pack = build_publish_copy_pack(
+        pipeline_dir,
+        title_seed=titles[0] if titles else hook_clean,
+        hook_text=hook_clean,
+        sentences=sentences,
+        keywords=keywords,
+        track=track,
+        cover_main=cover_main,
+        cover_sub=fit_sub,
+        has_4k_covers=has_4k,
+    )
+
     out = {
         "step": "09_title_cover",
         "titles": titles,
@@ -702,9 +945,13 @@ def run_step9(pipeline_dir: Path, track: str = "store", style_id: Optional[str] 
         "cover_jpg": str(cover_path.resolve()),
         "cover_3x4_jpg": str(cover_3x4_path.resolve()),
         "ui_safe_preview_jpg": str(ui_preview_path.resolve()),
+        "publish_copy_pack_md": str((pipeline_dir / "09_publish_copy_pack.md").resolve()),
+        "publish_copy_pack_json": str((pipeline_dir / "09_publish_copy_pack.json").resolve()),
+        "dual_4k_covers": dual_4k_res,
+        "preferred_title": copy_pack["preferred_title"],
     }
     write_json(pipeline_dir / "09_title_cover.json", out)
-    print(f"[step9] 黄金封面(9:16+3:4)与标题已生成 (选帧分 {best_meta.get('score', 0)}) -> 09_cover.jpg")
+    print(f"[step9] 黄金封面(9:16+3:4)与分平台文案包已生成 (选帧分 {best_meta.get('score', 0)}) -> 09_cover.jpg")
     return out
 
 
@@ -714,8 +961,9 @@ def main() -> None:
     parser.add_argument("--pipeline-dir", required=True)
     parser.add_argument("--track", choices=["store", "creator"], default="store")
     parser.add_argument("--style-id", help="绑定风格谱 ID")
+    parser.add_argument("--code-cover-4k", action="store_true", help="同时用代码绘制横版 16:9 + 竖版 3:4 双比例 4K 封面")
     args = parser.parse_args()
-    run_step9(Path(args.pipeline_dir), track=args.track, style_id=args.style_id)
+    run_step9(Path(args.pipeline_dir), track=args.track, style_id=args.style_id, code_cover_4k=args.code_cover_4k)
 
 
 if __name__ == "__main__":

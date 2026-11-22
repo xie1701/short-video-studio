@@ -777,6 +777,52 @@ def _write_blind_review_pack(
     return out_p
 
 
+def scan_residual_repeats(
+    segments: List[Dict[str, Any]],
+    reference_text: Optional[str] = None,
+    window_sec: float = 10.0,
+) -> Dict[str, Any]:
+    """
+    成片转写残留重说扫描：
+    1. 10 秒滑窗内同一 5 字片段重复出现（排除参考稿中本就有意重复 >=2 次的排比）；
+    2. 1–6 字短孤立段且其前 2 字正是下一段开头（典型漏剪残留起句，如“地图……地图上其实”）。
+    """
+    clean_segs: List[Tuple[float, str]] = []
+    for seg in (segments or []):
+        t0 = float(seg.get("start_sec", seg.get("start", 0.0)))
+        txt = _strip_punct_for_len(str(seg.get("text") or ""))
+        if txt:
+            clean_segs.append((t0, txt))
+
+    ref_clean = _strip_punct_for_len(reference_text or "")
+    dup_phrases: set[str] = set()
+    for i, (t0, s0) in enumerate(clean_segs):
+        for j in range(i, len(clean_segs)):
+            t1, s1 = clean_segs[j]
+            if (t1 - t0) > window_sec:
+                break
+            for k in range(max(0, len(s0) - 4)):
+                gram = s0[k : k + 5]
+                if len(gram) < 5:
+                    continue
+                pos = s1.find(gram, k + 5 if i == j else 0)
+                if pos >= 0:
+                    if not ref_clean or ref_clean.count(gram) < 2:
+                        dup_phrases.add(gram)
+
+    orphan_starts: List[str] = []
+    for (t0, s0), (t1, s1) in zip(clean_segs, clean_segs[1:]):
+        if 1 <= len(s0) <= 6 and len(s1) >= 2 and s1.startswith(s0[:2]):
+            if (t1 - t0) <= 4.0:
+                orphan_starts.append(f"{t0:.2f}s 「{s0}」→「{s1[:10]}」")
+
+    return {
+        "duplicate_phrases": sorted(dup_phrases),
+        "orphan_starts": orphan_starts,
+        "clean": (len(dup_phrases) == 0 and len(orphan_starts) == 0),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Step 10: 全套白盒硬红线与独立黑盒质检报告生成")
     parser.add_argument("--pipeline-dir", required=True)

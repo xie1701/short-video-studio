@@ -719,6 +719,12 @@ class StudioTests(unittest.TestCase):
             "买鞋" + "自由",
             "欧" + "阳",
             "飞" + "书",
+            "leader" + "ai",
+            "Azen" + "Yes",
+            "lead-" + "media",
+            "lead-" + "knowledge",
+            "video-rough-" + "cut",
+            "格陵兰" + "没那么大",
         ]
         scan_roots = [
             ROOT / "short-video-studio",
@@ -727,7 +733,7 @@ class StudioTests(unittest.TestCase):
             ROOT / "BRIEF.md",
             ROOT / "tests" / "test_studio.py",
         ]
-        text_exts = {".py", ".md", ".json", ".cube", ".mjs", ".command", ".bat", ".sh", ".ps1"}
+        text_exts = {".py", ".md", ".json", ".cube", ".mjs", ".js", ".html", ".command", ".bat", ".sh", ".ps1"}
         for sr in scan_roots:
             files = [sr] if sr.is_file() else sorted(sr.rglob("*"))
             for p in files:
@@ -810,6 +816,263 @@ class StudioTests(unittest.TestCase):
         self.assertTrue(c_app["human_approved"])
         self.assertIn("圆满完工", c_app["markdown_card"])
         self.assertIsNone(jargon_re.search(c_app["markdown_card"]))
+
+    def test_subtitle_dp_segmentation_and_protected_terms(self):
+        from step5_subtitles import (
+            align_corrected_text_to_words,
+            dp_segment_short_lines,
+            run_step5,
+        )
+
+        # 验证 DP 断句不拆开保护词、不拆开“数字+单位”、不把虚词放在行首
+        sent = "因为墨卡托投影把高纬度地区放大了14倍，所以地图上的面积看起来一模一样。"
+        segs = dp_segment_short_lines(
+            sent,
+            max_width_px=520,
+            font_size=56,
+            terms=["墨卡托投影", "高纬度地区"],
+            max_chars=10,
+            strip_punct=True,
+        )
+        texts = [t for _, _, t in segs]
+        self.assertGreaterEqual(len(texts), 2)
+        joined = "".join(texts).replace(" ", "")
+        self.assertIn("墨卡托投影", joined)
+        self.assertIn("14倍", joined)
+        for t in texts:
+            self.assertFalse(t.startswith(("的", "了", "吗", "呢")), f"Bad leading particle in {t}")
+        # 保护词和 14倍 必须完整留在单行内
+        self.assertTrue(any("墨卡托投影" in t for t in texts), f"Protected term split across lines: {texts}")
+        self.assertTrue(any("14倍" in t for t in texts), f"Number+unit split across lines: {texts}")
+
+        # 验证字符级校正对齐与插值
+        asr_w = [
+            {"word": "实拍", "start_sec": 0.0, "end_sec": 0.4},
+            {"word": "烤羊", "start_sec": 0.4, "end_sec": 0.8},
+            {"word": "牌", "start_sec": 0.8, "end_sec": 1.0},
+        ]
+        aligned, ratio = align_corrected_text_to_words("实拍烤羊排", asr_w)
+        self.assertEqual(len(aligned), 5)
+        self.assertGreaterEqual(ratio, 0.79)
+        self.assertEqual(aligned[-1]["word"], "排")
+
+        # 验证 run_step5 产出双层柔和阴影 ASS + SRT + 逐行自检报告
+        pdir = self.root / "sub_dp_pipe"
+        pdir.mkdir()
+        (pdir / "terms.txt").write_text("鲜切羊排\n", encoding="utf-8")
+        write_json(pdir / "03_audio_events.json", {
+            "sentences": [{
+                "id": "sent_001",
+                "text": "清晨现宰的鲜切羊排足足有14斤重，绝对不用冻货。",
+                "start_sec": 0.0,
+                "end_sec": 3.2,
+                "keywords": ["鲜切羊排", "14斤"],
+                "words": [
+                    {"word": ch, "start_sec": round(i * 0.14, 3), "end_sec": round((i + 1) * 0.14, 3), "is_keyword": False}
+                    for i, ch in enumerate("清晨现宰的鲜切羊排足足有14斤重绝对不用冻货")
+                ],
+            }]
+        })
+        res5 = run_step5(pdir, track="store")
+        self.assertTrue((pdir / "05_subtitles.srt").is_file())
+        self.assertTrue((pdir / "05_subtitle_check.txt").is_file())
+        ass_txt = (pdir / "05_subtitles.ass").read_text(encoding="utf-8")
+        self.assertIn("Dialogue: 0,", ass_txt)
+        self.assertIn("Dialogue: 1,", ass_txt)
+        self.assertIn("\\q2", ass_txt)
+        self.assertEqual(res5["broken_protected_terms"], [])
+
+    def test_speech_islands_frame_grid_and_residual_repeat_scanner(self):
+        import numpy as np
+        from qa_inspector import scan_residual_repeats
+        from step2_transcribe import detect_speech_islands
+        from step3_lock_audio import apply_edge_micro_fade, refine_cut_to_island_midpoint, snap_cut_to_frame_grid
+
+        sr = 16000
+        y = np.zeros(int(3.2 * sr), dtype=np.float32)
+        t_a = np.arange(int(0.35 * sr)) / sr
+        y[int(0.2 * sr) : int(0.55 * sr)] = (0.25 * np.sin(2 * np.pi * 240 * t_a)).astype(np.float32)
+        t_b = np.arange(int(1.4 * sr)) / sr
+        y[int(1.1 * sr) : int(2.5 * sr)] = (0.28 * np.sin(2 * np.pi * 240 * t_b)).astype(np.float32)
+
+        isl = detect_speech_islands(y, sr=sr, thr_db=-38.0, min_sil_sec=0.18)
+        self.assertEqual(len(isl), 2)
+        self.assertTrue(isl[0]["is_short_orphan_candidate"])
+        self.assertFalse(isl[1]["is_short_orphan_candidate"])
+
+        mid_cut = refine_cut_to_island_midpoint(0.80, isl, fps=30)
+        self.assertAlmostEqual(mid_cut, snap_cut_to_frame_grid(0.825, fps=30), places=2)
+
+        stereo = np.ones((4800, 2), dtype=np.float32) * 0.5
+        faded = apply_edge_micro_fade(stereo, fade_sec=0.012, sr=48000)
+        self.assertAlmostEqual(float(faded[0, 0]), 0.0, places=5)
+        self.assertAlmostEqual(float(faded[-1, 0]), 0.0, places=5)
+
+        rep = scan_residual_repeats([
+            {"start_sec": 0.2, "text": "地图上"},
+            {"start_sec": 1.0, "text": "地图上看起来一模一样"},
+            {"start_sec": 3.5, "text": "看起来一模一样但真实差距很大"},
+        ])
+        self.assertFalse(rep["clean"])
+        self.assertTrue(len(rep["orphan_starts"]) >= 1)
+        self.assertTrue(len(rep["duplicate_phrases"]) >= 1)
+
+    def test_synth_motion_sfx_and_peak_alignment(self):
+        import wave
+        from synth_motion_sfx import ALL_SFX_KINDS, mix_sfx_cues, synthesize_sfx_waveform
+
+        self.assertGreaterEqual(len(ALL_SFX_KINDS), 14)
+        for kind in ALL_SFX_KINDS:
+            arr = synthesize_sfx_waveform(kind)
+            self.assertEqual(arr.ndim, 2)
+            self.assertEqual(arr.shape[1], 2)
+            self.assertGreater(float(abs(arr).max()), 0.5)
+
+        out_wav = self.root / "sfx_mix.wav"
+        mixed = mix_sfx_cues(
+            [
+                {"t": 0.5, "sfx": "whoosh_in", "gain": 0.3},
+                {"t": 1.5, "sfx": "riser", "gain": 0.25, "align": "end"},
+                {"t": 1.5, "sfx": "impact", "gain": 0.35, "align": "peak"},
+                {"t": 1.55, "sfx": "pop", "gain": 0.25},
+            ],
+            total_duration_sec=3.0,
+            out_wav=out_wav,
+        )
+        self.assertTrue(out_wav.is_file())
+        self.assertEqual(mixed.shape[1], 2)
+        with wave.open(str(out_wav), "rb") as wf:
+            self.assertEqual(wf.getnchannels(), 2)
+            self.assertEqual(wf.getframerate(), 48000)
+
+    def test_knowledge_animator_timeline_audit_and_review_pack(self):
+        import subprocess
+        from common import find_bin
+        from knowledge_animator import audit_animation_video, build_review_pack, compile_animation_timeline, init_animation_project
+
+        anim_root = self.root / "anim_demo"
+        init_res = init_animation_project(
+            anim_root,
+            title="注意力的价格",
+            one_idea="每天解锁96次手机却只记得3次",
+            ratio="16x9",
+            font_mode="serif",
+        )
+        self.assertTrue(Path(init_res["timing_js"]).is_file())
+        self.assertTrue(Path(init_res["cover_html"]).is_file())
+        self.assertTrue(init_res["hook_within_5s"])
+
+        # 测试句末标点自动剥离与单行过长提示
+        tl = compile_animation_timeline({
+            "title": "测试",
+            "lines": [
+                {"id": "h1", "text": "你每天解锁手机[96次]。", "hook": True},
+                {"id": "c1", "text": "这是一句很长很长很长很长很长很长很长很长很长很长很长的超宽测试句，", "scene": True},
+            ],
+        })
+        self.assertEqual(tl["lines"][0]["text"], "你每天解锁手机[96次]")
+        self.assertTrue(any("单行过长" in w for w in tl["warnings"]))
+
+        # 生成一个 3.5 秒带运动的测试视频验证 audit 与 review-pack
+        ffmpeg = find_bin("ffmpeg")
+        if ffmpeg:
+            demo_mp4 = anim_root / "out" / "demo.mp4"
+            subprocess.run([
+                ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+                "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=3.5",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", str(demo_mp4),
+            ], check=True)
+            aud = audit_animation_video(demo_mp4, dead_sec=2.0, dark_style=False)
+            self.assertEqual(aud["dead_zones"], [])
+            self.assertGreater(aud["moving_ratio"], 0.8)
+            rp = build_review_pack(demo_mp4, anim_root / "review", timing_js=Path(init_res["timing_js"]))
+            self.assertTrue(Path(rp["guide_md"]).is_file())
+            self.assertTrue(rp["contact_sheet"] and Path(rp["contact_sheet"]).is_file())
+            self.assertGreaterEqual(len(rp["motion_strips"]), 1)
+
+    def test_publish_copy_pack_four_round_lint_and_smooth_orbit_pip(self):
+        from PIL import Image
+        from raw_intel_ingest import export_script_deliverables, lint_script
+        from render_mp4 import compose_pip_frame_pil
+        from step4_build_edl import detect_explainer_broll_windows
+        from step9_title_cover import build_publish_copy_pack
+
+        # 1) 四轮审稿体检 + 双文件解耦导出
+        lint = lint_script(
+            [
+                {"text": "这个东西全网第一，100%有效！"},
+                {"text": "点左下角小黄车马上抢。"},
+                {"text": "清晨现宰鲜羊排三小时炭火慢烤不糊弄。"},
+                {"text": "清晨现宰鲜羊排三小时炭火慢烤绝不糊弄。"},
+            ],
+            raw_intel={"target_platform": "xiaohongshu", "pain_keywords": []},
+        )
+        codes = {i["code"] for i in lint["issues"]}
+        self.assertIn("exaggerated_claim", codes)
+        self.assertIn("dangling_pronoun", codes)
+        self.assertIn("platform_residue", codes)
+        self.assertIn("redundant_paragraph", codes)
+
+        deliv = export_script_deliverables(
+            self.root / "script_out",
+            title="鲜羊排成本拆解",
+            sentences=[{"text": "四百块一份的烤羊排，成本其实占了七成。"}],
+            platform="douyin",
+        )
+        self.assertTrue(Path(deliv["pure_script_txt"]).is_file())
+        self.assertTrue(Path(deliv["execution_plan_md"]).is_file())
+        self.assertNotIn("〔画面", Path(deliv["pure_script_txt"]).read_text(encoding="utf-8"))
+
+        # 2) 口播动态讲解窗口探测 + smooth_orbit_pip 圆窗合成
+        wins = detect_explainer_broll_windows([
+            {"id": "s1", "text": "很多人问为什么看起来一样大其实差了14倍。", "start_sec": 0.4, "end_sec": 3.4, "words": [{"word": "14倍", "start_sec": 2.2, "end_sec": 2.6}]},
+            {"id": "s2", "text": "欢迎评论区聊聊。", "start_sec": 3.6, "end_sec": 5.0, "emotion_or_info": "cta"},
+        ])
+        self.assertEqual(len(wins), 1)
+        self.assertEqual(wins[0]["presenter_pip_mode"], "smooth_orbit_pip")
+
+        base = Image.new("RGB", (1080, 1920), (40, 60, 90))
+        broll = Image.new("RGB", (1080, 1920), (8, 19, 31))
+        comp, faces = compose_pip_frame_pil(
+            base,
+            secondary_img=broll,
+            pip_spec={"mode": "smooth_orbit_pip", "corner": "tr", "radius_px": 146, "border_hex": "#F4B13E"},
+        )
+        self.assertEqual(comp.size, (1080, 1920))
+        self.assertEqual(len(faces), 1)
+
+        # 3) 分平台发布文案交付包
+        pack = build_publish_copy_pack(
+            self.root,
+            title_seed="四百元烤羊排成本真相",
+            hook_text="价格越高的菜，利润反而越低",
+            sentences=[{"text": "价格越高的菜，利润反而越低"}, {"text": "鲜羊排原料成本就占了六成八"}],
+            keywords=["烤羊排", "利润"],
+            track="store",
+            cover_main="鲜羊排真相",
+            cover_sub="实拍算账",
+            has_4k_covers=True,
+        )
+        self.assertTrue((self.root / "09_publish_copy_pack.md").is_file())
+        self.assertIn("douyin_shipinhao", pack["platforms"])
+        self.assertIn("xiaohongshu", pack["platforms"])
+        self.assertIn("bilibili", pack["platforms"])
+
+    def test_subset_fonts_char_collection_and_fallback(self):
+        from common import find_commercial_font
+        from subset_fonts import collect_project_chars, subset_font_file
+
+        sample_dir = self.root / "font_scan"
+        sample_dir.mkdir()
+        (sample_dir / "page.html").write_text("<h1>测试中文字体子集化2026</h1>", encoding="utf-8")
+        chars = collect_project_chars([sample_dir])
+        self.assertIn("子", chars)
+        self.assertIn("2", chars)
+        fp = find_commercial_font()
+        if fp:
+            res = subset_font_file(Path(fp), self.root / "out_font" / Path(fp).name, chars)
+            self.assertIn(res["status"], ("subsetted", "copied_fallback_no_fonttools"))
+            self.assertTrue(Path(res["output"]).is_file())
 
 
 if __name__ == "__main__":

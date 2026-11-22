@@ -772,6 +772,49 @@ def run_step3(
     return audio_events
 
 
+def snap_cut_to_frame_grid(t_sec: float, fps: int = DEFAULT_FPS) -> float:
+    """将粗剪切点吸附至视频帧网格 round(t*fps)/fps，确保音画切点误差严格小于 1 帧。"""
+    f = max(1, int(fps))
+    return round(round(float(t_sec) * f) / float(f), 4)
+
+
+def apply_edge_micro_fade(audio_48k: np.ndarray, fade_sec: float = 0.012, sr: int = SR) -> np.ndarray:
+    """对单段硬切语音首尾施加 12ms 防爆音平滑淡入淡出（不做双端讲话交叉淡化，杜绝叠字）。"""
+    if len(audio_48k) < 16:
+        return audio_48k
+    out = audio_48k.copy()
+    fn = min(int(round(max(0.004, float(fade_sec)) * sr)), len(out) // 4)
+    if fn >= 4:
+        ramp = np.linspace(0.0, 1.0, fn, dtype=np.float32)[:, None]
+        out[:fn] *= ramp
+        out[-fn:] *= ramp[::-1]
+    return out
+
+
+def refine_cut_to_island_midpoint(
+    cut_sec: float,
+    islands: List[Dict[str, float]],
+    search_radius_sec: float = 0.25,
+    fps: int = DEFAULT_FPS,
+) -> float:
+    """将切点优先落在相邻语音能量岛之间的静音中段，再吸附帧网格，避开辅音起音与轻声尾音。"""
+    if not islands:
+        return snap_cut_to_frame_grid(cut_sec, fps=fps)
+    best_t = float(cut_sec)
+    best_dist = search_radius_sec + 1.0
+    for a, b in zip(islands, islands[1:]):
+        gap_s = float(a["end_sec"])
+        gap_e = float(b["start_sec"])
+        if gap_e - gap_s < 0.04:
+            continue
+        mid = (gap_s + gap_e) * 0.5
+        d = abs(mid - cut_sec)
+        if d <= search_radius_sec and d < best_dist:
+            best_dist = d
+            best_t = mid
+    return snap_cut_to_frame_grid(best_t, fps=fps)
+
+
 def main() -> None:
     maybe_reexec_in_venv()
     parser = argparse.ArgumentParser(description="Step 3: 锁定音轨 (零拍漂Bgm循环 + 纯净RoomTone + 过零点精剪)")

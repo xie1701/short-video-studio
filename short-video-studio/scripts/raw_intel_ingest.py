@@ -19,7 +19,7 @@ import re
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 SCRIPTS_ROOT = Path(__file__).resolve().parent
 if str(SCRIPTS_ROOT) not in sys.path:
@@ -329,6 +329,53 @@ def lint_script(script_items: List[Dict[str, Any]], raw_intel: Optional[Dict[str
     full_txt = "".join(_item_text(it) for it in valid_items)
     matched_pains = [k for k in pain_kws if k in full_txt]
 
+    # 四轮分焦增强校验：夸大承诺、段落相似重复（删除测试）、开句悬空指代、跨平台残留词
+    target_platform = str((raw_intel or {}).get("target_platform") or "").lower()
+    seen_norms: List[Tuple[int, str]] = []
+    for idx, it in enumerate(valid_items, start=1):
+        txt = _item_text(it)
+        for bad_claim in _EXAGGERATED_CLAIMS:
+            if bad_claim in txt:
+                issues.append({
+                    "line": idx,
+                    "severity": "error",
+                    "code": "exaggerated_claim",
+                    "text": txt,
+                    "message": f"包含无法兑现的夸大说法「{bad_claim}」，建议改成可核验的具体事实或实测数据。",
+                })
+        if idx == 1 and _DANGLING_START_RE.match(txt):
+            issues.append({
+                "line": idx,
+                "severity": "warn",
+                "code": "dangling_pronoun",
+                "text": txt,
+                "message": "第一句用「这个/那个/它」开头指向不明确，建议直接说出具体东西的名字。",
+            })
+        if target_platform in _PLATFORM_RESIDUE_MAP:
+            for res_w in _PLATFORM_RESIDUE_MAP[target_platform]:
+                if res_w in txt:
+                    issues.append({
+                        "line": idx,
+                        "severity": "warn",
+                        "code": "platform_residue",
+                        "text": txt,
+                        "message": f"当前目标平台为 {target_platform}，但句子里留有其他平台话术「{res_w}」，建议改掉。",
+                    })
+        norm_t = re.sub(r"[\s，。！？、；：,.!?;:]+", "", txt)
+        if len(norm_t) >= 8:
+            for prev_i, prev_n in seen_norms:
+                overlap = len(set(norm_t) & set(prev_n)) / max(1, len(set(norm_t) | set(prev_n)))
+                if overlap >= 0.82:
+                    issues.append({
+                        "line": idx,
+                        "severity": "warn",
+                        "code": "redundant_paragraph",
+                        "text": txt,
+                        "message": f"与第 {prev_i} 句意思高度重复，做一遍“删除测试”：若没有新增例子或限制条件建议删掉。",
+                    })
+                    break
+            seen_norms.append((idx, norm_t))
+
     errors = sum(1 for i in issues if i["severity"] == "error")
     warns = sum(1 for i in issues if i["severity"] == "warn")
     return {
@@ -339,6 +386,71 @@ def lint_script(script_items: List[Dict[str, Any]], raw_intel: Optional[Dict[str
         "matched_raw_pain_keywords": matched_pains,
         "issues": issues,
     }
+
+
+_EXAGGERATED_CLAIMS = ("全网第一", "100%有效", "必火", "绝对能爆", "震惊全网", "99%的人都不知道", "最强没有之一")
+_PLATFORM_RESIDUE_MAP = {
+    "xiaohongshu": ("左下角小黄车", "一键三连", "投币收藏", "点进橱窗"),
+    "bilibili": ("左下角小黄车", "点进橱窗", "主页笔记"),
+    "douyin": ("一键三连", "投币", "主页笔记"),
+    "shipinhao": ("左下角小黄车", "一键三连", "投币"),
+}
+_DANGLING_START_RE = re.compile(r"^(?:这个|那个|它|这里|那样)[，,。]?")
+
+
+def export_script_deliverables(
+    out_dir: Path,
+    title: str,
+    sentences: List[Dict[str, Any]],
+    opening_candidates: Optional[List[Dict[str, str]]] = None,
+    platform: str = "douyin",
+    todo_items: Optional[List[str]] = None,
+) -> Dict[str, str]:
+    """
+    口播文案双文件解耦导出：
+    1. 00_口播纯享稿.txt：零 Markdown、零停顿符与画面提示，直接放进提词器就能顺口开念；
+    2. 00_拍摄执行方案.md：含 3 选 1 开头候选（标出兑现段）、带停顿/画面提示逐字稿、易卡句提醒与待补核实清单。
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    clean_lines = [str(s.get("text") or "").strip() for s in sentences if str(s.get("text") or "").strip()]
+    pure_txt_p = out_dir / "00_口播纯享稿.txt"
+    pure_txt_p.write_text("\n".join(clean_lines) + "\n", encoding="utf-8")
+
+    cands = opening_candidates or [
+        {"type": "数据反常识（推荐）", "text": clean_lines[0] if clean_lines else title, "payoff": "第 2 段直接给出真实对照"},
+        {"type": "具体场景切入", "text": f"你有没有遇到过这种情况：{clean_lines[0] if clean_lines else title}", "payoff": "第 2–3 段给出解法"},
+        {"type": "常见误解纠偏", "text": f"很多人以为不是这样，但实际测下来恰恰相反", "payoff": "第 2 段用实拍验证"},
+    ]
+    hard_to_read = [ln for ln in clean_lines if len(re.sub(r"[\s，。！？、]", "", ln)) > 16][:2]
+    total_chars = sum(len(re.sub(r"[\s，。！？、]", "", ln)) for ln in clean_lines)
+    est_sec = round(total_chars / 4.2, 1)
+
+    md_lines = [
+        f"# 《{title}》口播拍摄执行方案",
+        "",
+        f"- **适配平台**：`{platform}` | **全稿字数**：约 `{total_chars}` 字 | **预计口播时长**：约 `{est_sec}` 秒",
+        "- **开念纯享稿**：直接打开同目录 `00_口播纯享稿.txt`（无符号干扰，直接照念）",
+        "",
+        "## 一、开头 3 选 1 候选（已标出正文兑现位置）",
+        *[f"{i}. **【{c.get('type', '候选')}】** {c.get('text', '')}（兑现：{c.get('payoff', '正文展开')}）" for i, c in enumerate(cands[:3], 1)],
+        "",
+        "## 二、带停顿与画面配合的逐字稿",
+        *[f"{i}. {ln}  〔画面：匹配实拍特写或重点图解〕" for i, ln in enumerate(clean_lines, 1)],
+        "",
+        "## 三、开录前防卡壳提醒",
+        *(
+            [f"- 偏长易喘气句（建议中间停半拍）：「{ln}」" for ln in hard_to_read]
+            if hard_to_read
+            else ["- 全稿均为短句，正常语速顺口可读。"]
+        ),
+        "",
+        "## 四、发布前待补 / 待核实项",
+        *([f"- [ ] {x}" for x in todo_items] if todo_items else ["- 无额外待补项，确认片中数字准确即可开拍。"]),
+        "",
+    ]
+    plan_md_p = out_dir / "00_拍摄执行方案.md"
+    plan_md_p.write_text("\n".join(md_lines), encoding="utf-8")
+    return {"pure_script_txt": str(pure_txt_p.resolve()), "execution_plan_md": str(plan_md_p.resolve())}
 
 
 def render_lint_markdown(lint_res: Dict[str, Any], raw_intel: Dict[str, Any]) -> str:
@@ -353,6 +465,10 @@ def render_lint_markdown(lint_res: Dict[str, Any], raw_intel: Dict[str, Any]) ->
         "ai_cliche": "书面套话",
         "abstract_fluff": "缺少具体细节",
         "missing_micro_hook": "平铺缺少转折",
+        "exaggerated_claim": "夸大无法兑现",
+        "dangling_pronoun": "开句指代不明",
+        "platform_residue": "跨平台话术残留",
+        "redundant_paragraph": "段落意思重复",
     }
     sev_zh = {"error": "建议必改", "warn": "优化提醒"}
     lines = [

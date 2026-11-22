@@ -71,14 +71,20 @@ description: 策划、剪辑和交付面向实体门店获客或个人账号增�
   ```bash
   python3 scripts/inventory_media.py --input-dir <原素材目录> --output <项目目录>/pipeline/00_inventory.json --track <store|creator>
   ```
-- **入口 3（纯代码制片 `--mode code-video`，零实拍图解 / 产品 UI 演示 / 科普短片）**：
-  - 编码前**必读总纲** [references/code-video-methodology.md](references/code-video-methodology.md) 及对应工艺手册（[craft-motion-promo.md](references/craft-motion-promo.md) / [craft-explainer-data.md](references/craft-explainer-data.md) / [craft-stylized-generative.md](references/craft-stylized-generative.md) / [craft-sound-beat-sync.md](references/craft-sound-beat-sync.md)）。
-  - 执行规约初始化、校验与渲染闭环：
+- **入口 3（零实拍代码制片 `--mode code-video` / 知识讲解动画 `--mode knowledge-animation`）**：
+  - 编码前**必读总纲** [references/code-video-methodology.md](references/code-video-methodology.md) 及对应工艺手册（[knowledge-animation-craft.md](references/knowledge-animation-craft.md) / [motion-broll-and-subtitles.md](references/motion-broll-and-subtitles.md) / [script-craft-and-platforms.md](references/script-craft-and-platforms.md) / [craft-motion-promo.md](references/craft-motion-promo.md) / [craft-explainer-data.md](references/craft-explainer-data.md) / [craft-stylized-generative.md](references/craft-stylized-generative.md) / [craft-sound-beat-sync.md](references/craft-sound-beat-sync.md)）。
+  - **知识讲解动画（支持「无配音字幕即旁白」与「配音同步」双模式 + 双比例 4K 代码封面 + 分平台发布文案包）**：
+    ```bash
+    python3 scripts/run_pipeline.py --account <账号> --workspace-root <工作区> --track creator --mode knowledge-animation --anim-title "<片名>" --anim-idea "<核心反常识命题>" --anim-ratio <16x9|9x16> --anim-font-mode <sans|serif>
+    ```
+  - **多卡片图解与产品演示规约闭环**：
     ```bash
     python3 scripts/code_video_spec.py --init-spec --title "<标题>" --one-idea "<核心命题>" --out-dir <pipeline目录>
     python3 scripts/code_video_spec.py --validate-spec <pipeline目录>/00_code_spec.json
     python3 scripts/run_pipeline.py --account <账号> --workspace-root <工作区> --track <store|creator> --mode code-video --code-spec <pipeline目录>/00_code_spec.json --script-json <台词JSON> --style-id style_14
     ```
+  - **口播增强套件（语音岛粗剪、动态讲解窗口 + 平滑圆环人像、词边界 DP 短句字幕、程序化 14 种动效拟音与字体子集化）**：
+    - `step2_transcribe.py`（语音能量岛 + 5s 重叠短窗防吞重说）→ `step4_build_edl.py`（自动探测动态讲解窗口）→ `step5_subtitles.py`（词边界 DP 断句 + `terms.txt` 保护词 + 双层柔和阴影 ASS/SRT + `05_subtitle_check.txt`）→ `synth_motion_sfx.py`（14 种无版权动效拟音峰值对齐）→ `step9_title_cover.py --code-cover-4k`（分平台发布文案包 `09_publish_copy_pack.md` + 16:9/3:4 双比例 4K 封面）→ `subset_fonts.py`（按工程用字自动压缩子集字体）。
 
 ### 专属工作区隔离、合规门禁与诚实基线（MUST）
 - **原素材严格只读**：所有加工、转码、临时帧和成片导出统一写入独立专属目录（默认 `~/.short-video-studio/workspaces/accounts/<account_slug>/projects/<project_id>/`，可用 `--workspace-root` 指定），**严禁向 `--raw-dir` 写入任何文件**。

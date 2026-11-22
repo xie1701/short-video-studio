@@ -12,9 +12,13 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import math
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -30,6 +34,7 @@ from common import (
     SUBTITLE_SYMMETRIC_MAX_W,
     bbox_iou,
     check_bbox_in_safe_zone,
+    find_bin,
     find_commercial_font,
     get_cached_font,
     load_subtitle_templates,
@@ -41,6 +46,323 @@ from common import (
 
 # 仅保留夹在数字间的小数点/冒号(如 3.5 / 18:30)以及数字后的%，彻底清掉紧贴数字的中文逗号句号！
 _NON_CORE_PUNCT_RE = re.compile(r"(?<!\d)[.:：](?!\d)|(?<!\d)[.:：](?=\d)|(?<=\d)[.:：](?!\d)|[，。、；！？,!?;“”‘’\"'（）()]+")
+
+_DP_NO_LEAD_CHARS = set("的了呢吗吧啊着过么嘛上里中下后前")
+_DP_NO_TAIL_CHARS = set("的把被从跟比在对向给让和与及是将用为")
+_DP_UNIT_AFTER_NUM = set("倍度年多万亿%％岁个次米元块斤克天月时分秒件家店条步项位层种")
+_DP_HARD_SPLIT_RE = re.compile(r"([。！？!?]+)")
+_DP_SOFT_PUNCT = set("，、；：,;: ")
+_COMMON_TWO_CHAR_WORDS = {
+    "因为", "所以", "但是", "其实", "如果", "而且", "虽然", "不过", "然后", "或者",
+    "为什么", "怎么样", "多少钱", "不会", "不能", "不是", "没有", "已经", "可以", "需要",
+    "自己", "大家", "我们", "你们", "他们", "这个", "那个", "这样", "那样", "这里", "那里",
+    "放大", "缩小", "面积", "真实", "成本", "利润", "价格", "时间", "方法", "步骤", "结果",
+    "对比", "发现", "问题", "答案", "原因", "标准", "细节", "效果", "数据", "视频", "画面",
+    "字幕", "镜头", "声音", "节奏", "烧烤", "羊排", "门店", "顾客", "老板", "新人", "完播",
+}
+
+
+def load_protected_terms(terms_path: Optional[Path] = None, extra_terms: Optional[List[str]] = None) -> List[str]:
+    terms: List[str] = []
+    if terms_path and Path(terms_path).is_file():
+        for ln in Path(terms_path).read_text(encoding="utf-8").splitlines():
+            t = ln.strip()
+            if t and not t.startswith("#") and t not in terms:
+                terms.append(t)
+    for t in (extra_terms or []):
+        ts = str(t or "").strip()
+        if len(ts) >= 2 and ts not in terms:
+            terms.append(ts)
+    terms.sort(key=len, reverse=True)
+    return terms
+
+
+def tokenize_semantic_words(sentence: str, terms: Optional[List[str]] = None) -> List[str]:
+    """
+    词边界切分器：优先调用 jieba（若已安装），否则使用零依赖中文语义边界与保护词/数字量词合并分词器。
+    严格保护 terms 中的专有名词、成语与“数字+单位”不被切碎。
+    """
+    s = str(sentence or "")
+    if not s:
+        return []
+    prot = sorted([t for t in (terms or []) if t], key=len, reverse=True)
+    raw_toks: List[str] = []
+
+    try:
+        import jieba  # type: ignore
+        jieba.setLogLevel(60)
+        for tm in prot:
+            jieba.add_word(tm, freq=2_000_000)
+        raw_toks = [t for t in jieba.cut(s, HMM=False) if t]
+    except Exception:
+        # 零依赖高质量分词兜底：先整块匹配保护词/数字+单位/英文词，再按虚词与常见词切分
+        i, n = 0, len(s)
+        num_unit_re = re.compile(r"[0-9]+(?:[.:][0-9]+)?[%％倍度年多万亿岁个次米元块斤克天月时分秒件家店条步项位层种]*")
+        ascii_re = re.compile(r"[A-Za-z][A-Za-z0-9_\-]*")
+        while i < n:
+            matched_prot = None
+            for tm in prot:
+                if s.startswith(tm, i):
+                    matched_prot = tm
+                    break
+            if matched_prot:
+                raw_toks.append(matched_prot)
+                i += len(matched_prot)
+                continue
+            m_num = num_unit_re.match(s, i)
+            if m_num:
+                raw_toks.append(m_num.group(0))
+                i = m_num.end()
+                continue
+            m_asc = ascii_re.match(s, i)
+            if m_asc:
+                raw_toks.append(m_asc.group(0))
+                i = m_asc.end()
+                continue
+            ch = s[i]
+            if ch in _DP_SOFT_PUNCT or ch in "。！？!?":
+                raw_toks.append(ch)
+                i += 1
+                continue
+            if i + 3 <= n and s[i : i + 3] in _COMMON_TWO_CHAR_WORDS:
+                raw_toks.append(s[i : i + 3])
+                i += 3
+                continue
+            if i + 2 <= n and s[i : i + 2] in _COMMON_TWO_CHAR_WORDS:
+                raw_toks.append(s[i : i + 2])
+                i += 2
+                continue
+            if ch in _DP_NO_LEAD_CHARS or ch in _DP_NO_TAIL_CHARS:
+                raw_toks.append(ch)
+                i += 1
+                continue
+            # 其余普通汉字尽量组成 2 字自然语义节拍，遇到标点/数字/虚词提前停
+            if i + 1 < n and ("\u4e00" <= s[i + 1] <= "\u9fff") and s[i + 1] not in _DP_NO_LEAD_CHARS and s[i + 1] not in _DP_NO_TAIL_CHARS:
+                if not any(s.startswith(tm, i + 1) for tm in prot):
+                    raw_toks.append(s[i : i + 2])
+                    i += 2
+                    continue
+            raw_toks.append(ch)
+            i += 1
+
+    # 后处理：强制合并跨 token 的“数字 + 单位/小数”
+    merged: List[str] = []
+    for tok in raw_toks:
+        if (
+            merged
+            and re.search(r"[0-9]$", merged[-1])
+            and tok
+            and (tok[0] in _DP_UNIT_AFTER_NUM or tok[0] in "0123456789.:")
+        ):
+            merged[-1] += tok
+        else:
+            merged.append(tok)
+    return merged
+
+
+def dp_segment_short_lines(
+    sentence: str,
+    max_width_px: int,
+    font_path: Optional[str] = None,
+    font_size: int = 62,
+    terms: Optional[List[str]] = None,
+    max_chars: int = 12,
+    strip_punct: bool = True,
+) -> List[Tuple[int, int, str]]:
+    """
+    词边界动态规划（DP）最优短句切分：
+    返回 [(start_char_idx, end_char_idx, display_text), ...]。
+    """
+    raw = str(sentence or "")
+    if not raw.strip():
+        return []
+    prot = [t for t in (terms or []) if len(t) >= 2]
+    toks = tokenize_semantic_words(raw, terms=prot)
+    bounds = [0]
+    for tk in toks:
+        bounds.append(bounds[-1] + len(tk))
+    nb = len(bounds)
+    if nb <= 1:
+        return []
+
+    def _disp(a: int, b: int) -> str:
+        sub = raw[a:b].strip()
+        if strip_punct:
+            sub = re.sub(r"[，、；：,;:]+", " ", sub)
+            sub = strip_display_punctuation(sub)
+            sub = re.sub(r"\s+", " ", sub).strip()
+        return sub
+
+    def _break_cost(pos: int) -> float:
+        if pos <= 0 or pos >= len(raw):
+            return 0.0
+        left = raw[:pos]
+        right = raw[pos:]
+        if left and left[-1] in _DP_SOFT_PUNCT:
+            return 0.0
+        cost = 4.0
+        r_trim = right.lstrip("，、；：,;: 。！？!?")
+        l_trim = left.rstrip("，、；：,;: 。！？!?")
+        r0 = r_trim[:1]
+        l_last = l_trim[-1:]
+        if r0 in _DP_NO_LEAD_CHARS:
+            cost += 30.0
+        if l_last in _DP_NO_TAIL_CHARS:
+            cost += 15.0
+        if r0.isdigit():
+            cost += 25.0
+        for tm in prot:
+            for m in re.finditer(re.escape(tm), raw):
+                if m.start() < pos < m.end():
+                    cost += 1000.0
+        return cost
+
+    inf = float("inf")
+    best = [inf] * nb
+    prev = [-1] * nb
+    best[0] = 0.0
+
+    for j in range(1, nb):
+        for i in range(j):
+            if best[i] == inf:
+                continue
+            txt = _disp(bounds[i], bounds[j])
+            if not txt:
+                if best[i] < best[j]:
+                    best[j] = best[i]
+                    prev[j] = i
+                continue
+            compact_len = len(txt.replace(" ", ""))
+            pw, _ = _measure_text_px(txt, font_path, font_size)
+            if pw > max_width_px or compact_len > max(max_chars + 2, 14):
+                continue
+            short_pen = max(0, 5 - compact_len) * 2.5 if j < nb - 1 or i > 0 else 0.0
+            if compact_len <= 3 and (i > 0 or j < nb - 1):
+                short_pen += 12.0
+            cand = best[i] + _break_cost(bounds[j]) + short_pen + 1.0
+            if cand < best[j]:
+                best[j] = cand
+                prev[j] = i
+
+    if best[nb - 1] == inf:
+        # 极端长保护词或超窄画布兜底：按原样返回整段
+        return [(0, len(raw), _disp(0, len(raw)) or raw.strip())]
+
+    out: List[Tuple[int, int, str]] = []
+    cur = nb - 1
+    while cur > 0:
+        p = prev[cur]
+        disp_t = _disp(bounds[p], bounds[cur])
+        if disp_t:
+            out.append((bounds[p], bounds[cur], disp_t))
+        cur = p
+    out.reverse()
+    return out
+
+
+def align_corrected_text_to_words(
+    corrected_text: str,
+    asr_words: List[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], float]:
+    """用 difflib.SequenceMatcher 将人工校对后的纯文本字符级对齐到逐字时间戳，未匹配字线性插值。"""
+    clean_chars = [ch for ch in re.sub(r"[\s，。！？、；：,.!?;:“”\"'（）()《》—]+", "", str(corrected_text or ""))]
+    asr_flat: List[Tuple[str, float, float]] = []
+    for w in asr_words:
+        wt = re.sub(r"[\s，。！？、；：,.!?;:“”\"'（）()《》—]+", "", str(w.get("word") or ""))
+        if not wt:
+            continue
+        ws = float(w.get("start_sec", 0.0))
+        we = float(w.get("end_sec", ws + 0.08))
+        n = len(wt)
+        for k, ch in enumerate(wt):
+            asr_flat.append((ch, ws + (we - ws) * k / n, ws + (we - ws) * (k + 1) / n))
+
+    if not clean_chars or not asr_flat:
+        return [], 0.0
+    sm = difflib.SequenceMatcher(None, clean_chars, [c for c, _, _ in asr_flat], autojunk=False)
+    times: List[Optional[Tuple[float, float]]] = [None] * len(clean_chars)
+    matched = 0
+    for blk in sm.get_matching_blocks():
+        matched += blk.size
+        for k in range(blk.size):
+            _, s, e = asr_flat[blk.b + k]
+            times[blk.a + k] = (s, e)
+
+    n = len(times)
+    i = 0
+    while i < n:
+        if times[i] is None:
+            j = i
+            while j < n and times[j] is None:
+                j += 1
+            t0 = times[i - 1][1] if i > 0 and times[i - 1] else (times[j][0] if j < n and times[j] else 0.0)
+            t1 = times[j][0] if j < n and times[j] else t0 + 0.18 * (j - i)
+            span = max(0.02 * (j - i), t1 - t0) / max(1, j - i)
+            for k in range(i, j):
+                times[k] = (t0 + span * (k - i), t0 + span * (k - i + 1))
+            i = j
+        else:
+            i += 1
+
+    aligned = [
+        {"word": ch, "start_sec": round(float(t[0]), 4), "end_sec": round(float(t[1]), 4)}
+        for ch, t in zip(clean_chars, times)
+        if t is not None
+    ]
+    return aligned, round(matched / max(1, len(clean_chars)), 4)
+
+
+def fmt_srt_time(sec: float) -> str:
+    ms = int(round(max(0.0, float(sec)) * 1000))
+    h, rem = divmod(ms, 3_600_000)
+    m, rem = divmod(rem, 60_000)
+    s, ms_r = divmod(rem, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms_r:03d}"
+
+
+def burn_ass_safely(
+    video_in: Path,
+    ass_path: Path,
+    video_out: Path,
+    font_path: Optional[Path] = None,
+    expected_font_hint: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    安全烧录 ASS 字幕：把 ASS 和单个字体复制到纯 ASCII 临时目录规避中文/冒号转义坑，
+    并从 libass verbose 日志确认实际命中的字体，防止静默回退系统默认字体。
+    """
+    ffmpeg = find_bin("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("需要 ffmpeg 烧录 ASS 字幕。")
+    with tempfile.TemporaryDirectory(prefix="svs_ass_") as td:
+        tdp = Path(td)
+        tmp_ass = tdp / "sub.ass"
+        shutil.copy2(ass_path, tmp_ass)
+        fonts_dir = tdp / "fonts"
+        fonts_dir.mkdir(exist_ok=True)
+        if font_path and Path(font_path).is_file():
+            shutil.copy2(font_path, fonts_dir / ("font" + Path(font_path).suffix.lower()))
+        ass_esc = str(tmp_ass).replace("\\", "/").replace(":", "\\:")
+        fd_esc = str(fonts_dir).replace("\\", "/").replace(":", "\\:")
+        vf = f"ass='{ass_esc}':fontsdir='{fd_esc}'"
+        proc = subprocess.run(
+            [
+                ffmpeg, "-y", "-hide_banner", "-loglevel", "verbose",
+                "-i", str(video_in), "-vf", vf,
+                "-c:v", "libx264", "-preset", "medium", "-crf", "17", "-pix_fmt", "yuv420p",
+                "-c:a", "copy", "-movflags", "+faststart", str(video_out),
+            ],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+        font_hits = re.findall(r"fontselect:\s*\(([^)]+)\)\s*->\s*(.+)", proc.stderr or "")
+        matched_ok = True
+        if expected_font_hint and font_hits:
+            matched_ok = any(expected_font_hint.lower() in f"{a} {b}".lower() for a, b in font_hits)
+        return {
+            "returncode": proc.returncode,
+            "font_select_hits": [f"{a} -> {b.strip()}" for a, b in font_hits[:6]],
+            "font_matched_expected": matched_ok,
+        }
 
 
 def strip_display_punctuation(text: str) -> str:
@@ -175,19 +497,52 @@ def split_sentence_into_chunks(
     font_size: int = 62,
     max_safe_px: int = 608,
     strip_punct: bool = True,
+    protected_terms: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
-    """把长句按真静音 (>=0.30s) 呼吸组与 92% 安全宽拆分为无残句字幕块（放行 4 字，严禁 <=3 字残组）。"""
+    """
+    把长句按真静音 (>=0.30s) 呼吸组 + 词边界动态规划（DP）拆分为无残句、不破词、不拆保护词的短句字幕块。
+    """
     clean_fn = strip_display_punctuation if strip_punct else (lambda s: str(s or "").strip())
     words = _clean_word_tokens(list(sent.get("words") or []), strip_punct=strip_punct)
+    sent_kws = list(sent.get("keywords") or [])
+    eff_terms = load_protected_terms(extra_terms=list(protected_terms or []) + [str(k) for k in sent_kws])
+
     if not words:
-        clean_txt = clean_fn(str(sent.get("text", ""))).strip()
-        return [{
-            "text": clean_txt or str(sent.get("text", "")).strip(),
-            "start_sec": sent["start_sec"],
-            "end_sec": sent["end_sec"],
-            "words": [],
-            "keywords": list(sent.get("keywords") or []),
-        }]
+        raw_t = str(sent.get("text", "")).strip()
+        dp_segs = dp_segment_short_lines(
+            raw_t,
+            max_width_px=max_safe_px,
+            font_path=font_path,
+            font_size=font_size,
+            terms=eff_terms,
+            max_chars=max_chars,
+            strip_punct=strip_punct,
+        )
+        if not dp_segs:
+            clean_txt = clean_fn(raw_t).strip()
+            return [{
+                "text": clean_txt or raw_t,
+                "start_sec": sent["start_sec"],
+                "end_sec": sent["end_sec"],
+                "words": [],
+                "keywords": sent_kws,
+            }]
+        total_chars = max(1, sum(len(t.replace(" ", "")) for _, _, t in dp_segs))
+        t0, t1 = float(sent["start_sec"]), float(sent["end_sec"])
+        span = max(0.2, t1 - t0)
+        cursor_t = t0
+        out_no_words: List[Dict[str, Any]] = []
+        for _, _, seg_t in dp_segs:
+            seg_dur = span * (max(1, len(seg_t.replace(" ", ""))) / total_chars)
+            out_no_words.append({
+                "text": seg_t,
+                "start_sec": round(cursor_t, 4),
+                "end_sec": round(min(t1, cursor_t + seg_dur), 4),
+                "words": [],
+                "keywords": sent_kws,
+            })
+            cursor_t += seg_dur
+        return out_no_words
 
     breath_groups: List[List[Dict[str, Any]]] = []
     cur_grp: List[Dict[str, Any]] = [words[0]]
@@ -204,25 +559,11 @@ def split_sentence_into_chunks(
         else:
             breath_groups.append(cur_grp)
 
-    def _split_oversized_slice(sl: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
-        t = "".join(str(x["word"]) for x in sl)
-        pw, _ = _measure_text_px(t, font_path, font_size)
-        if pw <= max_safe_px or len(sl) < 8:
-            return [sl]
-        mid = len(sl) // 2
-        if 4 <= mid < len(sl) - 4 and sl[mid - 1].get("is_keyword") and sl[mid].get("is_keyword"):
-            mid += 1
-        left, right = sl[:mid], sl[mid:]
-        if len(left) <= 3 or len(right) <= 3:
-            return [sl]
-        return _split_oversized_slice(left) + _split_oversized_slice(right)
-
     chunks: List[Dict[str, Any]] = []
-    sent_kws = list(sent.get("keywords") or [])
     for grp in breath_groups:
         txt = "".join(str(x["word"]) for x in grp)
         px_w, _ = _measure_text_px(txt, font_path, font_size)
-        if len(grp) <= max_chars + 1 and px_w <= max_safe_px:
+        if len(txt) <= max_chars + 1 and px_w <= max_safe_px:
             chunks.append({
                 "text": txt,
                 "start_sec": grp[0]["start_sec"],
@@ -232,41 +573,53 @@ def split_sentence_into_chunks(
             })
             continue
 
-        cap = max(6, min(max_chars, int(len(grp) * (max_safe_px / max(1, px_w))) if px_w > max_safe_px else max_chars))
-        n_parts = max(2, math.ceil(len(grp) / float(cap)))
-        base_len = len(grp) // n_parts
-        rem = len(grp) % n_parts
-        pos = 0
-        sub_slices: List[List[Dict[str, Any]]] = []
-        for i in range(n_parts):
-            part_len = base_len + (1 if i < rem else 0)
-            nxt_pos = pos + part_len
-            if 4 <= nxt_pos < len(grp) - 4 and grp[nxt_pos - 1].get("is_keyword") and grp[nxt_pos].get("is_keyword"):
-                nxt_pos += 1
-            nxt_pos = min(len(grp), nxt_pos)
-            sub_slices.append(grp[pos:nxt_pos])
-            pos = nxt_pos
-        if pos < len(grp) and sub_slices:
-            sub_slices[-1].extend(grp[pos:])
-        if len(sub_slices) >= 2 and len(sub_slices[-1]) <= 3:
-            tail = sub_slices.pop()
-            sub_slices[-1].extend(tail)
+        # 构造字符偏移到 word token 索引的精确映射，保证 DP 按语义词边界切片不丢逐字时间戳
+        char_to_wi: List[int] = []
+        for wi, w_item in enumerate(grp):
+            for _ in str(w_item["word"]):
+                char_to_wi.append(wi)
 
-        checked_slices: List[List[Dict[str, Any]]] = []
-        for sl in sub_slices:
-            if sl:
-                checked_slices.extend(_split_oversized_slice(sl))
-
-        for sl in checked_slices:
-            if not sl:
+        dp_segs = dp_segment_short_lines(
+            txt,
+            max_width_px=max_safe_px,
+            font_path=font_path,
+            font_size=font_size,
+            terms=eff_terms,
+            max_chars=max_chars,
+            strip_punct=strip_punct,
+        )
+        used_end_wi = 0
+        for s_ch, e_ch, _ in dp_segs:
+            if s_ch >= len(char_to_wi):
                 continue
-            chunks.append({
-                "text": "".join(str(x["word"]) for x in sl),
-                "start_sec": sl[0]["start_sec"],
-                "end_sec": sl[-1]["end_sec"],
-                "words": list(sl),
-                "keywords": sent_kws,
-            })
+            w_start = max(used_end_wi, char_to_wi[s_ch])
+            w_end = char_to_wi[min(len(char_to_wi) - 1, max(s_ch, e_ch - 1))] + 1
+            if w_end <= w_start:
+                continue
+            sl = grp[w_start:w_end]
+            used_end_wi = w_end
+            if sl:
+                chunks.append({
+                    "text": "".join(str(x["word"]) for x in sl),
+                    "start_sec": sl[0]["start_sec"],
+                    "end_sec": sl[-1]["end_sec"],
+                    "words": list(sl),
+                    "keywords": sent_kws,
+                })
+        if used_end_wi < len(grp):
+            tail_sl = grp[used_end_wi:]
+            if chunks and len(tail_sl) <= 3:
+                chunks[-1]["words"].extend(tail_sl)
+                chunks[-1]["text"] += "".join(str(x["word"]) for x in tail_sl)
+                chunks[-1]["end_sec"] = tail_sl[-1]["end_sec"]
+            elif tail_sl:
+                chunks.append({
+                    "text": "".join(str(x["word"]) for x in tail_sl),
+                    "start_sec": tail_sl[0]["start_sec"],
+                    "end_sec": tail_sl[-1]["end_sec"],
+                    "words": list(tail_sl),
+                    "keywords": sent_kws,
+                })
     return chunks
 
 
@@ -456,11 +809,17 @@ def run_step5(
                         ass_text += w_txt
                 if not ass_text:
                     ass_text = _escape_ass_text(ch["text"])
-                # 将避脸后精确中心坐标写入 ASS \pos(540, cy)，确保 .ass 与 PNG/HyperFrames 避脸与居中完全一致
+                plain_ass = _escape_ass_text(ch["text"])
+                # 双层柔和模糊阴影（Layer 0 柔黑阴影 + Layer 1 清晰主层，禁用自动换行 \q2）
                 ass_cx = SUBTITLE_CENTER_X
                 ass_cy = int(final_bbox["y"]) + int(final_bbox["h"]) // 2
                 ass_dialogues.append(
-                    f"Dialogue: 0,{fmt_ass_time(st_sec)},{fmt_ass_time(en_sec)},Default,,0,0,0,,{{\\an5\\pos({ass_cx},{ass_cy})}}{ass_text}"
+                    f"Dialogue: 0,{fmt_ass_time(st_sec)},{fmt_ass_time(en_sec)},Default,,0,0,0,,"
+                    f"{{\\q2\\an5\\pos({ass_cx + 4},{ass_cy + 5})\\1c&H000000&\\1a&HB0&\\3c&H000000&\\3a&HB0&\\shad0\\blur4}}{plain_ass}"
+                )
+                ass_dialogues.append(
+                    f"Dialogue: 1,{fmt_ass_time(st_sec)},{fmt_ass_time(en_sec)},Default,,0,0,0,,"
+                    f"{{\\q2\\an5\\pos({ass_cx},{ass_cy})}}{ass_text}"
                 )
             idx += 1
 
@@ -485,6 +844,34 @@ def run_step5(
 
     (pipeline_dir / "05_subtitles.ass").write_text(ass_content, encoding="utf-8")
 
+    # 同步导出纯净单行 SRT 与逐行断句检查报告（含字/秒节奏与保护词防拆核验）
+    srt_lines: List[str] = []
+    check_lines: List[str] = [f"字幕模板：{template_id} | 总条数：{len(entries)} | 让位挂起：{suppressed_count}", ""]
+    active_entries = [e for e in entries if not e.get("suppressed")]
+    for s_idx, ent in enumerate(active_entries, start=1):
+        srt_lines.append(f"{s_idx}\n{fmt_srt_time(ent['start_sec'])} --> {fmt_srt_time(ent['end_sec'])}\n{ent['text']}\n")
+        dur_e = max(0.05, float(ent["end_sec"]) - float(ent["start_sec"]))
+        cps_e = len(str(ent["text"]).replace(" ", "")) / dur_e
+        flag = "  <- 偏快 (>9字/秒)" if cps_e > 9.0 else ""
+        check_lines.append(f"{s_idx:02d} [{ent['start_sec']:6.2f}-{ent['end_sec']:6.2f}] {dur_e:4.2f}s {cps_e:4.1f}字/秒 | {ent['text']}{flag}")
+
+    terms_p = pipeline_dir / "terms.txt"
+    prot_terms = load_protected_terms(terms_p if terms_p.is_file() else None)
+    broken_terms: List[str] = []
+    for a, b in zip(active_entries, active_entries[1:]):
+        ta = str(a["text"]).replace(" ", "")
+        tb = str(b["text"]).replace(" ", "")
+        joint = ta[-4:] + "|" + tb[:4]
+        cut_i = joint.index("|")
+        joined_plain = joint.replace("|", "")
+        for tm in prot_terms:
+            for m in re.finditer(re.escape(tm), joined_plain):
+                if m.start() < cut_i < m.end():
+                    broken_terms.append(f"{a['id']}/{b['id']} 拆开了「{tm}」")
+    check_lines.append("\n保护词防拆检查：" + ("通过" if not broken_terms else "；".join(broken_terms)))
+    (pipeline_dir / "05_subtitles.srt").write_text("\n".join(srt_lines), encoding="utf-8")
+    (pipeline_dir / "05_subtitle_check.txt").write_text("\n".join(check_lines) + "\n", encoding="utf-8")
+
     out_json = {
         "step": "05_subtitles",
         "template_id": template_id,
@@ -494,6 +881,9 @@ def run_step5(
         "template_config": tpl,
         "count": len(entries),
         "suppressed_count": suppressed_count,
+        "srt_path": str((pipeline_dir / "05_subtitles.srt").resolve()),
+        "check_report_path": str((pipeline_dir / "05_subtitle_check.txt").resolve()),
+        "broken_protected_terms": broken_terms,
         "entries": entries,
     }
     write_json(pipeline_dir / "05_subtitles.json", out_json)

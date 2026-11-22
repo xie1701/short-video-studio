@@ -663,6 +663,26 @@ def compose_pip_frame_pil(
     fcx = (f0["x"] + f0["w"] * 0.5) / float(CANVAS_WIDTH)
     fcy = (f0["y"] + f0["h"] * 0.5) / float(CANVAS_HEIGHT)
 
+    if mode == "smooth_orbit_pip":
+        # 口播动态图解平滑圆环画中画：底图为动态讲解 B-roll，主讲人平滑缩至安全角旋转光环圆窗
+        bg = _crop_aspect_fill(sec_rgba, CANVAS_WIDTH, CANVAS_HEIGHT, 0.50, 0.50, zoom=1.0)
+        corner = str(pip_spec.get("corner") or "tr").lower()
+        r_pip = int(pip_spec.get("radius_px") or 146)
+        diam = r_pip * 2
+        cx_p = (CANVAS_WIDTH - 200) if corner != "tl" else 200
+        cy_p = int(pip_spec.get("center_y") or 360)
+        x0, y0 = cx_p - r_pip, cy_p - r_pip
+        avatar_crop = _crop_aspect_fill(base_rgba, diam, diam, fcx, max(0.24, fcy - 0.04), zoom=1.18)
+        _paste_circle_window(bg, avatar_crop, x0, y0, border_rgba=(236, 227, 207, 240), border_w=4, outer_ring_rgba=border_rgba)
+        # 外侧旋转装饰弧段
+        draw = ImageDraw.Draw(bg)
+        rot_deg = float(pip_spec.get("ring_deg", 28.0))
+        arc_box = [(x0 - 11, y0 - 11), (x0 + diam + 11, y0 + diam + 11)]
+        draw.arc(arc_box, start=rot_deg, end=rot_deg + 88.0, fill=border_rgba, width=4)
+        draw.arc(arc_box, start=rot_deg + 175.0, end=rot_deg + 240.0, fill=(236, 227, 207, 150), width=2)
+        eff_faces = [{"x": x0 + 36, "y": y0 + 28, "w": diam - 72, "h": diam - 64}]
+        return bg.convert("RGB"), eff_faces
+
     if mode == "blur_bg_center_card_pip":
         # style_08 / style_18：毛玻璃虚化底 + 中央悬浮圆角竖屏画中画 + 右下圆窗评论画中画
         bg = _crop_aspect_fill(base_rgba, CANVAS_WIDTH, CANVAS_HEIGHT, fcx, fcy, zoom=1.12)
@@ -968,6 +988,21 @@ def _build_ffmpeg_pip_vf(pip_layout: Optional[Dict[str, Any]], tw: int = CANVAS_
     if not bd_hex.startswith("#") or len(bd_hex) not in (7, 9):
         bd_hex = "#FFF589"
     bd_hex = bd_hex[:7]
+
+    if mode == "smooth_orbit_pip":
+        corner = str(pip_layout.get("corner") or "tr").lower()
+        r_pip = int(pip_layout.get("radius_px") or 146)
+        diam = r_pip * 2
+        cx_p = (CANVAS_WIDTH - 200) if corner != "tl" else 200
+        cy_p = int(pip_layout.get("center_y") or 360)
+        ox, oy = cx_p - r_pip, cy_p - r_pip
+        return (
+            f"split=2[pip_bg][pip_av];"
+            f"[pip_av]crop=min(iw\\,ih):min(iw\\,ih):(iw-min(iw\\,ih))/2:(ih-min(iw\\,ih))*0.28,"
+            f"scale={diam}:{diam},format=rgba,"
+            f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(hypot(X-{r_pip},Y-{r_pip}),{r_pip - 2}),255,0)'[pip_circ];"
+            f"[pip_bg][pip_circ]overlay=x={ox}:y={oy}:shortest=1"
+        )
 
     if mode == "blur_bg_center_card_pip":
         return (

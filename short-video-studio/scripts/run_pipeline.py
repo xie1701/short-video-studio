@@ -60,6 +60,7 @@ from inventory_media import (
     inventory_directory,
     render_markdown_summary,
 )
+from knowledge_animator import audit_animation_video, build_review_pack, init_animation_project
 from qa_inspector import inspect_video
 from raw_intel_ingest import lint_script, render_lint_markdown
 from render_mp4 import render_mp4
@@ -72,7 +73,7 @@ from step5_subtitles import run_step5
 from step6_packaging import run_step6
 from step7_color_grade import run_step7
 from step8_mix_audio import run_step8
-from step9_title_cover import run_step9
+from step9_title_cover import build_publish_copy_pack, render_dual_4k_code_covers, run_step9
 from workflow_guard import generate_action_strips, record_milestone, render_progress_card, tidy_workspace, verify_lock
 
 
@@ -965,10 +966,15 @@ def main() -> None:
     parser.add_argument("--track", choices=["store", "creator"], default="store")
     parser.add_argument(
         "--mode",
-        choices=["full", "lock-preview", "reedit-visuals", "relock-voice", "render-locked", "code-video"],
+        choices=["full", "lock-preview", "reedit-visuals", "relock-voice", "render-locked", "code-video", "knowledge-animation"],
         default="full",
         help="执行模式",
     )
+    parser.add_argument("--anim-title", default="知识讲解动画", help="knowledge-animation 模式：片名")
+    parser.add_argument("--anim-idea", default="用直观画面看穿一个反常识规律", help="knowledge-animation 模式：核心命题")
+    parser.add_argument("--anim-ratio", choices=["16x9", "9x16"], default="16x9", help="knowledge-animation 模式：画幅")
+    parser.add_argument("--anim-font-mode", choices=["sans", "serif"], default="sans", help="knowledge-animation 模式：字幕与封面字体气质")
+    parser.add_argument("--anim-blur", type=int, default=1, help="knowledge-animation 模式：运动模糊子帧数 (1=关闭, 8=电影级模糊)")
     parser.add_argument("--code-spec", help="入口 3 (code-video)：已有 00_code_spec.json 路径")
     parser.add_argument("--code-html", help="入口 3 (code-video)：自定义程序动画 HTML 目录或入口 HTML 文件路径")
     parser.add_argument(
@@ -1192,6 +1198,73 @@ def main() -> None:
             ws=ws,
             sync_window=args.sync_window,
         )
+    elif args.mode == "knowledge-animation":
+        anim_dir = project_dir / "animation"
+        init_res = init_animation_project(
+            anim_dir,
+            title=args.anim_title,
+            one_idea=args.anim_idea,
+            ratio=args.anim_ratio,
+            font_mode=args.anim_font_mode,
+        )
+        br = detect_browser_renderer()
+        if not br.get("available"):
+            raise RuntimeError("knowledge-animation 模式需要可用 Chrome/playwright-core，请先运行 check_and_setup.py --init-browser。")
+        size_arg = "1080x1920" if args.anim_ratio == "9x16" else "1920x1080"
+        stage_dir = Path(init_res["stage_dir"])
+        out_mp4 = pipeline_dir / "output_final.mp4"
+        cap_script = Path(__file__).resolve().parent / "capture_html_video.mjs"
+
+        run_cmd([
+            str(br["node_bin"]), str(cap_script), str(stage_dir),
+            "--verify", "--page", "anim_starter.html", "--size", size_arg, "--query", f"ratio={args.anim_ratio}",
+        ], check=True)
+        run_cmd([
+            str(br["node_bin"]), str(cap_script), str(stage_dir),
+            "--page", "anim_starter.html", "--size", size_arg, "--fps", "30",
+            "--blur", str(max(1, int(args.anim_blur))), "--query", f"ratio={args.anim_ratio}",
+            "--out", str(out_mp4.resolve()),
+        ], check=True)
+
+        audit_res = audit_animation_video(out_mp4)
+        write_json(pipeline_dir / "10_animation_audit.json", audit_res)
+        rp_res = build_review_pack(
+            out_mp4,
+            pipeline_dir / "review_pack",
+            timing_js=Path(init_res["timing_js"]),
+            storyboard_md=anim_dir / "work" / "storyboard.md",
+        )
+        cov_4k = render_dual_4k_code_covers(
+            pipeline_dir,
+            kicker=args.anim_idea[:14],
+            hero_lines=[args.anim_title[:4], args.anim_title[4:8] or "真相拆解"],
+            title=args.anim_title,
+            font_mode=args.anim_font_mode,
+        )
+        lines_cfg = read_json(Path(init_res["lines_json"]))
+        copy_pack = build_publish_copy_pack(
+            pipeline_dir,
+            title_seed=args.anim_title,
+            hook_text=args.anim_idea,
+            sentences=[{"text": l["text"]} for l in lines_cfg.get("lines", []) if not l.get("card")],
+            keywords=[args.anim_title[:6]],
+            track="creator",
+            cover_main=args.anim_title,
+            cover_sub=args.anim_idea[:12],
+            has_4k_covers=bool(cov_4k.get("ok")),
+        )
+        prog_card = render_progress_card(pipeline_dir, user_type="faceless_visual", track="creator", write_files=True)
+        write_json(pipeline_dir / "10_qa_report.json", {
+            "all_passed": bool(audit_res.get("passed")),
+            "approval_status": "READY_FOR_REVIEW" if audit_res.get("passed") else "NEEDS_FIX",
+            "animation_audit": audit_res,
+            "review_pack": rp_res,
+            "dual_4k_covers": cov_4k,
+            "publish_copy_pack": copy_pack["preferred_title"],
+        })
+        print(f"[knowledge-animation] 完成 -> {out_mp4}")
+        print("\n" + prog_card["markdown_card"])
+        return
     elif args.mode == "code-video":
         scenes_dir = _run_code_video_branch(
             pipeline_dir=pipeline_dir,
