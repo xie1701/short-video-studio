@@ -1,5 +1,5 @@
 {
-  "version": "3.1.0",
+  "version": "3.2.0",
   "default_style_id": "style_01",
   "blueprints": {
     "style_01": {
@@ -485,9 +485,9 @@
       "pip_spec": {
         "mode": "top_white_rounded_frame_pip",
         "frame_x": 40,
-        "frame_y": 210,
+        "frame_y": 96,
         "frame_w": 1000,
-        "frame_h": 920,
+        "frame_h": 980,
         "corner_radius": 38,
         "bg_hex": "#050506",
         "single_source": true
@@ -805,7 +805,11 @@
       "requires_aroll": "none",
       "allow_explainer_pip": false,
       "pip_spec": {
-        "mode": "none"
+        "mode": "vision_portrait_cutout_pip",
+        "outline_px": 8,
+        "outline_hex": "#FFFFFF",
+        "bg_blur_sigma": 10,
+        "single_source": false
       },
       "overlay_style": {
         "opening_mode": "store_detail_badge",

@@ -180,7 +180,8 @@
         3
       ],
       "max_chars_per_line": 13,
-      "full_width_bar": true
+      "full_width_bar": true,
+      "dual_line_banner": true
     },
     "style_03": {
       "name": "[style_03] 暗调深度口播 · 通宽深红实心底条大字风",
@@ -217,7 +218,8 @@
         3
       ],
       "max_chars_per_line": 10,
-      "full_width_bar": true
+      "full_width_bar": true,
+      "dual_line_banner": true
     },
     "style_04": {
       "name": "[style_04] 清冷奶油高光 · 极简轻描边宋体风",
@@ -846,7 +848,8 @@
         3
       ],
       "max_chars_per_line": 10,
-      "full_width_bar": true
+      "full_width_bar": true,
+      "dual_line_banner": true
     },
     "style_21": {
       "name": "[style_21] 门店工艺快切 · 85% 实拍特写暖黄大字风",

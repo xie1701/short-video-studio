@@ -420,7 +420,7 @@ class StudioTests(unittest.TestCase):
         self.assertIsNone(re.search(r"/(?:Users|home)/[A-Za-z0-9._-]+", raw_lib_text))
         self.assertNotIn("com." + "lveditor.draft", raw_lib_text)
         lib = read_json(lib_path)
-        self.assertEqual(lib.get("version"), "3.1.0")
+        self.assertEqual(lib.get("version"), "3.2.0")
         self.assertEqual(lib.get("default_style_id"), "style_01")
         styles = lib.get("styles") or []
         self.assertEqual(len(styles), 24)
@@ -1330,7 +1330,7 @@ class StudioTests(unittest.TestCase):
         bps = load_template_blueprints()
         self.assertEqual(len(bps), 24)
         none_cnt = sum(1 for s in lib["styles"] if (s.get("pip_composition_spec") or {}).get("mode") == "none")
-        self.assertGreaterEqual(none_cnt, 14)
+        self.assertGreaterEqual(none_cnt, 13)
         self.assertEqual((lib["styles"][0].get("pip_composition_spec") or {}).get("mode"), "none")
 
         # 全部 24 套模板蓝图均可渲染出有效透明叠层
@@ -1768,6 +1768,143 @@ class StudioTests(unittest.TestCase):
         info = ffprobe_media(base_mp4)
         dur = float(info.get("format", {}).get("duration", 0.0))
         self.assertAlmostEqual(dur, 3.0, delta=0.04, msg="xfade 转场后总时长必须 0 帧漂移")
+
+    def test_v32_ab_roll_switch_grammar_frequency_and_keyframes(self):
+        from common import ASSETS_DIR, read_json
+        from step4_build_edl import run_step4
+
+        lib = read_json(ASSETS_DIR / "style_spectrum" / "style_spectrum_library.json")
+        self.assertEqual(lib.get("version"), "3.2.0")
+        by_id = {s["style_id"]: s for s in lib["styles"]}
+        for sid, s in by_id.items():
+            ab = s.get("ab_switch_spec") or {}
+            self.assertIn(ab.get("pattern"), {
+                "fullscreen_intercut",
+                "zero_broll_keyframe_flow",
+                "container_internal_switch",
+                "cutout_broll_alternating",
+                "depth_hook_then_framed_broll",
+                "dual_window_broll_switcher",
+            }, f"Missing ab_switch_spec.pattern on {sid}")
+            self.assertGreater(float(ab.get("target_median_shot_sec", 0)), 0.7)
+            self.assertIn("kf_per_min_target", ab)
+
+        # 构造 4 句 8 秒的多镜头测试素材，验证不同风格的切镜频率、B-roll 占比、关键帧密度与切换样式
+        ar_p = self.root / "ab_aroll.mp4"
+        br1_p = self.root / "ab_broll1.mp4"
+        br2_p = self.root / "ab_broll2.mp4"
+        for p in (ar_p, br1_p, br2_p):
+            p.write_bytes(b"fixture-mp4")
+        man_items = [
+            {"id": "a1", "filename": "ab_aroll.mp4", "role": "a_roll", "video_grade": "usable", "normalized_mp4": str(ar_p), "duration_sec": 12.0},
+            {"id": "b1", "filename": "ab_broll1.mp4", "role": "b_roll", "video_grade": "usable", "normalized_mp4": str(br1_p), "duration_sec": 8.0, "best_in_sec": 0.0, "semantic_tags": ["门店"]},
+            {"id": "b2", "filename": "ab_broll2.mp4", "role": "b_roll", "video_grade": "usable", "normalized_mp4": str(br2_p), "duration_sec": 8.0, "best_in_sec": 0.0, "semantic_tags": ["特写"]},
+        ]
+        sents = [
+            {"id": f"s{i+1}", "text": f"第{i+1}句门店特写核心干货拆解", "keywords": ["核心干货"],
+             "start_sec": i * 2.0, "end_sec": (i + 1) * 2.0, "start_frame": i * 60, "end_frame": (i + 1) * 60,
+             "source_media": str(ar_p), "source_in_sec": i * 2.0, "source_out_sec": (i + 1) * 2.0, "emotion_or_info": "hook" if i == 0 else "info"}
+            for i in range(4)
+        ]
+        evts = []
+        for i in range(4):
+            evts.append({"id": f"ev_s{i+1}", "type": "sentence_start", "time_sec": i * 2.0, "frame": i * 60, "sentence_id": f"s{i+1}"})
+            evts.append({"id": f"ev_k{i+1}", "type": "keyword_accent", "time_sec": i * 2.0 + 1.0, "frame": i * 60 + 30, "sentence_id": f"s{i+1}"})
+        ae_doc = {"locked_duration_sec": 8.0, "locked_duration_frames": 240, "sentences": sents, "events": evts}
+
+        # 1) style_08 (0% B-roll 长镜 + 中频关键帧推拉 vs style_01 0 kf/min 零推拉)
+        p08 = self.root / "edl_s08"
+        p08.mkdir()
+        write_json(p08 / "01_manifest.json", {"items": man_items})
+        write_json(p08 / "03_audio_events.json", ae_doc)
+        edl08 = run_step4(p08, track="creator", style_id="style_08")
+        self.assertEqual(edl08["broll_ratio_actual"], 0.0, "style_08 必须为 0% B-roll 全 A-roll 长镜")
+        self.assertGreater(edl08["keyframe_moves_applied"], 0)
+
+        p01 = self.root / "edl_s01"
+        p01.mkdir()
+        write_json(p01 / "01_manifest.json", {"items": man_items})
+        write_json(p01 / "03_audio_events.json", ae_doc)
+        edl01 = run_step4(p01, track="store", style_id="style_01")
+        self.assertEqual(edl01["keyframe_moves_applied"], 0, "style_01 kf_per_min=0 应关闭自动 ken_burns 推拉")
+
+        # 2) style_10 (1.12s 极速跳剪 + 190.3 kf/min 几乎每镜推拉) 切镜数必须显著多于 style_04 (3.60s 慢调)
+        p10 = self.root / "edl_s10"
+        p10.mkdir()
+        write_json(p10 / "01_manifest.json", {"items": man_items})
+        write_json(p10 / "03_audio_events.json", ae_doc)
+        edl10 = run_step4(p10, track="creator", style_id="style_10")
+
+        p04 = self.root / "edl_s04"
+        p04.mkdir()
+        write_json(p04 / "01_manifest.json", {"items": man_items})
+        write_json(p04 / "03_audio_events.json", ae_doc)
+        edl04 = run_step4(p04, track="store", style_id="style_04")
+        self.assertGreater(edl10["clip_count"], edl04["clip_count"])
+        self.assertEqual(edl10["keyframe_moves_applied"], edl10["clip_count"])
+
+        # 3) style_05 (depth_hook_then_framed_broll): A-roll 挂 person_behind_giant_text_pip，B-roll 切 blur_bg_center_card_pip
+        p05 = self.root / "edl_s05"
+        p05.mkdir()
+        write_json(p05 / "01_manifest.json", {"items": man_items})
+        write_json(p05 / "03_audio_events.json", ae_doc)
+        edl05 = run_step4(p05, track="store", style_id="style_05")
+        a_modes_05 = {(c.get("pip_layout") or {}).get("mode") for c in edl05["clips"] if c["track_role"] == "a_roll"}
+        b_modes_05 = {(c.get("pip_layout") or {}).get("mode") for c in edl05["clips"] if c["track_role"] == "b_roll"}
+        self.assertIn("person_behind_giant_text_pip", a_modes_05)
+        self.assertIn("blur_bg_center_card_pip", b_modes_05)
+
+        # 4) style_07 (cutout_broll_alternating): A-roll 挂 vision_portrait_cutout_pip，纯 B-roll 镜保持全屏无 pip_layout
+        p07 = self.root / "edl_s07"
+        p07.mkdir()
+        write_json(p07 / "01_manifest.json", {"items": man_items})
+        write_json(p07 / "03_audio_events.json", ae_doc)
+        edl07 = run_step4(p07, track="store", style_id="style_07")
+        for c in edl07["clips"]:
+            if c["track_role"] == "a_roll":
+                self.assertEqual((c.get("pip_layout") or {}).get("mode"), "vision_portrait_cutout_pip")
+            elif c["track_role"] == "b_roll":
+                self.assertIsNone(c.get("pip_layout"), "cutout_broll_alternating 下纯 B-roll 镜应全屏呼吸展示")
+
+        # 5) style_09 (dual_window_broll_switcher): B-roll 镜也必须绑定 swap_main_secondary + speaker_media_path 保左下圆头像真人同步说话
+        p09 = self.root / "edl_s09"
+        p09.mkdir()
+        write_json(p09 / "01_manifest.json", {"items": man_items})
+        write_json(p09 / "03_audio_events.json", ae_doc)
+        edl09 = run_step4(p09, track="creator", style_id="style_09")
+        b_clips_09 = [c for c in edl09["clips"] if c["track_role"] == "b_roll"]
+        self.assertTrue(len(b_clips_09) >= 1)
+        self.assertTrue(all((c.get("pip_layout") or {}).get("swap_main_secondary") for c in b_clips_09))
+        self.assertTrue(all((c.get("pip_layout") or {}).get("speaker_media_path") == str(ar_p) for c in b_clips_09))
+
+    def test_v32_dual_line_banner_style21_cutout_and_flower_dedupe(self):
+        from common import ASSETS_DIR, load_subtitle_templates, read_json
+        from render_mp4 import _flower_duplicates_subtitle, render_subtitle_png
+
+        # 1) style_21 已补齐 vision_portrait_cutout_pip (outline_px=8)
+        lib = read_json(ASSETS_DIR / "style_spectrum" / "style_spectrum_library.json")
+        s21 = next(s for s in lib["styles"] if s["style_id"] == "style_21")
+        self.assertEqual(s21["pip_composition_spec"]["mode"], "vision_portrait_cutout_pip")
+        self.assertEqual(s21["pip_composition_spec"]["outline_px"], 8)
+
+        # 2) style_02 / 03 / 20 启用 dual_line_banner 后，长句自动排为上下双行高厚度大字横幅 (h >= 120px)
+        tpls = load_subtitle_templates()
+        for sid in ("style_02", "style_03", "style_20"):
+            self.assertTrue(tpls[sid].get("dual_line_banner"))
+            sub_p = self.root / f"dual_{sid}.png"
+            w, h = render_subtitle_png(
+                {"text": "实体工厂老板该怎么做短视频", "keywords": ["怎么做短视频"]},
+                tpls[sid],
+                None,
+                sub_p,
+            )
+            self.assertEqual(w, 1080)
+            self.assertGreaterEqual(h, 128, f"{sid} dual-line banner should be thick two-line banner, got h={h}")
+
+        # 3) 同屏花字与底字幕防重互斥
+        subs = [{"text": "钱背后藏着定价真相", "start_sec": 0.0, "end_sec": 2.0}]
+        self.assertTrue(_flower_duplicates_subtitle("两块钱背后藏", 0.0, 1.8, subs))
+        self.assertFalse(_flower_duplicates_subtitle("门店实拍核验", 0.0, 1.8, subs))
 
 
 if __name__ == "__main__":

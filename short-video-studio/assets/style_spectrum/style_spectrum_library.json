@@ -1,5 +1,5 @@
 {
-  "version": "3.1.0",
+  "version": "3.2.0",
   "generated_at": "2026-11-22T09:45:00+08:00",
   "source_dir": "builtin_style_spectrum_v31_100pct_whitebox",
   "total_videos": 24,
@@ -361,6 +361,13 @@
         "anim_mode": "store_stagger_burst",
         "transition_style": "zoomin",
         "suppress_top_duplicate_flower": false
+      },
+      "ab_switch_spec": {
+        "target_median_shot_sec": 1.87,
+        "kf_per_min_target": 0.0,
+        "pattern": "fullscreen_intercut",
+        "opening_cuts": 0,
+        "hook_clip_budget": 0
       }
     },
     {
@@ -643,6 +650,13 @@
         "anim_mode": "wipe_reveal",
         "transition_style": "fadeblack",
         "suppress_top_duplicate_flower": true
+      },
+      "ab_switch_spec": {
+        "target_median_shot_sec": 1.13,
+        "kf_per_min_target": 0.0,
+        "pattern": "fullscreen_intercut",
+        "opening_cuts": 3,
+        "hook_clip_budget": 0
       }
     },
     {
@@ -928,6 +942,13 @@
         "anim_mode": "wipe_reveal",
         "transition_style": "dissolve",
         "suppress_top_duplicate_flower": true
+      },
+      "ab_switch_spec": {
+        "target_median_shot_sec": 2.63,
+        "kf_per_min_target": 20.8,
+        "pattern": "fullscreen_intercut",
+        "opening_cuts": 1,
+        "hook_clip_budget": 0
       }
     },
     {
@@ -1208,6 +1229,13 @@
         "anim_mode": "ink_bloom",
         "transition_style": "dissolve",
         "suppress_top_duplicate_flower": false
+      },
+      "ab_switch_spec": {
+        "target_median_shot_sec": 3.6,
+        "kf_per_min_target": 86.2,
+        "pattern": "fullscreen_intercut",
+        "opening_cuts": 1,
+        "hook_clip_budget": 0
       }
     },
     {
@@ -1489,6 +1517,13 @@
         ],
         "stroke_color": "#0A0A0C",
         "stroke_width": 6
+      },
+      "ab_switch_spec": {
+        "target_median_shot_sec": 1.43,
+        "kf_per_min_target": 26.7,
+        "pattern": "depth_hook_then_framed_broll",
+        "opening_cuts": 2,
+        "hook_clip_budget": 3
       }
     },
     {
@@ -1779,6 +1814,13 @@
         "transition_style": "dissolve",
         "suppress_top_duplicate_flower": false,
         "handwriting_font": "MaShanZheng-Regular.ttf"
+      },
+      "ab_switch_spec": {
+        "target_median_shot_sec": 3.13,
+        "kf_per_min_target": 0.0,
+        "pattern": "container_internal_switch",
+        "opening_cuts": 1,
+        "hook_clip_budget": 0
       }
     },
     {
@@ -2066,6 +2108,13 @@
         "anim_mode": "bounce_smash",
         "transition_style": "zoomin",
         "suppress_top_duplicate_flower": false
+      },
+      "ab_switch_spec": {
+        "target_median_shot_sec": 1.4,
+        "kf_per_min_target": 34.1,
+        "pattern": "cutout_broll_alternating",
+        "opening_cuts": 2,
+        "hook_clip_budget": 0
       }
     },
     {
@@ -2273,7 +2322,7 @@
         ],
         "sfx_per_min_target": 31,
         "visual_per_min_target": 43,
-        "broll_overlay_ratio_target": 0.2
+        "broll_overlay_ratio_target": 0.0
       },
       "assets": {
         "lut_cube": "luts/style_08.cube"
@@ -2288,7 +2337,7 @@
       },
       "is_default_store_style": false,
       "is_default_creator_style": false,
-      "broll_overlay_ratio_target": 0.2,
+      "broll_overlay_ratio_target": 0.0,
       "broll_ambient_sound_policy": {
         "enabled": false,
         "gain_db": -10.0,
@@ -2355,6 +2404,13 @@
         "anim_mode": "wipe_reveal",
         "transition_style": "none",
         "suppress_top_duplicate_flower": false
+      },
+      "ab_switch_spec": {
+        "target_median_shot_sec": 6.0,
+        "kf_per_min_target": 34.9,
+        "pattern": "zero_broll_keyframe_flow",
+        "opening_cuts": 0,
+        "hook_clip_budget": 0
       }
     },
     {
@@ -2651,6 +2707,13 @@
         "anim_mode": "typewriter_char",
         "transition_style": "fadeblack",
         "suppress_top_duplicate_flower": false
+      },
+      "ab_switch_spec": {
+        "target_median_shot_sec": 1.5,
+        "kf_per_min_target": 11.3,
+        "pattern": "dual_window_broll_switcher",
+        "opening_cuts": 2,
+        "hook_clip_budget": 0
       }
     },
     {
@@ -2934,6 +2997,13 @@
         "anim_mode": "typewriter_char",
         "transition_style": "zoomin",
         "suppress_top_duplicate_flower": false
+      },
+      "ab_switch_spec": {
+        "target_median_shot_sec": 1.12,
+        "kf_per_min_target": 190.3,
+        "pattern": "fullscreen_intercut",
+        "opening_cuts": 3,
+        "hook_clip_budget": 0
       }
     },
     {
@@ -3217,6 +3287,13 @@
         "anim_mode": "wipe_reveal",
         "transition_style": "dissolve",
         "suppress_top_duplicate_flower": false
+      },
+      "ab_switch_spec": {
+        "target_median_shot_sec": 1.32,
+        "kf_per_min_target": 54.5,
+        "pattern": "fullscreen_intercut",
+        "opening_cuts": 2,
+        "hook_clip_budget": 0
       }
     },
     {
@@ -3492,6 +3569,13 @@
         ],
         "stroke_color": "#111111",
         "stroke_width": 6
+      },
+      "ab_switch_spec": {
+        "target_median_shot_sec": 1.9,
+        "kf_per_min_target": 31.9,
+        "pattern": "fullscreen_intercut",
+        "opening_cuts": 1,
+        "hook_clip_budget": 0
       }
     },
     {
@@ -3736,9 +3820,9 @@
       "pip_composition_spec": {
         "mode": "top_white_rounded_frame_pip",
         "frame_x": 40,
-        "frame_y": 210,
+        "frame_y": 96,
         "frame_w": 1000,
-        "frame_h": 920,
+        "frame_h": 980,
         "corner_radius": 38,
         "bg_hex": "#050506",
         "single_source": true
@@ -3768,6 +3852,13 @@
         ],
         "stroke_color": "#000000",
         "stroke_width": 2
+      },
+      "ab_switch_spec": {
+        "target_median_shot_sec": 1.46,
+        "kf_per_min_target": 33.8,
+        "pattern": "container_internal_switch",
+        "opening_cuts": 2,
+        "hook_clip_budget": 0
       }
     },
     {
@@ -4048,6 +4139,13 @@
         ],
         "stroke_color": "#000000",
         "stroke_width": 3
+      },
+      "ab_switch_spec": {
+        "target_median_shot_sec": 1.78,
+        "kf_per_min_target": 23.0,
+        "pattern": "container_internal_switch",
+        "opening_cuts": 1,
+        "hook_clip_budget": 0
       }
     },
     {
@@ -4330,6 +4428,13 @@
         "anim_mode": "bounce_smash",
         "transition_style": "fadeblack",
         "suppress_top_duplicate_flower": false
+      },
+      "ab_switch_spec": {
+        "target_median_shot_sec": 2.27,
+        "kf_per_min_target": 109.9,
+        "pattern": "fullscreen_intercut",
+        "opening_cuts": 1,
+        "hook_clip_budget": 0
       }
     },
     {
@@ -4619,6 +4724,13 @@
         "anim_mode": "number_flip_trio",
         "transition_style": "fadeblack",
         "suppress_top_duplicate_flower": false
+      },
+      "ab_switch_spec": {
+        "target_median_shot_sec": 1.75,
+        "kf_per_min_target": 36.0,
+        "pattern": "container_internal_switch",
+        "opening_cuts": 1,
+        "hook_clip_budget": 0
       }
     },
     {
@@ -4908,6 +5020,13 @@
         "anim_mode": "shimmer_3d_gold",
         "transition_style": "zoomin",
         "suppress_top_duplicate_flower": false
+      },
+      "ab_switch_spec": {
+        "target_median_shot_sec": 1.53,
+        "kf_per_min_target": 48.8,
+        "pattern": "dual_window_broll_switcher",
+        "opening_cuts": 2,
+        "hook_clip_budget": 0
       }
     },
     {
@@ -5189,6 +5308,13 @@
         "anim_mode": "shimmer_3d_gold",
         "transition_style": "zoomin",
         "suppress_top_duplicate_flower": false
+      },
+      "ab_switch_spec": {
+        "target_median_shot_sec": 1.58,
+        "kf_per_min_target": 25.1,
+        "pattern": "fullscreen_intercut",
+        "opening_cuts": 2,
+        "hook_clip_budget": 0
       }
     },
     {
@@ -5474,6 +5600,13 @@
         "anim_mode": "wipe_reveal",
         "transition_style": "fadeblack",
         "suppress_top_duplicate_flower": false
+      },
+      "ab_switch_spec": {
+        "target_median_shot_sec": 1.45,
+        "kf_per_min_target": 20.4,
+        "pattern": "cutout_broll_alternating",
+        "opening_cuts": 2,
+        "hook_clip_budget": 0
       }
     },
     {
@@ -5756,6 +5889,13 @@
         "anim_mode": "ink_bloom",
         "transition_style": "dissolve",
         "suppress_top_duplicate_flower": true
+      },
+      "ab_switch_spec": {
+        "target_median_shot_sec": 1.83,
+        "kf_per_min_target": 13.7,
+        "pattern": "fullscreen_intercut",
+        "opening_cuts": 1,
+        "hook_clip_budget": 0
       }
     },
     {
@@ -6011,7 +6151,11 @@
         "quote_citation_card": false
       },
       "pip_composition_spec": {
-        "mode": "none"
+        "mode": "vision_portrait_cutout_pip",
+        "outline_px": 8,
+        "outline_hex": "#FFFFFF",
+        "bg_blur_sigma": 10,
+        "single_source": false
       },
       "giant_text_spec": {
         "mode": "giant_smash_single",
@@ -6039,6 +6183,13 @@
         "anim_mode": "bounce_smash",
         "transition_style": "zoomin",
         "suppress_top_duplicate_flower": false
+      },
+      "ab_switch_spec": {
+        "target_median_shot_sec": 1.15,
+        "kf_per_min_target": 92.2,
+        "pattern": "cutout_broll_alternating",
+        "opening_cuts": 3,
+        "hook_clip_budget": 0
       }
     },
     {
@@ -6322,6 +6473,13 @@
         "anim_mode": "wipe_reveal",
         "transition_style": "wipeleft",
         "suppress_top_duplicate_flower": false
+      },
+      "ab_switch_spec": {
+        "target_median_shot_sec": 1.35,
+        "kf_per_min_target": 46.0,
+        "pattern": "container_internal_switch",
+        "opening_cuts": 2,
+        "hook_clip_budget": 0
       }
     },
     {
@@ -6601,6 +6759,13 @@
         "anim_mode": "ink_bloom",
         "transition_style": "dissolve",
         "suppress_top_duplicate_flower": false
+      },
+      "ab_switch_spec": {
+        "target_median_shot_sec": 4.08,
+        "kf_per_min_target": 22.9,
+        "pattern": "fullscreen_intercut",
+        "opening_cuts": 0,
+        "hook_clip_budget": 0
       }
     },
     {
@@ -6882,6 +7047,13 @@
         "anim_mode": "bounce_smash",
         "transition_style": "fadeblack",
         "suppress_top_duplicate_flower": false
+      },
+      "ab_switch_spec": {
+        "target_median_shot_sec": 1.11,
+        "kf_per_min_target": 16.5,
+        "pattern": "fullscreen_intercut",
+        "opening_cuts": 3,
+        "hook_clip_budget": 0
       }
     }
   ]

@@ -223,7 +223,7 @@ def _build_style01_layers(
     else:
         tag = (sub_text or tag_raw)[:8] if (sub_text or tag_raw) else ("门店实拍" if elem_kind == "center_burst_title" else "")
 
-    cw = 860
+    cw = 980
     layers: List[Tuple[Image.Image, Tuple[int, int], float]] = []
     y_cur = 18
 
@@ -242,32 +242,32 @@ def _build_style01_layers(
         b_ink = b_rot.getbbox()
         if b_ink:
             b_rot = b_rot.crop(b_ink)
-            layers.append((b_rot, ((cw - b_rot.width) // 2 - 42, y_cur), 0.0))
+            layers.append((b_rot, (6, y_cur), 0.0))
             y_cur += b_rot.height - 6
 
     if elem_kind == "center_burst_title":
         main_img = _draw_tilted_stroked_text(
-            l1 or main_text[:6], sans_font, 760, 98, (132, 255, 58, 255), (10, 12, 10, 255), stroke_w=10, tilt_deg=-4.5
+            l1 or main_text[:6], sans_font, 900, 126, (132, 255, 58, 255), (10, 12, 10, 255), stroke_w=11, tilt_deg=-4.5
         )
     else:
         main_img = _draw_tilted_stroked_text(
-            l1 or main_text[:6], oblique_font, 740, 76, (148, 255, 62, 255), (12, 22, 10, 255), stroke_w=8, tilt_deg=-4.0
+            l1 or main_text[:6], oblique_font, 860, 96, (148, 255, 62, 255), (12, 22, 10, 255), stroke_w=9, tilt_deg=-4.0
         )
-    layers.append((main_img, ((cw - main_img.width) // 2, y_cur), 0.22 if layers else 0.0))
+    layers.append((main_img, (14, y_cur), 0.22 if layers else 0.0))
     y_cur += main_img.height - 8
 
     if l2:
         sub_img = _draw_gradient_3d_text(
-            l2, sans_font, 760, 82,
+            l2, sans_font, 900, 108,
             top_rgb=(255, 118, 96), mid_rgb=(238, 36, 42), bot_rgb=(176, 12, 22),
             extrude_rgb=(45, 8, 12), stroke_rgb=(255, 255, 255), depth_px=6,
         )
-        layers.append((sub_img, ((cw - sub_img.width) // 2 + 14, y_cur), 0.44 if len(layers) >= 2 else 0.22))
+        layers.append((sub_img, (max(0, cw - sub_img.width - 6), y_cur - 14), 0.44 if len(layers) >= 2 else 0.22))
         y_cur += sub_img.height + 16
     else:
         y_cur += 16
 
-    ch = max(160, min(420, y_cur))
+    ch = max(160, min(560, y_cur + 14))
     # 保证偶数尺寸
     cw = cw & ~1
     ch = (ch + 1) & ~1
@@ -424,16 +424,16 @@ def render_template_packaging_png(
     # 7. style_06：黑底拍立得顶部两行真实毛笔手写体金句 (MaShanZheng-Regular.ttf)
     if family == "black_polaroid_vlog":
         l1, l2 = _split_two_lines(main_text, max_first=8)
-        w, h = 800, 210
+        w, h = 860, 228
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
-        f1, t1, _ = _fit_text(d, l1, hand_font, w - 40, 72, 38)
+        f1, t1, _ = _fit_text(d, l1, hand_font, w - 30, 90, 44)
         if l2:
-            f2, t2, _ = _fit_text(d, l2, hand_font, w - 40, 72, 38)
-            d.text((w // 2, 58), t1, font=f1, fill=(255, 255, 255, 252), anchor="mm")
-            d.text((w // 2, 144), t2, font=f2, fill=(255, 255, 255, 252), anchor="mm")
+            f2, t2, _ = _fit_text(d, l2, hand_font, w - 30, 90, 44)
+            d.text((w // 2, 62), t1, font=f1, fill=(255, 255, 255, 252), anchor="mm")
+            d.text((w // 2, 158), t2, font=f2, fill=(255, 255, 255, 252), anchor="mm")
         else:
-            d.text((w // 2, 105), t1, font=f1, fill=(255, 255, 255, 252), anchor="mm")
+            d.text((w // 2, 114), t1, font=f1, fill=(255, 255, 255, 252), anchor="mm")
         ink = img.getbbox()
         return img.crop(ink) if ink else img
 

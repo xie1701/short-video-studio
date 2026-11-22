@@ -92,6 +92,33 @@ def _char_is_tofu(font_key: str, font_size: int, ch: str) -> bool:
     return ch_bytes == tofu_sig
 
 
+_DEDUPE_MINIMAL_STYLES = {"style_04", "style_10", "style_11", "style_15", "style_23", "style_24"}
+
+
+def _norm_cn(text: Any) -> str:
+    return re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", str(text or ""))
+
+
+def _flower_duplicates_subtitle(text: str, s_t: float, e_t: float, subs: List[Dict[str, Any]]) -> bool:
+    """同屏防重：花字与同时段底字幕字面高度重合（>=60% 字符或互相包含）时，丢弃花字，避免胸口+肚子上下说同一句话。"""
+    ft = _norm_cn(text)
+    if len(ft) < 2:
+        return False
+    ft_set = set(ft)
+    for sub in subs:
+        if sub.get("suppressed"):
+            continue
+        if float(sub.get("end_sec", 0.0)) <= s_t or float(sub.get("start_sec", 0.0)) >= e_t:
+            continue
+        st = _norm_cn(sub.get("text"))
+        if not st:
+            continue
+        if ft in st or st in ft or (sum(1 for ch in ft_set if ch in st) / float(len(ft_set))) >= 0.6:
+            return True
+    return False
+
+
+
 def compute_subtitle_place_xy(img_w: int, img_h: int, tpl: Dict[str, Any]) -> Tuple[int, int]:
     """按画布绝对水平正中 x=540px 居中放置字幕（通宽底条模式贴满 0..1080，其余严守对称安全带 [220, 860]）。"""
     y_center = int(tpl.get("safe_y_center", tpl.get("y_center", 1310)))
@@ -118,6 +145,8 @@ def render_subtitle_png(
         raw_text = "".join(str(w.get("word", "")) for w in words)
 
     orig_fs = max(24, int(tpl.get("font_size", 62)))
+    if bool(tpl.get("dual_line_banner")):
+        orig_fs = max(76, int(round(orig_fs * 1.32)))
     orig_stroke_w = int(tpl.get("stroke_width", 4))
     kw_scale = float(tpl.get("keyword_scale", 1.133))
 
@@ -128,7 +157,17 @@ def render_subtitle_png(
     pad_x = 28 if has_bg else 14
     pad_y = 18 if has_bg else 12
 
-    max_line_w = SUBTITLE_SYMMETRIC_MAX_W - pad_x * 2
+    dual_banner = bool(tpl.get("dual_line_banner"))
+    max_line_w = 840 if dual_banner else (SUBTITLE_SYMMETRIC_MAX_W - pad_x * 2)
+    if dual_banner and "\n" not in raw_text and len(raw_text) >= 5:
+        # 通宽双行大字横幅（上白下荧光/暖黄/雅金）：优先在重点词前断行，否则对半断行
+        cut_at = (len(raw_text) + 1) // 2
+        for kw in sorted((str(k) for k in (entry.get("keywords") or []) if k), key=len, reverse=True):
+            k_idx = raw_text.find(kw)
+            if 2 <= k_idx <= len(raw_text) - 2:
+                cut_at = k_idx
+                break
+        raw_text = raw_text[:cut_at] + "\n" + raw_text[cut_at:]
     lines_text = raw_text.splitlines() if "\n" in raw_text else [raw_text]
     if not lines_text:
         lines_text = [""]
@@ -196,6 +235,17 @@ def render_subtitle_png(
                 start = idx + len(kw)
         for ch, flag in zip(raw_text, kw_flags):
             tokens.append((ch, flag, ch == "\n"))
+
+    if dual_banner and any(t[2] for t in tokens):
+        seen_nl = False
+        recolored: List[Tuple[str, bool, bool]] = []
+        for ch_t, kw_t, nl_t in tokens:
+            if nl_t:
+                seen_nl = True
+                recolored.append((ch_t, False, True))
+            else:
+                recolored.append((ch_t, seen_nl, False))
+        tokens = recolored
 
     # 逐行收集字符排版元信息
     lines: List[List[Tuple[str, Any, Tuple[int, int, int, int], int, int, int]]] = [[]]
@@ -1512,7 +1562,29 @@ def build_graded_segment_cmd(
     if isinstance(pip_cfg, dict):
         sec_media = str(pip_cfg.get("secondary_media_path") or "")
         sec_in = max(0.0, float(pip_cfg.get("secondary_in_sec", 0.0)))
-        if sec_media and Path(sec_media).is_file() and str(Path(sec_media).resolve()) != str(Path(media_path).resolve()):
+        swap_spk = str(pip_cfg.get("speaker_media_path") or "") if pip_cfg.get("swap_main_secondary") else ""
+        if swap_spk and Path(swap_spk).is_file() and sec_media and Path(sec_media).is_file():
+            # B-roll 镜头也要保证「主讲人头像/同步口型」是当前句真人：把真人口播源换成主输入，B-roll 作为证据窗副输入
+            spk_chain = f"fps=fps={fps},trim=duration={clip_dur:.4f},setpts=PTS-STARTPTS,{_cover_crop_vf(tw, th, face_bias=True)}"
+            if color_vf and not preview:
+                spk_chain += f",{color_vf}"
+            swap_cmd = _build_dual_pip_cmd(
+                ffmpeg_bin=ffmpeg_bin,
+                media_path=swap_spk,
+                src_in=max(0.0, float(pip_cfg.get("speaker_in_sec", 0.0))),
+                src_avail=clip_dur + 0.1,
+                base_vf_chain=spk_chain,
+                pip_layout=pip_cfg,
+                sec_media=sec_media,
+                sec_in=sec_in,
+                clip_dur=clip_dur,
+                clip_frames=clip_frames,
+                fps=fps,
+                out_mp4=out_mp4,
+            )
+            if swap_cmd:
+                return swap_cmd
+        elif sec_media and Path(sec_media).is_file() and str(Path(sec_media).resolve()) != str(Path(media_path).resolve()):
             dual_cmd = _build_dual_pip_cmd(
                 ffmpeg_bin=ffmpeg_bin,
                 media_path=media_path,
@@ -1745,7 +1817,7 @@ def build_base_video_track(
             xf_cmd.extend(["-i", str(sf_p)])
         fc_parts: List[str] = []
         for si in range(len(seg_files)):
-            fc_parts.append(f"[{si}:v]settb=AVTB,fps=fps={fps},format=yuv420p[xs{si}]")
+            fc_parts.append(f"[{si}:v]fps=fps={fps},settb=AVTB,format=yuv420p[xs{si}]")
         cur_lbl = "[xs0]"
         acc_frames = clip_nom_frames[0]
         for edge_i in range(len(seg_files) - 1):
@@ -1755,10 +1827,10 @@ def build_base_video_track(
                 # 前镜多预留了 xf_frames，在名义终点 acc_frames 处开启 xf_dur 过渡
                 off_sec = max(0.0, frames_to_sec(acc_frames, fps))
                 fc_parts.append(
-                    f"{cur_lbl}{nxt_lbl}xfade=transition={xf_type}:duration={xf_dur:.4f}:offset={off_sec:.4f}{out_lbl}"
+                    f"{cur_lbl}{nxt_lbl}xfade=transition={xf_type}:duration={xf_dur:.4f}:offset={off_sec:.4f},settb=AVTB{out_lbl}"
                 )
             else:
-                fc_parts.append(f"{cur_lbl}{nxt_lbl}concat=n=2:v=1:a=0{out_lbl}")
+                fc_parts.append(f"{cur_lbl}{nxt_lbl}concat=n=2:v=1:a=0,settb=AVTB{out_lbl}")
             cur_lbl = out_lbl
             acc_frames += clip_nom_frames[edge_i + 1]
         fc_parts.append(f"[vxf_raw]{','.join(BT709_VF_SUFFIX)}[vxf_out]")
@@ -1876,6 +1948,10 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
         e_t = min(exact_dur, frames_to_sec(int(elem.get("end_frame", 0)), fps))
         if e_t <= s_t:
             continue
+        elem_kind_d = str(elem.get("kind") or elem.get("type") or "")
+        if elem_kind_d in ("flower_text", "stamp_tag") or (elem_kind_d == "center_burst_title" and style_id in _DEDUPE_MINIMAL_STYLES):
+            if _flower_duplicates_subtitle(str(elem.get("text_or_asset") or elem.get("text") or ""), s_t, e_t, subs_data.get("entries") or []):
+                continue
         ov_path: Path
         is_video_ov = False
         pw, ph = 400, 120
@@ -1916,6 +1992,10 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
             # style_01 开场综艺斜标移至中下部避脸安全区（不遮额头五官）
             px = max(40, (CANVAS_WIDTH - pw) // 2)
             py = max(720, min(860, 1110 - ph))
+        elif style_id == "style_18" and elem_kind_s == "center_burst_title":
+            # style_18 3D 金属扫光大字落在主讲人腹部下三分之一视觉焦点位，上半身五官保持干净
+            px = max(40, (CANVAS_WIDTH - pw) // 2)
+            py = max(760, 1120 - ph)
         elif style_id == "style_05":
             # style_05 第 4 层胸前高对比白字提问（前景压巨字）
             px = max(60, (CANVAS_WIDTH - pw) // 2)

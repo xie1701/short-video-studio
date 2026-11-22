@@ -394,6 +394,41 @@ def _build_eye_locked_vf(eye_anchor: Optional[Dict[str, Any]], zoom: float = 1.1
     return f"scale={zw}:{zh}:flags=lanczos,crop={CANVAS_WIDTH}:{CANVAS_HEIGHT}:{crop_x}:{crop_y}"
 
 
+def _apply_keyframe_policy(clips: List[Dict[str, Any]], kf_per_min: float, total_dur: float) -> int:
+    """
+    按风格实测关键帧频次给分镜挂载推/拉镜（每次推或拉记 2 个关键帧）：
+    0 = 机位完全不动；>=80 = 几乎每镜都推拉（1.00↔1.14）；其余按预算挑最长的镜头做温和呼吸（1.00↔1.07）。
+    code_broll（程序生成图卡）与带锁眼放大的镜头不参与。返回挂载数量。
+    """
+    for c in clips:
+        c["ken_burns"] = None
+    if kf_per_min <= 0.0:
+        return 0
+    cands = [c for c in clips if c.get("track_role") != "code_broll" and not c.get("vf_extra")]
+    if not cands:
+        return 0
+    strong = kf_per_min >= 80.0
+    if strong:
+        chosen = cands
+    else:
+        budget = max(1, int(round(kf_per_min * total_dur / 60.0 / 2.0)))
+        chosen = sorted(cands, key=lambda c: -float(c.get("duration_sec", 0.0)))[:budget]
+    chosen_ids = {id(c) for c in chosen}
+    peak = 1.14 if strong else 1.07
+    flip = 0
+    for c in clips:
+        if id(c) not in chosen_ids:
+            continue
+        push = (flip % 2 == 0)
+        c["ken_burns"] = {
+            "zoom_start": 1.0 if push else peak,
+            "zoom_end": peak if push else 1.0,
+            "reason": f"风格关键帧密度 {kf_per_min:g}/分钟 · {'推镜' if push else '拉镜'}",
+        }
+        flip += 1
+    return len(chosen)
+
+
 def run_step4(
     pipeline_dir: Path,
     track: str = "store",
@@ -442,12 +477,33 @@ def run_step4(
 
     eff_prof = account_profile if (account_profile and account_profile.get("sample_sufficient") is True) else {}
     min_shot_gap = max(0.95, min(2.4, float(eff_prof.get("target_median_shot_sec", 1.55)) * 0.85))
-    pacing = EDIT_PROFILES[edit_profile]
+    pacing = dict(EDIT_PROFILES[edit_profile])
     max_shot = float(pacing["max_shot_sec"])
     micro_hook_max_sec = min(max_shot, float(eff_prof.get("micro_hook_max_sec", max_shot - 1.8)))
     default_aroll_r = max(0.0, min(0.80, 1.0 - broll_target_ratio))
     target_aroll_ratio = max(0.0, min(0.85, float(eff_prof.get("target_aroll_ratio", default_aroll_r))))
     broll_only_mode = bool(prefer_broll_only or (broll_target_ratio >= 0.995) or (target_aroll_ratio <= 0.005))
+
+    # 风格专属「A/B-roll 切换语法」：切镜频率 / 关键帧推拉密度 / 开场切数 / 切换样式，均来自白盒草稿实测值
+    ab_spec = dict((style_entry or {}).get("ab_switch_spec") or {})
+    ab_pattern = str(ab_spec.get("pattern") or "")
+    use_ab_timing = bool(ab_spec) and not eff_prof
+    zero_broll_mode = bool(ab_spec) and broll_target_ratio <= 0.01 and bool(usable_arolls) and not prefer_broll_only
+    if use_ab_timing:
+        med_target = max(0.8, float(ab_spec.get("target_median_shot_sec", 1.55)))
+        min_shot_gap = max(0.60, med_target * 0.78)
+        pacing["sentence_cut_gap"] = max(0.60, min(med_target * 0.62, 6.0))
+        pacing["max_shot_sec"] = max(float(pacing["max_shot_sec"]), med_target * 2.2)
+        max_shot = float(pacing["max_shot_sec"])
+        micro_hook_max_sec = min(max_shot, max(med_target * 2.0, 2.6))
+        pacing["opening_cuts"] = int(ab_spec.get("opening_cuts", pacing["opening_cuts"]))
+        if zero_broll_mode:
+            # 0% B-roll 长镜风：只在句界硬切（锁定音轨已切净气口，A-roll 不能跨句连续），不再人为插入中途切点
+            min_shot_gap = 0.60
+            pacing["sentence_cut_gap"] = 0.60
+            micro_hook_max_sec = max_shot
+    kf_target = float(ab_spec["kf_per_min_target"]) if ("kf_per_min_target" in ab_spec) else None
+    allow_punch = kf_target is None or kf_target > 0.0
 
     first_3s_evts = pick_first_3s_events(events, fps, int(pacing["opening_cuts"]))
     sent_by_id = {s["id"]: s for s in sentences}
@@ -572,7 +628,14 @@ def run_step4(
         if not overlapping:
             overlapping = [find_sentence_for_time(t_in, cut_points[seg_idx]["event"])]
         if len(overlapping) != 1:
-            return False
+            # 若相邻多句来自同一段连续实拍 A-roll 源（如开场长镜或 0% B-roll 长镜），且中间无跳跃剪切，同样允许作为连续 A-roll
+            same_src = len({str(s.get("source_media") or "") for s in overlapping}) == 1
+            contiguous = all(
+                abs(float(overlapping[k + 1].get("source_in_sec", 0.0)) - float(overlapping[k].get("source_out_sec", 0.0))) <= 0.35
+                for k in range(len(overlapping) - 1)
+            )
+            if not (same_src and contiguous and (seg_idx == 0 or zero_broll_mode)):
+                return False
         if t_in - float(overlapping[0]["start_sec"]) > 1.10:
             return False
         if seg_idx < n_segs - 1:
@@ -632,7 +695,7 @@ def run_step4(
                 cur_aroll_sec += seg_durs_est[best_tail_i]
 
         min_aroll_sec = total_dur * max(0.0, min(0.35, target_aroll_ratio * 0.75))
-        max_aroll_sec = total_dur * min(0.85, max(0.02, target_aroll_ratio + 0.05))
+        max_aroll_sec = total_dur * (1.0 if zero_broll_mode else min(0.85, max(0.02, target_aroll_ratio + 0.05)))
         if cur_aroll_sec < min_aroll_sec:
             cands = []
             for i in range(n_segs):
@@ -676,6 +739,11 @@ def run_step4(
                     cur_aroll_sec -= seg_durs_est[i_drop]
                     if cur_aroll_sec <= max_aroll_sec:
                         break
+
+    if zero_broll_mode:
+        for i_z in range(n_segs):
+            if not audio_only_flags[i_z] and source_aroll_valid[i_z]:
+                roles[i_z] = "a_roll"
 
     # 真·J-cut (正帧移：声先画后) 与 真·L-cut (负帧移：高语义物证画面先入)
     first_3s_cutoff_f = 3 * fps
@@ -851,7 +919,7 @@ def run_step4(
 
             vf_extra = ""
             cur_zoom = 1.0
-            if idx > 0 and roles[idx - 1] == "a_roll" and not has_prop_show:
+            if idx > 0 and roles[idx - 1] == "a_roll" and not has_prop_show and allow_punch:
                 cur_zoom = 1.15 if last_aroll_zoom == 1.0 else 1.0
                 if cur_zoom > 1.01:
                     vf_extra = _build_eye_locked_vf(ar.get("eye_anchor"), zoom=cur_zoom)
@@ -1091,7 +1159,91 @@ def run_step4(
     if pip_mode in ("", "none", "null"):
         pip_mode = ""
     pip_applied_count = explainer_applied_count
-    if pip_mode and clips:
+
+    # 关键帧推拉频次：严格按风格实测值（0=机位完全不动；>=80=几乎每镜都推/拉）
+    kf_applied = _apply_keyframe_policy(clips, kf_target, total_dur) if kf_target is not None else None
+
+    # A/B-roll 切换样式：按风格范式决定「哪些镜头挂画框/抠像、哪些保持纯净全屏」
+    known_patterns = {
+        "fullscreen_intercut", "zero_broll_keyframe_flow", "container_internal_switch",
+        "cutout_broll_alternating", "depth_hook_then_framed_broll", "dual_window_broll_switcher",
+    }
+    pattern_handled = ab_pattern in known_patterns
+    if pattern_handled and pip_mode and clips:
+        live_b = [m for m in broll_pool if m.get("role") == "b_roll"] or list(broll_pool)
+        rot = {"n": 0}
+
+        def _alt_broll(main_media: str) -> Tuple[str, float]:
+            alts = [m for m in live_b if str(m.get("normalized_mp4") or "") not in ("", main_media)]
+            if not alts:
+                return "", 0.0
+            m_pick = alts[rot["n"] % len(alts)]
+            rot["n"] += 1
+            return str(m_pick.get("normalized_mp4")), float(m_pick.get("best_in_sec", 0.0))
+
+        def _speaker_for(c_obj: Dict[str, Any]) -> Tuple[str, float]:
+            cur_s = sent_by_id.get(str(c_obj.get("sentence_id") or "")) or {}
+            sm = str(cur_s.get("source_media") or "")
+            if not sm or sm not in usable_aroll_paths or not Path(sm).is_file():
+                return "", 0.0
+            s_base = float(cur_s.get("start_sec", 0.0))
+            off = max(0.0, float(c_obj.get("timeline_in_sec", s_base)) - s_base)
+            return sm, round(max(0.0, float(cur_s.get("source_in_sec", 0.0)) + off), 4)
+
+        def _dual_cfg(c_obj: Dict[str, Any], sec_media: str, sec_in: float) -> Dict[str, Any]:
+            return {
+                **pip_spec, "mode": pip_mode, "single_source": False,
+                "secondary_media_path": sec_media,
+                "secondary_in_sec": round(max(0.0, sec_in), 4),
+                "secondary_out_sec": round(max(0.0, sec_in) + float(c_obj.get("duration_sec", 1.5)), 4),
+            }
+
+        hook_left = int(ab_spec.get("hook_clip_budget") or 0)
+        a_seen = -1
+        for c_obj in clips:
+            role = c_obj.get("track_role")
+            if role == "code_broll" or c_obj.get("pip_layout"):
+                continue
+            main_media = str(c_obj.get("media_path") or "")
+            cfg: Optional[Dict[str, Any]] = None
+            if ab_pattern == "container_internal_switch":
+                # 容器（拍立得/圆角框/聚光圆窗/羽化窗/顶栏）外壳恒定，A/B-roll 都在容器内部切换，绝不破框
+                cfg = {**pip_spec, "mode": pip_mode, "single_source": True}
+            elif ab_pattern == "depth_hook_then_framed_broll":
+                if role == "a_roll":
+                    a_seen += 1
+                    cur_s = sent_by_id.get(str(c_obj.get("sentence_id") or "")) or {}
+                    emo = str(cur_s.get("emotion_or_info") or "")
+                    if hook_left > 0 and (a_seen == 0 or emo in ("hook", "twist") or a_seen % 2 == 0):
+                        c_kws = [str(k).strip() for k in (cur_s.get("keywords") or []) if 2 <= len(str(k).strip()) <= 4]
+                        clean = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", str(cur_s.get("text") or ""))[:4]
+                        cfg = {**pip_spec, "mode": pip_mode, "single_source": True,
+                               "giant_back_text": c_kws[0] if c_kws else (clean or "核心真相")}
+                        hook_left -= 1
+                else:
+                    cfg = {"mode": "blur_bg_center_card_pip", "border_hex": "#FFD426", "single_source": True}
+            elif ab_pattern == "cutout_broll_alternating":
+                if role == "a_roll":
+                    sec_m, sec_i = _alt_broll(main_media)
+                    cfg = _dual_cfg(c_obj, sec_m, sec_i) if sec_m else {**pip_spec, "mode": pip_mode, "single_source": True}
+            elif ab_pattern == "dual_window_broll_switcher":
+                if pip_mode == "dark_doc_circle_avatar_pip":
+                    if role == "a_roll":
+                        sec_m, sec_i = _alt_broll(main_media)
+                        cfg = _dual_cfg(c_obj, sec_m, sec_i) if sec_m else None
+                    else:
+                        spk_m, spk_i = _speaker_for(c_obj)
+                        if spk_m:
+                            cfg = _dual_cfg(c_obj, main_media, float(c_obj.get("source_in_sec", 0.0)))
+                            cfg.update({"swap_main_secondary": True, "speaker_media_path": spk_m, "speaker_in_sec": spk_i})
+                elif role == "a_roll":
+                    sec_m, sec_i = _alt_broll(main_media)
+                    cfg = _dual_cfg(c_obj, sec_m, sec_i) if sec_m else None
+            if cfg:
+                c_obj["pip_layout"] = cfg
+                pip_applied_count += 1
+
+    if pip_mode and clips and not pattern_handled:
         live_brolls = [m for m in broll_pool if m.get("role") == "b_roll"] or list(broll_pool)
         # 单源画框/景深类：只需当前主镜即可渲染（无需第二路副镜）
         single_source_frame_modes = {
@@ -1222,6 +1374,10 @@ def run_step4(
         "l_cut_applied_count": lcut_real_count,
         "punch_in_count": punch_in_count,
         "pip_mode": pip_mode or ("smooth_orbit_pip" if explainer_applied_count > 0 else "none"),
+        "ab_switch_pattern": ab_pattern or "legacy",
+        "ab_target_median_shot_sec": ab_spec.get("target_median_shot_sec"),
+        "kf_per_min_target": kf_target,
+        "keyframe_moves_applied": kf_applied,
         "pip_applied_count": pip_applied_count,
         "explainer_broll_windows": explainer_windows,
         "explainer_applied_count": explainer_applied_count,

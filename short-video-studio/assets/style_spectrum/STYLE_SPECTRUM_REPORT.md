@@ -1,31 +1,31 @@
-# 24 套全白盒视觉模板报告 (v3.1)
+# 24 套全白盒视觉与镜头切换模板报告 (v3.2)
 
-> 全部 **24/24** 风格均为真实剪映白盒模板（100% 真实构图、真实调色曲线、真实 30fps 动态文字动效与镜头间平滑转场）。
+> 全部 **24/24** 风格均为真实剪映白盒模板（100% 复刻画面构图、调色曲线、30fps 动态文字动效、镜头切换频率、特写配比、6 大主讲与特写切换样式、运镜推拉密度及平滑转场）。
 > 全局默认风格：**`style_01`（门店原生爆款风 · 综艺分拍斜标开场）**。
 
-| 编号 | 风格名称 | 所属流派 | 画面构图模式 | 动态文字动效 | 镜头转场 | 白盒来源 | 适用说明 |
-| :---: | :--- | :--- | :--- | :--- | :---: | :---: | :--- |
-| `style_01` | 门店原生爆款风 · 综艺分拍斜标开场（默认） |  | `none` | `store_stagger_burst` | `zoomin` | 白盒 | 全屏真实镜头配开场三拍错落斜标综艺大字，正文居中无框大白字配暖黄重点词，实体门店获客默认首选。 |
-| `style_02` | 极速跳剪避坑 · 通宽暗灰底框荧光绿风 |  | `none` | `wipe_reveal` | `fadeblack` | 白盒 | 一秒一镜快节奏跳剪，下半屏通宽半透明暗灰底条配白字与荧光黄绿双行斜体，适合三十秒干货避坑。 |
-| `style_03` | 暗调深度口播 · 通宽深红实心底条大字风 |  | `none` | `wipe_reveal` | `dissolve` | 白盒 | 暗调沉稳画面配下半屏通宽深红实心双行粗白大字，重点句极强视觉抓力，适合深度观点和老板讲故事。 |
-| `style_04` | 清冷奶油高光 · 极简轻描边宋体风 |  | `none` | `ink_bloom` | `dissolve` | 白盒 | 干净透亮奶油质感全屏画面，配居中轻描边思源宋体，无多余杂乱贴纸，适合美业、护肤和精致主理人。 |
-| `style_05` | 人像前景压巨字 · 三层海报景深风 |  | `person_behind_giant_text_pip` | `depth_behind_person` | `fadeblack` | 白盒 | 人物从背景里抠出来压住身后的巨型亮黄大字，胸前叠高对比纯白提问字，适合重磅干货和观点揭秘。 |
-| `style_06` | 黑底拍立得相框 · 顶部毛笔手写金句风 |  | `black_polaroid_frame_pip` | `typewriter_char` | `dissolve` | 白盒 | 纯黑留白背景配居中无变形相框、顶部两行毛笔手写白字金句和底部复古英文副标，适合成长故事与情感口播。 |
-| `style_07` | 人像真轮廓白边抠像 · 虚化展厅避坑风 |  | `vision_portrait_cutout_pip` | `bounce_smash` | `zoomin` | 白盒 | 把真人沿轮廓抠出来加上白色手撕剪纸描边，叠在虚化实景展厅或店铺画面前，适合全屋定制、家居和探店避坑。 |
-| `style_08` | 专家长镜 · 左上角斜杠双色大标风 |  | `none` | `wipe_reveal` | `none` | 白盒 | 自然流畅的专家长镜头口播，左上角常驻白字斜杠导语加亮黄粗描边大标题，适合行业专家、咨询顾问与疗愈号。 |
-| `style_09` | 纯黑纪实面板 · 顶栏双格金线+左圆头像风 |  | `dark_doc_circle_avatar_pip` | `typewriter_char` | `fadeblack` | 白盒 | 纯黑纪实底板上方配左右双格细金线证据窗和案情注记，左下正圆白金边主讲头像配右侧大标题，适合普法与深度案例。 |
-| `style_10` | 高频推拉微距 · 极净全屏职场干货风 |  | `none` | `typewriter_char` | `zoomin` | 白盒 | 干净全屏高频景别推拉微距，配清亮天蓝高亮重点词，零冗余遮挡，适合职场干货与高效方法论。 |
-| `style_11` | 清亮知性干货 · 柔和圆角通透字幕风（博主默认） |  | `none` | `wipe_reveal` | `dissolve` | 白盒 | 自然通透的知性口播画面配柔和半透明圆角底框字幕，讲到数据流程时可轻量切入讲解图解，个人博主默认首选。 |
-| `style_12` | 顶置双色悬念标 · 干货对比口播风 |  | `none` | `typewriter_char` | `wipeleft` | 白盒 | 顶部跨屏挂出白字配荧光黄绿的双行悬念大标题，底部配干净无底框居中字，适合对比拆解和避坑干货。 |
-| `style_13` | 上白圆角画框 · 下纯黑宽幕沉浸风 |  | `top_white_rounded_frame_pip` | `ink_bloom` | `dissolve` | 白盒 | 画面上方是圆角柔和画框，下半屏大面积纯黑留白只放居中精致白字，高级聚焦零视觉干扰。 |
-| `style_14` | 纯黑聚光圆窗 · 极简聚焦口播风 |  | `black_spotlight_circle_pip` | `typewriter_char` | `fadeblack` | 白盒 | 全屏纯黑极简背景配居中上方正圆聚光人物窗口，视线一键锁死主角与下方暖黄重点字。 |
-| `style_15` | 实景访谈切片 · 弹性双色花字节奏流 |  | `none` | `bounce_smash` | `fadeblack` | 白盒 | 自然真实的实景访谈全屏画面，依靠富有弹性的双色大字花字卡点推进，适合创始人访谈与创业实录。 |
-| `style_16` | 暗黑羽化分屏 · 上窄实景下黑底书摘巨字风 |  | `linear_split_feather_pip` | `number_flip_trio` | `fadeblack` | 白盒 | 上方实景画面经柔和羽化渐变溶入下半纯黑书摘区，居中浮现巨型白金三格金句与数字，适合商业认知和深度拆解。 |
-| `style_17` | 暖金强切探店 · 上下双格金线对比风 |  | `dual_gold_frame_pip` | `shimmer_3d_gold` | `zoomin` | 白盒 | 暖金高对比质感画面，双镜对比时呈现上下暖金细线双格框，单镜时干净全屏强切，适合汽车、实体探店与改造对比。 |
-| `style_18` | 户外实景探盘 · 3D 金属扫光立体大字风 |  | `none` | `shimmer_3d_gold` | `zoomin` | 白盒 | 户外实景走动口播配厚重 3D 金黄金属渐变立体大字与流动扫光，视觉冲击力极强，适合房产带看、户外探店与大促。 |
-| `style_19` | 冷峻数据新闻前景 · 人像抠像白条字幕风 |  | `data_news_cutout_pip` | `wipe_reveal` | `fadeblack` | 白盒 | 把主讲人精准抠出叠加在冷峻动态数据曲线新闻背景前，居中配精悍纯白新闻字幕条，适合律师、财经与硬核分析。 |
-| `style_20` | 国风暖木匠心 · 通宽黑条双行粗宋体风 |  | `none` | `ink_bloom` | `dissolve` | 白盒 | 暖木高级质感全屏配下半屏通宽半透明黑带与居中两行米白粗宋体，水墨柔和浮现配双段配乐，适合养生、茶饮与匠心门店。 |
-| `style_21` | 门店工艺快切 · 85% 实拍特写暖黄大字风 |  | `none` | `bounce_smash` | `zoomin` | 白盒 | 以门店工艺和细节特写为主的高密度实拍快切，配底部醒目白字暖黄高亮，适合少出镜或不爱露脸的实体商家。 |
-| `style_22` | 九成例证拆解 · 顶栏常驻主题横幅风 |  | `top_banner_evidence_pip` | `wipe_reveal` | `wipeleft` | 白盒 | 顶部常驻深底醒目主题横幅条，下方全宽轮播大量真实案例和过程特写画面，适合案例盘点与教程拆解。 |
-| `style_23` | 品牌微纪录 · 95% 慢调空镜克制宋体风 |  | `none` | `ink_bloom` | `dissolve` | 白盒 | 大片真实环境与过程空镜缓推，搭配克制的居中思源宋体旁白，几乎零花字打扰，适合品牌故事和人文微纪录。 |
-| `style_24` | 100% 不露脸混剪 · 炸裂金句高燃踩点风 |  | `none` | `bounce_smash` | `fadeblack` | 白盒 | 全程无需真人出镜，纯靠高密实拍画面踩点切换和强反差炸裂金句大字推进，适合纯空镜和社恐不露脸账号。 |
+| 编号 | 风格名称 | 画面构图模式 | 切换范式 | 中位镜长 | 特写占比 | 推拉密度(次/分) | 动态文字动效 | 镜头转场 | 适用说明 |
+| :---: | :--- | :--- | :--- | :---: | :---: | :---: | :--- | :---: | :--- |
+| `style_01` | 门店原生爆款风 · 综艺分拍斜标开场（默认） | `none` | `fullscreen_intercut` | 1.87s | 53% | 0 | `store_stagger_burst` | `zoomin` | 全屏真实镜头配开场三拍错落斜标综艺大字，正文居中无框大白字配暖黄重点词，实体门店获客默认首选。 |
+| `style_02` | 极速跳剪避坑 · 通宽暗灰底框荧光绿风 | `none` | `fullscreen_intercut` | 1.13s | 11% | 0 | `wipe_reveal` | `fadeblack` | 一秒一镜快节奏跳剪，下半屏通宽半透明暗灰底条配白字与荧光黄绿双行斜体，适合三十秒干货避坑。 |
+| `style_03` | 暗调深度口播 · 通宽深红实心底条大字风 | `none` | `fullscreen_intercut` | 2.63s | 10% | 20.8 | `wipe_reveal` | `dissolve` | 暗调沉稳画面配下半屏通宽深红实心双行粗白大字，重点句极强视觉抓力，适合深度观点和老板讲故事。 |
+| `style_04` | 清冷奶油高光 · 极简轻描边宋体风 | `none` | `fullscreen_intercut` | 3.60s | 23% | 86.2 | `ink_bloom` | `dissolve` | 干净透亮奶油质感全屏画面，配居中轻描边思源宋体，无多余杂乱贴纸，适合美业、护肤和精致主理人。 |
+| `style_05` | 人像前景压巨字 · 三层海报景深风 | `person_behind_giant_text_pip` | `depth_hook_then_framed_broll` | 1.43s | 27% | 26.7 | `depth_behind_person` | `fadeblack` | 人物从背景里抠出来压住身后的巨型亮黄大字，胸前叠高对比纯白提问字，适合重磅干货和观点揭秘。 |
+| `style_06` | 黑底拍立得相框 · 顶部毛笔手写金句风 | `black_polaroid_frame_pip` | `container_internal_switch` | 3.13s | 100% | 0 | `typewriter_char` | `dissolve` | 纯黑留白背景配居中无变形相框、顶部两行毛笔手写白字金句和底部复古英文副标，适合成长故事与情感口播。 |
+| `style_07` | 人像真轮廓白边抠像 · 虚化展厅避坑风 | `vision_portrait_cutout_pip` | `cutout_broll_alternating` | 1.40s | 60% | 34.1 | `bounce_smash` | `zoomin` | 把真人沿轮廓抠出来加上白色手撕剪纸描边，叠在虚化实景展厅或店铺画面前，适合全屋定制、家居和探店避坑。 |
+| `style_08` | 专家长镜 · 左上角斜杠双色大标风 | `none` | `zero_broll_keyframe_flow` | 6.00s | 0% | 34.9 | `wipe_reveal` | `none` | 自然流畅的专家长镜头口播，左上角常驻白字斜杠导语加亮黄粗描边大标题，适合行业专家、咨询顾问与疗愈号。 |
+| `style_09` | 纯黑纪实面板 · 顶栏双格金线+左圆头像风 | `dark_doc_circle_avatar_pip` | `dual_window_broll_switcher` | 1.50s | 33% | 11.3 | `typewriter_char` | `fadeblack` | 纯黑纪实底板上方配左右双格细金线证据窗和案情注记，左下正圆白金边主讲头像配右侧大标题，适合普法与深度案例。 |
+| `style_10` | 高频推拉微距 · 极净全屏职场干货风 | `none` | `fullscreen_intercut` | 1.12s | 57% | 190.3 | `typewriter_char` | `zoomin` | 干净全屏高频景别推拉微距，配清亮天蓝高亮重点词，零冗余遮挡，适合职场干货与高效方法论。 |
+| `style_11` | 清亮知性干货 · 柔和圆角通透字幕风（博主默认） | `none` | `fullscreen_intercut` | 1.32s | 34% | 54.5 | `wipe_reveal` | `dissolve` | 自然通透的知性口播画面配柔和半透明圆角底框字幕，讲到数据流程时可轻量切入讲解图解，个人博主默认首选。 |
+| `style_12` | 顶置双色悬念标 · 干货对比口播风 | `none` | `fullscreen_intercut` | 1.90s | 5% | 31.9 | `typewriter_char` | `wipeleft` | 顶部跨屏挂出白字配荧光黄绿的双行悬念大标题，底部配干净无底框居中字，适合对比拆解和避坑干货。 |
+| `style_13` | 上白圆角画框 · 下纯黑宽幕沉浸风 | `top_white_rounded_frame_pip` | `container_internal_switch` | 1.46s | 38% | 33.8 | `ink_bloom` | `dissolve` | 画面上方是圆角柔和画框，下半屏大面积纯黑留白只放居中精致白字，高级聚焦零视觉干扰。 |
+| `style_14` | 纯黑聚光圆窗 · 极简聚焦口播风 | `black_spotlight_circle_pip` | `container_internal_switch` | 1.78s | 15% | 23 | `typewriter_char` | `fadeblack` | 全屏纯黑极简背景配居中上方正圆聚光人物窗口，视线一键锁死主角与下方暖黄重点字。 |
+| `style_15` | 实景访谈切片 · 弹性双色花字节奏流 | `none` | `fullscreen_intercut` | 2.27s | 35% | 109.9 | `bounce_smash` | `fadeblack` | 自然真实的实景访谈全屏画面，依靠富有弹性的双色大字花字卡点推进，适合创始人访谈与创业实录。 |
+| `style_16` | 暗黑羽化分屏 · 上窄实景下黑底书摘巨字风 | `linear_split_feather_pip` | `container_internal_switch` | 1.75s | 56% | 36 | `number_flip_trio` | `fadeblack` | 上方实景画面经柔和羽化渐变溶入下半纯黑书摘区，居中浮现巨型白金三格金句与数字，适合商业认知和深度拆解。 |
+| `style_17` | 暖金强切探店 · 上下双格金线对比风 | `dual_gold_frame_pip` | `dual_window_broll_switcher` | 1.53s | 16% | 48.8 | `shimmer_3d_gold` | `zoomin` | 暖金高对比质感画面，双镜对比时呈现上下暖金细线双格框，单镜时干净全屏强切，适合汽车、实体探店与改造对比。 |
+| `style_18` | 户外实景探盘 · 3D 金属扫光立体大字风 | `none` | `fullscreen_intercut` | 1.58s | 42% | 25.1 | `shimmer_3d_gold` | `zoomin` | 户外实景走动口播配厚重 3D 金黄金属渐变立体大字与流动扫光，视觉冲击力极强，适合房产带看、户外探店与大促。 |
+| `style_19` | 冷峻数据新闻前景 · 人像抠像白条字幕风 | `data_news_cutout_pip` | `cutout_broll_alternating` | 1.45s | 24% | 20.4 | `wipe_reveal` | `fadeblack` | 把主讲人精准抠出叠加在冷峻动态数据曲线新闻背景前，居中配精悍纯白新闻字幕条，适合律师、财经与硬核分析。 |
+| `style_20` | 国风暖木匠心 · 通宽黑条双行粗宋体风 | `none` | `fullscreen_intercut` | 1.83s | 12% | 13.7 | `ink_bloom` | `dissolve` | 暖木高级质感全屏配下半屏通宽半透明黑带与居中两行米白粗宋体，水墨柔和浮现配双段配乐，适合养生、茶饮与匠心门店。 |
+| `style_21` | 门店工艺快切 · 85% 实拍特写暖黄大字风 | `vision_portrait_cutout_pip` | `cutout_broll_alternating` | 1.15s | 85% | 92.2 | `bounce_smash` | `zoomin` | 以门店工艺和细节特写为主的高密度实拍快切，配底部醒目白字暖黄高亮，适合少出镜或不爱露脸的实体商家。 |
+| `style_22` | 九成例证拆解 · 顶栏常驻主题横幅风 | `top_banner_evidence_pip` | `container_internal_switch` | 1.35s | 90% | 46 | `wipe_reveal` | `wipeleft` | 顶部常驻深底醒目主题横幅条，下方全宽轮播大量真实案例和过程特写画面，适合案例盘点与教程拆解。 |
+| `style_23` | 品牌微纪录 · 95% 慢调空镜克制宋体风 | `none` | `fullscreen_intercut` | 4.08s | 95% | 22.9 | `ink_bloom` | `dissolve` | 大片真实环境与过程空镜缓推，搭配克制的居中思源宋体旁白，几乎零花字打扰，适合品牌故事和人文微纪录。 |
+| `style_24` | 100% 不露脸混剪 · 炸裂金句高燃踩点风 | `none` | `fullscreen_intercut` | 1.11s | 100% | 16.5 | `bounce_smash` | `fadeblack` | 全程无需真人出镜，纯靠高密实拍画面踩点切换和强反差炸裂金句大字推进，适合纯空镜和社恐不露脸账号。 |
