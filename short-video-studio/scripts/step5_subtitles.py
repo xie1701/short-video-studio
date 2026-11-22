@@ -195,10 +195,16 @@ def dp_segment_short_lines(
             sub = re.sub(r"\s+", " ", sub).strip()
         return sub
 
-    # 预计算保护词区间，避免 DP 内层每次重复 re.finditer
+    # 预计算保护词区间，并自动保护“中文连续数字+量词”（如 二十五张 / 八间 / 三百块），防止断句切词
     prot_spans: List[Tuple[int, int]] = []
     for tm in prot:
         for m in re.finditer(re.escape(tm), raw):
+            prot_spans.append((m.start(), m.end()))
+    for m in re.finditer(
+        r"[零一二两三四五六七八九十百千万亿几多]+(?:[点余多来])?[零一二两三四五六七八九十百千万亿]*[个张间块元平米斤克秒分天年月人位套条次倍成折%]?",
+        raw,
+    ):
+        if m.end() - m.start() >= 2:
             prot_spans.append((m.start(), m.end()))
 
     def _break_cost(pos: int) -> float:
@@ -739,7 +745,33 @@ def run_step5(
     kw_scale_f = float(tpl.get("keyword_scale", 1.133))
     eff_measure_fs = int(round(base_fs * max(1.0, (1.0 + kw_scale_f) * 0.5)))
 
-    for sent in audio_events["sentences"]:
+    # 实测痛点 #12 根治：合并相邻极短无强标点碎句（<0.85s 且间隔 <0.35s），避免“大约有二十”+“五张左右”被强行硬拆
+    merged_sentences: List[Dict[str, Any]] = []
+    for raw_s in audio_events["sentences"]:
+        s_copy = dict(raw_s)
+        s_copy["words"] = [dict(w) for w in (raw_s.get("words") or [])]
+        if merged_sentences:
+            prev_s = merged_sentences[-1]
+            p_txt = str(prev_s.get("text") or "").strip()
+            c_txt = str(s_copy.get("text") or "").strip()
+            p_dur = float(prev_s.get("end_sec", 0.0)) - float(prev_s.get("start_sec", 0.0))
+            c_dur = float(s_copy.get("end_sec", 0.0)) - float(s_copy.get("start_sec", 0.0))
+            gap = float(s_copy.get("start_sec", 0.0)) - float(prev_s.get("end_sec", 0.0))
+            if (
+                (p_dur < 0.85 or c_dur < 0.85)
+                and 0.0 <= gap <= 0.35
+                and p_txt
+                and not p_txt.endswith(("。", "？", "！", "?", "!"))
+                and len(p_txt) + len(c_txt) <= tpl_max_chars * 2 + 4
+            ):
+                prev_s["text"] = p_txt + c_txt
+                prev_s["end_sec"] = max(float(prev_s.get("end_sec", 0.0)), float(s_copy.get("end_sec", 0.0)))
+                prev_s["words"] = list(prev_s.get("words") or []) + list(s_copy.get("words") or [])
+                prev_s["keywords"] = list(dict.fromkeys(list(prev_s.get("keywords") or []) + list(s_copy.get("keywords") or [])))
+                continue
+        merged_sentences.append(s_copy)
+
+    for sent in merged_sentences:
         sent_eff = dict(sent)
         if raw_pain_kws:
             s_kws = list(sent_eff.get("keywords") or [])

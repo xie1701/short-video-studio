@@ -16,7 +16,7 @@ import re
 import statistics
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 SCRIPTS_ROOT = Path(__file__).resolve().parent
 if str(SCRIPTS_ROOT) not in sys.path:
@@ -38,8 +38,138 @@ from generate_code_broll import render_broll_clip_pillow, render_code_clip, reso
 
 PROP_SHOW_CUES = ("睇下", "看下", "看一下", "给大家看", "给你看", "看我手上", "看我手里", "效果图", "实物", "清单", "明细")
 DEICTIC_CUES = ("这张图", "四张图", "两张图", "三张图", "效果图", "平面图", "明细表", "账单", "发票", "检测单", "看这里", "看这个", "你看这", "对比一下")
+MEDIA_GAP_OBJECT_GROUPS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
+    ("效果图/平面图", ("效果图", "平面图", "设计图", "这张图", "两张图", "三张图", "四张图")),
+    ("账单/价格/菜单", ("账单", "发票", "明细", "菜单", "价目表", "报价", "检测单")),
+    ("卡座/包房/大厅座位", ("卡座", "包房", "包厢", "大厅", "雅间", "座位", "散台")),
+    ("后厨/厨房/设备", ("后厨", "厨房", "灶台", "设备", "机器", "明档")),
+    ("门头/招牌/外立面", ("门头", "招牌", "门口", "外立面")),
+    ("原料/食材/菜品特写", ("原料", "食材", "现切", "现熬", "锅底", "招牌菜")),
+    ("改造前后对比", ("改造前", "改造后", "对比一下", "前后对比", "翻新")),
+)
 POSITIVE_PRAISE_CUES = ("招牌", "正宗", "干净", "舒服", "鲜嫩", "多汁", "放心", "透明", "美味", "好吃", "靓", "靠谱", "新鲜", "卫生", "环境好")
 HARD_TABOO_ALWAYS = {"crew_leak", "kitchen_trash", "construction_trash"}
+
+
+def detect_script_media_gaps(
+    sentences: List[Dict[str, Any]],
+    shots: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    统一台词-画面缺口预警（供打断 #1 确认单与 Step 4 共用）：
+    扫描台词里明确提及的视觉指代词、空间/设施/物证对象，比对现有可用素材的文件名与语义标签，
+    缺镜头时提前给出大白话补拍或图解替代建议。
+    """
+    usable_shots = [
+        m for m in (shots or [])
+        if m.get("video_grade", "usable") != "ng" and m.get("usable", True) is not False
+    ]
+    pool_blob = " ".join(
+        " ".join(str(t) for t in (m.get("semantic_tags", []) + m.get("manual_tags", [])))
+        + " "
+        + Path(str(m.get("source_path") or m.get("path") or m.get("normalized_mp4") or m.get("filename") or "")).stem
+        for m in usable_shots
+    )
+    gaps: List[Dict[str, Any]] = []
+    seen_labels: set[str] = set()
+    for sent in (sentences or []):
+        s_txt = str(sent.get("text") or "").strip()
+        if not s_txt:
+            continue
+        # 1) 强指代词优先
+        matched_deictic = next((c for c in DEICTIC_CUES if c in s_txt), None)
+        if matched_deictic:
+            tokens = [matched_deictic] + [tk for tk in ("图", "效果", "平面", "账单", "明细", "发票", "检测", "对比") if tk in matched_deictic]
+            if not any(tk in pool_blob for tk in tokens) and matched_deictic not in seen_labels:
+                seen_labels.add(matched_deictic)
+                gaps.append({
+                    "sentence_id": sent.get("id", ""),
+                    "matched_cue": matched_deictic,
+                    "text": s_txt,
+                    "severity": "high",
+                    "suggestion": f"台词提到了「{matched_deictic}」，但素材里暂未看到对应画面，建议补拍 3 秒特写或自动生成一张对比图卡顶上",
+                })
+                continue
+        # 2) 具体空间/设备/菜品对象扫描
+        for group_label, keywords in MEDIA_GAP_OBJECT_GROUPS:
+            hit_kw = next((kw for kw in keywords if kw in s_txt), None)
+            if not hit_kw or group_label in seen_labels:
+                continue
+            if not any(kw in pool_blob for kw in keywords):
+                seen_labels.add(group_label)
+                gaps.append({
+                    "sentence_id": sent.get("id", ""),
+                    "matched_cue": hit_kw,
+                    "group": group_label,
+                    "text": s_txt,
+                    "severity": "medium",
+                    "suggestion": f"台词讲到「{hit_kw}」（{group_label}），目前素材池里没看到对应实拍标签，如需展示可补拍 3 秒特写",
+                })
+    return gaps
+
+
+def _apply_excluded_rules_to_items(pipeline_dir: Path, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """合并 00_excluded_shots.json 与单条记录自带的 usable/excluded_windows，返回过滤后的可用素材列表。"""
+    ex_p = pipeline_dir / "00_excluded_shots.json"
+    rules = (read_json(ex_p).get("rules") or []) if ex_p.is_file() else []
+    out: List[Dict[str, Any]] = []
+    for raw_m in items:
+        m = dict(raw_m)
+        names = {
+            str(m.get("filename") or ""),
+            Path(str(m.get("source_path") or "")).name,
+            Path(str(m.get("normalized_mp4") or "")).name,
+        }
+        stems = {Path(n).stem for n in names if n}
+        wins = list(m.get("excluded_windows") or [])
+        for r in rules:
+            rf = str(r.get("filename") or "")
+            if not rf:
+                continue
+            if rf in names or Path(rf).stem in stems:
+                if r.get("full_clip"):
+                    m["usable"] = False
+                    m["video_grade"] = "ng"
+                elif isinstance(r.get("window"), dict):
+                    wins.append(r["window"])
+        m["excluded_windows"] = wins
+        if m.get("usable", True) is False or m.get("video_grade", "usable") == "ng":
+            continue
+        out.append(m)
+    return out
+
+
+def _avoid_excluded_windows(
+    src_in: float,
+    seg_dur: float,
+    avail: float,
+    excluded_windows: List[Dict[str, Any]],
+) -> float:
+    """若目标切片 [src_in, src_in+seg_dur] 与任一人工标废时间窗重叠，自动前移跳过标废区间。"""
+    if not excluded_windows:
+        return src_in
+    wins = sorted(
+        [
+            (float(w.get("start_sec", 0.0)), float(w.get("end_sec", 0.0)))
+            for w in excluded_windows
+            if float(w.get("end_sec", 0.0)) > float(w.get("start_sec", 0.0))
+        ],
+        key=lambda x: x[0],
+    )
+    cand = float(src_in)
+    for _ in range(len(wins) + 1):
+        overlap = next((w for w in wins if cand < w[1] and (cand + seg_dur) > w[0]), None)
+        if not overlap:
+            break
+        nxt = overlap[1] + 0.05
+        if nxt + min(0.5, seg_dur) <= avail:
+            cand = nxt
+        else:
+            # 尾部放不下则尝试窗口之前的干净区段
+            before = max(0.0, overlap[0] - seg_dur - 0.05)
+            cand = before
+            break
+    return round(max(0.0, min(cand, max(0.0, avail - 0.05))), 4)
 
 
 _EXPLAINER_WINDOW_RE = re.compile(
@@ -286,38 +416,17 @@ def run_step4(
     total_dur = float(audio_events["locked_duration_sec"])
     total_frames = int(audio_events["locked_duration_frames"])
 
-    arolls = [m for m in manifest["items"] if m["role"] == "a_roll" and m.get("video_grade", "usable") != "ng"]
+    active_items = _apply_excluded_rules_to_items(pipeline_dir, manifest.get("items") or [])
+    arolls = [m for m in active_items if m["role"] == "a_roll"]
     usable_arolls = [m for m in arolls if m.get("video_grade", "usable") == "usable"]
     usable_aroll_paths = {str(m["normalized_mp4"]) for m in usable_arolls}
     vgrade_by_mp4 = {str(m.get("normalized_mp4")): str(m.get("video_grade", "usable")) for m in manifest["items"]}
-    brolls_raw = [m for m in manifest["items"] if m["role"] in ("b_roll", "code_broll") and m.get("video_grade", "usable") != "ng"]
+    brolls_raw = [m for m in active_items if m["role"] in ("b_roll", "code_broll")]
     broll_pool = ensure_code_broll_pool(pipeline_dir, sentences, brolls_raw, track, style_id=style_id, total_dur=total_dur)
 
-    deictic_gaps: List[Dict[str, Any]] = []
-    for sent in sentences:
-        s_txt = str(sent.get("text", ""))
-        matched_cue = next((c for c in DEICTIC_CUES if c in s_txt), None)
-        if not matched_cue:
-            continue
-        cue_tokens = [matched_cue]
-        for tk in ("图", "效果", "平面", "账单", "明细", "发票", "检测", "对比"):
-            if tk in matched_cue:
-                cue_tokens.append(tk)
-        has_visual_match = False
-        for m in broll_pool:
-            tags = " ".join(str(t) for t in (m.get("semantic_tags", []) + m.get("manual_tags", []))) + " " + Path(str(m.get("normalized_mp4", ""))).name
-            if any(tk in tags for tk in cue_tokens):
-                has_visual_match = True
-                break
-        if not has_visual_match:
-            deictic_gaps.append({
-                "sentence_id": sent["id"],
-                "matched_cue": matched_cue,
-                "text": s_txt,
-                "suggestion": f"台词含视觉指代「{matched_cue}」，但 B-roll 标签库未见匹配素材，建议补拍对应特写或通过 00_visual_index.json 标注",
-            })
+    deictic_gaps = detect_script_media_gaps(sentences, broll_pool)
     if deictic_gaps:
-        print(f"[step4] [WARN] A3 视觉指代缺口 {len(deictic_gaps)} 处: {[g['matched_cue'] for g in deictic_gaps]}")
+        print(f"[step4] [WARN] 镜头与台词缺口预警 {len(deictic_gaps)} 处: {[g['matched_cue'] for g in deictic_gaps]}")
 
     raw_intel_p = pipeline_dir / "00_raw_intel.json"
     raw_intel = read_json(raw_intel_p) if raw_intel_p.is_file() else {}
@@ -826,6 +935,8 @@ def run_step4(
                     src_in = round(min_floor, 4)
                 else:
                     src_in = round(min(min_floor, max(0.0, avail - 0.05)), 4)
+                if br.get("excluded_windows"):
+                    src_in = _avoid_excluded_windows(src_in, seg_dur, avail, br["excluded_windows"])
                 src_out = round(min(avail, src_in + seg_dur), 4)
                 max_out_by_mp[mp_str] = max(float(max_out_by_mp.get(mp_str, 0.0)), src_out)
                 used_cursors[bid] = round(src_out + 0.10, 4)
@@ -910,8 +1021,13 @@ def run_step4(
 
     # 消费 explainer_broll_windows：口播讲解数字/流程/对比句时，若镜头为真人出镜且整体代码图解占比不超 30%，
     # 自动切入动态讲解图解并挂载平滑圆环人像画中画（smooth_orbit_pip），主讲人平滑缩至安全角继续同步说话
+    # 仅在当前风格允许讲解圆窗画中画时才自动插入动态讲解图解 + 圆环人像（纯全屏原生模板如 style_01 绝不强塞画中画）
+    allow_explainer_pip = bool(
+        (style_entry or {}).get("allow_explainer_pip", False)
+        or str(pip_spec.get("mode") or "") == "smooth_orbit_pip"
+    )
     explainer_applied_count = 0
-    if explainer_windows and clips and not prefer_broll_only and usable_arolls:
+    if allow_explainer_pip and explainer_windows and clips and not prefer_broll_only and usable_arolls:
         win_by_sid = {str(w["sentence_id"]): w for w in explainer_windows}
         gen_exp_dir = pipeline_dir / "04_generated_broll"
         gen_exp_dir.mkdir(parents=True, exist_ok=True)
@@ -971,48 +1087,85 @@ def run_step4(
             explainer_applied_count += 1
         code_ratio = round(cur_code_dur / max(0.1, total_dur), 3)
 
-    pip_mode = str(pip_spec.get("mode") or "")
+    pip_mode = str(pip_spec.get("mode") or "none").strip()
+    if pip_mode in ("", "none", "null"):
+        pip_mode = ""
     pip_applied_count = explainer_applied_count
     if pip_mode and clips:
         live_brolls = [m for m in broll_pool if m.get("role") == "b_roll"] or list(broll_pool)
-        full_frame_modes = {
+        # 单源画框类：只对当前主镜施加拍立得/毛玻璃/纸卡/笔记卡/顶栏装帧，不需要第二路副镜
+        single_source_frame_modes = {
             "black_polaroid_frame_pip",
             "blur_bg_center_card_pip",
+            "paper_craft_card_pip",
+            "minimal_white_note_card_pip",
+            "top_banner_evidence_pip",
+        }
+        # 双源构图类：必须存在异于主镜的真实副镜，严禁“主讲人自己缩小贴在自己右上角”同脸套娃！
+        full_dual_modes = {
             "dark_doc_circle_avatar_pip",
             "linear_split_feather_pip",
+            "dual_gold_frame_pip",
+            "vision_portrait_cutout_pip",
+            "data_news_cutout_pip",
         }
         for c_i, c_obj in enumerate(clips):
             if c_obj.get("track_role") == "code_broll" or c_obj.get("pip_layout"):
                 continue
+            main_media = str(c_obj.get("media_path") or "")
+            if pip_mode in single_source_frame_modes:
+                c_obj["pip_layout"] = {
+                    **pip_spec,
+                    "mode": pip_mode,
+                    "single_source": True,
+                }
+                pip_applied_count += 1
+                continue
+
             should_apply = (
-                pip_mode in full_frame_modes
-                or c_i == 0
-                or c_obj.get("track_role") == "b_roll"
-                or (c_i % 2 == 0)
+                pip_mode in full_dual_modes
+                or (c_obj.get("track_role") == "b_roll" and bool(usable_arolls))
+                or (c_i % 2 == 1 and bool(live_brolls))
             )
             if not should_apply:
                 continue
-            sec_media = str(c_obj.get("media_path") or "")
-            sec_in = float(c_obj.get("source_in_sec", 0.0))
-            if c_obj.get("track_role") == "a_roll" and live_brolls:
-                pick_m = live_brolls[c_i % len(live_brolls)]
-                sec_media = str(pick_m.get("normalized_mp4") or sec_media)
-                sec_in = float(pick_m.get("best_in_sec", 0.0))
-            elif c_obj.get("track_role") != "a_roll":
-                # 优先绑定当前句的真实口播源与同步时间点，严禁硬从 0.0s 播口播造成口型穿帮
+
+            sec_media = ""
+            sec_in = 0.0
+            if c_obj.get("track_role") == "a_roll":
+                alt_b = next(
+                    (m for m in live_brolls if str(m.get("normalized_mp4") or "") not in ("", main_media)),
+                    None,
+                )
+                if alt_b:
+                    sec_media = str(alt_b.get("normalized_mp4"))
+                    sec_in = float(alt_b.get("best_in_sec", 0.0))
+            else:
+                # 优先绑定当前句的真实口播源与同步时间点（保持口型同步）
                 cur_sent = sent_by_id.get(str(c_obj.get("sentence_id") or "")) or {}
                 s_src_media = str(cur_sent.get("source_media") or "")
-                if s_src_media and Path(s_src_media).is_file():
+                if s_src_media and s_src_media != main_media and Path(s_src_media).is_file():
                     sec_media = s_src_media
                     s_base = float(cur_sent.get("start_sec", 0.0))
                     s_src_in = float(cur_sent.get("source_in_sec", 0.0))
                     sec_in = max(0.0, s_src_in + max(0.0, float(c_obj.get("timeline_in_sec", s_base)) - s_base))
-                elif live_brolls and len(live_brolls) > 1:
-                    alt_b = next((m for m in live_brolls if str(m.get("normalized_mp4")) != sec_media), live_brolls[0])
-                    sec_media = str(alt_b.get("normalized_mp4") or sec_media)
-                    sec_in = float(alt_b.get("best_in_sec", 0.0))
+                else:
+                    alt_b = next(
+                        (m for m in live_brolls if str(m.get("normalized_mp4") or "") not in ("", main_media)),
+                        None,
+                    )
+                    if alt_b:
+                        sec_media = str(alt_b.get("normalized_mp4"))
+                        sec_in = float(alt_b.get("best_in_sec", 0.0))
+
+            # 严禁同源套娃：找不到异源副镜时绝不把同一个画面缩小贴在自己身上
+            if not sec_media or sec_media == main_media:
+                continue
+
             c_obj["pip_layout"] = {
                 **pip_spec,
+                "mode": pip_mode,
+                "single_source": False,
                 "secondary_media_path": sec_media,
                 "secondary_in_sec": round(max(0.0, sec_in), 4),
                 "secondary_out_sec": round(max(0.0, sec_in) + float(c_obj.get("duration_sec", 1.5)), 4),

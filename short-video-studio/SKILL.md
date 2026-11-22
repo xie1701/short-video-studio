@@ -15,7 +15,7 @@ description: 策划、剪辑和交付面向实体门店获客或个人账号增�
 
 ### 1.1 首次进入对话：按 5 类真实用户先猜后确认（不问大空题、不说行话）
 根据用户第一句话自动识别其所属类型，用**一句话先猜后确认**，同时亮出他专属的总步数（详细话术与点单菜单见 [references/interactive-coach-protocol.md](references/interactive-coach-protocol.md)）：
-1. **实体店从零拍（`store_from_zero`，共 5 步，属 `store` 轨，默认 `style_14`）**：还没拍素材，想拉同城客人私信或进店 → `定话题写说话词 → 照手机清单开拍 → 听声音定节奏 → 看粗剪画面 → 拿成品与封面`。
+1. **实体店从零拍（`store_from_zero`，共 5 步，属 `store` 轨，默认 `style_01`）**：还没拍素材，想拉同城客人私信或进店 → `定话题写说话词 → 照手机清单开拍 → 听声音定节奏 → 看粗剪画面 → 拿成品与封面`。
 2. **个人博主口播提质感（`creator_talking`，共 4 步，属 `creator` 轨，默认 `style_11` / `08` / `09` / `16`）**：有观点或已录好说话视频，想要小窗口、超大号重点字、金句卡片 → `定台词或收素材 → 听声音定节奏 → 选画面样式看粗剪 → 拿成品与封面`。
 3. **手机存货一键挑剪（`footage_organizer`，共 3 步）**：已拍了一堆随手拍片段堆在文件夹里，懒得自己挑和剪 → `自动筛废片排顺序 → 听声音看粗剪 → 拿成品与封面`。
 4. **社恐不露脸 / 纯图解动画（`faceless_visual`，共 4 步，默认 `style_24` / `22` / `06` 或纯代码制片）**：不想出镜，只有产品/环境特写或只有一段文字数据 → `定台词与配音 → 配全屏特写或动态图表 → 看粗剪确认 → 拿成品与封面`。
@@ -23,8 +23,11 @@ description: 策划、剪辑和交付面向实体门店获客或个人账号增�
 
 ### 1.2 每一轮回复强制携带【四要素掌控感进度卡】（MUST）
 在陪伴用户推进项目的**每一轮回复**中，AI 必须同步运行 `workflow_guard.py status --pipeline-dir <dir> [--user-type <类型>]`，按 [interactive-coach-protocol.md](references/interactive-coach-protocol.md) 第二节格式展示大白话四要素进度卡（`当前进度 / 我刚做了或正在做 / 现在轮到你(附 A/B/C 选项) / 离能发还差`，严禁技术缩写或黑话）：
-- **选画面样式不甩全表**：按用户所属人群从 [interactive-coach-protocol.md](references/interactive-coach-protocol.md) 第三节只挑 **3~4 款最对口的大白话样式**让用户选 A/B/C/D。
-- **后台长任务先预告、缺素材给二选一补救、隔天回来先读 `00_progress_card.json` 无缝续接**。
+- **选画面样式不甩全表**：按用户所属人群和有无真人出镜素材（`apply_style_spectrum.py --list --has-aroll no`）只挑 **3~4 款最对口的大白话样式**让用户选 A/B/C/D；全仓默认输出风格为 **`style_01`（门店爆款原生风，全屏无画中画干扰）**。
+- **先确认文案与剪辑方案再动手（硬门禁）**：不管是新写稿还是带已有素材来剪，**绝不能没让用户看过说话文案和镜头排查结果就直接剪成片**！先运行 `--mode plan-only` 输出大白话确认单 `00_confirm_plan.md`（含缺镜提醒与耗时预估），用户点头（或运行 `workflow_guard.py confirm-plan`）后再正式开剪；用户否决的废镜/时间窗立刻用 `workflow_guard.py exclude-shot` 持久化标废。
+- **任务耗时预估 + Windows 非 C 盘 + 跨项目零冗余**：每次启动长任务前给出清晰中文等待时间预期；Windows 环境下首次工作区避开 C 盘并询问用户存放位置（持久化至 `~/.short-video-studio/config.json`）；同一账号不同项目自动通过内容指纹 + 硬链接零冗余复用已归一素材，不重复占满硬盘。
+- **内置 `gbro-cover-design` 封面技能 + Cola 智能体自动联动**：已完整内置 `subskills/gbro-cover-design/`。当检测到当前智能体为 Cola（`PI_PROVIDER=cola` 或 `COLA_ACCOUNT_DIR` 存在或任一 `COLA_*` 环境变量命中）时，`step9_title_cover.py` 会自动从 A-roll 筛选五官最清晰自然的一帧保存为 `09_host_face_ref.png` 作为图 1 垫图，并产出 `09_gbro_cover_prompt.md` 与 `09_gbro_cover_handoff.json`，AI 直接调用该内置封面技能交付 3:4 爆款真人封面。
+- **内容驱动知识讲解动画（严禁套用无关占位图）**：`--mode knowledge-animation` 必须按具体台词知识内容分幕驱动 8 类可视化组件（数字卡 / 价格柱状对比 / 左右反差 / 流程机制 / 占比环图 / 趋势折线 / 场景价目卡片 / 精排片名卡）或手写 `custom_scenes.js`，严禁出现与主题无关的星球/太空占位元素。
 
 ---
 
@@ -103,14 +106,19 @@ description: 策划、剪辑和交付面向实体门店获客或个人账号增�
 
 完整中间文件契约见 [references/pipeline-schemas.md](references/pipeline-schemas.md)，安全区与居中字幕规范见 [references/platform-safe-zones.md](references/platform-safe-zones.md)。
 
-一键跑通端到端流水线（默认门店轨 `style_14` / 博主轨 `style_11`，自动落盘 `out/` 并清理大体积临时文件）：
+一键跑通端到端流水线（默认全局/门店轨 `style_01` / 博主轨 `style_11`，自动落盘 `out/` 并清理大体积临时文件）：
 ```bash
 python3 scripts/run_pipeline.py \
   --account <账号> \
   --raw-dir <原素材目录> \
   --track <store|creator> \
-  --mode <full|code-video|knowledge-animation|lock-preview|reedit-visuals|relock-voice|render-locked> \
-  [--style-id style_14] \
+  --mode <plan-only|full|code-video|knowledge-animation|lock-preview|reedit-visuals|relock-voice|patch-lines|render-locked> \
+  [--style-id style_01] \
+  [--require-plan-confirm] \
+  [--keep-edl] \
+  [--no-flower-text] \
+  [--patch-json <patches.json>] \
+  [--agent cola] \
   [--raw-intel <00_raw_intel.json>] \
   [--sources-json <sources.json>] \
   [--visual-index <00_visual_index.json>] \
@@ -156,14 +164,14 @@ python3 scripts/content_log_review.py --account <账号> --track <store|creator>
 
 ## 六、 风格谱参考包装库与环境初始化
 
-- 已内置 **24 套 v2.1 量化风格谱**（`style_01` ~ `style_24`，涵盖 20 套主流商业短视频形态 + **4 套高空镜实拍/图解风格 `style_21`–`style_24`（空镜占比 85%–100%）**，100% 原生 `1080×1920` 竖屏安全区锁定）与 **3 大共享剪辑规则字典**（83 组 0ms 文字动画×音效配对、29 类口播语义音效分类、黄金四色排版与 3:4 封面四构图法则）：
-  - **门店获客默认（`style_14`）**：门店实景出镜、双段音乐情绪反转、过半店内实拍叠层、居中暖黄重点大字；另含白边圆角人像贴纸框（`style_07`）、清冷奶油美业（`style_04`）、二手车暖金双格框（`style_17`）、户外探盘立体大字（`style_18`）、暖木厚重宋体（`style_20`）、牛皮纸工艺拆解（`style_05`）、慢调空间漫游（`style_13`）、**85% 门店工艺特写快切（`style_21`）**、**95% 品牌微纪录慢调空镜（`style_23`）**。
-  - **个人账号默认（`style_11`）**：清亮通透圆角底框配圆窗例证与双段音乐；另含极速跳剪荧光高亮（`style_02`）、顶栏常驻长口播（`style_03`）、黑底竖相框治愈金句（`style_06`）、毛玻璃虚化画中画与双行巨字评论（`style_08`）、暗黑双格证据窗与圆窗主讲普法（`style_09`）、高能快切弹窗种草（`style_10`）、极简白底卡片（`style_12`）、全屏高密动效大字访谈（`style_15`）、暗黑三格巨型数字卡与线性分屏书摘（`style_16`）、冷峻数据背景白边贴纸框（`style_19`）、暗黑控制台演示（`style_01`）、**90% 例证图解拆解（`style_22`）**、**100% 全画面无出镜卡点混剪（`style_24`）**。
+- 已内置 **24 套 v3.0 模板复刻风格库**（`style_01` ~ `style_24`，15 套纯全屏原生模板 + 9 套真实画框/相框/抠像/双格/羽化分屏模板，全部等比无变形、严禁同脸套娃）与 **3 大共享剪辑规则字典**：
+  - **全局/门店获客默认（`style_01`）**：完整复刻门店爆款原生模板——全屏实景出镜、综艺斜标海报开场、居中无底框大号双色暖黄重点字、双段音乐切换；另含白边人像贴纸抠像（`style_07`）、清冷奶油极简宋体（`style_04`）、暖金双格对比（`style_17`）、户外探盘 3D 金属立体大字（`style_18`）、国风暖木黑条粗宋体（`style_20`）、牛皮纸工艺卡（`style_05`）、慢调空间漫游（`style_13`）、高空镜种草（`style_21`）、微纪录慢调（`style_23`）。
+  - **个人账号默认（`style_11`）**：清亮知性通透圆角字幕；另含暗灰底框荧光绿斜体（`style_02`）、深红底条双行大字（`style_03`）、黑底拍立得手写金句+Daily Vlog（`style_06`）、专家长镜左上角斜杠双色标（`style_08`）、纯黑纪实金线双格框+左圆头像（`style_09`）、高频推拉（`style_10`）、极简白底笔记卡（`style_12`）、深色控制台步骤条（`style_14`）、弹性纯花字流（`style_15`）、暗黑羽化分屏书摘巨字（`style_16`）、冷峻数据新闻前景抠像（`style_19`）、九成例证顶栏横幅（`style_22`）、100% 不露脸混剪（`style_24`）。
   - 完整大白话选用指南见 [assets/style_spectrum/STYLE_SPECTRUM_REPORT.md](assets/style_spectrum/STYLE_SPECTRUM_REPORT.md)。
   ```bash
-  python3 scripts/apply_style_spectrum.py --list
-  python3 scripts/apply_style_spectrum.py --style-id style_14 --apply-pipeline <项目目录>/pipeline
-  python3 scripts/apply_style_spectrum.py --style-id style_14 --export-hyperframes <out_dir>
+  python3 scripts/apply_style_spectrum.py --list [--has-aroll no]
+  python3 scripts/apply_style_spectrum.py --style-id style_01 --apply-pipeline <项目目录>/pipeline --apply-full --keep-edl
+  python3 scripts/apply_style_spectrum.py --style-id style_01 --export-hyperframes <out_dir>
   ```
 - 所有随仓内置的 4 款开源商用字体（阿里妈妈数黑体、得意黑、思源宋体 Bold & Heavy）、CC0 真实录制 BGM、物理 SFX 与 `17³` LUT 授权清单见 [references/assets-attribution.md](references/assets-attribution.md)。
 - 首次部署或排查依赖/字体/无头浏览器桥时运行：

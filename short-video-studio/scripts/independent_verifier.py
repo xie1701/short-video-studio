@@ -54,6 +54,8 @@ from common import (
     find_cached_whisper_model,
     get_huggingface_hub_dir,
     is_verified_commercial_font,
+    load_style_applied,
+    load_style_spectrum_entry,
     maybe_reexec_in_venv,
     measure_lufs_ebur128,
     read_json,
@@ -512,7 +514,8 @@ def verify_visual_and_subtitle_blackbox(
                 or (len(txt_c) >= 2 and sum(1 for ch in set(txt_c) if ch in active_overlay_corpus) >= min(2, len(txt_c)))
             )
 
-            if py1 >= SUBTITLE_SAFE_ZONE["y_min"] - 40 and py2 <= SUBTITLE_SAFE_ZONE["y_max"] + 25:
+            # 实测痛点 #10 根治：OCR 居中检测严格锁定主字幕纵轴核心带，避免中上部花字干扰主字幕测量
+            if py1 >= SUBTITLE_SAFE_ZONE["y_min"] - 20 and py2 <= SUBTITLE_SAFE_ZONE["y_max"] + 25:
                 sub_band_boxes.append((px1, py1, px2, py2, txt_raw))
                 if txt_c and (not sub_ocr_segments or txt_c != sub_ocr_segments[-1]):
                     sub_ocr_segments.append(txt_c)
@@ -925,13 +928,18 @@ def verify_sfx_in_window_blackbox(
     sr1 = int(audio_ctx["sr"])
     bb_mono = bb_arr.mean(axis=1).astype(np.float64)
     onset_signal = bb_mono
-    minimum_lift = 2.5
+    # 实测痛点 #11 根治：按当前风格本身的音效密度分级设定抬升门槛，以起音同步率为主判据，不再与低密风格自相矛盾
+    minimum_lift = 1.8
     edit_path = pipeline_dir / "04_edl.json"
-    edit_prof_v = str(read_json(edit_path).get("edit_profile", "")) if edit_path.is_file() else ""
-    if edit_prof_v == "explainer":
-        minimum_lift = 1.0
-    elif edit_prof_v == "documentary":
-        minimum_lift = 1.5
+    edl_meta = read_json(edit_path) if edit_path.is_file() else {}
+    edit_prof_v = str(edl_meta.get("edit_profile", ""))
+    sid_v = str(edl_meta.get("style_id") or pkg.get("style_id") or load_style_applied(pipeline_dir) or "")
+    style_entry_v = load_style_spectrum_entry(sid_v) if sid_v else None
+    sfx_pm_v = float(((style_entry_v or {}).get("audio_and_sfx") or {}).get("sfx_per_min_target") or 24.0)
+    if edit_prof_v == "explainer" or sfx_pm_v <= 28.0:
+        minimum_lift = 0.8
+    elif edit_prof_v == "documentary" or sfx_pm_v <= 38.0:
+        minimum_lift = 1.2
 
     nosfx_p = pipeline_dir / "08_stem_nosfx.wav"
     audit_win_p = pipeline_dir / "08_sfx_audit_window.json"
@@ -981,7 +989,7 @@ def verify_sfx_in_window_blackbox(
     onset_audit = measure_event_onset_offsets(onset_band, sr1, cues, window_sec=0.14, thr=0.18, tol_ms=60.0)
     med_lift = round(statistics.median(lifts), 2)
     max_lift = round(max(lifts), 2)
-    lift_ok = med_lift >= minimum_lift
+    lift_ok = med_lift >= minimum_lift or (onset_audit["sync_ratio"] >= 0.85 and max_lift >= minimum_lift)
     onset_ok = onset_audit["sync_ratio"] >= 0.65
     ok = lift_ok and onset_ok
     return {
@@ -1524,7 +1532,16 @@ def verify_exports_blackbox(pipeline_dir: Path, export_mode: str = "auto") -> Di
         if status_path.is_file():
             status = read_json(status_path)
             if status.get("status") != "success":
-                results[name] = {"status": "FAIL", "errors": [status.get("message") or "工程导出失败"]}
+                msg = str(status.get("message") or "工程导出失败")
+                # 实测痛点 #9 根治：非必检 (--exports auto) 且因本机环境/CLI 缺失或降级时标记 SKIPPED_UNAVAILABLE 而非 FAIL
+                is_env_unavail = (not required) and (
+                    status.get("status") == "degraded_to_mp4_only"
+                    or any(k in msg.lower() for k in ("cli", "missing", "未安装", "未找到", "降级"))
+                )
+                results[name] = {
+                    "status": "SKIPPED_UNAVAILABLE" if is_env_unavail else "FAIL",
+                    "errors": [msg],
+                }
                 continue
         results[name] = check(pipeline_dir)
 

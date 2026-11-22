@@ -193,6 +193,9 @@ def apply_to_pipeline(lib: Dict[str, Any], style_id: str, pipeline_dir: Path) ->
         "multi_zone_flower_spec": entry.get("multi_zone_flower_spec"),
         "packaging_techniques": entry.get("packaging_techniques"),
         "pip_composition_spec": entry.get("pip_composition_spec"),
+        "visual_blueprint": entry.get("visual_blueprint"),
+        "requires_aroll": entry.get("requires_aroll", "optional"),
+        "allow_explainer_pip": entry.get("allow_explainer_pip", False),
         "giant_text_spec": entry.get("giant_text_spec"),
         "audio_and_sfx": entry.get("audio_and_sfx"),
         "shot_distribution": entry.get("shot_distribution"),
@@ -206,11 +209,72 @@ def apply_to_pipeline(lib: Dict[str, Any], style_id: str, pipeline_dir: Path) ->
     return out
 
 
+def filter_styles_by_aroll(lib: Dict[str, Any], has_aroll: bool) -> List[Dict[str, Any]]:
+    """按有无出镜口播素材智能筛出适配模板（实测 #15：无出镜时主推无需口播的全空镜/图文/画框模板）。"""
+    styles = list(lib.get("styles") or [])
+    if has_aroll:
+        return styles
+    return [s for s in styles if str(s.get("requires_aroll") or "optional") != "required"]
+
+
+def apply_full_visual_refresh(
+    lib: Dict[str, Any],
+    style_id: str,
+    pipeline_dir: Path,
+    keep_edl: bool = True,
+    no_flower_text: bool = False,
+) -> Dict[str, Any]:
+    """
+    一键切换视觉风格并真正刷完下游文件（根治实测 #6 只写 JSON 不联动 + #7 换风格不丢人工 EDL/花字）：
+    保留 03_audio_events 与（keep_edl=True 时的）04_edl.json 选镜，刷新 step5/step6/step7/step9。
+    """
+    apply_to_pipeline(lib, style_id, pipeline_dir)
+    rt = resolve_style_runtime_config(style_id)
+    track = str(rt.get("recommended_track") or "store")
+    edl_p = pipeline_dir / "04_edl.json"
+    if edl_p.is_file():
+        edl = read_json(edl_p)
+        edl["style_id"] = style_id
+        if keep_edl:
+            entry = get_style_entry(lib, style_id)
+            pip_spec = entry.get("pip_composition_spec") or {"mode": "none"}
+            pip_mode = str(pip_spec.get("mode") or "none")
+            edl["pip_mode"] = pip_mode
+            for c in edl.get("clips") or []:
+                if pip_mode in ("", "none"):
+                    c.pop("pip_layout", None)
+                elif pip_spec.get("single_source"):
+                    c["pip_layout"] = {**pip_spec, "mode": pip_mode, "single_source": True}
+        write_json(edl_p, edl)
+    refreshed: List[str] = ["style_spectrum_applied.json"]
+    if (pipeline_dir / "03_audio_events.json").is_file() and edl_p.is_file():
+        from step5_subtitles import run_step5
+        from step6_packaging import run_step6
+        from step7_color_grade import run_step7
+        from step9_title_cover import run_step9
+
+        run_step5(pipeline_dir, track=track, template_id=rt["subtitle_template"])
+        refreshed.append("05_subtitles.json")
+        run_step6(pipeline_dir, style_id=style_id, no_flower_text=no_flower_text, keep_manual_texts=keep_edl)
+        refreshed.append("06_packaging.json")
+        run_step7(pipeline_dir, track=track, lut_name=rt["lut_file"], style_id=style_id)
+        refreshed.append("07_color_plan.json")
+        if (pipeline_dir / "01_manifest.json").is_file():
+            run_step9(pipeline_dir, track=track, style_id=style_id)
+            refreshed.append("09_title_cover.json")
+    print(f"[apply-style] 全视觉层联动刷新完成 ({style_id}, keep_edl={keep_edl}) -> {refreshed}")
+    return {"style_id": style_id, "keep_edl": keep_edl, "refreshed": refreshed}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="应用「风格谱」至流水线或导出 HyperFrames 样板")
     parser.add_argument("--list", action="store_true", help="列出全部风格谱")
-    parser.add_argument("--style-id", help="风格 ID（如 style_02）")
+    parser.add_argument("--has-aroll", choices=["auto", "yes", "no"], default="auto", help="按有无出镜素材过滤推荐模板")
+    parser.add_argument("--style-id", help="风格 ID（如 style_01）")
     parser.add_argument("--apply-pipeline", help="目标流水线目录")
+    parser.add_argument("--apply-full", action="store_true", help="写入风格并立即联动刷新 step5/6/7/9 使换装真正生效")
+    parser.add_argument("--keep-edl", action="store_true", help="与 --apply-full 搭配：保留已有 EDL 选镜与花字文案，只换视觉样式")
+    parser.add_argument("--no-flower-text", action="store_true", help="与 --apply-full 搭配：关闭自动花字")
     parser.add_argument("--export-hyperframes", help="导出 HyperFrames HTML 目录或文件路径")
     parser.add_argument("--duration", type=float, default=15.0, help="样板时长（秒）")
     parser.add_argument("--title", default="核心视觉样板", help="样板标题")
@@ -219,7 +283,12 @@ def main() -> None:
 
     lib = load_library()
     if args.list:
-        list_styles(lib)
+        if args.has_aroll == "no":
+            filtered = {**lib, "styles": filter_styles_by_aroll(lib, has_aroll=False)}
+            print(f"[apply-style] 无出镜素材模式：为你筛出 {len(filtered['styles'])} 套纯空镜/画框适配风格")
+            list_styles(filtered)
+        else:
+            list_styles(lib)
         return
     if not args.style_id:
         parser.error("请指定 --style-id 或使用 --list")
@@ -227,7 +296,13 @@ def main() -> None:
     if args.print_config:
         print(json.dumps(resolve_style_runtime_config(args.style_id), ensure_ascii=False, indent=2))
     if args.apply_pipeline:
-        apply_to_pipeline(lib, args.style_id, Path(args.apply_pipeline))
+        if args.apply_full:
+            apply_full_visual_refresh(
+                lib, args.style_id, Path(args.apply_pipeline),
+                keep_edl=args.keep_edl, no_flower_text=args.no_flower_text,
+            )
+        else:
+            apply_to_pipeline(lib, args.style_id, Path(args.apply_pipeline))
     if args.export_hyperframes:
         export_hyperframes_html(
             lib, args.style_id, Path(args.export_hyperframes),

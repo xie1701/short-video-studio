@@ -56,13 +56,13 @@ ARCHETYPE_TO_VIBE_STYLE: Dict[str, str] = {
     "arch_01_tech_ui_console": "style_15",
     "arch_02_high_contrast_story": "style_03",
     "arch_03_editorial_matte_depth": "style_12",
-    "arch_04_punch_talking_head": "style_14",
+    "arch_04_punch_talking_head": "style_01",
     "arch_05_cinema_slow_space": "style_06",
     "arch_06_paper_stopmotion": "style_05",
 }
 
 STYLE_SOUND_MAP: Dict[str, Dict[str, Any]] = {
-    "style_14": {
+    "style_01": {
         "bgm": {"src": "fs_680113_Pop-Guitar-Loop-Thing.mp3", "start": 0.60, "end": 65.50, "bpm": 120.0},
         "sfx": {
             "transition": ("fs_585257_swoosh-1-mp3.mp3", 0.10, 0.36, -1.5),
@@ -230,12 +230,12 @@ def search_freesound(query: str, license_mode: str = "cc0", limit: int = 8, page
 
 
 SFX_DEDUP_ALIAS: Dict[str, str] = {
-    "sound_vibe/sfx/style_02_transition.wav": "sound_vibe/sfx/style_14_transition.wav",
+    "sound_vibe/sfx/style_02_transition.wav": "sound_vibe/sfx/style_01_transition.wav",
     "sound_vibe/sfx/style_12_transition.wav": "sound_vibe/sfx/style_02_ui.wav",
     "sound_vibe/sfx/style_15_transition.wav": "sound_vibe/sfx/style_02_ui.wav",
-    "sound_vibe/sfx/style_12_accent.wav": "sound_vibe/sfx/style_14_ui.wav",
+    "sound_vibe/sfx/style_12_accent.wav": "sound_vibe/sfx/style_01_ui.wav",
     "sound_vibe/sfx/style_15_ui.wav": "sound_vibe/sfx/style_12_ui.wav",
-    "sound_vibe/sfx/style_03_ui.wav": "sound_vibe/sfx/style_14_accent.wav",
+    "sound_vibe/sfx/style_03_ui.wav": "sound_vibe/sfx/style_01_accent.wav",
     "sound_vibe/sfx/style_05_ui.wav": "sound_vibe/sfx/style_03_accent.wav",
     "sound_vibe/sfx/style_06_transition.wav": "sound_vibe/sfx/style_03_transition.wav",
     "sound_vibe/sfx/style_05_accent.wav": "sound_vibe/sfx/style_05_transition.wav",
@@ -384,8 +384,8 @@ def get_style_sound_profile(style_id: str) -> Optional[Dict[str, Any]]:
 
 
 def get_default_sound_profile(track: str = "store") -> Optional[Dict[str, Any]]:
-    """当未指定 style_id 时按轨道返回默认 CC0 真录音库（门店轨 style_14 / 博主轨 style_12）。"""
-    return get_style_sound_profile("style_14" if track == "store" else "style_12")
+    """当未指定 style_id 时按轨道返回默认 CC0 真录音库（门店轨 style_01 / 博主轨 style_12）。"""
+    return get_style_sound_profile("style_01" if track == "store" else "style_12")
 
 
 def main() -> None:

@@ -1,0 +1,853 @@
+{
+  "version": "3.0.0",
+  "default_style_id": "style_01",
+  "blueprints": {
+    "style_01": {
+      "template_family": "store_poster_burst",
+      "label_cn": "门店爆款原生 · 综艺斜标海报开场",
+      "requires_aroll": "required",
+      "allow_explainer_pip": false,
+      "pip_spec": {
+        "mode": "none"
+      },
+      "overlay_style": {
+        "opening_mode": "store_poster_burst",
+        "flower_mode": "tilted_variety_sticker",
+        "persistent_top_bar": false,
+        "tilt_deg": -5,
+        "accent_colors": [
+          "#FF3B30",
+          "#7CFF2A",
+          "#FFD83B"
+        ],
+        "stroke_color": "#0B0B0C",
+        "stroke_width": 8,
+        "has_sticker_tag": true,
+        "entry_anim": "bounce_pop"
+      },
+      "subtitle_override": {
+        "font_size": 64,
+        "keyword_scale": 1.16,
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFE24A",
+        "stroke_color": "#000000",
+        "stroke_width": 5,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
+        "safe_y_center": 1330
+      }
+    },
+    "style_02": {
+      "template_family": "dark_gray_neon_slab",
+      "label_cn": "极速跳剪避坑 · 暗灰底框白绿双行斜体",
+      "requires_aroll": "required",
+      "allow_explainer_pip": false,
+      "pip_spec": {
+        "mode": "none"
+      },
+      "overlay_style": {
+        "opening_mode": "dark_gray_neon_slab",
+        "flower_mode": "neon_lime_slab",
+        "persistent_top_bar": false,
+        "tilt_deg": -3,
+        "accent_colors": [
+          "#FFFFFF",
+          "#BCFF00"
+        ],
+        "bg_slab": "rgba(28, 32, 30, 0.84)",
+        "stroke_color": "#000000",
+        "stroke_width": 4,
+        "entry_anim": "slide_snap"
+      },
+      "subtitle_override": {
+        "font_size": 58,
+        "keyword_scale": 1.14,
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#BCFF00",
+        "stroke_color": "#000000",
+        "stroke_width": 3,
+        "bg_box_color": "#1E2220D4",
+        "bg_radius": 18,
+        "safe_y_center": 1340
+      }
+    },
+    "style_03": {
+      "template_family": "red_bar_dual_line",
+      "label_cn": "暗调深度口播 · 深红实心底条双行大字",
+      "requires_aroll": "required",
+      "allow_explainer_pip": false,
+      "pip_spec": {
+        "mode": "none"
+      },
+      "overlay_style": {
+        "opening_mode": "red_bar_dual_line",
+        "flower_mode": "crimson_band_callout",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#B91C1C",
+          "#FFFFFF",
+          "#FDE047"
+        ],
+        "bg_slab": "#B91C1C",
+        "stroke_color": "#140404",
+        "stroke_width": 3,
+        "entry_anim": "wipe_in"
+      },
+      "subtitle_override": {
+        "font_size": 58,
+        "keyword_scale": 1.12,
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFF066",
+        "stroke_color": "#000000",
+        "stroke_width": 3,
+        "bg_box_color": "#B91C1CE6",
+        "bg_radius": 8,
+        "safe_y_center": 1345
+      }
+    },
+    "style_04": {
+      "template_family": "cream_minimal_serif",
+      "label_cn": "清冷奶油高光 · 极简轻描边宋体",
+      "requires_aroll": "required",
+      "allow_explainer_pip": false,
+      "pip_spec": {
+        "mode": "none"
+      },
+      "overlay_style": {
+        "opening_mode": "minimal_serif_subtle",
+        "flower_mode": "minimal_serif_caption",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#FFFFFF",
+          "#F6E7CB"
+        ],
+        "stroke_color": "#262320",
+        "stroke_width": 2,
+        "entry_anim": "fade_up"
+      },
+      "subtitle_override": {
+        "font_size": 52,
+        "keyword_scale": 1.08,
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFE8B6",
+        "stroke_color": "#22201E",
+        "stroke_width": 2,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
+        "safe_y_center": 1350
+      }
+    },
+    "style_05": {
+      "template_family": "paper_craft_diagram",
+      "label_cn": "牛皮纸拼贴图解 · 工艺结构拆解卡",
+      "requires_aroll": "optional",
+      "allow_explainer_pip": false,
+      "pip_spec": {
+        "mode": "paper_craft_card_pip",
+        "frame_x": 76,
+        "frame_y": 320,
+        "frame_w": 928,
+        "frame_h": 928,
+        "bg_hex": "#ECE5D8",
+        "border_hex": "#C8B89E",
+        "border_width": 6,
+        "single_source": true
+      },
+      "overlay_style": {
+        "opening_mode": "paper_blueprint_header",
+        "flower_mode": "red_ruler_note",
+        "persistent_top_bar": true,
+        "accent_colors": [
+          "#D93829",
+          "#2D241C",
+          "#EFE6D5"
+        ],
+        "stroke_color": "#2D241C",
+        "stroke_width": 2,
+        "entry_anim": "stamp_in"
+      },
+      "subtitle_override": {
+        "font_size": 50,
+        "keyword_scale": 1.12,
+        "primary_color": "#2A2118",
+        "keyword_color": "#C62828",
+        "stroke_color": "#FFFDF8",
+        "stroke_width": 4,
+        "bg_box_color": "#F5EFE2E0",
+        "bg_radius": 10,
+        "safe_y_center": 1380
+      }
+    },
+    "style_06": {
+      "template_family": "black_polaroid_vlog",
+      "label_cn": "黑底竖相框留白 · 顶部手写金句+Daily Vlog",
+      "requires_aroll": "optional",
+      "allow_explainer_pip": false,
+      "pip_spec": {
+        "mode": "black_polaroid_frame_pip",
+        "frame_x": 140,
+        "frame_y": 540,
+        "frame_w": 800,
+        "frame_h": 720,
+        "bg_hex": "#050506",
+        "border_hex": "#FFFFFF",
+        "border_width": 0,
+        "bottom_tag": "Daily Vlog",
+        "bottom_quote": "Every ordinary moment carries quiet strength.",
+        "single_source": true
+      },
+      "overlay_style": {
+        "opening_mode": "polaroid_handwritten_top",
+        "flower_mode": "polaroid_handwritten_top",
+        "persistent_top_bar": true,
+        "accent_colors": [
+          "#FFFFFF",
+          "#E5E7EB"
+        ],
+        "stroke_color": "#000000",
+        "stroke_width": 0,
+        "entry_anim": "fade_up"
+      },
+      "subtitle_override": {
+        "font_size": 46,
+        "keyword_scale": 1.08,
+        "primary_color": "#F8FAFC",
+        "keyword_color": "#FDE68A",
+        "stroke_color": "#000000",
+        "stroke_width": 2,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
+        "safe_y_center": 1390
+      }
+    },
+    "style_07": {
+      "template_family": "white_outline_cutout",
+      "label_cn": "人像白边贴纸抠像 · 高密实景避坑风",
+      "requires_aroll": "required",
+      "allow_explainer_pip": false,
+      "pip_spec": {
+        "mode": "vision_portrait_cutout_pip",
+        "outline_px": 10,
+        "outline_hex": "#FFFFFF",
+        "bg_blur_sigma": 12,
+        "single_source": false
+      },
+      "overlay_style": {
+        "opening_mode": "sticker_cutout_badge",
+        "flower_mode": "clean_sticker_pop",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#FFFFFF",
+          "#FFBF17"
+        ],
+        "stroke_color": "#111111",
+        "stroke_width": 4,
+        "entry_anim": "bounce_pop"
+      },
+      "subtitle_override": {
+        "font_size": 56,
+        "keyword_scale": 1.15,
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFBF17",
+        "stroke_color": "#111111",
+        "stroke_width": 4,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
+        "safe_y_center": 1310
+      }
+    },
+    "style_08": {
+      "template_family": "top_left_slash_badge",
+      "label_cn": "专家长镜 · 左上角斜杠双色大标",
+      "requires_aroll": "required",
+      "allow_explainer_pip": false,
+      "pip_spec": {
+        "mode": "none"
+      },
+      "overlay_style": {
+        "opening_mode": "top_left_slash_badge",
+        "flower_mode": "slash_yellow_badge",
+        "persistent_top_bar": true,
+        "accent_colors": [
+          "#FFFFFF",
+          "#FFE14D"
+        ],
+        "stroke_color": "#0F172A",
+        "stroke_width": 6,
+        "entry_anim": "slide_snap"
+      },
+      "subtitle_override": {
+        "font_size": 54,
+        "keyword_scale": 1.12,
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFE14D",
+        "stroke_color": "#000000",
+        "stroke_width": 4,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
+        "safe_y_center": 1350
+      }
+    },
+    "style_09": {
+      "template_family": "dark_doc_dual_gold_panel",
+      "label_cn": "纯黑纪实面板 · 金线双格框+左圆头像",
+      "requires_aroll": "optional",
+      "allow_explainer_pip": false,
+      "pip_spec": {
+        "mode": "dark_doc_circle_avatar_pip",
+        "top_frame_x": 76,
+        "top_frame_y": 290,
+        "top_frame_w": 928,
+        "top_frame_h": 540,
+        "avatar_cx": 215,
+        "avatar_cy": 1030,
+        "avatar_r": 122,
+        "bg_hex": "#060608",
+        "border_hex": "#C8A96A",
+        "border_width": 3,
+        "avatar_border_hex": "#E2D5B5",
+        "single_source": false
+      },
+      "overlay_style": {
+        "opening_mode": "dark_doc_panel_header",
+        "flower_mode": "doc_case_title",
+        "persistent_top_bar": true,
+        "accent_colors": [
+          "#F5F5F4",
+          "#D4AF37"
+        ],
+        "stroke_color": "#000000",
+        "stroke_width": 2,
+        "entry_anim": "fade_up"
+      },
+      "subtitle_override": {
+        "font_size": 48,
+        "keyword_scale": 1.1,
+        "primary_color": "#F5F5F4",
+        "keyword_color": "#E5C07B",
+        "stroke_color": "#000000",
+        "stroke_width": 3,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
+        "safe_y_center": 1370
+      }
+    },
+    "style_10": {
+      "template_family": "clean_punch_minimal",
+      "label_cn": "高频推拉微距 · 极净全屏职场干货",
+      "requires_aroll": "required",
+      "allow_explainer_pip": false,
+      "pip_spec": {
+        "mode": "none"
+      },
+      "overlay_style": {
+        "opening_mode": "clean_minimal_title",
+        "flower_mode": "clean_accent_pill",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#FFFFFF",
+          "#38BDF8"
+        ],
+        "stroke_color": "#0F172A",
+        "stroke_width": 3,
+        "entry_anim": "fade_up"
+      },
+      "subtitle_override": {
+        "font_size": 52,
+        "keyword_scale": 1.12,
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#7DD3FC",
+        "stroke_color": "#0F172A",
+        "stroke_width": 3,
+        "bg_box_color": "#0F172A99",
+        "bg_radius": 14,
+        "safe_y_center": 1355
+      }
+    },
+    "style_11": {
+      "template_family": "clean_creator_studio",
+      "label_cn": "博主默认清亮知性 · 通透圆角字幕",
+      "requires_aroll": "required",
+      "allow_explainer_pip": true,
+      "pip_spec": {
+        "mode": "none"
+      },
+      "overlay_style": {
+        "opening_mode": "clean_creator_callout",
+        "flower_mode": "soft_glass_pill",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#FFFFFF",
+          "#38BDF8",
+          "#FDE047"
+        ],
+        "stroke_color": "#1E293B",
+        "stroke_width": 3,
+        "entry_anim": "fade_up"
+      },
+      "subtitle_override": {
+        "font_size": 52,
+        "keyword_scale": 1.12,
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFE066",
+        "stroke_color": "#1A1A1A",
+        "stroke_width": 3,
+        "bg_box_color": "#11182788",
+        "bg_radius": 16,
+        "safe_y_center": 1350
+      }
+    },
+    "style_12": {
+      "template_family": "white_note_card",
+      "label_cn": "极简白底笔记 · 结构化清单卡",
+      "requires_aroll": "optional",
+      "allow_explainer_pip": true,
+      "pip_spec": {
+        "mode": "minimal_white_note_card_pip",
+        "frame_x": 76,
+        "frame_y": 330,
+        "frame_w": 928,
+        "frame_h": 880,
+        "bg_hex": "#F8F8F6",
+        "border_hex": "#18181B",
+        "border_width": 4,
+        "single_source": true
+      },
+      "overlay_style": {
+        "opening_mode": "white_note_header",
+        "flower_mode": "ink_underline_note",
+        "persistent_top_bar": true,
+        "accent_colors": [
+          "#111827",
+          "#2563EB"
+        ],
+        "stroke_color": "#FFFFFF",
+        "stroke_width": 2,
+        "entry_anim": "fade_up"
+      },
+      "subtitle_override": {
+        "font_size": 50,
+        "keyword_scale": 1.12,
+        "primary_color": "#111827",
+        "keyword_color": "#1D4ED8",
+        "stroke_color": "#FFFFFF",
+        "stroke_width": 3,
+        "bg_box_color": "#FFFFFFEB",
+        "bg_radius": 14,
+        "safe_y_center": 1370
+      }
+    },
+    "style_13": {
+      "template_family": "cinema_serif_quiet",
+      "label_cn": "空间漫游极简 · 电影人文思源宋体",
+      "requires_aroll": "optional",
+      "allow_explainer_pip": false,
+      "pip_spec": {
+        "mode": "none"
+      },
+      "overlay_style": {
+        "opening_mode": "cinema_serif_title",
+        "flower_mode": "minimal_serif_caption",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#F8F5EE",
+          "#E2C799"
+        ],
+        "stroke_color": "#1A1816",
+        "stroke_width": 2,
+        "entry_anim": "fade_up"
+      },
+      "subtitle_override": {
+        "font_size": 48,
+        "keyword_scale": 1.06,
+        "primary_color": "#FBF8F1",
+        "keyword_color": "#E6C792",
+        "stroke_color": "#1C1917",
+        "stroke_width": 2,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
+        "safe_y_center": 1375
+      }
+    },
+    "style_14": {
+      "template_family": "dark_console_stepper",
+      "label_cn": "深色控制台界面 · 顶部步骤条演示风",
+      "requires_aroll": "optional",
+      "allow_explainer_pip": true,
+      "pip_spec": {
+        "mode": "none"
+      },
+      "overlay_style": {
+        "opening_mode": "console_step_header",
+        "flower_mode": "amber_tech_card",
+        "persistent_top_bar": true,
+        "accent_colors": [
+          "#F59E0B",
+          "#38BDF8",
+          "#F8FAFC"
+        ],
+        "stroke_color": "#09090B",
+        "stroke_width": 2,
+        "entry_anim": "slide_snap"
+      },
+      "subtitle_override": {
+        "font_size": 46,
+        "keyword_scale": 1.1,
+        "primary_color": "#F8FAFC",
+        "keyword_color": "#FBBF24",
+        "stroke_color": "#09090B",
+        "stroke_width": 2,
+        "bg_box_color": "#09090BC4",
+        "bg_radius": 10,
+        "safe_y_center": 1390
+      }
+    },
+    "style_15": {
+      "template_family": "interview_flower_flow",
+      "label_cn": "实景访谈口播 · 弹性纯花字节奏流",
+      "requires_aroll": "required",
+      "allow_explainer_pip": false,
+      "pip_spec": {
+        "mode": "none"
+      },
+      "overlay_style": {
+        "opening_mode": "interview_kinetic_title",
+        "flower_mode": "elastic_gold_pop",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#FFFFFF",
+          "#FACC15",
+          "#F97316"
+        ],
+        "stroke_color": "#111111",
+        "stroke_width": 5,
+        "entry_anim": "bounce_pop"
+      },
+      "subtitle_override": {
+        "font_size": 58,
+        "keyword_scale": 1.15,
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FACC15",
+        "stroke_color": "#111111",
+        "stroke_width": 4,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
+        "safe_y_center": 1340
+      }
+    },
+    "style_16": {
+      "template_family": "dark_feather_book_quote",
+      "label_cn": "暗黑羽化分屏 · 上窄实景下黑底书摘巨字",
+      "requires_aroll": "optional",
+      "allow_explainer_pip": false,
+      "pip_spec": {
+        "mode": "linear_split_feather_pip",
+        "top_h": 620,
+        "feather_px": 140,
+        "bg_hex": "#050507",
+        "single_source": false
+      },
+      "overlay_style": {
+        "opening_mode": "dark_book_quote_giant",
+        "flower_mode": "book_quote_gold",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#FFFFFF",
+          "#EAB308"
+        ],
+        "stroke_color": "#000000",
+        "stroke_width": 2,
+        "entry_anim": "fade_up"
+      },
+      "subtitle_override": {
+        "font_size": 54,
+        "keyword_scale": 1.14,
+        "primary_color": "#F8FAFC",
+        "keyword_color": "#FACC15",
+        "stroke_color": "#000000",
+        "stroke_width": 2,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
+        "safe_y_center": 1320
+      }
+    },
+    "style_17": {
+      "template_family": "warm_gold_highlight",
+      "label_cn": "暖金强切探店 · 双镜对比高亮风",
+      "requires_aroll": "optional",
+      "allow_explainer_pip": false,
+      "pip_spec": {
+        "mode": "dual_gold_frame_pip",
+        "top_y": 240,
+        "top_h": 610,
+        "bot_y": 870,
+        "bot_h": 610,
+        "border_hex": "#D4AF37",
+        "border_width": 4,
+        "bg_hex": "#100D08",
+        "single_source": false
+      },
+      "overlay_style": {
+        "opening_mode": "warm_gold_banner",
+        "flower_mode": "gold_badge_pop",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#FDE047",
+          "#FFFFFF",
+          "#F59E0B"
+        ],
+        "stroke_color": "#1C1408",
+        "stroke_width": 5,
+        "entry_anim": "bounce_pop"
+      },
+      "subtitle_override": {
+        "font_size": 58,
+        "keyword_scale": 1.15,
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FDE047",
+        "stroke_color": "#1C1408",
+        "stroke_width": 4,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
+        "safe_y_center": 1345
+      }
+    },
+    "style_18": {
+      "template_family": "metallic_3d_gold_title",
+      "label_cn": "户外探盘实景 · 3D 金属渐变立体大字",
+      "requires_aroll": "required",
+      "allow_explainer_pip": false,
+      "pip_spec": {
+        "mode": "none"
+      },
+      "overlay_style": {
+        "opening_mode": "metallic_3d_gold_title",
+        "flower_mode": "metallic_3d_gold",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#FFF2A6",
+          "#F59E0B",
+          "#78350F"
+        ],
+        "stroke_color": "#451A03",
+        "stroke_width": 6,
+        "entry_anim": "zoom_smash"
+      },
+      "subtitle_override": {
+        "font_size": 62,
+        "keyword_scale": 1.18,
+        "primary_color": "#FFF6CC",
+        "keyword_color": "#FFB800",
+        "stroke_color": "#3B1800",
+        "stroke_width": 5,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
+        "safe_y_center": 1335
+      }
+    },
+    "style_19": {
+      "template_family": "cool_data_news_cutout",
+      "label_cn": "冷峻数据新闻前景 · 人像抠像白条字幕",
+      "requires_aroll": "required",
+      "allow_explainer_pip": false,
+      "pip_spec": {
+        "mode": "data_news_cutout_pip",
+        "outline_px": 0,
+        "bg_tint": "cool_news",
+        "single_source": false
+      },
+      "overlay_style": {
+        "opening_mode": "news_ticker_card",
+        "flower_mode": "white_strip_news",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#0F172A",
+          "#FFFFFF",
+          "#38BDF8"
+        ],
+        "stroke_color": "#0F172A",
+        "stroke_width": 2,
+        "entry_anim": "wipe_in"
+      },
+      "subtitle_override": {
+        "font_size": 50,
+        "keyword_scale": 1.1,
+        "primary_color": "#0F172A",
+        "keyword_color": "#0369A1",
+        "stroke_color": "#FFFFFF",
+        "stroke_width": 0,
+        "bg_box_color": "#FFFFFFE6",
+        "bg_radius": 6,
+        "safe_y_center": 1335
+      }
+    },
+    "style_20": {
+      "template_family": "guofeng_black_band_serif",
+      "label_cn": "国风养生匠心 · 下半屏黑条双行粗宋体",
+      "requires_aroll": "required",
+      "allow_explainer_pip": false,
+      "pip_spec": {
+        "mode": "none"
+      },
+      "overlay_style": {
+        "opening_mode": "guofeng_black_band",
+        "flower_mode": "guofeng_serif_seal",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#F5EBDC",
+          "#C89B54",
+          "#991B1B"
+        ],
+        "bg_slab": "rgba(18, 14, 12, 0.72)",
+        "stroke_color": "#1A120B",
+        "stroke_width": 2,
+        "entry_anim": "fade_up"
+      },
+      "subtitle_override": {
+        "font_size": 56,
+        "keyword_scale": 1.08,
+        "primary_color": "#F7EFE1",
+        "keyword_color": "#F2C97D",
+        "stroke_color": "#120D0A",
+        "stroke_width": 2,
+        "bg_box_color": "#14100DB8",
+        "bg_radius": 4,
+        "safe_y_center": 1270
+      }
+    },
+    "style_21": {
+      "template_family": "high_broll_store_tag",
+      "label_cn": "高空镜门店种草 · 细节特写暖黄大字",
+      "requires_aroll": "none",
+      "allow_explainer_pip": false,
+      "pip_spec": {
+        "mode": "none"
+      },
+      "overlay_style": {
+        "opening_mode": "store_detail_badge",
+        "flower_mode": "warm_tag_callout",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#FFFFFF",
+          "#FCD34D",
+          "#EF4444"
+        ],
+        "stroke_color": "#18181B",
+        "stroke_width": 4,
+        "entry_anim": "bounce_pop"
+      },
+      "subtitle_override": {
+        "font_size": 58,
+        "keyword_scale": 1.15,
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FCD34D",
+        "stroke_color": "#000000",
+        "stroke_width": 4,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
+        "safe_y_center": 1345
+      }
+    },
+    "style_22": {
+      "template_family": "top_banner_case_study",
+      "label_cn": "九成例证拆解 · 顶栏常驻主题横幅",
+      "requires_aroll": "none",
+      "allow_explainer_pip": false,
+      "pip_spec": {
+        "mode": "top_banner_evidence_pip",
+        "banner_h": 240,
+        "bg_hex": "#0B0D12",
+        "single_source": true
+      },
+      "overlay_style": {
+        "opening_mode": "top_banner_headline",
+        "flower_mode": "evidence_highlight_pill",
+        "persistent_top_bar": true,
+        "accent_colors": [
+          "#FFFFFF",
+          "#FACC15",
+          "#1D4ED8"
+        ],
+        "stroke_color": "#0B0D12",
+        "stroke_width": 3,
+        "entry_anim": "slide_snap"
+      },
+      "subtitle_override": {
+        "font_size": 52,
+        "keyword_scale": 1.12,
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FDE047",
+        "stroke_color": "#000000",
+        "stroke_width": 3,
+        "bg_box_color": "#0B0D12B8",
+        "bg_radius": 10,
+        "safe_y_center": 1365
+      }
+    },
+    "style_23": {
+      "template_family": "micro_doc_film_serif",
+      "label_cn": "氛围微纪录 · 胶片质感克制宋体",
+      "requires_aroll": "none",
+      "allow_explainer_pip": false,
+      "pip_spec": {
+        "mode": "none"
+      },
+      "overlay_style": {
+        "opening_mode": "micro_doc_title",
+        "flower_mode": "minimal_serif_caption",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#F5F5F4",
+          "#D6D3D1"
+        ],
+        "stroke_color": "#0C0A09",
+        "stroke_width": 2,
+        "entry_anim": "fade_up"
+      },
+      "subtitle_override": {
+        "font_size": 46,
+        "keyword_scale": 1.06,
+        "primary_color": "#FAFAF9",
+        "keyword_color": "#FDE68A",
+        "stroke_color": "#0C0A09",
+        "stroke_width": 2,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
+        "safe_y_center": 1380
+      }
+    },
+    "style_24": {
+      "template_family": "faceless_kinetic_montage",
+      "label_cn": "100% 不露脸混剪 · 炸裂金句节奏流",
+      "requires_aroll": "none",
+      "allow_explainer_pip": false,
+      "pip_spec": {
+        "mode": "none"
+      },
+      "overlay_style": {
+        "opening_mode": "faceless_giant_impact",
+        "flower_mode": "high_impact_smash",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#FFFFFF",
+          "#FFE14D",
+          "#FF453A"
+        ],
+        "stroke_color": "#000000",
+        "stroke_width": 6,
+        "entry_anim": "zoom_smash"
+      },
+      "subtitle_override": {
+        "font_size": 60,
+        "keyword_scale": 1.18,
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFE14D",
+        "stroke_color": "#000000",
+        "stroke_width": 5,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
+        "safe_y_center": 1335
+      }
+    }
+  }
+}

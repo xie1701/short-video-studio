@@ -33,6 +33,7 @@ from common import (
     SAFE_ZONE,
     SUBTITLE_CENTER_X,
     detect_browser_renderer,
+    estimate_task_eta,
     find_bin,
     fit_text_line,
     load_style_applied,
@@ -71,14 +72,24 @@ from render_mp4 import render_mp4
 from source_review import import_sources, write_source_review
 from step1_normalize import run_step1
 from step2_transcribe import run_step2
-from step3_lock_audio import run_step3
-from step4_build_edl import run_step4
+from step3_lock_audio import patch_locked_audio_sentences, run_step3
+from step4_build_edl import detect_script_media_gaps, run_step4
 from step5_subtitles import run_step5
 from step6_packaging import run_step6
 from step7_color_grade import run_step7
 from step8_mix_audio import run_step8
 from step9_title_cover import build_publish_copy_pack, render_dual_4k_code_covers, run_step9
-from workflow_guard import compute_plan_digest, generate_action_strips, record_milestone, render_progress_card, tidy_workspace, verify_lock
+from workflow_guard import (
+    compute_plan_digest,
+    confirm_plan,
+    generate_action_strips,
+    is_plan_confirmed,
+    record_milestone,
+    render_progress_card,
+    tidy_workspace,
+    verify_lock,
+    write_confirm_plan_doc,
+)
 
 
 def _run_script_prelint(
@@ -933,18 +944,38 @@ def run_visual_to_delivery(
     export_mode: str = "auto",
     edit_profile: str = "talking",
     sync_window: Optional[List[float]] = None,
+    keep_edl: bool = False,
+    no_flower_text: bool = False,
+    agent: Optional[str] = None,
 ) -> Dict[str, Any]:
-    run_step4(
-        pipeline_dir,
-        track=track,
-        j_cut_frames=j_cut_frames,
-        prefer_broll_only=prefer_broll_only,
-        style_id=style_id,
-        account_profile=account_profile,
-        edit_profile=edit_profile,
-    )
+    edl_p = pipeline_dir / "04_edl.json"
+    if keep_edl and edl_p.is_file():
+        edl_existing = read_json(edl_p)
+        if style_id:
+            edl_existing["style_id"] = style_id
+            st_e = load_style_spectrum_entry(style_id) or {}
+            pip_sp = st_e.get("pip_composition_spec") or {"mode": "none"}
+            pm = str(pip_sp.get("mode") or "none")
+            edl_existing["pip_mode"] = pm
+            for c_item in edl_existing.get("clips") or []:
+                if pm in ("", "none"):
+                    c_item.pop("pip_layout", None)
+                elif pip_sp.get("single_source"):
+                    c_item["pip_layout"] = {**pip_sp, "mode": pm, "single_source": True}
+            write_json(edl_p, edl_existing)
+        print("[pipeline] --keep-edl 已启用：保留已有分镜选镜，仅刷新字幕/花字/调色/封面视觉层。")
+    else:
+        run_step4(
+            pipeline_dir,
+            track=track,
+            j_cut_frames=j_cut_frames,
+            prefer_broll_only=prefer_broll_only,
+            style_id=style_id,
+            account_profile=account_profile,
+            edit_profile=edit_profile,
+        )
     run_step5(pipeline_dir, track=track, template_id=subtitle_template)
-    run_step6(pipeline_dir, style_id=style_id)
+    run_step6(pipeline_dir, style_id=style_id, no_flower_text=no_flower_text, keep_manual_texts=keep_edl)
     write_source_review(pipeline_dir)
     run_step7(pipeline_dir, track=track, lut_name=lut_name, style_id=style_id)
     run_step8(
@@ -952,7 +983,7 @@ def run_visual_to_delivery(
         licenses_path=licenses_path,
         out_dir=(ws or {}).get("out_dir"),
     )
-    run_step9(pipeline_dir, track=track, style_id=style_id)
+    run_step9(pipeline_dir, track=track, style_id=style_id, agent=agent)
 
     if preview_only:
         preview_mp4 = render_mp4(pipeline_dir, preview=True)
@@ -985,10 +1016,15 @@ def main() -> None:
     parser.add_argument("--track", choices=["store", "creator"], default="store")
     parser.add_argument(
         "--mode",
-        choices=["full", "lock-preview", "reedit-visuals", "relock-voice", "render-locked", "code-video", "knowledge-animation"],
+        choices=["full", "plan-only", "lock-preview", "reedit-visuals", "relock-voice", "patch-lines", "render-locked", "code-video", "knowledge-animation"],
         default="full",
-        help="执行模式",
+        help="执行模式（plan-only 仅盘点+转写+出文案确认单不直接开剪；patch-lines 增量局部改句）",
     )
+    parser.add_argument("--patch-json", help="patch-lines 模式：增量改句 JSON 路径（仅替换指定 sentence_id，不动其余原声）")
+    parser.add_argument("--require-plan-confirm", action="store_true", help="严格门禁：未先确认 00_confirm_plan.md 时暂停并输出确认单")
+    parser.add_argument("--keep-edl", action="store_true", help="换风格/微调时保留已有 04_edl.json 选镜与花字文案，只刷新视觉层")
+    parser.add_argument("--no-flower-text", action="store_true", help="关闭全部自动花字/巨字，仅保留干净字幕与音效")
+    parser.add_argument("--agent", help="可选：显式指定当前运行智能体标识（如 cola 自动联动内置封面技能）")
     parser.add_argument("--anim-title", default="知识讲解动画", help="knowledge-animation 模式：片名")
     parser.add_argument("--anim-idea", default="用直观画面看穿一个反常识规律", help="knowledge-animation 模式：核心命题")
     parser.add_argument("--anim-ratio", choices=["16x9", "9x16", "1x1", "3x4"], default="16x9", help="knowledge-animation 模式：画幅")
@@ -1118,7 +1154,7 @@ def main() -> None:
         args.style_id
         or load_style_applied(pipeline_dir)
         or prof_pref_style
-        or ("style_14" if args.track == "store" else "style_11")
+        or ("style_01" if args.track == "store" else "style_11")
     )
     j_cut_frames = 3 if args.j_cut_frames is None else int(args.j_cut_frames)
     subtitle_template = args.subtitle_template
@@ -1174,14 +1210,15 @@ def main() -> None:
 
     def _ensure_effective_raw_dir() -> Path:
         has_media = raw_dir.is_dir() and any(
-            p.is_file() and p.suffix.lower() in MEDIA_EXTS for p in raw_dir.iterdir()
+            p.is_file() and p.suffix.lower() in MEDIA_EXTS and not any(part.startswith(".") for part in p.relative_to(raw_dir).parts)
+            for p in raw_dir.rglob("*")
         )
         if has_media:
             return raw_dir
         if args.raw_dir:
             raise FileNotFoundError(f"指定的原素材目录没有可用视频：{raw_dir}")
         demo_dir = project_dir / "_demo_raw_media"
-        if not (demo_dir.is_dir() and any(p.is_file() and p.suffix.lower() in MEDIA_EXTS for p in demo_dir.iterdir())):
+        if not (demo_dir.is_dir() and any(p.is_file() and p.suffix.lower() in MEDIA_EXTS for p in demo_dir.rglob("*"))):
             print("[pipeline] 未检测到原始素材，正在专属工作区内生成演示素材包（零写入原目录）...")
             generate_demo_media_pack(demo_dir, style_id=active_style_id)
         return demo_dir
@@ -1195,10 +1232,25 @@ def main() -> None:
             raw_intel=raw_intel,
             contact_sheet_path=contact_jpg,
             visual_index_path=visual_index_path,
+            shared_cache_dir=ws.get("shared_cache_dir"),
         )
         write_json(pipeline_dir / "00_inventory.json", inv)
         write_json(pipeline_dir / "00_shot_log.json", build_shot_log_dict(inv))
         (pipeline_dir / "00_inventory.md").write_text(render_markdown_summary(inv), encoding="utf-8")
+
+    # 按模式播报中文等待耗时预期，让用户全程有明确心理预期
+    _eta_stage_map = {
+        "plan-only": "inventory",
+        "full": "full_edit",
+        "lock-preview": "full_edit",
+        "reedit-visuals": "render_final",
+        "patch-lines": "render_final",
+        "knowledge-animation": "knowledge_animation",
+        "code-video": "code_video",
+        "render-locked": "render_final",
+    }
+    _eta_info = estimate_task_eta(_eta_stage_map.get(args.mode, "full_edit"), duration_sec=35.0, clip_count=6)
+    print(f"[ETA] 当前模式={args.mode} | 预计完成耗时：{_eta_info['eta_cn']}（{_eta_info['note']}）")
 
     if args.mode == "render-locked":
         code_lk, msg_lk, _ = verify_lock(pipeline_dir)
@@ -1433,12 +1485,81 @@ def main() -> None:
             hook_variants=args.hook_variants,
             ws=ws,
             sync_window=args.sync_window,
+            keep_edl=args.keep_edl,
+            no_flower_text=args.no_flower_text,
+            agent=args.agent,
+        )
+    elif args.mode == "plan-only":
+        eff_raw = _ensure_effective_raw_dir()
+        _run_inventory_if_needed(eff_raw)
+        run_step1([eff_raw], pipeline_dir, shared_cache_dir=ws.get("shared_cache_dir"))
+        run_step2(
+            pipeline_dir,
+            track=args.track,
+            script_json_path=script_p,
+            force_tts=args.force_tts,
+            whisper_model=args.whisper_model,
+            whitelist_path=whitelist_path,
+            dialect=args.dialect,
+            store_anchor=args.store_anchor,
+            multi_speaker=args.multi_speaker,
+        )
+        tr_data = read_json(pipeline_dir / "02_transcript.json") if (pipeline_dir / "02_transcript.json").is_file() else {}
+        mf_data = read_json(pipeline_dir / "01_manifest.json") if (pipeline_dir / "01_manifest.json").is_file() else {}
+        gaps = detect_script_media_gaps(
+            tr_data.get("kept_segments") or tr_data.get("segments") or [],
+            mf_data.get("items") or [],
+        )
+        plan_doc = write_confirm_plan_doc(
+            pipeline_dir,
+            style_id=active_style_id,
+            eta_summary=estimate_task_eta("full_edit", duration_sec=35.0, clip_count=max(1, len(mf_data.get("items") or []))),
+            media_gaps=gaps,
+        )
+        record_milestone(pipeline_dir, "stop1_script", "已产出开剪前文案与剪辑方案确认单（待用户确认）")
+        prog_card = render_progress_card(pipeline_dir, track=args.track, write_files=True)
+        print(f"[plan-only] 已生成开剪前确认单（尚未执行正式剪辑）-> {plan_doc}")
+        print("\n" + prog_card["markdown_card"])
+        return
+    elif args.mode == "patch-lines":
+        if not args.patch_json or not Path(args.patch_json).is_file():
+            raise FileNotFoundError("patch-lines 模式需要通过 --patch-json 提供增量改句 JSON 文件。")
+        raw_patches = read_json(Path(args.patch_json))
+        patches_list = raw_patches if isinstance(raw_patches, list) else list(raw_patches.get("patches") or [])
+        patch_locked_audio_sentences(pipeline_dir, patches_list, track=args.track)
+        _ensure_reedit_dependencies(pipeline_dir, track=args.track, bgm_p=bgm_p, pause_sec=args.pause_sec, account_profile=account_profile, preserve_locked_audio=True)
+        res = run_visual_to_delivery(
+            pipeline_dir=pipeline_dir,
+            track=args.track,
+            j_cut_frames=j_cut_frames,
+            subtitle_template=subtitle_template,
+            lut_name=lut_name,
+            prefer_broll_only=eff_prefer_broll_only,
+            benchmark=bench_p,
+            simulate_jy_fail=args.simulate_jy_fail,
+            simulate_hf_fail=args.simulate_hf_fail,
+            preview_only=False,
+            style_id=active_style_id,
+            account_profile=account_profile,
+            dialect=args.dialect,
+            store_anchor=args.store_anchor,
+            require_lock=args.require_lock,
+            strict_asr=args.strict_asr,
+            export_mode=args.exports,
+            edit_profile=edit_profile,
+            licenses_path=licenses_path,
+            hook_variants=args.hook_variants,
+            ws=ws,
+            sync_window=args.sync_window,
+            keep_edl=args.keep_edl,
+            no_flower_text=args.no_flower_text,
+            agent=args.agent,
         )
     else:
         if args.mode in ("full", "lock-preview"):
             eff_raw = _ensure_effective_raw_dir()
             _run_inventory_if_needed(eff_raw)
-            run_step1([eff_raw], pipeline_dir)
+            run_step1([eff_raw], pipeline_dir, shared_cache_dir=ws.get("shared_cache_dir"))
             run_step2(
                 pipeline_dir,
                 track=args.track,
@@ -1451,6 +1572,23 @@ def main() -> None:
                 multi_speaker=args.multi_speaker,
             )
             record_milestone(pipeline_dir, "stop1_script", "Step 2 脚本转写与合规门禁完成")
+            if args.require_plan_confirm and not is_plan_confirmed(pipeline_dir):
+                tr_data = read_json(pipeline_dir / "02_transcript.json") if (pipeline_dir / "02_transcript.json").is_file() else {}
+                mf_data = read_json(pipeline_dir / "01_manifest.json") if (pipeline_dir / "01_manifest.json").is_file() else {}
+                gaps = detect_script_media_gaps(
+                    tr_data.get("kept_segments") or tr_data.get("segments") or [],
+                    mf_data.get("items") or [],
+                )
+                plan_doc = write_confirm_plan_doc(
+                    pipeline_dir,
+                    style_id=active_style_id,
+                    eta_summary=estimate_task_eta("full_edit", duration_sec=35.0, clip_count=max(1, len(mf_data.get("items") or []))),
+                    media_gaps=gaps,
+                )
+                prog_card = render_progress_card(pipeline_dir, track=args.track, write_files=True)
+                print(f"[GATE] 严格方案确认门禁已生效：请先审阅 {plan_doc} 并执行 workflow_guard.py confirm-plan 后再正式开剪。")
+                print("\n" + prog_card["markdown_card"])
+                sys.exit(3)
             run_step3(
                 pipeline_dir,
                 track=args.track,
@@ -1463,7 +1601,7 @@ def main() -> None:
             if not (pipeline_dir / "01_manifest.json").exists():
                 eff_raw = _ensure_effective_raw_dir()
                 _run_inventory_if_needed(eff_raw)
-                run_step1([eff_raw], pipeline_dir)
+                run_step1([eff_raw], pipeline_dir, shared_cache_dir=ws.get("shared_cache_dir"))
             else:
                 _ensure_reedit_dependencies(pipeline_dir, track=args.track, bgm_p=bgm_p, pause_sec=args.pause_sec, account_profile=account_profile)
             run_step2(
@@ -1515,6 +1653,9 @@ def main() -> None:
             hook_variants=args.hook_variants,
             ws=ws,
             sync_window=args.sync_window,
+            keep_edl=args.keep_edl,
+            no_flower_text=args.no_flower_text,
+            agent=args.agent,
         )
 
     if lock_files:

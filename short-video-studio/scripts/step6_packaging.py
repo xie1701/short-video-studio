@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -56,16 +57,79 @@ def _default_cc0_sfx(role: str) -> Path:
     """全仓统一 CC0 真录物理音效兜底（彻底淘汰正弦波合成电子音）。"""
     vibe_sfx = ASSETS_DIR / "sound_vibe" / "sfx"
     role_map = {
-        "transition": vibe_sfx / "style_14_transition.wav",
-        "accent": vibe_sfx / "style_14_accent.wav",
-        "ui": vibe_sfx / "style_14_ui.wav",
+        "transition": vibe_sfx / "style_01_transition.wav",
+        "accent": vibe_sfx / "style_01_accent.wav",
+        "ui": vibe_sfx / "style_01_ui.wav",
         "receipt": vibe_sfx / "style_15_receipt.wav",
     }
-    cand = role_map.get(role, vibe_sfx / "style_14_ui.wav")
+    cand = role_map.get(role, vibe_sfx / "style_01_ui.wav")
     if cand.is_file():
         return cand
     any_wav = next(iter(sorted(vibe_sfx.glob("*.wav"))), None) if vibe_sfx.is_dir() else None
     return any_wav or cand
+
+
+_FLOWER_FILLER_PREFIXES = (
+    "介绍一下", "给大家介绍", "我介绍一下", "我觉得", "其实", "一个", "因为", "所以",
+    "可以", "就是", "然后", "那么", "这个", "那个", "大家看", "你看", "你们看",
+    "今天", "现在", "咱们", "我们", "这里", "这边", "还有", "而且", "但是", "不过",
+)
+_FLOWER_BAN_EXACT = {"介绍", "一下", "一个", "这个", "那个", "觉得", "可以", "就是", "然后", "因为", "所以", "非常", "真的", "很"}
+
+
+def _extract_clean_flower_phrase(
+    sent: Dict[str, Any],
+    raw_pain_kws: Optional[List[str]] = None,
+    max_len: int = 8,
+) -> str:
+    """
+    高质量花字短语提炼（根治实测 #4“介绍一下/我觉得”半词碎片）：
+    1. 优先命中一手原始痛点词；
+    2. 其次提取完整「数字+单位+核心名词」短语；
+    3. 其次从句子 keywords 中跳过虚词/半词；
+    4. 最后剥离口语虚词前缀，取完整语义短语，绝不硬截残词。
+    """
+    txt = str(sent.get("text") or "").strip()
+    clean_txt = re.sub(r"[，。！？、；：“”\"'（）()【】\[\]\s]+", "", txt)
+    for pk in (raw_pain_kws or []):
+        pks = str(pk).strip()
+        if 2 <= len(pks) <= max_len and pks in txt and pks not in _FLOWER_BAN_EXACT:
+            return pks
+
+    # 提取数字+量词/核心实体短语（如 25张卡座、8个包房、99元双人餐）
+    num_m = re.search(r"([零一二两三四五六七八九十百千万\d]+(?:\.\d+)?[个张间家次倍元块万亿%％折平米天小时分钟秒][\u4e00-\u9fff]{0,4})", clean_txt)
+    if num_m and 2 <= len(num_m.group(1)) <= max_len:
+        return num_m.group(1)
+
+    for kw in (sent.get("keywords") or []):
+        ks = str(kw).strip()
+        if len(ks) < 2 or ks in _FLOWER_BAN_EXACT:
+            continue
+        if any(ks.startswith(p) for p in _FLOWER_FILLER_PREFIXES):
+            continue
+        if len(ks) <= max_len:
+            return ks
+
+    # 剥离常见口语虚词开头后按自然子句提取
+    clauses = [c.strip() for c in re.split(r"[，。！？、；：,\.!\?;:]+", txt) if c.strip()]
+    best_clause = ""
+    for cl in clauses:
+        c = cl
+        changed = True
+        while changed:
+            changed = False
+            for pref in _FLOWER_FILLER_PREFIXES:
+                if c.startswith(pref) and len(c) > len(pref) + 1:
+                    c = c[len(pref):].lstrip("的了呢啊呀吧")
+                    changed = True
+        c = c.strip("的了呢啊呀吧")
+        if 2 <= len(c) <= max_len:
+            return c
+        if len(c) > len(best_clause):
+            best_clause = c
+    if best_clause:
+        return best_clause[:max_len]
+    return clean_txt[:max_len] or "核心亮点"
 
 
 def rotate_sfx(candidates: List[Path], last_used_name: Optional[str]) -> Path:
@@ -129,8 +193,8 @@ def _avoid_faces_for_pkg(bbox: Dict[str, int], faces_px: List[Dict[str, Any]]) -
         return cand
     best = cand
     best_iou = cur_iou
-    for try_y in (176, 224, 280, 340, 460, 820, 920, 1020):
-        if try_y + cand["h"] > 1165:
+    for try_y in (176, 224, 280, 340, 460, 780, 880, 960):
+        if try_y + cand["h"] > 1120:
             continue
         alt = {"x": cand["x"], "y": int(try_y), "w": cand["w"], "h": cand["h"]}
         ok, _ = check_bbox_in_safe_zone(alt)
@@ -162,11 +226,15 @@ def run_step6(
     pipeline_dir: Path,
     fps: int = DEFAULT_FPS,
     style_id: str | None = None,
+    no_flower_text: bool = False,
+    keep_manual_texts: bool = False,
 ) -> Dict[str, Any]:
     audio_events = read_json(pipeline_dir / "03_audio_events.json")
     edl = read_json(pipeline_dir / "04_edl.json")
     man_p = pipeline_dir / "01_manifest.json"
     manifest = read_json(man_p) if man_p.exists() else {"items": []}
+    prev_pkg_p = pipeline_dir / "06_packaging.json"
+    prev_visuals = (read_json(prev_pkg_p).get("visual_elements") or []) if (keep_manual_texts and prev_pkg_p.is_file()) else []
 
     faces_by_mp4: Dict[str, List[Dict[str, int]]] = {}
     for it in manifest.get("items", []):
@@ -177,7 +245,7 @@ def run_step6(
 
     if not style_id:
         style_id = edl.get("style_id") or load_style_applied(pipeline_dir)
-    style_id = str(style_id or "style_14")
+    style_id = str(style_id or "style_01")
 
     vibe_prof = None
     try:
@@ -439,206 +507,227 @@ def run_step6(
     giant_count_target = int(pkg_tech.get("giant_impact_count") or 2)
     use_multi_tag = bool(pkg_tech.get("multi_tag_burst") or flower_spec.get("multi_tag_burst"))
 
-    first_sent = audio_events["sentences"][0] if audio_events["sentences"] else {"text": "必看重点", "keywords": []}
-    hook_badge_text = first_sent["keywords"][0] if first_sent.get("keywords") else first_sent["text"][:6]
-    top_ef = min(int(min(4.2, total_dur * 0.45) * fps), int(total_dur * fps))
-    hook_ef = min(int(2.2 * fps), int(total_dur * fps))
-
-    # 1. 若风格启用「顶部常驻标题栏」(如 style_01 / 03 / 06 / 08 / 22 / 24)，严格落在安全区 y=162 (>= SAFE_ZONE.y_min=160)
-    if use_top_bar and total_dur >= 3.2 and not overlaps_code(0, top_ef):
-        top_label = f"本期主题 · {hook_badge_text[:8]}"
-        top_w = _measure_pkg_badge_width(top_label, pkg_font_path, SUBTITLE_SYMMETRIC_MAX_W, target_fs=34, min_w=280)
-        top_bb = {"x": SUBTITLE_CENTER_X - top_w // 2, "y": 162, "w": top_w, "h": 58}
-        ok_top, _ = check_bbox_in_safe_zone(top_bb)
-        visual_elements.append({
-            "id": f"pkg_{len(visual_elements)+1:03d}",
-            "kind": "persistent_top_bar",
-            "overlay_mode": "top_bar",
-            "fg_hex": _safe_readable_fg(flower_spec.get("center_burst_color"), "#FFF589"),
-            "stroke_hex": "#000000",
-            "text_or_asset": top_label,
-            "start_frame": 0,
-            "end_frame": top_ef,
-            "read_hold_sec": round(top_ef / float(fps), 2),
-            "aligned_sfx_or_accent_frame": 0,
-            "alignment_error_frames": 0,
-            "bbox": top_bb,
-            "final_bbox": top_bb,
-            "safe_zone_ok": ok_top,
-            "jianying_anim_name": default_jy_anim,
-            "anim_duration_ms": int(matched_pair.get("anim_duration_ms", 400)),
-            "paired_jianying_sfx": str(matched_pair.get("jianying_sfx_name", "提示音")),
-            "reason": f"{style_id} 顶部常驻主题标语栏",
-        })
-
-    # 2. 开场真·巨字冲击（与顶部常驻标题栏可同屏共存，解除互斥锁！）
-    can_place_opening_giant = (
-        len(visual_elements) < max_visual_budget
-        and (giant_count_target > 0 or is_borderless_flower or not use_top_bar)
-        and not overlaps_code(0, hook_ef)
-        and (hook_ef / float(fps) >= 1.35)
-    )
-    if can_place_opening_giant:
-        hook_label = hook_badge_text[:6]
-        hook_w = min(SUBTITLE_SYMMETRIC_MAX_W, max(360, _measure_pkg_badge_width(hook_label, pkg_font_path, SUBTITLE_SYMMETRIC_MAX_W, target_fs=96, min_w=360)))
-        hook_x = SUBTITLE_CENTER_X - hook_w // 2
-        hook_h = 152 if giant_mode in ("giant_dual_clash", "giant_numeric_trio") else 142
-        init_giant_y = 224 if use_top_bar else 178
-        active_faces_0 = []
-        for c in edl.get("clips", []):
-            if int(c["timeline_in_frame"]) < hook_ef and int(c["timeline_out_frame"]) > 0:
-                active_faces_0.extend(faces_by_mp4.get(str(c.get("media_path", "")), []))
-        hook_bbox = _avoid_faces_for_pkg({"x": hook_x, "y": init_giant_y, "w": hook_w, "h": hook_h}, active_faces_0)
-        if use_top_bar and hook_bbox["y"] < 218:
-            hook_bbox["y"] = 222
-        safe_ok, _ = check_bbox_in_safe_zone(hook_bbox)
-        sec_kw = (first_sent.get("keywords") or [None, None])[1] if len(first_sent.get("keywords") or []) >= 2 else ""
-        visual_elements.append({
-            "id": f"pkg_{len(visual_elements)+1:03d}",
-            "kind": "center_burst_title",
-            "giant_mode": giant_mode,
-            "font_size_px": giant_fs,
-            "tag_label": giant_tag,
-            "accent_hex": giant_accent,
-            "subtext": str(sec_kw or giant_tag),
-            "overlay_mode": "borderless",
-            "fg_hex": giant_fg,
-            "stroke_hex": giant_stroke,
-            "text_or_asset": hook_label,
-            "start_frame": 0,
-            "end_frame": hook_ef,
-            "read_hold_sec": round(hook_ef / float(fps), 2),
-            "aligned_sfx_or_accent_frame": 0,
-            "alignment_error_frames": 0,
-            "bbox": hook_bbox,
-            "final_bbox": hook_bbox,
-            "safe_zone_ok": safe_ok,
-            "jianying_anim_name": default_jy_anim,
-            "anim_duration_ms": int(matched_pair.get("anim_duration_ms", 400)),
-            "paired_jianying_sfx": str(matched_pair.get("jianying_sfx_name", "“呼”的转场音效")),
-            "reason": f"{style_id} 开场 {giant_fs}px 砸屏巨字冲击 ({giant_mode})",
-        })
-    max_pkg_w = SUBTITLE_SYMMETRIC_MAX_W
-
     raw_intel_p = pipeline_dir / "00_raw_intel.json"
     raw_pain_kws = [str(k) for k in ((read_json(raw_intel_p).get("pain_keywords") or []) if raw_intel_p.is_file() else []) if str(k).strip()]
 
-    last_vis_end = hook_ef + int(2.2 * fps)
-    last_sent = audio_events["sentences"][-1] if audio_events["sentences"] else None
-    stamp_zone_ys = (280, 860, 230, 930)
-    stamp_seq = 0
-    has_end_cta = False
-    for cue in sfx_cues:
-        if len(visual_elements) >= max_visual_budget:
-            break
-        sf = int(cue["frame"])
-        if sf < last_vis_end or sf > int((total_dur - 1.35) * fps):
-            continue
-        sent = next((s for s in audio_events["sentences"] if s["start_frame"] <= sf <= s["end_frame"] + 15), first_sent)
-        if sent.get("emotion_or_info") not in ("hook", "info", "twist", "persona", "cta"):
-            continue
+    first_sent = audio_events["sentences"][0] if audio_events["sentences"] else {"text": "核心亮点", "keywords": []}
+    hook_badge_text = _extract_clean_flower_phrase(first_sent, raw_pain_kws=raw_pain_kws, max_len=8)
+    top_ef = min(int(min(4.2, total_dur * 0.45) * fps), int(total_dur * fps))
+    hook_ef = min(int(2.2 * fps), int(total_dur * fps))
 
-        # 优先采用与本句重合的客户真实痛点词做花字，否则用句子重点词
-        sent_txt = str(sent.get("text") or "")
-        matched_pain = next((pk for pk in raw_pain_kws if pk in sent_txt), None)
-        kw_label = matched_pain or (sent["keywords"][0] if sent.get("keywords") else sent_txt[:8])
-        est_hold = estimate_read_hold_sec(kw_label, min_sec=2.0, max_sec=3.0)
-        ef = min(int(total_dur * fps), sf + int(math.ceil(est_hold * fps)))
-        if (ef - sf) / float(fps) < 1.35 or overlaps_code(sf, ef):
-            continue
-        is_end_cta = bool(is_borderless_flower and last_sent and sent.get("id") == last_sent.get("id"))
-        is_quote_item = bool(use_quote_card and not is_end_cta and stamp_seq == 0)
-        use_centered_box = True
-        box_max_w = SUBTITLE_SYMMETRIC_MAX_W
-        target_fs = 64 if is_quote_item else (68 if is_borderless_flower else 48)
-        box_w = min(box_max_w, max(320 if is_quote_item else 260, _measure_pkg_badge_width(kw_label, pkg_font_path, box_max_w, target_fs=target_fs, min_w=320 if is_quote_item else 260)))
-        box_x = SUBTITLE_CENTER_X - box_w // 2
-        box_h = 136 if is_end_cta else (132 if is_quote_item else (112 if is_borderless_flower else 96))
-        init_y = 920 if is_end_cta else (840 if is_quote_item else stamp_zone_ys[stamp_seq % len(stamp_zone_ys)])
-        active_faces = []
-        for c in edl.get("clips", []):
-            if int(c["timeline_in_frame"]) < ef and int(c["timeline_out_frame"]) > sf:
-                active_faces.extend(faces_by_mp4.get(str(c.get("media_path", "")), []))
-        final_bbox = _avoid_faces_for_pkg({"x": box_x, "y": init_y, "w": box_w, "h": box_h}, active_faces)
-        ok, _ = check_bbox_in_safe_zone(final_bbox)
-        elem_kind = (
-            "end_card_cta" if is_end_cta else
-            ("quote_citation_card" if is_quote_item else
-             ("stamp_tag" if is_borderless_flower else "flower_text"))
-        )
-        fg_key = "end_card_color" if is_end_cta else ("flank_color" if is_quote_item else "stamp_color")
-        fg_default = "#FFE28A" if (is_end_cta or is_quote_item) else "#FFF589"
-        burst_tags = [str(k)[:5] for k in (sent.get("keywords") or []) if str(k).strip()][:3] if use_multi_tag else []
-        elem_obj: Dict[str, Any] = {
-            "id": f"pkg_{len(visual_elements)+1:03d}",
-            "kind": elem_kind,
-            "overlay_mode": "borderless" if is_borderless_flower else ("focus_blur" if sent.get("emotion_or_info") == "twist" else "corner"),
-            "fg_hex": _safe_readable_fg(flower_spec.get(fg_key), fg_default),
-            "accent_hex": giant_accent,
-            "stroke_hex": str(flower_spec.get("stroke_color") or "#000000"),
-            "text_or_asset": f"“{kw_label}”" if is_quote_item and not kw_label.startswith("“") else kw_label,
-            "subtext": f"—— {giant_tag} · 核心实证" if is_quote_item else "",
-            "burst_tags": burst_tags,
-            "start_frame": sf,
-            "end_frame": ef,
-            "read_hold_sec": round((ef - sf) / float(fps), 2),
-            "aligned_sfx_or_accent_frame": sf,
-            "alignment_error_frames": 0,
-            "bbox": final_bbox,
-            "final_bbox": final_bbox,
-            "safe_zone_ok": ok,
-            "jianying_anim_name": default_jy_anim,
-            "anim_duration_ms": int(matched_pair.get("anim_duration_ms", 400)),
-            "paired_jianying_sfx": str(matched_pair.get("jianying_sfx_name", "“呼”的转场音效")),
-            "reason": cue["reason"],
-        }
-        if is_end_cta:
-            elem_obj["subtext"] = "评论区聊聊你的看法"
-            has_end_cta = True
-        else:
-            stamp_seq += 1
-        visual_elements.append(elem_obj)
-        last_vis_end = ef + int(2.5 * fps)
-
-    # 保障片尾互动大字在无框风格下不会因末句缺少独立 SFX cue 而丢失
-    if is_borderless_flower and not has_end_cta and last_sent and len(visual_elements) < max_visual_budget:
-        ls_sf = int(last_sent.get("start_frame", 0))
-        ls_ef = min(int(total_dur * fps), max(ls_sf + int(1.45 * fps), int(last_sent.get("end_frame", ls_sf))))
-        if ls_sf >= last_vis_end and (ls_ef - ls_sf) / float(fps) >= 1.40 and not overlaps_code(ls_sf, ls_ef):
-            cta_label = (last_sent["keywords"][0] if last_sent.get("keywords") else str(last_sent.get("text", ""))[:8]) or "欢迎评论聊聊"
-            bw = _measure_pkg_badge_width(cta_label, pkg_font_path, max_pkg_w, target_fs=54, min_w=240)
-            bx = SUBTITLE_CENTER_X - bw // 2
-            active_f = []
-            for c in edl.get("clips", []):
-                if int(c["timeline_in_frame"]) < ls_ef and int(c["timeline_out_frame"]) > ls_sf:
-                    active_f.extend(faces_by_mp4.get(str(c.get("media_path", "")), []))
-            cta_bb = _avoid_faces_for_pkg({"x": bx, "y": 920, "w": bw, "h": 128}, active_f)
-            ok_cta, _ = check_bbox_in_safe_zone(cta_bb)
+    if no_flower_text:
+        visual_elements = []
+    elif keep_manual_texts and prev_visuals:
+        # --keep-edl 换风格时：完整保留已有花字文案与起止帧，只按新风格更新配色与视觉参数
+        for idx_p, pe in enumerate(prev_visuals, start=1):
+            ne = dict(pe)
+            ne["id"] = f"pkg_{idx_p:03d}"
+            ne["fg_hex"] = giant_fg if ne.get("kind") == "center_burst_title" else _safe_readable_fg(flower_spec.get("stamp_color"), "#FFF589")
+            ne["accent_hex"] = giant_accent
+            ne["stroke_hex"] = giant_stroke
+            ne["jianying_anim_name"] = default_jy_anim
+            fb = dict(ne.get("final_bbox") or ne.get("bbox") or {"x": 220, "y": 240, "w": 480, "h": 110})
+            if fb["y"] + fb["h"] > 1120:
+                fb["y"] = max(162, 1120 - fb["h"])
+            ne["bbox"] = fb
+            ne["final_bbox"] = fb
+            visual_elements.append(ne)
+    else:
+        # 1. 若风格启用「顶部常驻标题栏」(如 style_05/06/08/09/12/14/22)，严格落在安全区 y=162
+        if use_top_bar and total_dur >= 3.2 and not overlaps_code(0, top_ef):
+            top_label = f"{hook_badge_text[:10]}"
+            top_w = _measure_pkg_badge_width(top_label, pkg_font_path, SUBTITLE_SYMMETRIC_MAX_W, target_fs=34, min_w=280)
+            top_bb = {"x": SUBTITLE_CENTER_X - top_w // 2, "y": 162, "w": top_w, "h": 58}
+            ok_top, _ = check_bbox_in_safe_zone(top_bb)
             visual_elements.append({
                 "id": f"pkg_{len(visual_elements)+1:03d}",
-                "kind": "end_card_cta",
-                "overlay_mode": "borderless",
-                "fg_hex": str(flower_spec.get("end_card_color") or "#FFE28A"),
-                "stroke_hex": str(flower_spec.get("stroke_color") or "#000000"),
-                "text_or_asset": cta_label,
-                "subtext": "评论区聊聊你的看法",
-                "start_frame": ls_sf,
-                "end_frame": ls_ef,
-                "read_hold_sec": round((ls_ef - ls_sf) / float(fps), 2),
-                "aligned_sfx_or_accent_frame": ls_sf,
+                "kind": "persistent_top_bar",
+                "overlay_mode": "top_bar",
+                "fg_hex": _safe_readable_fg(flower_spec.get("center_burst_color"), "#FFF589"),
+                "stroke_hex": "#000000",
+                "text_or_asset": top_label,
+                "start_frame": 0,
+                "end_frame": top_ef,
+                "read_hold_sec": round(top_ef / float(fps), 2),
+                "aligned_sfx_or_accent_frame": 0,
                 "alignment_error_frames": 0,
-                "bbox": cta_bb,
-                "final_bbox": cta_bb,
-                "safe_zone_ok": ok_cta,
+                "bbox": top_bb,
+                "final_bbox": top_bb,
+                "safe_zone_ok": ok_top,
+                "jianying_anim_name": default_jy_anim,
+                "anim_duration_ms": int(matched_pair.get("anim_duration_ms", 400)),
+                "paired_jianying_sfx": str(matched_pair.get("jianying_sfx_name", "提示音")),
+                "reason": f"{style_id} 顶部常驻主题标语栏",
+            })
+
+        # 2. 开场重点大字冲击
+        can_place_opening_giant = (
+            len(visual_elements) < max_visual_budget
+            and (giant_count_target > 0 or is_borderless_flower or not use_top_bar)
+            and not overlaps_code(0, hook_ef)
+            and (hook_ef / float(fps) >= 1.35)
+        )
+        if can_place_opening_giant:
+            hook_label = hook_badge_text[:8]
+            hook_w = min(SUBTITLE_SYMMETRIC_MAX_W, max(360, _measure_pkg_badge_width(hook_label, pkg_font_path, SUBTITLE_SYMMETRIC_MAX_W, target_fs=96, min_w=360)))
+            hook_x = SUBTITLE_CENTER_X - hook_w // 2
+            hook_h = 152 if giant_mode in ("giant_dual_clash", "giant_numeric_trio") else 142
+            init_giant_y = 224 if use_top_bar else 178
+            active_faces_0 = []
+            for c in edl.get("clips", []):
+                if int(c["timeline_in_frame"]) < hook_ef and int(c["timeline_out_frame"]) > 0:
+                    active_faces_0.extend(faces_by_mp4.get(str(c.get("media_path", "")), []))
+            hook_bbox = _avoid_faces_for_pkg({"x": hook_x, "y": init_giant_y, "w": hook_w, "h": hook_h}, active_faces_0)
+            if use_top_bar and hook_bbox["y"] < 218:
+                hook_bbox["y"] = 222
+            if hook_bbox["y"] + hook_bbox["h"] > 1120:
+                hook_bbox["y"] = max(162, 1120 - hook_bbox["h"])
+            safe_ok, _ = check_bbox_in_safe_zone(hook_bbox)
+            sec_kw = (first_sent.get("keywords") or [None, None])[1] if len(first_sent.get("keywords") or []) >= 2 else ""
+            visual_elements.append({
+                "id": f"pkg_{len(visual_elements)+1:03d}",
+                "kind": "center_burst_title",
+                "giant_mode": giant_mode,
+                "font_size_px": giant_fs,
+                "tag_label": giant_tag,
+                "accent_hex": giant_accent,
+                "subtext": str(sec_kw or ""),
+                "overlay_mode": "borderless",
+                "fg_hex": giant_fg,
+                "stroke_hex": giant_stroke,
+                "text_or_asset": hook_label,
+                "start_frame": 0,
+                "end_frame": hook_ef,
+                "read_hold_sec": round(hook_ef / float(fps), 2),
+                "aligned_sfx_or_accent_frame": 0,
+                "alignment_error_frames": 0,
+                "bbox": hook_bbox,
+                "final_bbox": hook_bbox,
+                "safe_zone_ok": safe_ok,
                 "jianying_anim_name": default_jy_anim,
                 "anim_duration_ms": int(matched_pair.get("anim_duration_ms", 400)),
                 "paired_jianying_sfx": str(matched_pair.get("jianying_sfx_name", "“呼”的转场音效")),
-                "reason": "片尾收束互动召唤大字（绑定末句起声帧）",
+                "reason": f"{style_id} 开场 {giant_fs}px 砸屏巨字冲击 ({giant_mode})",
             })
+        max_pkg_w = SUBTITLE_SYMMETRIC_MAX_W
+
+        last_vis_end = hook_ef + int(2.2 * fps)
+        last_sent = audio_events["sentences"][-1] if audio_events["sentences"] else None
+        stamp_zone_ys = (280, 820, 230, 890)
+        stamp_seq = 0
+        has_end_cta = False
+        for cue in sfx_cues:
+            if len(visual_elements) >= max_visual_budget:
+                break
+            sf = int(cue["frame"])
+            if sf < last_vis_end or sf > int((total_dur - 1.35) * fps):
+                continue
+            sent = next((s for s in audio_events["sentences"] if s["start_frame"] <= sf <= s["end_frame"] + 15), first_sent)
+            if sent.get("emotion_or_info") not in ("hook", "info", "twist", "persona", "cta"):
+                continue
+
+            kw_label = _extract_clean_flower_phrase(sent, raw_pain_kws=raw_pain_kws, max_len=8)
+            est_hold = estimate_read_hold_sec(kw_label, min_sec=2.0, max_sec=3.0)
+            ef = min(int(total_dur * fps), sf + int(math.ceil(est_hold * fps)))
+            if (ef - sf) / float(fps) < 1.35 or overlaps_code(sf, ef):
+                continue
+            is_end_cta = bool(is_borderless_flower and last_sent and sent.get("id") == last_sent.get("id"))
+            is_quote_item = bool(use_quote_card and not is_end_cta and stamp_seq == 0)
+            box_max_w = SUBTITLE_SYMMETRIC_MAX_W
+            target_fs = 64 if is_quote_item else (68 if is_borderless_flower else 48)
+            box_w = min(box_max_w, max(320 if is_quote_item else 260, _measure_pkg_badge_width(kw_label, pkg_font_path, box_max_w, target_fs=target_fs, min_w=320 if is_quote_item else 260)))
+            box_x = SUBTITLE_CENTER_X - box_w // 2
+            box_h = 136 if is_end_cta else (132 if is_quote_item else (112 if is_borderless_flower else 96))
+            init_y = 890 if is_end_cta else (820 if is_quote_item else stamp_zone_ys[stamp_seq % len(stamp_zone_ys)])
+            active_faces = []
+            for c in edl.get("clips", []):
+                if int(c["timeline_in_frame"]) < ef and int(c["timeline_out_frame"]) > sf:
+                    active_faces.extend(faces_by_mp4.get(str(c.get("media_path", "")), []))
+            final_bbox = _avoid_faces_for_pkg({"x": box_x, "y": init_y, "w": box_w, "h": box_h}, active_faces)
+            if final_bbox["y"] + final_bbox["h"] > 1120:
+                final_bbox["y"] = max(162, 1120 - final_bbox["h"])
+            ok, _ = check_bbox_in_safe_zone(final_bbox)
+            elem_kind = (
+                "end_card_cta" if is_end_cta else
+                ("quote_citation_card" if is_quote_item else
+                 ("stamp_tag" if is_borderless_flower else "flower_text"))
+            )
+            fg_key = "end_card_color" if is_end_cta else ("flank_color" if is_quote_item else "stamp_color")
+            fg_default = "#FFE28A" if (is_end_cta or is_quote_item) else "#FFF589"
+            burst_tags = [str(k)[:5] for k in (sent.get("keywords") or []) if str(k).strip()][:3] if use_multi_tag else []
+            elem_obj: Dict[str, Any] = {
+                "id": f"pkg_{len(visual_elements)+1:03d}",
+                "kind": elem_kind,
+                "overlay_mode": "borderless" if is_borderless_flower else ("focus_blur" if sent.get("emotion_or_info") == "twist" else "corner"),
+                "fg_hex": _safe_readable_fg(flower_spec.get(fg_key), fg_default),
+                "accent_hex": giant_accent,
+                "stroke_hex": str(flower_spec.get("stroke_color") or "#000000"),
+                "text_or_asset": f"“{kw_label}”" if is_quote_item and not kw_label.startswith("“") else kw_label,
+                "subtext": f"—— {giant_tag}" if is_quote_item else "",
+                "burst_tags": burst_tags,
+                "start_frame": sf,
+                "end_frame": ef,
+                "read_hold_sec": round((ef - sf) / float(fps), 2),
+                "aligned_sfx_or_accent_frame": sf,
+                "alignment_error_frames": 0,
+                "bbox": final_bbox,
+                "final_bbox": final_bbox,
+                "safe_zone_ok": ok,
+                "jianying_anim_name": default_jy_anim,
+                "anim_duration_ms": int(matched_pair.get("anim_duration_ms", 400)),
+                "paired_jianying_sfx": str(matched_pair.get("jianying_sfx_name", "“呼”的转场音效")),
+                "reason": cue["reason"],
+            }
+            if is_end_cta:
+                elem_obj["subtext"] = "评论区聊聊你的看法"
+                has_end_cta = True
+            else:
+                stamp_seq += 1
+            visual_elements.append(elem_obj)
+            last_vis_end = ef + int(2.5 * fps)
+
+        # 保障片尾互动大字在无框风格下不会因末句缺少独立 SFX cue 而丢失
+        if is_borderless_flower and not has_end_cta and last_sent and len(visual_elements) < max_visual_budget:
+            ls_sf = int(last_sent.get("start_frame", 0))
+            ls_ef = min(int(total_dur * fps), max(ls_sf + int(1.45 * fps), int(last_sent.get("end_frame", ls_sf))))
+            if ls_sf >= last_vis_end and (ls_ef - ls_sf) / float(fps) >= 1.40 and not overlaps_code(ls_sf, ls_ef):
+                cta_label = _extract_clean_flower_phrase(last_sent, raw_pain_kws=raw_pain_kws, max_len=8) or "欢迎评论聊聊"
+                bw = _measure_pkg_badge_width(cta_label, pkg_font_path, max_pkg_w, target_fs=54, min_w=240)
+                bx = SUBTITLE_CENTER_X - bw // 2
+                active_f = []
+                for c in edl.get("clips", []):
+                    if int(c["timeline_in_frame"]) < ls_ef and int(c["timeline_out_frame"]) > ls_sf:
+                        active_f.extend(faces_by_mp4.get(str(c.get("media_path", "")), []))
+                cta_bb = _avoid_faces_for_pkg({"x": bx, "y": 890, "w": bw, "h": 128}, active_f)
+                if cta_bb["y"] + cta_bb["h"] > 1120:
+                    cta_bb["y"] = max(162, 1120 - cta_bb["h"])
+                ok_cta, _ = check_bbox_in_safe_zone(cta_bb)
+                visual_elements.append({
+                    "id": f"pkg_{len(visual_elements)+1:03d}",
+                    "kind": "end_card_cta",
+                    "overlay_mode": "borderless",
+                    "fg_hex": str(flower_spec.get("end_card_color") or "#FFE28A"),
+                    "stroke_hex": str(flower_spec.get("stroke_color") or "#000000"),
+                    "text_or_asset": cta_label,
+                    "subtext": "评论区聊聊你的看法",
+                    "start_frame": ls_sf,
+                    "end_frame": ls_ef,
+                    "read_hold_sec": round((ls_ef - ls_sf) / float(fps), 2),
+                    "aligned_sfx_or_accent_frame": ls_sf,
+                    "alignment_error_frames": 0,
+                    "bbox": cta_bb,
+                    "final_bbox": cta_bb,
+                    "safe_zone_ok": ok_cta,
+                    "jianying_anim_name": default_jy_anim,
+                    "anim_duration_ms": int(matched_pair.get("anim_duration_ms", 400)),
+                    "paired_jianying_sfx": str(matched_pair.get("jianying_sfx_name", "“呼”的转场音效")),
+                    "reason": "片尾收束互动召唤大字（绑定末句起声帧）",
+                })
 
     packaging = {
         "step": "06_packaging",
         "style_id": style_id,
+        "no_flower_text": bool(no_flower_text),
         "sfx_track_wav": str(sfx_wav_path.resolve()),
         "budget": {
             "max_visual_elements": max_visual_budget,
@@ -662,8 +751,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Step 6: 音效先行与±1帧对齐视觉包装")
     parser.add_argument("--pipeline-dir", required=True)
     parser.add_argument("--style-id", help="绑定风格谱 ID")
+    parser.add_argument("--no-flower-text", action="store_true", help="关闭全部自动花字/巨字，仅保留字幕与音效")
+    parser.add_argument("--keep-manual-texts", action="store_true", help="换风格时保留已有人工编辑的花字文案")
     args = parser.parse_args()
-    run_step6(Path(args.pipeline_dir), style_id=args.style_id)
+    run_step6(
+        Path(args.pipeline_dir),
+        style_id=args.style_id,
+        no_flower_text=args.no_flower_text,
+        keep_manual_texts=args.keep_manual_texts,
+    )
 
 
 if __name__ == "__main__":

@@ -76,11 +76,209 @@ def estimate_single_line_width_px(text: str, font_size: int) -> float:
     return w
 
 
+def build_content_scenes_from_lines(
+    compiled_payload: Dict[str, Any],
+    storyboard_scenes: Optional[List[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    内容驱动分幕编译器（彻底取代无关蓝色星球占位）：
+    根据每幕具体台词中的数字、价格、百分比、对比词、流程词、菜单/界面词或趋势词，
+    编译专属的 8 类数据可视化场景（big_stat / bar_compare / split_versus / flow_mechanism /
+    proportion_ring / timeline_curve / mockup_card / quote_poster），避免连续两幕重复组件。
+    若调用方传入定制 storyboard_scenes，则原样采用并自动补齐起止时间。
+    """
+    total_sec = float(compiled_payload.get("total_sec") or 12.0)
+    lines = list(compiled_payload.get("lines") or [])
+    if storyboard_scenes:
+        out_custom: List[Dict[str, Any]] = []
+        n_c = len(storyboard_scenes)
+        for i, sc in enumerate(storyboard_scenes):
+            st = float(sc.get("start", round(total_sec * i / max(1, n_c), 3)))
+            en = float(sc.get("end", round(total_sec * (i + 1) / max(1, n_c), 3)))
+            out_custom.append({**sc, "id": str(sc.get("id") or f"sc_{i+1:02d}"), "start": st, "end": en})
+        return out_custom
+
+    if not lines:
+        return [{
+            "id": "sc_01",
+            "visual_type": "quote_poster",
+            "title": str(compiled_payload.get("title") or "知识拆解"),
+            "start": 0.0,
+            "end": total_sec,
+            "data": {"headline": str(compiled_payload.get("title") or "知识拆解"), "subline": str(compiled_payload.get("question") or "")},
+        }]
+
+    scenes: List[Dict[str, Any]] = []
+    last_vtype = ""
+    title_str = str(compiled_payload.get("title") or "知识拆解")
+    question_str = str(compiled_payload.get("question") or "")
+
+    for idx, ln in enumerate(lines):
+        st = float(ln.get("start", 0.0))
+        en = float(lines[idx + 1]["start"]) if idx + 1 < len(lines) else total_sec
+        if en <= st + 0.15:
+            en = max(st + 1.0, float(ln.get("end", st + 1.5)))
+        raw_txt = re.sub(r"[\[\]]", "", str(ln.get("text") or "")).strip()
+
+        if ln.get("card"):
+            scenes.append({
+                "id": str(ln.get("id") or f"sc_{idx+1:02d}"),
+                "visual_type": "quote_poster",
+                "title": raw_txt or title_str,
+                "start": round(st, 3),
+                "end": round(en, 3),
+                "data": {"headline": raw_txt or title_str, "subline": question_str, "en": str(compiled_payload.get("subtitle_en") or "VISUAL EXPLAINER")},
+            })
+            last_vtype = "quote_poster"
+            continue
+
+        # 提取句中的全部数字+单位（用于价格对比/占比/巨型数字卡）
+        nums = re.findall(r"(\d+(?:\.\d+)?)\s*(%|％|元|块|块钱|倍|万|亿|折|分钟|小时|天|ml|毫升|克|g|斤)?", raw_txt)
+        nums = [(v, u) for v, u in nums if v]
+
+        has_menu = any(w in raw_txt for w in ("大杯", "中杯", "小杯", "菜单", "定价", "售价", "套餐", "买单", "货架", "规格", "价目"))
+        has_pct = any(u in ("%", "％") for _, u in nums) or any(w in raw_txt for w in ("占比", "毛利", "利润率", "比例", "成本占"))
+        has_vs = any(w in raw_txt for w in ("对比", "反而", "其实", "真相", "以为", "不是", "而是", "差距", "便宜", "划算"))
+        has_flow = any(w in raw_txt for w in ("第一", "第二", "第三", "步骤", "先", "再", "最后", "机制", "原理", "本质", "流程", "因为"))
+        has_trend = any(w in raw_txt for w in ("增长", "翻倍", "飙升", "暴涨", "下降", "趋势", "越来越", "长期", "曲线", "复利"))
+
+        vtype = "flow_mechanism"
+        data: Dict[str, Any] = {}
+
+        if has_menu and last_vtype != "mockup_card":
+            vtype = "mockup_card"
+            # 提取真实价格或基于句意构造价目表
+            price_nums = [float(v) for v, u in nums if u in ("元", "块", "块钱", "")]
+            if len(price_nums) >= 2:
+                p1, p2 = min(price_nums[:2]), max(price_nums[:2])
+                diff = round(p2 - p1, 1)
+                data = {
+                    "header": title_str[:12],
+                    "items": [
+                        {"name": "常规中杯", "price": f"¥{p1:g}", "tag": "锚点参照规格"},
+                        {"name": "升级大杯", "price": f"¥{p2:g}", "tag": f"仅多加 ¥{diff:g} · 最容易被选", "highlight": True},
+                    ],
+                }
+            elif len(price_nums) == 1 and price_nums[0] <= 10:
+                diff = price_nums[0]
+                base_p = 16
+                data = {
+                    "header": title_str[:12],
+                    "items": [
+                        {"name": "常规中杯", "price": f"¥{base_p}", "tag": "参照锚点"},
+                        {"name": "升级大杯", "price": f"¥{base_p + int(diff)}", "tag": f"只贵 {diff:g} 块 · 引导升级", "highlight": True},
+                    ],
+                }
+            else:
+                data = {
+                    "header": title_str[:12],
+                    "items": [
+                        {"name": "基础规格", "price": "常规档", "tag": "拉高锚点对比"},
+                        {"name": "升级主推", "price": "高毛利", "tag": raw_txt[:14], "highlight": True},
+                    ],
+                }
+        elif len(nums) >= 2 and last_vtype != "bar_compare":
+            vtype = "bar_compare"
+            v1, u1 = float(nums[0][0]), nums[0][1] or ""
+            v2, u2 = float(nums[1][0]), nums[1][1] or u1
+            data = {
+                "kicker": "数值落差对比",
+                "bars": [
+                    {"label": "对照项", "value": max(1.0, v1), "display": f"{v1:g}{u1}", "highlight": False},
+                    {"label": "核心项", "value": max(1.0, v2), "display": f"{v2:g}{u2}", "highlight": True},
+                ],
+                "delta_note": f"差值 {abs(v2 - v1):g}{u2 or u1}" if abs(v2 - v1) > 0 else raw_txt[:12],
+            }
+        elif has_pct and last_vtype != "proportion_ring":
+            vtype = "proportion_ring"
+            pct_val = next((float(v) for v, u in nums if u in ("%", "％")), 72.0)
+            pct_val = max(8.0, min(92.0, pct_val))
+            data = {
+                "kicker": "成本与价值结构",
+                "percent": round(pct_val, 1),
+                "primary_label": raw_txt[:10],
+                "secondary_label": "其余固定/边际成本",
+            }
+        elif nums and last_vtype != "big_stat":
+            vtype = "big_stat"
+            v0, u0 = nums[0]
+            data = {
+                "kicker": "关键数字信号",
+                "numeric_value": float(v0),
+                "unit": u0 or "",
+                "value_text": f"{v0}{u0}",
+                "caption": raw_txt[:18],
+            }
+        elif has_vs and last_vtype != "split_versus":
+            vtype = "split_versus"
+            parts = [p.strip() for p in re.split(r"[，,；;：:]", raw_txt) if p.strip()]
+            l_title = parts[0][:10] if parts else "表面直觉"
+            r_title = parts[1][:10] if len(parts) > 1 else raw_txt[-10:]
+            data = {
+                "left": {"tag": "直觉以为", "title": l_title, "desc": "第一眼看到的价格或表象"},
+                "right": {"tag": "底层逻辑", "title": r_title, "desc": "真正决定成交与利润的关键"},
+            }
+        elif has_trend and last_vtype != "timeline_curve":
+            vtype = "timeline_curve"
+            data = {
+                "kicker": raw_txt[:12],
+                "points": [
+                    {"label": "起步阶段", "y": 0.22},
+                    {"label": "心理锚定", "y": 0.44},
+                    {"label": "升级转化", "y": 0.78},
+                    {"label": "利润放大", "y": 0.94},
+                ],
+            }
+        elif has_flow or last_vtype in ("big_stat", "mockup_card", "split_versus"):
+            vtype = "flow_mechanism"
+            segs = [p.strip() for p in re.split(r"[，,、；;]", raw_txt) if p.strip()]
+            s1 = segs[0][:8] if segs else "设定参照"
+            s2 = segs[1][:8] if len(segs) > 1 else "缩小差价"
+            s3 = segs[2][:8] if len(segs) > 2 else "抬高客单"
+            data = {
+                "kicker": "机制拆解",
+                "steps": [
+                    {"num": "01", "title": s1, "desc": "先给参照锚点"},
+                    {"num": "02", "title": s2, "desc": "放大心理划算感"},
+                    {"num": "03", "title": s3, "desc": "顺理成章成交"},
+                ],
+            }
+        else:
+            vtype = "bar_compare" if last_vtype != "bar_compare" else "split_versus"
+            if vtype == "bar_compare":
+                data = {
+                    "kicker": raw_txt[:12],
+                    "bars": [
+                        {"label": "边际成本增量", "value": 15, "display": "极低增量", "highlight": False},
+                        {"label": "额外利润空间", "value": 85, "display": "纯利放大", "highlight": True},
+                    ],
+                    "delta_note": "几乎全进纯利",
+                }
+            else:
+                data = {
+                    "left": {"tag": "常规视角", "title": raw_txt[:8], "desc": "只看表面单价"},
+                    "right": {"tag": "本质视角", "title": raw_txt[-8:], "desc": "看懂隐藏杠杆"},
+                }
+
+        scenes.append({
+            "id": str(ln.get("id") or f"sc_{idx+1:02d}"),
+            "visual_type": vtype,
+            "title": raw_txt[:14] or title_str,
+            "start": round(st, 3),
+            "end": round(en, 3),
+            "data": data,
+        })
+        last_vtype = vtype
+
+    return scenes
+
+
 def compile_animation_timeline(
     lines_cfg: Dict[str, Any],
     out_timing_js: Optional[Path] = None,
     audio_events_path: Optional[Path] = None,
     ratio: str = "16x9",
+    storyboard_scenes: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """将 lines.json（或绑定 03_audio_events.json）编译为确定性 timing.js 并执行前 5 秒金句与单行宽校验。"""
     start_t = float(lines_cfg.get("start", 0.30))
@@ -189,12 +387,17 @@ def compile_animation_timeline(
         "hook_within_5s": hook_within_5s,
         "warnings": warnings,
     }
+    content_scenes = build_content_scenes_from_lines(payload, storyboard_scenes=storyboard_scenes)
+    payload["content_scenes"] = content_scenes
 
     if out_timing_js is not None:
         out_timing_js.parent.mkdir(parents=True, exist_ok=True)
         js_body = (
             "window.SVS_TIMING = "
             + json.dumps(payload, ensure_ascii=False, indent=2)
+            + ";\n"
+            + "window.SVS_SCENES = "
+            + json.dumps(content_scenes, ensure_ascii=False, indent=2)
             + ";\n"
             + "window.SVS_LINE_MAP = Object.fromEntries((window.SVS_TIMING.lines || []).map((l) => [l.id, l]));\n"
         )
@@ -394,6 +597,13 @@ def init_animation_project(
         src = CANVAS_RUNTIME_DIR / fname
         if src.is_file():
             shutil.copy2(src, stage_dir / fname)
+    custom_js = stage_dir / "custom_scenes.js"
+    if not custom_js.is_file():
+        custom_js.write_text(
+            "// 可选：按具体知识内容注册定制 Canvas 场景渲染器，键名为 scene.id 或 visual_type\n"
+            "window.SVS_CUSTOM_RENDERERS = window.SVS_CUSTOM_RENDERERS || {};\n",
+            encoding="utf-8",
+        )
 
     lines_list = lines_override or [
         {"id": "h1", "text": f"{title[:12]}背后有个[反常识真相]", "hook": True},
@@ -448,10 +658,11 @@ def init_animation_project(
         encoding="utf-8",
     )
 
-    # 注入随仓开源商用字体（SVSSans / SVSSerif），彻底避免无头浏览器静默回退系统字体
+    # 注入随仓开源商用字体（SVSSans / SVSSerif），包含分幕图表全部文字防止子集化缺字
+    scenes_blob = json.dumps(compiled.get("content_scenes") or [], ensure_ascii=False)
     font_info = inject_stage_commercial_fonts(
         stage_dir,
-        extra_text=f"{title}{one_idea}{''.join(str(x.get('text') or '') for x in lines_list)}",
+        extra_text=f"{title}{one_idea}{''.join(str(x.get('text') or '') for x in lines_list)}{scenes_blob}",
     )
 
     brief_md = work_dir / "storyboard.md"

@@ -606,6 +606,50 @@ def _extract_segment_acoustic_sig(y16: np.ndarray, sr: int, s_sec: float, e_sec:
     }
 
 
+def split_segments_at_pauses(
+    segments: List[Dict[str, Any]],
+    min_gap_sec: float = 0.25,
+) -> List[Dict[str, Any]]:
+    """
+    先按词级停顿 (>=0.25s) 或强句末标点将 ASR 合并的长段拆细为独立子句，
+    避免主讲人与画外提问被并入同一段导致平均 RMS 掩盖低电平画外音。
+    """
+    out: List[Dict[str, Any]] = []
+    for seg in segments:
+        words = seg.get("words") or []
+        if seg.get("is_filler") or len(words) < 4:
+            out.append(seg)
+            continue
+        chunks: List[List[Dict[str, Any]]] = []
+        cur: List[Dict[str, Any]] = [words[0]]
+        for prev_w, cur_w in zip(words, words[1:]):
+            gap = float(cur_w.get("start_sec", 0.0)) - float(prev_w.get("end_sec", 0.0))
+            prev_txt = str(prev_w.get("word") or "")
+            if (gap >= min_gap_sec or prev_txt.endswith(("。", "？", "！", "?", "!"))) and len(cur) >= 2:
+                chunks.append(cur)
+                cur = [cur_w]
+            else:
+                cur.append(cur_w)
+        if cur:
+            chunks.append(cur)
+        if len(chunks) <= 1:
+            out.append(seg)
+            continue
+        for c_idx, ch_words in enumerate(chunks, 1):
+            ch_txt = "".join(str(w.get("word") or "") for w in ch_words).strip()
+            if not ch_txt:
+                continue
+            sub_seg = dict(seg)
+            sub_seg["id"] = f"{seg.get('id', 'seg')}_{c_idx}"
+            sub_seg["text"] = ch_txt
+            sub_seg["start_sec"] = round(float(ch_words[0].get("start_sec", seg["start_sec"])), 4)
+            sub_seg["end_sec"] = round(float(ch_words[-1].get("end_sec", seg["end_sec"])), 4)
+            sub_seg["words"] = ch_words
+            sub_seg["keywords"] = extract_auto_keywords(ch_txt)
+            out.append(sub_seg)
+    return out
+
+
 def filter_offcamera_and_retakes(
     segments: List[Dict[str, Any]],
     audio_cache: Optional[Dict[str, Tuple[np.ndarray, int]]] = None,
@@ -635,11 +679,11 @@ def filter_offcamera_and_retakes(
     primary_rms_by_source: Dict[str, float] = {}
     for sa_key, idx_list in by_source.items():
         valid_rms = sorted([sigs[i]["rms_db"] for i in idx_list if sigs[i] and not segments[i].get("is_filler")], reverse=True)
-        if len(valid_rms) < 3:
+        if len(valid_rms) < 2:
             if valid_rms:
                 primary_rms_by_source[sa_key] = valid_rms[0]
             continue
-        top_n = max(2, int(math.ceil(len(valid_rms) * 0.65)))
+        top_n = max(1, int(math.ceil(len(valid_rms) * 0.60)))
         primary_rms = float(np.median(valid_rms[:top_n]))
         primary_rms_by_source[sa_key] = primary_rms
         core_bands = [
@@ -657,7 +701,7 @@ def filter_offcamera_and_retakes(
                 continue
             db_drop = primary_rms - sg["rms_db"]
             spec_dist = float(np.linalg.norm(sg["bands"] - primary_band)) if primary_band is not None else 0.0
-            if (db_drop >= 9.0 and spec_dist >= 0.14) or db_drop >= 12.0:
+            if (db_drop >= 8.0 and spec_dist >= 0.14) or db_drop >= 10.0:
                 seg["is_filler"] = True
                 seg["emotion"] = "filler"
                 seg["drop_reason"] = f"offcamera_speaker (rms_drop={db_drop:.1f}dB, spec_dist={spec_dist:.2f})"
@@ -1548,11 +1592,12 @@ def run_step2(
         source_types: List[str] = []
         total_dur = 0.0
         audio_cache: Dict[str, Tuple[np.ndarray, int]] = {}
+        demoted_brolls: List[str] = []
+        valid_arolls: List[Dict[str, Any]] = []
         for ar in arolls:
             wav_path = Path(ar["normalized_wav"])
             wav_key = str(wav_path.resolve())
             dur_ar = get_wav_duration_sec(wav_path)
-            total_dur += dur_ar
             if wav_key not in audio_cache:
                 audio_cache[wav_key] = load_wav_16k_mono(wav_path)
             y16_ar, sr16_ar = audio_cache[wav_key]
@@ -1573,21 +1618,41 @@ def run_step2(
                         seg["source_audio"] = wav_key
                     ar_segs = asr_segs
                     stype = "asr_whisper"
+                elif asr_segs is not None and len(asr_segs) == 0:
+                    # 实测痛点 #2 根治：带环境声空镜被误判为候选口播但 ASR 识别 0 字 -> 自动降级回 b_roll 不崩流程！
+                    ar["role"] = "b_roll"
+                    demoted_brolls.append(Path(ar["normalized_mp4"]).name)
+                    print(f"[step2] 检测到 {Path(ar['normalized_mp4']).name} 仅含环境音无有效人声，已自动归类为补拍空镜(b_roll)")
+                    continue
                 elif has_user_script:
                     raise RuntimeError(
-                        f"存在 {len(arolls)} 段实拍口播且 faster-whisper 转写{'为空' if asr_segs is not None else '失败'}，无法安全分配单份脚本至多段原声。"
+                        f"存在 {len(arolls)} 段实拍口播且 faster-whisper 不可用，无法安全分配单份脚本至多段原声。"
                     )
                 else:
                     raise RuntimeError(
-                        f"检测到实拍口播原声 ({Path(ar['normalized_mp4']).name})，但 faster-whisper {'未识别到有效语音' if asr_segs is not None else '不可用'}且未传 --script-json。"
-                        "已拒绝静默套用内置示范台词，请补充 --script-json 或运行 check_and_setup.py --install-ml。"
+                        f"检测到实拍口播原声 ({Path(ar['normalized_mp4']).name})，但 faster-whisper 不可用且未传 --script-json。"
+                        "请运行 check_and_setup.py --install-ml 或补充 --script-json。"
                     )
 
+            total_dur += dur_ar
+            valid_arolls.append(ar)
             for seg in ar_segs:
                 seg["source_video_grade"] = vgrade_by_mp4.get(str(ar["normalized_mp4"]), "usable")
             segments.extend(ar_segs)
             source_types.append(stype)
 
+        if demoted_brolls:
+            write_json(mf_path, manifest)
+
+        if not segments:
+            raise RuntimeError(
+                "所有候选视频均未识别出有效说话人声（可能全部为带环境声的实景空镜）。"
+                "请确认口播视频放在名为「口播/」的子目录，或传入 --script-json + --force-tts 走配音纯画面模式。"
+            )
+        arolls = valid_arolls
+
+        # 实测痛点 #3 根治：先按静音停顿拆细被 ASR 合并的长句，再独立测每子句 RMS 剔除画外导演/提问声
+        segments = split_segments_at_pauses(segments, min_gap_sec=0.25)
         for gi, seg in enumerate(segments, start=1):
             seg["id"] = f"seg_{gi:03d}"
 

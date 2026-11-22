@@ -26,11 +26,183 @@ from typing import Any, Dict, List, Optional, Tuple
 SKILL_ROOT = Path(__file__).resolve().parent.parent
 ASSETS_DIR = SKILL_ROOT / "assets"
 SCRIPTS_DIR = SKILL_ROOT / "scripts"
-VENV_DIR = Path.home() / ".short-video-studio" / "venv"
-NODE_TOOLS_DIR = Path.home() / ".short-video-studio" / "node_tools"
-DEFAULT_WORKSPACE_ROOT = Path(
-    os.environ.get("SVS_WORKSPACE_ROOT") or (Path.home() / ".short-video-studio" / "workspaces")
+VENDOR_DIR = SKILL_ROOT / "vendor"
+SUBSKILLS_DIR = SKILL_ROOT / "subskills"
+SVS_HOME_DIR = Path.home() / ".short-video-studio"
+USER_CONFIG_PATH = SVS_HOME_DIR / "config.json"
+VENV_DIR = SVS_HOME_DIR / "venv"
+NODE_TOOLS_DIR = SVS_HOME_DIR / "node_tools"
+DEFAULT_STYLE_ID = "style_01"
+DEFAULT_CREATOR_STYLE_ID = "style_11"
+
+# 国内高速镜像源默认值（下载失败时自动回退官方源）
+PYPI_CHINA_MIRRORS = (
+    "https://pypi.tuna.tsinghua.edu.cn/simple",
+    "https://mirrors.aliyun.com/pypi/simple",
 )
+NPM_CHINA_MIRROR = "https://registry.npmmirror.com"
+HF_CHINA_MIRROR = "https://hf-mirror.com"
+
+
+def load_user_config() -> Dict[str, Any]:
+    """读取用户级持久化配置 (~/.short-video-studio/config.json)。"""
+    if USER_CONFIG_PATH.is_file():
+        try:
+            data = json.loads(USER_CONFIG_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+    return {}
+
+
+def save_user_config(updates: Dict[str, Any]) -> Path:
+    """合并写入用户级持久化配置 (~/.short-video-studio/config.json)。"""
+    cfg = load_user_config()
+    cfg.update(updates)
+    USER_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    USER_CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+    return USER_CONFIG_PATH
+
+
+def list_non_system_drives_windows() -> List[Dict[str, Any]]:
+    """Windows 下列出所有非 C 盘的可用本地驱动器，按剩余空间降序排列。"""
+    if sys.platform != "win32":
+        return []
+    drives: List[Dict[str, Any]] = []
+    for letter in "DEFGHIJKLMNOPQRSTUVWXYZ":
+        root = Path(f"{letter}:\\")
+        if root.exists():
+            try:
+                usage = shutil.disk_usage(root)
+                drives.append({
+                    "drive": f"{letter}:\\",
+                    "free_gb": round(usage.free / (1024 ** 3), 1),
+                    "recommended_workspace": str(root / "ShortVideoStudioWorkspaces"),
+                })
+            except Exception:
+                continue
+    drives.sort(key=lambda d: d["free_gb"], reverse=True)
+    return drives
+
+
+def resolve_default_workspace_root() -> Path:
+    """解析默认工作区根目录：环境变量 > config.json > 系统默认路径（Win 非 C 盘优先提示）。"""
+    env_ws = os.environ.get("SVS_WORKSPACE_ROOT")
+    if env_ws:
+        return Path(env_ws).expanduser()
+    cfg_ws = str(load_user_config().get("workspace_root") or "").strip()
+    if cfg_ws:
+        return Path(cfg_ws).expanduser()
+    return SVS_HOME_DIR / "workspaces"
+
+
+DEFAULT_WORKSPACE_ROOT = resolve_default_workspace_root()
+
+
+def detect_active_agent(explicit_agent: Optional[str] = None) -> Dict[str, Any]:
+    """
+    自动识别当前宿主智能体环境：
+    - 最高优先级：显式参数 explicit_agent
+    - Cola 智能体：PI_PROVIDER=cola，或 COLA_ACCOUNT_DIR 存在，或任一 COLA_* 环境变量命中
+    - Antigravity / Claude Code / 通用宿主
+    """
+    if explicit_agent and str(explicit_agent).strip():
+        ag = str(explicit_agent).strip().lower()
+        return {"agent": ag, "is_cola": ag == "cola", "signal": f"explicit:{ag}"}
+    env = os.environ
+    pi_prov = str(env.get("PI_PROVIDER") or "").strip().lower()
+    if pi_prov == "cola":
+        return {"agent": "cola", "is_cola": True, "signal": "PI_PROVIDER=cola"}
+    if env.get("COLA_ACCOUNT_DIR"):
+        return {"agent": "cola", "is_cola": True, "signal": "COLA_ACCOUNT_DIR"}
+    cola_keys = sorted(k for k in env.keys() if k.startswith("COLA_") and env.get(k))
+    if cola_keys:
+        return {"agent": "cola", "is_cola": True, "signal": cola_keys[0]}
+    if env.get("ANTIGRAVITY_AGENT"):
+        return {"agent": "antigravity", "is_cola": False, "signal": "ANTIGRAVITY_AGENT"}
+    if env.get("CLAUDECODE") or env.get("CLAUDE_CODE"):
+        return {"agent": "claude_code", "is_cola": False, "signal": "CLAUDE_CODE"}
+    return {"agent": "generic", "is_cola": False, "signal": "default"}
+
+
+def format_eta_cn(seconds: float) -> str:
+    """将预估秒数转为小白一眼看懂的大白话等待预期。"""
+    s = max(3, int(round(float(seconds))))
+    if s < 60:
+        return f"约 {s} 秒"
+    mins, rem = divmod(s, 60)
+    if rem < 10:
+        return f"约 {mins} 分钟"
+    return f"约 {mins} 分 {rem} 秒"
+
+
+def estimate_task_eta(
+    stage: str,
+    clip_count: int = 0,
+    cached_count: int = 0,
+    audio_dur_sec: float = 0.0,
+    target_dur_sec: float = 45.0,
+    frame_count: int = 0,
+    duration_sec: Optional[float] = None,
+) -> Dict[str, Any]:
+    """根据任务类型与素材体量预估完成耗时（基于真机压测基线，给用户清晰等待预期）。"""
+    eff_dur = float(duration_sec) if duration_sec is not None else float(target_dur_sec)
+    uncached = max(0, int(clip_count) - int(cached_count))
+    note_map = {
+        "inventory": "含子目录素材扫描、画面清晰度评估与接触表生成",
+        "normalize": "含色彩还原、画幅统一与跨项目硬链接缓存复用",
+        "transcribe": "含本地语音转写、重说与画外音清洗",
+        "plan_only": "含素材盘点、转写与大白话确认单生成",
+        "lock_preview": "含声音修顺、排镜与带字幕低清预览导出",
+        "render_final": "含高清成片合成、封面生成与出厂体检",
+        "style_switch": "保留原声与选镜，仅刷新字幕/花字/调色风格层",
+        "knowledge_animation": "含内容分幕编译、无头逐帧动画渲染与配乐混音",
+        "code_video": "含图解动画分幕渲染、合成与核验",
+        "full_edit": "含盘点、声音修顺、配画面、字幕包装与成片导出",
+    }
+    if stage == "inventory":
+        sec = max(5.0, uncached * 1.8 + cached_count * 0.08 + 2.0)
+    elif stage == "normalize":
+        sec = max(3.0, uncached * 1.1 + cached_count * 0.05 + 1.5)
+    elif stage == "transcribe":
+        sec = max(6.0, float(audio_dur_sec) * 0.20 + 5.0)
+    elif stage == "plan_only":
+        sec = max(10.0, uncached * 1.8 + float(audio_dur_sec) * 0.20 + 6.0)
+    elif stage == "lock_preview":
+        sec = max(12.0, uncached * 1.1 + float(audio_dur_sec) * 0.22 + eff_dur * 0.45 + 8.0)
+    elif stage == "render_final":
+        sec = max(10.0, eff_dur * 1.15 + 6.0)
+    elif stage == "style_switch":
+        sec = max(5.0, eff_dur * 0.12 + 4.0)
+    elif stage == "knowledge_animation":
+        fc = max(180, int(frame_count or round(max(15.0, eff_dur) * 30)))
+        sec = max(20.0, fc * 0.14 + 12.0)
+    else:
+        sec = max(15.0, uncached * 1.2 + eff_dur * 1.2 + 10.0)
+    lbl = format_eta_cn(sec)
+    return {
+        "stage": stage,
+        "estimated_sec": int(round(sec)),
+        "label_cn": lbl,
+        "eta_cn": lbl,
+        "note": note_map.get(stage, "按当前素材体量动态估算"),
+    }
+
+
+def fast_media_fingerprint(path: Path, salt: str = "") -> str:
+    """对大视频文件执行毫秒级内容指纹（文件大小 + mtime + 首尾 64KB 采样），用于跨项目缓存安全复用。"""
+    p = path.resolve()
+    st = p.stat()
+    h = hashlib.sha256()
+    h.update(f"{st.st_size}:{st.st_mtime_ns}:{salt}".encode("utf-8"))
+    with p.open("rb") as f:
+        head = f.read(65536)
+        h.update(head)
+        if st.st_size > 131072:
+            f.seek(max(0, st.st_size - 65536))
+            h.update(f.read(65536))
+    return h.hexdigest()[:24]
 
 # 标准成片画布与安全区常量（1080x1920 @ 30fps，全仓唯一权威真相源）
 CANVAS_WIDTH = 1080
@@ -203,7 +375,15 @@ def maybe_reexec_in_venv(extra_modules: Tuple[str, ...] = ()) -> None:
 
 
 def find_bin(name: str) -> Optional[str]:
-    """查找二进制可执行文件（ffmpeg / ffprobe / node / npm / uv 等）。"""
+    """查找二进制可执行文件：优先命中离线包内置 vendor/bin/，再查找系统 PATH。"""
+    vendor_bin_dir = VENDOR_DIR / "bin"
+    if vendor_bin_dir.is_dir():
+        cands = [vendor_bin_dir / name]
+        if sys.platform == "win32" and not name.lower().endswith(".exe"):
+            cands.insert(0, vendor_bin_dir / f"{name}.exe")
+        for c in cands:
+            if c.is_file():
+                return str(c.resolve())
     return shutil.which(name)
 
 
@@ -1151,10 +1331,11 @@ def resolve_workspace_paths(
     解析多账号物理隔离工作区与专属加工目录，并严格防止向用户原素材目录写入任何加工文件。
     目录结构：<workspace_root>/accounts/<account_slug>/{content-log/account_profile.json,compliance_whitelist.json,projects/<project_id>}
     """
-    ws_root = (workspace_root or DEFAULT_WORKSPACE_ROOT).expanduser().resolve()
+    ws_root = (workspace_root or resolve_default_workspace_root()).expanduser().resolve()
     acc_slug = sanitize_slug(account, default="default")
     account_dir = ws_root / "accounts" / acc_slug
     content_log_dir = account_dir / "content-log"
+    shared_cache_dir = account_dir / "shared_cache"
 
     raw_res = raw_dir.expanduser().resolve() if raw_dir else None
     if project_id:
@@ -1202,6 +1383,7 @@ def resolve_workspace_paths(
         "account_slug": acc_slug,
         "account_dir": account_dir,
         "content_log_dir": content_log_dir,
+        "shared_cache_dir": shared_cache_dir,
         "account_profile_path": account_profile_path,
         "compliance_whitelist_path": account_dir / "compliance_whitelist.json",
         "project_id": proj_slug,
@@ -1250,18 +1432,45 @@ def sha256_file(path: Path) -> str:
 _WHISPER_MODEL_CACHE: Dict[Tuple[str, str, str, bool], Any] = {}
 
 
+def resolve_bundled_whisper_model(model_size: str) -> Optional[Path]:
+    """优先查找离线分发包内置的 Whisper 模型目录 (vendor/whisper_models/<size>)。"""
+    base = VENDOR_DIR / "whisper_models"
+    if not base.is_dir():
+        return None
+    for cand in (
+        base / str(model_size),
+        base / f"faster-whisper-{model_size}",
+        base / f"models--Systran--faster-whisper-{model_size}",
+    ):
+        if not cand.is_dir():
+            continue
+        if (cand / "model.bin").is_file():
+            return cand
+        snaps = cand / "snapshots"
+        if snaps.is_dir():
+            for sp in sorted(snaps.iterdir()):
+                if (sp / "model.bin").is_file():
+                    return sp
+    return None
+
+
 def get_cached_whisper_model(
     model_size: str,
     device: str = "cpu",
     compute_type: str = "int8",
     local_files_only: bool = False,
 ) -> Any:
-    """进程级单例缓存 faster-whisper 模型，消除同进程 Step 2 与 Step 10 重复冷加载。"""
-    key = (str(model_size), str(device), str(compute_type), bool(local_files_only))
+    """进程级单例缓存 faster-whisper 模型：优先加载离线内置模型，在线下载默认走国内 hf-mirror 镜像。"""
+    bundled = resolve_bundled_whisper_model(model_size)
+    target_ref = str(bundled) if bundled is not None else str(model_size)
+    eff_local_only = True if bundled is not None else bool(local_files_only)
+    key = (target_ref, str(device), str(compute_type), eff_local_only)
     if key not in _WHISPER_MODEL_CACHE:
+        if not eff_local_only and not os.environ.get("HF_ENDPOINT"):
+            os.environ["HF_ENDPOINT"] = HF_CHINA_MIRROR
         from faster_whisper import WhisperModel
         _WHISPER_MODEL_CACHE[key] = WhisperModel(
-            model_size, device=device, compute_type=compute_type, local_files_only=local_files_only
+            target_ref, device=device, compute_type=compute_type, local_files_only=eff_local_only
         )
     return _WHISPER_MODEL_CACHE[key]
 
@@ -1301,6 +1510,7 @@ def detect_browser_renderer() -> Dict[str, Any]:
     """只读探测 Node + playwright-core + 本机 Chrome/Chromium（含 Playwright 缓存与 Windows 路径）。"""
     node_bin = find_bin("node")
     pw_cands = [
+        VENDOR_DIR / "node_tools" / "node_modules" / "playwright-core",
         NODE_TOOLS_DIR / "node_modules" / "playwright-core",
         NODE_TOOLS_DIR / "node_modules" / "playwright",
     ]
@@ -1345,7 +1555,10 @@ def get_huggingface_hub_dir() -> Path:
 
 
 def find_cached_whisper_model(hf_hub: Optional[Path] = None) -> Optional[str]:
-    """按精度优先级探测本地已缓存的 faster-whisper 模型名。"""
+    """按精度优先级探测离线内置模型或本地已缓存的 faster-whisper 模型名。"""
+    for cand in ("large-v3", "large-v3-turbo", "medium", "small", "base", "tiny"):
+        if resolve_bundled_whisper_model(cand) is not None:
+            return cand
     hub = hf_hub or get_huggingface_hub_dir()
     for cand in ("large-v3", "large-v3-turbo", "medium", "small", "base", "tiny"):
         d = hub / f"models--Systran--faster-whisper-{cand}"

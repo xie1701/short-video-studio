@@ -7,9 +7,11 @@
 ## 一、 核心设计原则
 
 1. **首次对话「5 类用户分流 + 四要素掌控感进度卡」**
-   - **门店轨（`store`）**：服务实体店老板 / 本地生活商家，以**评论区咨询、私信、到店核销**为核心目标（默认风格谱 `style_14`）。
-   - **博主轨（`creator`）**：服务个人创作者 / 知识或泛娱乐账号，以**开头 3 秒留人、看完全片、新增关注**为核心目标（默认风格谱 `style_11`）。
-   - 对话按 **5 类真实用户**（实体店从零拍 / 个人博主口播提质感 / 手机存货一键挑剪 / 社恐不露脸或纯图解动画 / 发片后复盘调优）先猜后确认，每轮附带大白话四要素进度卡（`00_progress_card.json`）。
+   - **门店轨（`store`）**：服务实体店老板 / 本地生活商家，以**评论区咨询、私信、到店核销**为核心目标（默认全局风格 `style_01`）。
+   - **博主轨（`creator`）**：服务个人创作者 / 知识或泛娱乐账号，以**开头 3 秒留人、看完全片、新增关注**为核心目标（默认风格 `style_11`）。
+   - 对话按 **5 类真实用户**先猜后确认，每轮附带大白话四要素进度卡（`00_progress_card.json`）与**任务耗时预估**；正式剪辑前强制提供**大白话文案与方案确认单（`--mode plan-only` / `00_confirm_plan.md`）**。
+   - **内置 `gbro-cover-design` 封面技能 + Cola 自动联动**：识别 `PI_PROVIDER=cola` / `COLA_ACCOUNT_DIR` / `COLA_*` 时自动从口播挑选五官最清晰帧（`09_host_face_ref.png`）作为垫图生成 3:4 真人封面交接单。
+   - **国内高速镜像 + 双系统离线全依赖包 + Windows 非 C 盘 + 跨项目零冗余**：安装一键接入清华/阿里/淘宝/HF 国内镜像，支持构建 macOS / Windows 离线全依赖包（含 Whisper 模型）；同一账号跨项目自动硬链接复用已归一素材。
 2. **唯一选题与文案方法论（内部严格溯源，对外全程大白话）**
    - 以 [methodology-cheatsheet.md](short-video-studio/references/methodology-cheatsheet.md) 为日常速查手册、[建立可循环的内容系统.md](<short-video-studio/references/建立可循环的内容系统.md>) 为完整总库；搭配 [script-craft-and-platforms.md](short-video-studio/references/script-craft-and-platforms.md) 执行四轮审稿体检与双文件解耦导出。
    - **全程零黑话铁律**：内部按完整编导体系选型并过「事件一句话」自检；面向用户对话、4 周发片计划、口播稿、拍摄卡、剪辑表、《我替你做的决定》与周复盘全部转化为老百姓听得懂的大白话。
@@ -109,8 +111,14 @@ cd short-video-studio
    # 零实拍知识讲解动画（含 BGM + 15 种动效拟音 + 4K 双比例封面 + 分平台发布文案包）
    python3 short-video-studio/scripts/run_pipeline.py --account demo --track creator --mode knowledge-animation --anim-title "注意力的价格" --anim-idea "每天解锁96次手机却只记得3次" --anim-ratio 16x9 --anim-font-mode serif
 
-   # 一键正式出片（默认门店 style_14，可指定任意 --style-id / --raw-intel / --benchmark / --exports）
-   python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --track store --mode full --style-id style_14 --benchmark ./benchmark.mp4
+   # 先出文案与剪辑方案确认单（不直接开剪，含缺镜排查与耗时预估）
+   python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --track store --mode plan-only
+
+   # 一键正式出片（全仓默认 style_01 门店爆款原生风，支持 --keep-edl / --no-flower-text / --agent cola）
+   python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --track store --mode full --style-id style_01 --benchmark ./benchmark.mp4
+
+   # 构建 macOS / Windows 离线全依赖分发 ZIP 包（含 Python 轮子 + Whisper 模型）
+   python3 dev_tools/build_release_zips.py --targets macos-arm64 win-x64 --whisper-model small
    ```
 6. **独立校验与工程导出**
    - 自动质检：`python3 short-video-studio/scripts/qa_inspector.py --pipeline-dir ./my_video/pipeline`

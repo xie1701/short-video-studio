@@ -420,7 +420,8 @@ class StudioTests(unittest.TestCase):
         self.assertIsNone(re.search(r"/(?:Users|home)/[A-Za-z0-9._-]+", raw_lib_text))
         self.assertNotIn("com." + "lveditor.draft", raw_lib_text)
         lib = read_json(lib_path)
-        self.assertEqual(lib.get("version"), "2.1.0")
+        self.assertEqual(lib.get("version"), "3.0.0")
+        self.assertEqual(lib.get("default_style_id"), "style_01")
         styles = lib.get("styles") or []
         self.assertEqual(len(styles), 24)
 
@@ -462,13 +463,17 @@ class StudioTests(unittest.TestCase):
             pip_spec = s.get("pip_composition_spec") or {}
             giant_spec = s.get("giant_text_spec") or {}
             self.assertIn(pip_spec.get("mode"), {
+                "none",
                 "blur_bg_center_card_pip",
                 "dark_doc_circle_avatar_pip",
                 "linear_split_feather_pip",
                 "black_polaroid_frame_pip",
-                "corner_circle_evidence_pip",
-                "white_outline_cutout_pip",
-                "dual_rect_grid_pip",
+                "paper_craft_card_pip",
+                "minimal_white_note_card_pip",
+                "top_banner_evidence_pip",
+                "dual_gold_frame_pip",
+                "vision_portrait_cutout_pip",
+                "data_news_cutout_pip",
             }, f"Invalid pip_composition_spec on {sid}")
             self.assertIn(giant_spec.get("mode"), {
                 "giant_smash_single",
@@ -486,38 +491,49 @@ class StudioTests(unittest.TestCase):
     def test_pip_giant_text_and_template_packaging_rendering(self):
         from render_mp4 import _build_dual_pip_cmd, _build_ffmpeg_pip_vf, render_packaging_png
 
-        for sid, expected_mode in (
-            ("style_06", "black_polaroid_frame_pip"),
-            ("style_07", "white_outline_cutout_pip"),
-            ("style_08", "blur_bg_center_card_pip"),
-            ("style_09", "dark_doc_circle_avatar_pip"),
-            ("style_11", "corner_circle_evidence_pip"),
-            ("style_16", "linear_split_feather_pip"),
-            ("style_17", "dual_rect_grid_pip"),
-            ("style_11", "smooth_orbit_pip"),
+        # 单源画框模式全部走等比无变形缩放裁切；mode="none" 返回 None 保持纯净全屏
+        self.assertIsNone(_build_ffmpeg_pip_vf({"mode": "none"}))
+        for expected_mode in (
+            "black_polaroid_frame_pip",
+            "paper_craft_card_pip",
+            "minimal_white_note_card_pip",
+            "blur_bg_center_card_pip",
+            "linear_split_feather_pip",
+            "smooth_orbit_pip",
         ):
             vf_str = _build_ffmpeg_pip_vf({"mode": expected_mode, "border_hex": "#FFF589"})
-            self.assertIsNotNone(vf_str)
+            self.assertIsNotNone(vf_str, f"Single-source mode returned None: {expected_mode}")
+            self.assertIn("force_original_aspect_ratio=increase", vf_str)
             self.assertIn("overlay=", vf_str)
 
-        # 验证双源 PIP 命令路由：secondary_media_path 异于主镜时走多路 -i + -filter_complex
-        cmd_dual = _build_dual_pip_cmd(
-            "ffmpeg",
-            str(self.root / "pip_main.mp4"),
-            0.0,
-            5.0,
-            "scale=1080:1920",
-            {"mode": "smooth_orbit_pip", "corner": "tr", "radius_px": 146, "border_hex": "#F4B13E"},
-            str(self.root / "pip_sec.mp4"),
-            1.2,
-            2.0,
-            60,
-            30,
-            self.root / "seg_dual.mp4",
-        )
-        self.assertIsNotNone(cmd_dual)
-        self.assertIn("-filter_complex", cmd_dual)
-        self.assertEqual(cmd_dual.count("-i"), 4)  # main + sec + circle mask + circle ring
+        # 验证双源 PIP 命令路由：secondary_media_path 异于主镜时走多路 -i + -filter_complex 且等比无变形
+        for dmode, expected_inputs in (
+            ("smooth_orbit_pip", 4),
+            ("dark_doc_circle_avatar_pip", 4),
+            ("dual_gold_frame_pip", 2),
+            ("linear_split_feather_pip", 2),
+            ("vision_portrait_cutout_pip", 2),
+            ("data_news_cutout_pip", 2),
+        ):
+            cmd_dual = _build_dual_pip_cmd(
+                "ffmpeg",
+                str(self.root / "pip_main.mp4"),
+                0.0,
+                5.0,
+                "scale=1080:1920",
+                {"mode": dmode, "corner": "tr", "radius_px": 146, "border_hex": "#F4B13E"},
+                str(self.root / "pip_sec.mp4"),
+                1.2,
+                2.0,
+                60,
+                30,
+                self.root / "seg_dual.mp4",
+            )
+            self.assertIsNotNone(cmd_dual, f"Dual PIP returned None: {dmode}")
+            self.assertIn("-filter_complex", cmd_dual)
+            self.assertEqual(cmd_dual.count("-i"), expected_inputs)
+            fc_str = cmd_dual[cmd_dual.index("-filter_complex") + 1]
+            self.assertIn("force_original_aspect_ratio=increase", fc_str)
 
         for gmode in ("giant_smash_single", "giant_dual_clash", "giant_numeric_trio", "giant_vertical_seal"):
             im_g = render_packaging_png({
@@ -1274,6 +1290,308 @@ class StudioTests(unittest.TestCase):
             res = subset_font_file(Path(fp), self.root / "out_font" / Path(fp).name, chars)
             self.assertIn(res["status"], ("subsetted", "copied_fallback_no_fonttools"))
             self.assertTrue(Path(res["output"]).is_file())
+
+    def test_v30_default_style01_and_blueprints_zero_fake_pip(self):
+        from common import ASSETS_DIR, DEFAULT_STYLE_ID, read_json
+        from render_template_overlays import load_template_blueprints, render_template_packaging_png
+
+        self.assertEqual(DEFAULT_STYLE_ID, "style_01")
+        lib = read_json(ASSETS_DIR / "style_spectrum" / "style_spectrum_library.json")
+        self.assertEqual(lib.get("default_style_id"), "style_01")
+        bps = load_template_blueprints()
+        self.assertEqual(len(bps), 24)
+        none_cnt = sum(1 for s in lib["styles"] if (s.get("pip_composition_spec") or {}).get("mode") == "none")
+        self.assertGreaterEqual(none_cnt, 14)
+        self.assertEqual((lib["styles"][0].get("pip_composition_spec") or {}).get("mode"), "none")
+
+        # 全部 24 套模板蓝图均可渲染出有效透明叠层
+        for i in range(1, 25):
+            sid = f"style_{i:02d}"
+            im = render_template_packaging_png(
+                {"type": "center_burst_title", "text_or_asset": "大杯只贵两块钱", "subtext": "真相拆解"},
+                style_id=sid,
+            )
+            self.assertIsNotNone(im, f"Overlay failed for {sid}")
+            self.assertGreater(im.width, 40)
+            self.assertGreater(im.height, 30)
+
+    def test_v30_cola_agent_detection_and_gbro_cover_handoff(self):
+        import os
+        from common import SUBSKILLS_DIR, detect_active_agent, find_bin
+        from step9_title_cover import build_gbro_cover_handoff, extract_best_host_face_frame
+
+        self.assertTrue((SUBSKILLS_DIR / "gbro-cover-design" / "SKILL.md").is_file())
+        orig_env = dict(os.environ)
+        try:
+            for k in list(os.environ):
+                if k == "PI_PROVIDER" or k.startswith("COLA_"):
+                    os.environ.pop(k, None)
+            self.assertFalse(detect_active_agent()["is_cola"])
+
+            os.environ["PI_PROVIDER"] = "cola"
+            det1 = detect_active_agent()
+            self.assertTrue(det1["is_cola"])
+            self.assertEqual(det1["agent"], "cola")
+
+            os.environ.pop("PI_PROVIDER", None)
+            os.environ["COLA_ACCOUNT_DIR"] = "/tmp/fake_cola_acct"
+            det2 = detect_active_agent()
+            self.assertTrue(det2["is_cola"])
+
+            os.environ.pop("COLA_ACCOUNT_DIR", None)
+            os.environ["COLA_WORKSPACE"] = "yes"
+            det3 = detect_active_agent()
+            self.assertTrue(det3["is_cola"])
+
+            # 验证 A-roll 人脸参考帧抽取与 gbro-cover-design 交接单生成
+            pdir = self.root / "cola_cover_test"
+            pdir.mkdir()
+            demo_vid = pdir / "aroll_01.mp4"
+            subprocess.run([
+                find_bin("ffmpeg"), "-y", "-hide_banner", "-loglevel", "error",
+                "-f", "lavfi", "-i", "testsrc2=size=540x960:rate=30:duration=2",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", str(demo_vid),
+            ], check=True)
+            write_json(pdir / "01_manifest.json", {
+                "items": [{"id": "m1", "role": "a_roll", "normalized_mp4": str(demo_vid), "duration_sec": 2.0, "video_grade": "usable"}]
+            })
+            face_ref = extract_best_host_face_frame(pdir)
+            self.assertIsNotNone(face_ref)
+            self.assertTrue(Path(face_ref["path"]).is_file())
+
+            handoff = build_gbro_cover_handoff(
+                pdir,
+                title_main="为什么大杯只贵2块",
+                title_sub="实体店定价秘密",
+                hook_text="为什么奶茶店大杯只贵2块钱",
+                track="store",
+                agent_info=det1,
+            )
+            self.assertIsNotNone(handoff)
+            self.assertTrue((pdir / "09_gbro_cover_prompt.md").is_file())
+            self.assertTrue((pdir / "09_gbro_cover_handoff.json").is_file())
+        finally:
+            os.environ.clear()
+            os.environ.update(orig_env)
+
+    def test_v30_recursive_scan_speech_band_and_offcam_filter(self):
+        from inventory_media import _collect_media_files_recursive, _folder_role_hint, classify_clip
+        from step2_transcribe import split_segments_at_pauses
+
+        raw_d = self.root / "nested_raw"
+        (raw_d / "口播").mkdir(parents=True)
+        (raw_d / "空镜素材" / "环境").mkdir(parents=True)
+        (raw_d / ".hidden").mkdir(parents=True)
+        f1 = raw_d / "口播" / "a1.mp4"
+        f2 = raw_d / "空镜素材" / "环境" / "b1.mp4"
+        f3 = raw_d / ".hidden" / "ignore.mp4"
+        for f in (f1, f2, f3):
+            f.write_bytes(b"00")
+        found = _collect_media_files_recursive(raw_d)
+        self.assertEqual({p.name for p in found}, {"a1.mp4", "b1.mp4"})
+        self.assertEqual(_folder_role_hint(f1, raw_d), "a_roll_candidate")
+        self.assertEqual(_folder_role_hint(f2, raw_d), "b_roll_candidate")
+
+        # 空镜有吵闹低频背景音乐但语音频带占比低 -> 必判 b_roll_candidate 而非 a_roll_candidate
+        role_bg = classify_clip(
+            filename="clip_env.mp4",
+            a_stream={"codec_type": "audio"},
+            quality={"speech_ratio": 0.72, "audio_dyn_range_db": 6.0, "speech_band_ratio": 0.22},
+            duration=8.0,
+            folder_hint="b_roll_candidate",
+        )
+        self.assertEqual(role_bg, "b_roll_candidate")
+
+        # ASR 长段内有 >=0.25s 停顿 -> 按停顿切细以便独立识别画外音
+        merged_seg = [{
+            "id": "seg_001",
+            "text": "主讲说一句画外插一句",
+            "start_sec": 0.0,
+            "end_sec": 4.0,
+            "words": [
+                {"word": "主讲", "start_sec": 0.0, "end_sec": 0.5},
+                {"word": "说一句", "start_sec": 0.52, "end_sec": 1.1},
+                {"word": "画外", "start_sec": 1.65, "end_sec": 2.1},
+                {"word": "插一句", "start_sec": 2.12, "end_sec": 2.8},
+            ],
+        }]
+        split_res = split_segments_at_pauses(merged_seg, min_gap_sec=0.25)
+        self.assertEqual(len(split_res), 2)
+
+    def test_v30_plan_confirm_gate_and_exclude_shot_persistence(self):
+        from step4_build_edl import _apply_excluded_rules_to_items, _avoid_excluded_windows, detect_script_media_gaps
+        from workflow_guard import confirm_plan, exclude_shot_window, is_plan_confirmed, write_confirm_plan_doc
+
+        pdir = self.root / "gate_p"
+        pdir.mkdir()
+        write_json(pdir / "01_manifest.json", {
+            "items": [
+                {"id": "m1", "filename": "a1.mp4", "role": "a_roll", "video_grade": "usable", "normalized_mp4": str(pdir / "a1.mp4")},
+                {"id": "m2", "filename": "b_bad.mp4", "role": "b_roll", "video_grade": "usable", "normalized_mp4": str(pdir / "b_bad.mp4")},
+                {"id": "m3", "filename": "b_win.mp4", "role": "b_roll", "video_grade": "usable", "normalized_mp4": str(pdir / "b_win.mp4")},
+            ]
+        })
+        write_json(pdir / "02_transcript.json", {
+            "kept_segments": [
+                {"id": "s1", "text": "咱们店里有二十五张卡座和八个包房", "start_sec": 0.0, "end_sec": 3.0},
+            ]
+        })
+        gaps = detect_script_media_gaps(
+            [{"id": "s1", "text": "咱们店里有二十五张卡座和八个包房"}],
+            [{"filename": "door.mp4", "semantic_tags": ["门头"]}],
+        )
+        self.assertTrue(any("卡座" in str(g.get("matched_cue")) or "包房" in str(g.get("matched_cue")) for g in gaps))
+
+        self.assertFalse(is_plan_confirmed(pdir))
+        plan_p = write_confirm_plan_doc(pdir, style_id="style_01", media_gaps=gaps)
+        self.assertTrue(plan_p.is_file())
+        self.assertIn("二十五张卡座", plan_p.read_text(encoding="utf-8"))
+        confirm_plan(pdir, note="用户已点头")
+        self.assertTrue(is_plan_confirmed(pdir))
+
+        # 整条标废 + 时间窗标废持久化
+        exclude_shot_window(pdir, "b_bad.mp4", reason="手抖穿帮")
+        exclude_shot_window(pdir, "b_win.mp4", start_sec=2.0, end_sec=5.0, reason="中段路人入镜")
+        kept = _apply_excluded_rules_to_items(pdir, read_json(pdir / "01_manifest.json")["items"])
+        self.assertNotIn("b_bad.mp4", [x["filename"] for x in kept])
+        shifted = _avoid_excluded_windows(2.2, 1.5, 10.0, [{"start_sec": 2.0, "end_sec": 5.0}])
+        self.assertGreaterEqual(shifted, 5.0)
+
+    def test_v30_shared_cache_hardlink_zero_redundancy(self):
+        import os
+        from common import find_bin
+        from step1_normalize import run_step1
+
+        raw_d = self.root / "shared_raw"
+        raw_d.mkdir()
+        clip = raw_d / "sample_b.mp4"
+        subprocess.run([
+            find_bin("ffmpeg"), "-y", "-hide_banner", "-loglevel", "error",
+            "-f", "lavfi", "-i", "testsrc2=size=540x960:rate=30:duration=1.5",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", str(clip),
+        ], check=True)
+        cache_dir = self.root / "acct_shared_cache"
+        p1 = self.root / "proj1" / "pipeline"
+        p2 = self.root / "proj2" / "pipeline"
+        m1 = run_step1([raw_d], p1, shared_cache_dir=cache_dir)
+        m2 = run_step1([raw_d], p2, shared_cache_dir=cache_dir)
+        f1 = Path(m1["items"][0]["normalized_mp4"])
+        f2 = Path(m2["items"][0]["normalized_mp4"])
+        self.assertTrue(f1.is_file() and f2.is_file())
+        self.assertEqual(os.stat(f1).st_ino, os.stat(f2).st_ino, "跨项目应通过硬链接零冗余复用同一份归一素材")
+
+    def test_v30_flower_text_clean_no_flower_and_keep_edl(self):
+        from apply_style_spectrum import apply_full_visual_refresh, filter_styles_by_aroll, load_library
+        from step6_packaging import _extract_clean_flower_phrase, run_step6
+
+        # 拦截“介绍一下/我觉得”口语虚词碎片
+        p1 = _extract_clean_flower_phrase({"text": "我给大家介绍一下，咱们店有25张卡座", "keywords": ["介绍一下", "一个"]})
+        self.assertNotIn("介绍", p1)
+        self.assertIn("25张卡座", p1)
+
+        # --has-aroll no 应过滤掉 requires_aroll == "required" 的模板
+        lib = load_library()
+        no_aroll_styles = filter_styles_by_aroll(lib, has_aroll=False)
+        self.assertTrue(all(s.get("requires_aroll") != "required" for s in no_aroll_styles))
+        self.assertIn("style_24", [s["style_id"] for s in no_aroll_styles])
+        self.assertNotIn("style_01", [s["style_id"] for s in no_aroll_styles])
+
+        # 验证 --no-flower-text 与 keep_manual_texts
+        pdir = self.root / "pkg_v30"
+        pdir.mkdir()
+        write_json(pdir / "03_audio_events.json", {
+            "locked_duration_sec": 6.0,
+            "sentences": [{"id": "s1", "text": "大杯只贵两块钱", "keywords": ["大杯只贵2块"], "start_sec": 0.0, "end_sec": 3.0, "start_frame": 0, "end_frame": 90, "emotion_or_info": "hook"}],
+            "events": [{"id": "e1", "type": "sentence_start", "time_sec": 0.0, "frame": 0, "sentence_id": "s1"}],
+        })
+        write_json(pdir / "04_edl.json", {
+            "style_id": "style_01",
+            "clips": [{"clip_id": "c1", "track_role": "a_roll", "media_path": "", "timeline_in_sec": 0.0, "timeline_out_sec": 6.0, "timeline_in_frame": 0, "timeline_out_frame": 180, "cut_event_frame": 0, "cut_event_id": "e1"}],
+        })
+        res_off = run_step6(pdir, style_id="style_01", no_flower_text=True)
+        self.assertEqual(len(res_off["visual_elements"]), 0)
+        self.assertTrue(res_off["no_flower_text"])
+
+        # 写入人工编辑花字后切风格 keep_edl=True -> 文案不丢
+        res_on = run_step6(pdir, style_id="style_01", no_flower_text=False)
+        self.assertGreaterEqual(len(res_on["visual_elements"]), 1)
+        res_on["visual_elements"][0]["text_or_asset"] = "手工定制大标题"
+        write_json(pdir / "06_packaging.json", res_on)
+        refresh = apply_full_visual_refresh(lib, "style_03", pdir, keep_edl=True)
+        self.assertIn("06_packaging.json", refresh["refreshed"])
+        pkg_after = read_json(pdir / "06_packaging.json")
+        self.assertEqual(pkg_after["style_id"], "style_03")
+        self.assertEqual(pkg_after["visual_elements"][0]["text_or_asset"], "手工定制大标题")
+
+    def test_v30_incremental_patch_lines(self):
+        import numpy as np
+        from step3_lock_audio import SR, patch_locked_audio_sentences, save_stereo_wav_np
+
+        pdir = self.root / "patch_p"
+        pdir.mkdir()
+        t = np.linspace(0.0, 2.0, 2 * SR, endpoint=False, dtype=np.float32)
+        s1_arr = np.column_stack([0.2 * np.sin(2 * np.pi * 220 * t), 0.2 * np.sin(2 * np.pi * 220 * t)])
+        s2_arr = np.column_stack([0.2 * np.sin(2 * np.pi * 330 * t), 0.2 * np.sin(2 * np.pi * 330 * t)])
+        full_v = np.concatenate([s1_arr, s2_arr], axis=0)
+        save_stereo_wav_np(pdir / "03_locked_voice.wav", full_v, SR)
+        save_stereo_wav_np(pdir / "03_locked_bgm.wav", full_v * 0.1, SR)
+        rep_wav = pdir / "rep_s1.wav"
+        t_new = np.linspace(0.0, 1.0, SR, endpoint=False, dtype=np.float32)
+        save_stereo_wav_np(rep_wav, np.column_stack([0.2 * np.sin(2 * np.pi * 440 * t_new)] * 2), SR)
+        write_json(pdir / "03_audio_events.json", {
+            "locked_duration_sec": 4.0,
+            "total_duration_sec": 4.0,
+            "locked_duration_frames": 120,
+            "bgm": {"file": str(pdir / "03_locked_bgm.wav"), "bpm": 120.0, "downbeat_times_sec": [0.0, 2.0]},
+            "sentences": [
+                {"id": "sent_001", "text": "旧的第一句", "start_sec": 0.0, "end_sec": 2.0, "duration_sec": 2.0},
+                {"id": "sent_002", "text": "保持不变第二句", "start_sec": 2.0, "end_sec": 4.0, "duration_sec": 2.0},
+            ],
+            "events": [],
+        })
+        ae_new = patch_locked_audio_sentences(
+            pdir,
+            [{"sentence_id": "sent_001", "new_text": "新的第一句", "replacement_wav": str(rep_wav)}],
+        )
+        self.assertEqual(ae_new["sentences"][0]["text"], "新的第一句")
+        self.assertEqual(ae_new["sentences"][1]["text"], "保持不变第二句")
+        self.assertAlmostEqual(ae_new["sentences"][1]["start_sec"], 1.0, delta=0.08)
+        self.assertAlmostEqual(ae_new["locked_duration_sec"], 3.0, delta=0.08)
+
+    def test_v30_content_driven_knowledge_animation_no_blue_planet(self):
+        from common import ASSETS_DIR
+        from knowledge_animator import compile_animation_timeline
+
+        starter_html = (ASSETS_DIR / "canvas_runtime" / "anim_starter.html").read_text(encoding="utf-8")
+        self.assertNotIn("drawMaterialOrb", starter_html, "anim_starter.html 不得再残留写死的蓝色星球占位代码")
+        self.assertIn("SVS_SCENES", starter_html)
+
+        payload = compile_animation_timeline({
+            "title": "大杯只贵2块的秘密",
+            "question": "为什么奶茶店总把大杯定价只比中杯贵2块钱",
+            "lines": [
+                {"id": "h1", "text": "中杯[16元]大杯只要[18元]", "hook": True},
+                {"id": "h2", "text": "多加[2块钱]商家利润率反而涨了[70%]", "hook": True},
+                {"id": "c1", "text": "大杯只贵2块的秘密", "card": True},
+                {"id": "s1", "text": "表面以为赚了便宜其实是被锚点引导升级", "scene": True},
+                {"id": "s2", "text": "第一步定锚点第二步缩差价第三步抬客单", "scene": True},
+            ],
+        })
+        scenes = payload.get("content_scenes") or []
+        vtypes = [s["visual_type"] for s in scenes]
+        self.assertIn("mockup_card", vtypes)
+        self.assertIn("quote_poster", vtypes)
+        self.assertGreaterEqual(len(set(vtypes)), 3)
+
+    def test_v30_china_mirrors_eta_and_windows_drive_config(self):
+        from common import HF_CHINA_MIRROR, NPM_CHINA_MIRROR, PYPI_CHINA_MIRRORS, estimate_task_eta
+
+        self.assertTrue(any("tuna.tsinghua.edu.cn" in m for m in PYPI_CHINA_MIRRORS))
+        self.assertIn("npmmirror.com", NPM_CHINA_MIRROR)
+        self.assertIn("hf-mirror.com", HF_CHINA_MIRROR)
+        eta = estimate_task_eta("full_edit", duration_sec=45.0, clip_count=8)
+        self.assertTrue(eta["eta_cn"])
+        self.assertGreater(eta["estimated_sec"], 10)
 
 
 if __name__ == "__main__":

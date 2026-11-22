@@ -27,6 +27,8 @@ from common import (
     MEDIA_EXTS,
     compute_bt709_luma,
     detect_vfr_hdr,
+    estimate_task_eta,
+    fast_media_fingerprint,
     ffprobe_media,
     find_bin,
     find_commercial_font,
@@ -38,6 +40,50 @@ from common import (
     run_cmd,
     write_json,
 )
+
+_AROLL_DIR_HINTS = ("口播", "主讲", "人声", "说话", "aroll", "a_roll", "talk", "host", "speech")
+_BROLL_DIR_HINTS = ("素材", "空镜", "特写", "环境", "补拍", "画面", "产品", "broll", "b_roll", "sucai", "cutaway")
+
+
+def _collect_media_files_recursive(input_dir: Path) -> List[Path]:
+    """递归扫描多级子目录中的全部视频素材（忽略隐藏目录与系统目录，按规范路径去重）。"""
+    seen: set[str] = set()
+    found: List[Path] = []
+    if not input_dir.exists():
+        return found
+    for p in sorted(input_dir.rglob("*")):
+        if not p.is_file():
+            continue
+        rel_parts = p.relative_to(input_dir).parts
+        if any(part.startswith(".") or part == "__pycache__" for part in rel_parts):
+            continue
+        if p.suffix.lower() not in MEDIA_EXTS:
+            continue
+        if "benchmark" in p.name.lower():
+            continue
+        key = str(p.resolve())
+        if key not in seen:
+            seen.add(key)
+            found.append(p)
+    return found
+
+
+def _folder_role_hint(path: Path, root_dir: Optional[Path] = None) -> Optional[str]:
+    """基于文件所在子目录名给出强角色先验（例如 口播/ vs 素材/空镜/）。"""
+    parts: List[str] = []
+    if root_dir is not None:
+        try:
+            parts = list(path.resolve().relative_to(root_dir.resolve()).parts[:-1])
+        except Exception:
+            parts = [path.parent.name]
+    else:
+        parts = [path.parent.name]
+    joined = "/".join(parts).lower()
+    if any(k in joined for k in _BROLL_DIR_HINTS):
+        return "b_roll_candidate"
+    if any(k in joined for k in _AROLL_DIR_HINTS):
+        return "a_roll_candidate"
+    return None
 
 if __name__ == "__main__":
     maybe_reexec_in_venv()
@@ -123,14 +169,21 @@ def _analyze_audio_raw(ffmpeg: str, path: Path, has_audio: bool, duration: float
         p10, p95 = float(np.percentile(db, 10)), float(np.percentile(db, 95))
         dyn_range = max(0.0, p95 - p10)
         sil_ratio = float(np.mean(db < -42.0))
+        # 计算人声语音频带 (300–3400Hz) 能量占比，区分人声口播与宽频环境噪音/厨具环境声
+        spec = np.abs(np.fft.rfft(blocks * np.hanning(hop).astype(np.float32), axis=1)) ** 2
+        freqs = np.fft.rfftfreq(hop, 1.0 / 16000.0)
+        v_mask = (freqs >= 300.0) & (freqs <= 3400.0)
+        tot_e = float(np.sum(spec)) + 1e-10
+        speech_band_ratio = float(np.sum(spec[:, v_mask]) / tot_e)
         return {
             "silence_ratio": round(sil_ratio, 2),
             "dyn_range_db": round(dyn_range, 1),
+            "speech_band_ratio": round(speech_band_ratio, 3),
             "clipping_ratio": round(clip_ratio, 5),
             "stereo_diag": st_diag,
         }
     except Exception:
-        return {"silence_ratio": 1.0, "dyn_range_db": 0.0, "clipping_ratio": 0.0, "stereo_diag": "error"}
+        return {"silence_ratio": 1.0, "dyn_range_db": 0.0, "speech_band_ratio": 0.0, "clipping_ratio": 0.0, "stereo_diag": "error"}
 
 
 def analyze_video_quality(
@@ -308,6 +361,7 @@ def analyze_video_quality(
         "luma_p99": luma_p99,
         "silence_ratio": sil_ratio,
         "dyn_range_db": aud["dyn_range_db"],
+        "speech_band_ratio": aud.get("speech_band_ratio", 0.0),
         "clipping_ratio": aud["clipping_ratio"],
         "stereo_diag": aud["stereo_diag"],
         "sharpness_score": sharpness_score,
@@ -325,19 +379,23 @@ def classify_clip(
     quality: Dict[str, Any],
     duration: float,
     v_idx_entry: Optional[Dict[str, Any]] = None,
+    folder_hint: Optional[str] = None,
 ) -> str:
     low = filename.lower()
     if v_idx_entry and v_idx_entry.get("role") in ("a_roll_candidate", "b_roll_candidate"):
         return str(v_idx_entry["role"])
-    if "broll" in low or "b_roll" in low:
+    if "broll" in low or "b_roll" in low or "sucai" in low or "空镜" in low or "素材" in low:
         return "b_roll_candidate"
-    if "aroll" in low or "a_roll" in low or "talk" in low:
+    if "aroll" in low or "a_roll" in low or "talk" in low or "口播" in low:
         return "a_roll_candidate"
-    # 不仅看 silence_ratio，还需具备语音动态范围 >= 7dB（防止嘈杂环境空镜持续底噪误判成口播 A-roll）
+    if folder_hint in ("a_roll_candidate", "b_roll_candidate"):
+        return folder_hint
+    # 综合静音占比 + 语音动态范围 (>=10dB) + 语音频带能量比 (>=0.42)，大幅降低嘈杂空镜误判 A-roll 概率
     if (
         a_stream
         and quality["silence_ratio"] < 0.55
-        and float(quality.get("dyn_range_db", 0.0)) >= 7.0
+        and float(quality.get("dyn_range_db", 0.0)) >= 10.0
+        and float(quality.get("speech_band_ratio", 0.5)) >= 0.42
         and duration >= 2.0
     ):
         return "a_roll_candidate"
@@ -647,6 +705,7 @@ def build_shot_log_dict(inv: Dict[str, Any]) -> Dict[str, Any]:
                 "shot_size": c.get("shot_size", "medium"),
                 "action_apex_sec": c.get("action_apex_sec", 0.0),
                 "usable": c.get("usable", True),
+                "excluded_windows": c.get("excluded_windows", []),
                 "visual_indexed": c.get("visual_indexed", False),
                 "audio_grade": c.get("audio_grade", "usable"),
                 "video_grade": c.get("video_grade", "usable"),
@@ -670,11 +729,23 @@ def inventory_directory(
     raw_intel: Optional[Dict[str, Any]] = None,
     contact_sheet_path: Optional[Path] = None,
     visual_index_path: Optional[Path] = None,
+    shared_cache_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    files = sorted([
-        p for p in input_dir.iterdir()
-        if p.is_file() and p.suffix.lower() in MEDIA_EXTS and "benchmark" not in p.name.lower()
-    ])
+    files = _collect_media_files_recursive(input_dir)
+    inv_cache_dir = (shared_cache_dir / "inventory_cache") if shared_cache_dir else None
+    if inv_cache_dir:
+        inv_cache_dir.mkdir(parents=True, exist_ok=True)
+    cached_hits = 0
+    if inv_cache_dir and files:
+        for f in files:
+            try:
+                if (inv_cache_dir / f"{fast_media_fingerprint(f, salt='inv_v3')}.json").is_file():
+                    cached_hits += 1
+            except Exception:
+                pass
+    if files:
+        eta = estimate_task_eta("inventory", clip_count=len(files), cached_count=cached_hits)
+        print(f"[inventory] 发现 {len(files)} 段视频素材（缓存命中 {cached_hits} 段），预计耗时 {eta['label_cn']} ...")
     v_index = _load_visual_index_map(visual_index_path)
     clips: List[Dict[str, Any]] = []
     ffmpeg = find_bin("ffmpeg")
@@ -706,7 +777,20 @@ def inventory_directory(
             is_10bit = any(k in pix_fmt for k in ("10le", "10be", "p010"))
 
             v_idx_entry = v_index.get(f.name) or v_index.get(f.stem)
-            quality = analyze_video_quality(f, dur, dw, dh, has_audio=(a_stream is not None))
+            fp_key = fast_media_fingerprint(f, salt="inv_v3") if inv_cache_dir else None
+            cache_file = (inv_cache_dir / f"{fp_key}.json") if (inv_cache_dir and fp_key) else None
+            if cache_file and cache_file.is_file():
+                try:
+                    quality = read_json(cache_file)
+                except Exception:
+                    quality = analyze_video_quality(f, dur, dw, dh, has_audio=(a_stream is not None))
+            else:
+                quality = analyze_video_quality(f, dur, dw, dh, has_audio=(a_stream is not None))
+                if cache_file:
+                    try:
+                        write_json(cache_file, quality)
+                    except Exception:
+                        pass
             if v_idx_entry and isinstance(v_idx_entry.get("best_in_sec"), (int, float)):
                 quality["best_in_sec"] = round(max(0.0, min(max(0.0, dur - 0.5), float(v_idx_entry["best_in_sec"]))), 2)
 
@@ -722,15 +806,19 @@ def inventory_directory(
             if min(dw, dh) < 720 or max(dw, dh) < 1080:
                 issues.append(f"清晰度偏低（{dw}x{dh}），建议少用或当辅助小画面")
 
-            role = classify_clip(f.name, a_stream, quality, dur, v_idx_entry=v_idx_entry)
+            f_hint = _folder_role_hint(f, input_dir)
+            role = classify_clip(f.name, a_stream, quality, dur, v_idx_entry=v_idx_entry, folder_hint=f_hint)
             tags_meta = meta.get("format", {}).get("tags", {}) or v_stream.get("tags", {}) or {}
             ctime = str(tags_meta.get("creation_time", ""))[:10]
             luma_band = "dark" if (quality.get("avg_luma") or 128) < 85 else ("bright" if (quality.get("avg_luma") or 128) > 165 else "mid")
             scene_group = f"shoot_{ctime or 'default'}_{geom['orientation']}_{luma_band}"
+            rel_p = str(f.resolve().relative_to(input_dir.resolve())) if input_dir.resolve() in f.resolve().parents else f.name
 
             clip_idx = len(clips)
             clips.append({
                 "filename": f.name,
+                "rel_path": rel_p,
+                "parent_dir": f.parent.name,
                 "path": str(f.resolve()),
                 "duration_sec": round(dur, 2),
                 "width": dw,
@@ -762,7 +850,8 @@ def inventory_directory(
                 "action_apex_sec": float((v_idx_entry or {}).get("action_apex_sec") or quality.get("action_apex_sec") or 0.0),
                 "issues": issues,
                 "suggested_role": role,
-                "usable": dur >= 0.8,
+                "usable": bool((v_idx_entry or {}).get("usable", dur >= 0.8)),
+                "excluded_windows": list((v_idx_entry or {}).get("excluded_windows") or []),
                 "audio_grade": "usable",
                 "video_grade": "usable",
                 "taboo_tags": [],

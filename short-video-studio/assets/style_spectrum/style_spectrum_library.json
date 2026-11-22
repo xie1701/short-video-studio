@@ -1,14 +1,15 @@
 {
-  "version": "2.1.0",
+  "version": "3.0.0",
   "generated_at": "2026-11-22T09:45:00+08:00",
-  "source_dir": "builtin_style_spectrum_v21",
+  "source_dir": "builtin_style_spectrum_v30",
   "total_videos": 24,
-  "default_style_id": "style_14",
+  "default_style_id": "style_01",
   "default_creator_style_id": "style_11",
   "shared_rulebooks": {
     "animation_sfx_pairs": "assets/style_spectrum/animation_sfx_pairs.json",
     "sfx_intent_taxonomy": "assets/style_spectrum/sfx_intent_taxonomy.json",
-    "typography_cover_rules": "assets/style_spectrum/typography_cover_rules.json"
+    "typography_cover_rules": "assets/style_spectrum/typography_cover_rules.json",
+    "template_blueprints": "assets/style_spectrum/template_blueprints.json"
   },
   "archetypes": [
     {
@@ -19,7 +20,7 @@
       "rhythm_signature": "顶部章节步骤条常驻 + 画面内部 UI/卡片高频切换 + 强节拍/事件对齐 (60%~90%)",
       "subtitle_signature": "克制小号居中底字 (36~46px)，重在让渡主视觉区给界面与卡片演示",
       "member_styles": [
-        "style_01",
+        "style_14",
         "style_09",
         "style_10",
         "style_19"
@@ -67,7 +68,7 @@
       "member_styles": [
         "style_02",
         "style_07",
-        "style_14",
+        "style_01",
         "style_17",
         "style_21"
       ],
@@ -106,179 +107,166 @@
     {
       "style_id": "style_01",
       "index": 1,
-      "style_name_cn": "深色控制台界面 · 工具与流程演示风",
-      "archetype_id": "arch_01_tech_ui_console",
-      "recommended_track": "creator",
+      "style_name_cn": "门店原生爆款风 · 居中双字号暖黄高亮（默认）",
+      "archetype_id": "arch_04_punch_talking_head",
+      "recommended_track": "store",
       "domain_tags": [
-        "AI工具演示",
-        "软件教程",
-        "代码图解",
-        "流程拆解"
+        "门店老板",
+        "同城获客",
+        "实拍口播",
+        "默认旗舰风格"
       ],
       "source_filename": "style_01_preset",
       "meta": {
         "width": 1080,
         "height": 1920,
-        "orientation": "portrait_9_16",
-        "aspect_ratio": "9:16",
+        "aspect": "9:16",
         "fps": 30.0,
-        "nb_frames": 4498,
-        "duration_sec": 149.952,
-        "file_size_mb": 13.45,
-        "has_audio": true,
-        "audio_sample_rate": 48000,
-        "aspect": "9:16"
+        "duration_sec": 68.5,
+        "benchmark_source": "builtin_preset_style_14"
       },
       "shot_distribution": {
-        "total_frames_analyzed": 4498,
-        "total_shots": 16,
-        "hard_cuts": 8,
-        "jump_or_punch_cuts": 7,
-        "dissolve_or_wipe_transitions": 36,
-        "cuts_per_min": 6.0,
-        "transitions_per_min": 20.41,
-        "first_3s_cut_times_sec": [],
-        "min_sec": 1.0,
-        "p25_sec": 2.408,
-        "median_sec": 2.4,
-        "mean_sec": 9.371,
-        "p75_sec": 13.317,
-        "p90_sec": 21.017,
-        "max_sec": 36.467,
-        "pct_under_1s": 0.0,
-        "pct_1s_to_2_5s": 25.0,
-        "pct_over_2_5s": 75.0,
-        "aroll_median_sec": 2.4,
-        "broll_coverage_ratio": 0.45
+        "total_shots": 45,
+        "hard_cuts": 45,
+        "jump_cuts": 24,
+        "broll_overlays": 21,
+        "median_sec": 1.67,
+        "aroll_median_sec": 1.87,
+        "broll_coverage_ratio": 0.533,
+        "fast_cuts_under_1s_ratio": 0.12
       },
       "beat_alignment": {
-        "estimated_bpm": 112.0,
-        "beat_strength_score": 0.186,
+        "estimated_bpm": 120.0,
+        "beat_strength_score": 0.037,
         "bgm_presence": "continuous_bgm_bed",
-        "cut_beat_align_2f_pct": 13.3,
-        "cut_event_align_1f_pct": 26.7,
-        "cut_event_align_3f_pct": 53.3,
+        "cut_beat_align_2f_pct": 45.8,
+        "cut_event_align_1f_pct": 37.5,
+        "cut_event_align_3f_pct": 91.7,
         "j_cut_detected_pct": 0.0,
         "j_cut_median_lead_frames": 0.0,
-        "recommended_j_cut_frames": 0
+        "recommended_j_cut_frames": 2
       },
       "audio_and_sfx": {
-        "integrated_lufs": -12.6,
-        "loudness_range_lu": 3.1,
-        "true_peak_dbtp": 1.1,
-        "silence_count": 2,
-        "mean_pause_sec": 0.173,
-        "sfx_transient_count": 149,
-        "sfx_per_min_measured": 59.62,
-        "sfx_per_min_target": 60
+        "integrated_lufs": -14.0,
+        "sfx_per_min_measured": 24.0,
+        "sfx_per_min_target": 24.0,
+        "voice_bgm_snr_target_db": 11.0,
+        "dual_bgm_enabled": true
       },
       "subtitle_spec": {
         "font_family": "Alimama ShuHeiTi",
         "font_candidates": [
           "AlimamaShuHeiTi-Bold.otf",
-          "SmileySans-Oblique.ttf",
-          "SourceHanSerifCN-Bold.otf"
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
         ],
-        "font_weight": "Medium",
-        "bilingual": true,
-        "font_size_1080p_px": 40,
-        "english_font_size_px": 22,
-        "keyword_scale": 1.1,
-        "primary_color": "#FBFAEE",
-        "keyword_color": "#D2BB8C",
-        "stroke_color": "#0D0C0D",
-        "stroke_width": 2,
+        "font_weight": "Bold",
+        "bilingual": false,
+        "font_size_1080p_px": 64,
+        "keyword_scale": 1.16,
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFE24A",
+        "stroke_color": "#000000",
+        "stroke_width": 5,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
-        "safe_y_ratio": 0.76,
-        "animation": "fade_slide_up",
-        "punct_stripped": false,
-        "measured_y_center_ratio": 0.638,
+        "safe_y_ratio": 0.682,
+        "animation": "pop_subtle",
+        "punct_stripped": true,
+        "measured_y_center_ratio": 0.712,
         "measured_animation_raw": "smooth_pop_or_fade",
-        "safe_y_px_1080x1920": 1459,
-        "safe_y_px_1920x1080": 864,
+        "safe_y_px_1080x1920": 1330,
+        "safe_y_px_1920x1080": 799,
+        "shadow": true,
+        "shadow_color": "#000000C8",
+        "shadow_offset": [
+          2,
+          3
+        ],
+        "max_chars_per_line": 10,
         "symmetry_center_x": 540,
-        "symmetry_max_width_px": 640,
-        "max_chars_per_line": 10
+        "symmetry_max_width_px": 640
       },
       "color_and_lut": {
-        "y_mean_255": 43.7,
-        "y_p05_255": 8.3,
-        "y_p50_255": 21.6,
-        "y_p95_255": 152.2,
-        "dynamic_range_255": 143.8,
-        "dark_ratio_pct": 78.0,
-        "bright_ratio_pct": 6.2,
+        "y_mean_255": 142.8,
+        "y_p05_255": 45.2,
+        "y_p50_255": 152.6,
+        "y_p95_255": 224.9,
+        "dynamic_range_255": 179.7,
+        "dark_ratio_pct": 8.8,
+        "bright_ratio_pct": 28.7,
         "sat_mean_pct": 20.5,
-        "warmth_index": 6.86,
-        "tone_mood": "深沉低饱和质感调",
+        "warmth_index": 0.9,
+        "tone_mood": "均衡自然高通透调",
         "shadow_rgb": [
-          19.1,
-          16.6,
-          16.3
+          45.8,
+          51.2,
+          70.3
         ],
         "midtone_rgb": [
-          139.4,
-          113.7,
-          105.6
+          140.2,
+          126.8,
+          121.4
         ],
         "highlight_rgb": [
-          232.9,
-          230.0,
-          222.7
+          219.0,
+          222.2,
+          221.8
         ],
         "top5_palette_hex": [
-          "#0D0C0D",
-          "#F3F2EF",
-          "#2D2B2C",
-          "#504E4D",
-          "#73726E"
+          "#E8ECED",
+          "#35476E",
+          "#D1D3D3",
+          "#2B3551",
+          "#514E51"
         ],
         "lut_file": "style_01.cube",
         "lut_size": 17,
-        "contrast_gain": 1.24,
+        "contrast_gain": 1.135,
         "sat_scale": 0.76,
         "shadow_tint_rgb": [
-          0.0051,
-          -0.0013,
-          -0.0021
+          -0.0144,
+          -0.0006,
+          0.0481
         ],
         "highlight_tint_rgb": [
-          0.0061,
-          -0.0002,
-          -0.0159
+          -0.0054,
+          0.0015,
+          0.0007
         ],
-        "css_filter_approx": "brightness(0.934) contrast(1.24) saturate(0.76) sepia(0.057)",
+        "css_filter_approx": "brightness(1.046) contrast(1.135) saturate(0.76) sepia(0.008)",
         "lut_relative_path": "assets/style_spectrum/luts/style_01.cube"
       },
       "opening_structure": {
-        "0_to_3s_pattern": "深黑框暗窗 0.2s 渐亮开场 → 0.65s 推至半身口播并顶部浮现主题白字 → 1.55s 展开金黄双行重点大字 → 2.65s 切入画中画界面或流程演示",
-        "hook_formula": "开篇悬念预览 + 干货合集指引",
-        "first_frame_density": "中等偏高（拟物暗色控制台边框 + 顶部进度栏 + 主讲人主体）",
-        "first_3s_cuts_count": 2
+        "0_to_3s_pattern": "0.00–1.37s 主讲人在实景前正脸开讲第一句 → 1.37–2.83s 切强动作或态度的关键定格帧 + 重音起拍 → 1.53–2.83s 同步弹出多方位无底框描边花字（头顶主字 + 侧翼重点词 + 底部强调签）",
+        "hook_formula": "真实冲突瞬间 + 定格强态度 + 多方位花字连环出字 + 引子音乐切主曲",
+        "first_frame_density": "极高（实景背景 + 主体人物 + 无底框高反差红黄大字 + 利益引导）",
+        "first_3s_cuts_count": 2,
+        "hook_intro_sec": 2.83
       },
       "title_cover_layout": {
-        "layout_id": "top_giant_bottom_sub",
-        "layout_name": "复古胶片齿孔放映控制台",
-        "grid_desc": "深黑底色嵌双侧胶片齿孔，顶部常驻章节胶囊进度条，左侧场次数字，右侧速度表盘，片尾弹清晰评价卡",
-        "main_sub_ratio": 1.85,
-        "highlight_style": "金黄金属渐变大字 + 胶片黄黑胶囊状态标签"
+        "layout_id": "jianying_poster_4zone",
+        "layout_name": "门店老板白边人像 + 四区高低错落爆款封面",
+        "grid_desc": "实景铺底 + 主讲人半身主体轮廓 + 左上主标题与正红黑边大字 + 中左微倾斜明黄黑边状态签 + 底部行动引导双色大字",
+        "main_sub_ratio": 1.75,
+        "highlight_style": "正红黑边主爆字(#FF2222) + 明黄黑边倾斜贴纸(#FFE234) + 红白双色福利大字"
       },
       "transition_and_packaging": {
-        "ui_cadence": "每 15-20 秒切换一个章节阶段（01 → 02 → 03），内部画中画搭配流畅节奏演示与卡点反馈",
+        "ui_cadence": "主轨口播物理切净气口零缝紧拼（中位1.87s），句群级特写/实景覆盖率53.3%（中位1.67s），动作指代句保留-10dB现场动作真声；开头2.8s引子音乐切正文轻快主曲；片尾2.7s独立金黄大字+评论区引导尾卡",
         "transitions": [
-          "暗场淡入",
-          "胶片滚动切场",
-          "弹窗意见卡滑入"
+          "零缝紧剪硬切",
+          "定格爆点切入",
+          "句群实拍特写画面覆盖切回"
         ],
         "elements": [
-          "胶片齿孔边框",
-          "胶囊场次进度条",
-          "圆环倒计时速度表",
-          "白底映后意见卡"
+          "无底框头顶红字爆点",
+          "左右双翼金黄花字",
+          "底部暗红印章小字",
+          "片尾金黄大字尾卡"
         ],
-        "sfx_per_min_target": 60,
-        "visual_per_min_target": 12
+        "sfx_per_min_target": 24,
+        "visual_per_min_target": 8,
+        "broll_overlay_ratio_target": 0.53
       },
       "assets": {
         "lut_cube": "luts/style_01.cube"
@@ -291,9 +279,10 @@
         "max_chars_per_line": 10,
         "vertical_face_avoid_only": true
       },
-      "broll_overlay_ratio_target": 0.45,
+      "is_default_store_style": true,
+      "broll_overlay_ratio_target": 0.53,
       "broll_ambient_sound_policy": {
-        "enabled": false,
+        "enabled": true,
         "gain_db": -10.0,
         "trigger_action_words": [
           "敲",
@@ -311,7 +300,7 @@
         ]
       },
       "dual_bgm_structure": {
-        "enabled": false,
+        "enabled": true,
         "intro_duration_sec": 2.83,
         "intro_fade_out_sec": 0.57,
         "main_bgm_gain_db": -11.0,
@@ -324,50 +313,61 @@
         "stamp_color": "#B71C1C",
         "end_card_color": "#FFD637",
         "stroke_color": "#000000",
-        "borderless": false
+        "borderless": true
       },
-      "plain_cn_pitch": "深色清爽界面配顶部步骤条和键盘打字声，适合软件操作、工具演示和流程图解。",
+      "plain_cn_pitch": "老板门店实景出镜，前三秒定格冲突瞬间并切轻快主音乐，过半画面穿插店内实拍并保留现场动作真声，居中暖黄大字清晰好读。",
       "commercial_safe_font": "AlimamaShuHeiTi-Bold.otf",
+      "source_jianying_font": "新青年体-文跃新青年体",
       "whitebox_source": {
         "project_name": "style_01_preset",
-        "is_whitebox_jianying": false,
-        "rulebook_injected": true,
-        "canvas": "1080x1920"
+        "is_whitebox_jianying": true,
+        "canvas": "1080x1920",
+        "total_tracks": 25,
+        "duration_sec": 68.5
       },
       "packaging_techniques": {
-        "ai_matting_cutout": 0,
+        "ai_matting_cutout": 3,
         "white_paper_outline": false,
-        "mask_shapes": {},
-        "persistent_top_bar": true,
+        "mask_shapes": {
+          "线性": 1
+        },
+        "persistent_top_bar": false,
         "quote_citation_card": false,
-        "giant_impact_count": 2,
-        "capsule_bg_subtitle": true,
+        "giant_impact_count": 4,
+        "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
-        "pip_mode": "corner_circle_evidence_pip",
+        "pip_mode": "none",
         "giant_mode": "giant_smash_single"
       },
+      "benchmark_reference": "builtin_store_default_preset",
       "pip_composition_spec": {
-        "mode": "corner_circle_evidence_pip",
-        "window_bbox": {
-          "x": 692,
-          "y": 236,
-          "w": 288,
-          "h": 288
-        },
-        "mask_shape": "circle",
-        "border_hex": "#38BDF8",
-        "border_width": 5,
-        "tag_text": "实操画面",
-        "apply_on": "all_clips"
+        "mode": "none"
       },
       "giant_text_spec": {
         "mode": "giant_smash_single",
-        "font_size_px": 130,
-        "fg_hex": "#38BDF8",
-        "accent_hex": "#FFF589",
-        "stroke_hex": "#0B0F19",
-        "stroke_width": 9,
-        "tag_label": "核心拆解"
+        "font_size_px": 142,
+        "fg_hex": "#FFE066",
+        "accent_hex": "#FF3B30",
+        "stroke_hex": "#000000",
+        "stroke_width": 10,
+        "tag_label": "门店招牌"
+      },
+      "requires_aroll": "required",
+      "allow_explainer_pip": false,
+      "visual_blueprint": {
+        "opening_mode": "store_poster_burst",
+        "flower_mode": "tilted_variety_sticker",
+        "persistent_top_bar": false,
+        "tilt_deg": -5,
+        "accent_colors": [
+          "#FF3B30",
+          "#7CFF2A",
+          "#FFD83B"
+        ],
+        "stroke_color": "#0B0B0C",
+        "stroke_width": 8,
+        "has_sticker_tag": true,
+        "entry_anim": "bounce_pop"
       }
     },
     {
@@ -409,7 +409,7 @@
         "capsule_bg_subtitle": true,
         "black_polaroid_frame": false,
         "pure_kinetic_flower_flow": false,
-        "pip_mode": "dual_rect_grid_pip",
+        "pip_mode": "none",
         "giant_mode": "giant_dual_clash"
       },
       "meta": {
@@ -464,19 +464,19 @@
         "font_weight": "Bold",
         "bilingual": false,
         "font_size_1080p_px": 58,
-        "keyword_scale": 1.12,
+        "keyword_scale": 1.14,
         "primary_color": "#FFFFFF",
         "keyword_color": "#BCFF00",
         "stroke_color": "#000000",
         "stroke_width": 3,
-        "bg_box_color": "#1F2421CC",
-        "bg_radius": 16,
+        "bg_box_color": "#1E2220D4",
+        "bg_radius": 18,
         "safe_y_ratio": 0.76,
         "animation": "loop:弹幕滚动",
         "punct_stripped": true,
         "measured_y_center_ratio": 0.76,
         "measured_animation_raw": "loop:弹幕滚动/in:向右集合/in:开幕",
-        "safe_y_px_1080x1920": 1459,
+        "safe_y_px_1080x1920": 1340,
         "safe_y_px_1920x1080": 800,
         "shadow": true,
         "shadow_color": "#000000C8",
@@ -620,18 +620,7 @@
         "quote_citation_card": false
       },
       "pip_composition_spec": {
-        "mode": "dual_rect_grid_pip",
-        "window_bbox": {
-          "x": 84,
-          "y": 238,
-          "w": 912,
-          "h": 440
-        },
-        "mask_shape": "rounded_rect",
-        "border_hex": "#BCFF00",
-        "border_width": 4,
-        "tag_text": "对比直击",
-        "apply_on": "all_clips"
+        "mode": "none"
       },
       "giant_text_spec": {
         "mode": "giant_dual_clash",
@@ -641,6 +630,22 @@
         "stroke_hex": "#000000",
         "stroke_width": 10,
         "tag_label": "避坑真相"
+      },
+      "requires_aroll": "required",
+      "allow_explainer_pip": false,
+      "visual_blueprint": {
+        "opening_mode": "dark_gray_neon_slab",
+        "flower_mode": "neon_lime_slab",
+        "persistent_top_bar": false,
+        "tilt_deg": -3,
+        "accent_colors": [
+          "#FFFFFF",
+          "#BCFF00"
+        ],
+        "bg_slab": "rgba(28, 32, 30, 0.84)",
+        "stroke_color": "#000000",
+        "stroke_width": 4,
+        "entry_anim": "slide_snap"
       }
     },
     {
@@ -677,13 +682,13 @@
           "圆形": 2,
           "钢笔": 1
         },
-        "persistent_top_bar": true,
+        "persistent_top_bar": false,
         "quote_citation_card": true,
         "giant_impact_count": 10,
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
         "pure_kinetic_flower_flow": false,
-        "pip_mode": "linear_split_feather_pip",
+        "pip_mode": "none",
         "giant_mode": "giant_smash_single"
       },
       "meta": {
@@ -737,20 +742,20 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 60,
-        "keyword_scale": 1.15,
+        "font_size_1080p_px": 58,
+        "keyword_scale": 1.12,
         "primary_color": "#FFFFFF",
-        "keyword_color": "#FFF589",
+        "keyword_color": "#FFF066",
         "stroke_color": "#000000",
-        "stroke_width": 4,
-        "bg_box_color": "#00000000",
-        "bg_radius": 0,
+        "stroke_width": 3,
+        "bg_box_color": "#B91C1CE6",
+        "bg_radius": 8,
         "safe_y_ratio": 0.76,
         "animation": "in:冰雪飘动",
         "punct_stripped": true,
         "measured_y_center_ratio": 0.76,
         "measured_animation_raw": "in:冰雪飘动/in:逐字显影/in:向上滑动",
-        "safe_y_px_1080x1920": 1459,
+        "safe_y_px_1080x1920": 1345,
         "safe_y_px_1920x1080": 800,
         "shadow": true,
         "shadow_color": "#000000C8",
@@ -896,24 +901,7 @@
         "quote_citation_card": true
       },
       "pip_composition_spec": {
-        "mode": "linear_split_feather_pip",
-        "window_bbox": {
-          "x": 0,
-          "y": 140,
-          "w": 1080,
-          "h": 680
-        },
-        "book_card_bbox": {
-          "x": 150,
-          "y": 248,
-          "w": 780,
-          "h": 440
-        },
-        "mask_shape": "linear_feather",
-        "border_hex": "#FFF589",
-        "border_width": 3,
-        "tag_text": "深度例证",
-        "apply_on": "all_clips"
+        "mode": "none"
       },
       "giant_text_spec": {
         "mode": "giant_smash_single",
@@ -923,6 +911,22 @@
         "stroke_hex": "#000000",
         "stroke_width": 10,
         "tag_label": "深度洞察"
+      },
+      "requires_aroll": "required",
+      "allow_explainer_pip": false,
+      "visual_blueprint": {
+        "opening_mode": "red_bar_dual_line",
+        "flower_mode": "crimson_band_callout",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#B91C1C",
+          "#FFFFFF",
+          "#FDE047"
+        ],
+        "bg_slab": "#B91C1C",
+        "stroke_color": "#140404",
+        "stroke_width": 3,
+        "entry_anim": "wipe_in"
       }
     },
     {
@@ -963,7 +967,7 @@
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
         "pure_kinetic_flower_flow": false,
-        "pip_mode": "black_polaroid_frame_pip",
+        "pip_mode": "none",
         "giant_mode": "giant_vertical_seal"
       },
       "meta": {
@@ -1017,12 +1021,12 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 60,
-        "keyword_scale": 1.15,
+        "font_size_1080p_px": 52,
+        "keyword_scale": 1.08,
         "primary_color": "#FFFFFF",
-        "keyword_color": "#FFF589",
-        "stroke_color": "#000000",
-        "stroke_width": 4,
+        "keyword_color": "#FFE8B6",
+        "stroke_color": "#22201E",
+        "stroke_width": 2,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "safe_y_ratio": 0.695,
@@ -1030,7 +1034,7 @@
         "punct_stripped": true,
         "measured_y_center_ratio": 0.695,
         "measured_animation_raw": "in:缩小/in:开幕/in:收拢",
-        "safe_y_px_1080x1920": 1334,
+        "safe_y_px_1080x1920": 1350,
         "safe_y_px_1920x1080": 800,
         "shadow": true,
         "shadow_color": "#000000C8",
@@ -1175,19 +1179,7 @@
         "quote_citation_card": false
       },
       "pip_composition_spec": {
-        "mode": "black_polaroid_frame_pip",
-        "frame_bg_hex": "#1B1917",
-        "window_bbox": {
-          "x": 72,
-          "y": 252,
-          "w": 936,
-          "h": 1220
-        },
-        "mask_shape": "rounded_rect",
-        "border_hex": "#E6DEC8",
-        "border_width": 4,
-        "tag_text": "美学实景",
-        "apply_on": "all_clips"
+        "mode": "none"
       },
       "giant_text_spec": {
         "mode": "giant_vertical_seal",
@@ -1197,6 +1189,20 @@
         "stroke_hex": "#1E1B18",
         "stroke_width": 8,
         "tag_label": "主理人手记"
+      },
+      "requires_aroll": "required",
+      "allow_explainer_pip": false,
+      "visual_blueprint": {
+        "opening_mode": "minimal_serif_subtle",
+        "flower_mode": "minimal_serif_caption",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#FFFFFF",
+          "#F6E7CB"
+        ],
+        "stroke_color": "#262320",
+        "stroke_width": 2,
+        "entry_anim": "fade_up"
       }
     },
     {
@@ -1281,20 +1287,20 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 48,
-        "keyword_scale": 1.15,
-        "primary_color": "#FFFFFF",
-        "keyword_color": "#FFD54F",
-        "stroke_color": "#1E1E1E",
+        "font_size_1080p_px": 50,
+        "keyword_scale": 1.12,
+        "primary_color": "#2A2118",
+        "keyword_color": "#C62828",
+        "stroke_color": "#FFFDF8",
         "stroke_width": 4,
-        "bg_box_color": "#00000000",
-        "bg_radius": 0,
+        "bg_box_color": "#F5EFE2E0",
+        "bg_radius": 10,
         "safe_y_ratio": 0.76,
         "animation": "fade_slide_up",
         "punct_stripped": true,
         "measured_y_center_ratio": 0.787,
         "measured_animation_raw": "smooth_pop_or_fade",
-        "safe_y_px_1080x1920": 1459,
+        "safe_y_px_1080x1920": 1380,
         "safe_y_px_1920x1080": 950,
         "symmetry_center_x": 540,
         "symmetry_max_width_px": 640,
@@ -1436,27 +1442,24 @@
         "ai_matting_cutout": 0,
         "white_paper_outline": false,
         "mask_shapes": {},
-        "persistent_top_bar": false,
+        "persistent_top_bar": true,
         "quote_citation_card": false,
         "giant_impact_count": 2,
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
-        "pip_mode": "white_outline_cutout_pip",
+        "pip_mode": "paper_craft_card_pip",
         "giant_mode": "giant_smash_single"
       },
       "pip_composition_spec": {
-        "mode": "white_outline_cutout_pip",
-        "window_bbox": {
-          "x": 664,
-          "y": 236,
-          "w": 320,
-          "h": 412
-        },
-        "mask_shape": "white_outline_cutout",
-        "border_hex": "#FFF8E7",
-        "border_width": 8,
-        "tag_text": "结构特写",
-        "apply_on": "all_clips"
+        "mode": "paper_craft_card_pip",
+        "frame_x": 76,
+        "frame_y": 320,
+        "frame_w": 928,
+        "frame_h": 928,
+        "bg_hex": "#ECE5D8",
+        "border_hex": "#C8B89E",
+        "border_width": 6,
+        "single_source": true
       },
       "giant_text_spec": {
         "mode": "giant_smash_single",
@@ -1466,6 +1469,21 @@
         "stroke_hex": "#1A1412",
         "stroke_width": 9,
         "tag_label": "工艺内幕"
+      },
+      "requires_aroll": "optional",
+      "allow_explainer_pip": false,
+      "visual_blueprint": {
+        "opening_mode": "paper_blueprint_header",
+        "flower_mode": "red_ruler_note",
+        "persistent_top_bar": true,
+        "accent_colors": [
+          "#D93829",
+          "#2D241C",
+          "#EFE6D5"
+        ],
+        "stroke_color": "#2D241C",
+        "stroke_width": 2,
+        "entry_anim": "stamp_in"
       }
     },
     {
@@ -1560,12 +1578,12 @@
         ],
         "font_weight": "Bold",
         "bilingual": true,
-        "font_size_1080p_px": 60,
-        "keyword_scale": 1.15,
-        "primary_color": "#FFFFFF",
-        "keyword_color": "#FFF589",
+        "font_size_1080p_px": 46,
+        "keyword_scale": 1.08,
+        "primary_color": "#F8FAFC",
+        "keyword_color": "#FDE68A",
         "stroke_color": "#000000",
-        "stroke_width": 4,
+        "stroke_width": 2,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "safe_y_ratio": 0.693,
@@ -1573,7 +1591,7 @@
         "punct_stripped": true,
         "measured_y_center_ratio": 0.693,
         "measured_animation_raw": "in:逐字显影/in:轻微放大/in:随机上升",
-        "safe_y_px_1080x1920": 1331,
+        "safe_y_px_1080x1920": 1390,
         "safe_y_px_1920x1080": 800,
         "shadow": true,
         "shadow_color": "#000000C8",
@@ -1718,18 +1736,16 @@
       },
       "pip_composition_spec": {
         "mode": "black_polaroid_frame_pip",
-        "frame_bg_hex": "#07090D",
-        "window_bbox": {
-          "x": 74,
-          "y": 284,
-          "w": 932,
-          "h": 1190
-        },
-        "mask_shape": "rounded_rect",
-        "border_hex": "#EAD4A6",
-        "border_width": 3,
-        "tag_text": "慢调纪实",
-        "apply_on": "all_clips"
+        "frame_x": 140,
+        "frame_y": 540,
+        "frame_w": 800,
+        "frame_h": 720,
+        "bg_hex": "#050506",
+        "border_hex": "#FFFFFF",
+        "border_width": 0,
+        "bottom_tag": "Daily Vlog",
+        "bottom_quote": "Every ordinary moment carries quiet strength.",
+        "single_source": true
       },
       "giant_text_spec": {
         "mode": "giant_vertical_seal",
@@ -1739,6 +1755,20 @@
         "stroke_hex": "#000000",
         "stroke_width": 8,
         "tag_label": "内心独白"
+      },
+      "requires_aroll": "optional",
+      "allow_explainer_pip": false,
+      "visual_blueprint": {
+        "opening_mode": "polaroid_handwritten_top",
+        "flower_mode": "polaroid_handwritten_top",
+        "persistent_top_bar": true,
+        "accent_colors": [
+          "#FFFFFF",
+          "#E5E7EB"
+        ],
+        "stroke_color": "#000000",
+        "stroke_width": 0,
+        "entry_anim": "fade_up"
       }
     },
     {
@@ -1782,7 +1812,7 @@
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
         "pure_kinetic_flower_flow": false,
-        "pip_mode": "white_outline_cutout_pip",
+        "pip_mode": "vision_portrait_cutout_pip",
         "giant_mode": "giant_smash_single"
       },
       "meta": {
@@ -1836,11 +1866,11 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 60,
+        "font_size_1080p_px": 56,
         "keyword_scale": 1.15,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFBF17",
-        "stroke_color": "#000000",
+        "stroke_color": "#111111",
         "stroke_width": 4,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
@@ -1849,7 +1879,7 @@
         "punct_stripped": true,
         "measured_y_center_ratio": 0.643,
         "measured_animation_raw": "in:流光扩散/in:轻微放大/in:发光模糊",
-        "safe_y_px_1080x1920": 1235,
+        "safe_y_px_1080x1920": 1310,
         "safe_y_px_1920x1080": 800,
         "shadow": true,
         "shadow_color": "#000000C8",
@@ -1994,18 +2024,11 @@
         "quote_citation_card": false
       },
       "pip_composition_spec": {
-        "mode": "white_outline_cutout_pip",
-        "window_bbox": {
-          "x": 656,
-          "y": 232,
-          "w": 332,
-          "h": 428
-        },
-        "mask_shape": "white_outline_cutout",
-        "border_hex": "#FFFFFF",
-        "border_width": 9,
-        "tag_text": "人像贴纸解说",
-        "apply_on": "all_clips"
+        "mode": "vision_portrait_cutout_pip",
+        "outline_px": 10,
+        "outline_hex": "#FFFFFF",
+        "bg_blur_sigma": 12,
+        "single_source": false
       },
       "giant_text_spec": {
         "mode": "giant_smash_single",
@@ -2015,6 +2038,20 @@
         "stroke_hex": "#000000",
         "stroke_width": 10,
         "tag_label": "避坑警告"
+      },
+      "requires_aroll": "required",
+      "allow_explainer_pip": false,
+      "visual_blueprint": {
+        "opening_mode": "sticker_cutout_badge",
+        "flower_mode": "clean_sticker_pop",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#FFFFFF",
+          "#FFBF17"
+        ],
+        "stroke_color": "#111111",
+        "stroke_width": 4,
+        "entry_anim": "bounce_pop"
       }
     },
     {
@@ -2058,7 +2095,7 @@
         "pure_kinetic_flower_flow": false,
         "blur_bg_center_pip": true,
         "multi_tag_burst": true,
-        "pip_mode": "blur_bg_center_card_pip",
+        "pip_mode": "none",
         "giant_mode": "giant_dual_clash"
       },
       "meta": {
@@ -2113,12 +2150,12 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 62,
-        "keyword_scale": 1.18,
+        "font_size_1080p_px": 54,
+        "keyword_scale": 1.12,
         "primary_color": "#FFFFFF",
-        "keyword_color": "#FFF589",
+        "keyword_color": "#FFE14D",
         "stroke_color": "#000000",
-        "stroke_width": 5,
+        "stroke_width": 4,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "safe_y_ratio": 0.695,
@@ -2126,7 +2163,7 @@
         "punct_stripped": true,
         "measured_y_center_ratio": 0.695,
         "measured_animation_raw": "in:折叠/in:缩小/in:发光模糊/in:打字光标",
-        "safe_y_px_1080x1920": 1334,
+        "safe_y_px_1080x1920": 1350,
         "safe_y_px_1920x1080": 800,
         "shadow": true,
         "shadow_color": "#000000D8",
@@ -2275,25 +2312,7 @@
         "multi_tag_burst": true
       },
       "pip_composition_spec": {
-        "mode": "blur_bg_center_card_pip",
-        "window_bbox": {
-          "x": 154,
-          "y": 244,
-          "w": 772,
-          "h": 910
-        },
-        "circle_window_bbox": {
-          "x": 112,
-          "y": 824,
-          "w": 304,
-          "h": 304
-        },
-        "mask_shape": "rounded_rect",
-        "border_hex": "#FFF589",
-        "border_width": 4,
-        "bg_blur_sigma": 22,
-        "tag_text": "热点现场",
-        "apply_on": "all_clips"
+        "mode": "none"
       },
       "giant_text_spec": {
         "mode": "giant_dual_clash",
@@ -2304,6 +2323,20 @@
         "stroke_hex": "#000000",
         "stroke_width": 10,
         "tag_label": "深度锐评"
+      },
+      "requires_aroll": "required",
+      "allow_explainer_pip": false,
+      "visual_blueprint": {
+        "opening_mode": "top_left_slash_badge",
+        "flower_mode": "slash_yellow_badge",
+        "persistent_top_bar": true,
+        "accent_colors": [
+          "#FFFFFF",
+          "#FFE14D"
+        ],
+        "stroke_color": "#0F172A",
+        "stroke_width": 6,
+        "entry_anim": "slide_snap"
       }
     },
     {
@@ -2339,7 +2372,7 @@
           "圆形": 15,
           "矩形": 6
         },
-        "persistent_top_bar": false,
+        "persistent_top_bar": true,
         "quote_citation_card": true,
         "giant_impact_count": 3,
         "capsule_bg_subtitle": false,
@@ -2400,12 +2433,12 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 60,
-        "keyword_scale": 1.15,
-        "primary_color": "#FFFFFF",
-        "keyword_color": "#FF1837",
+        "font_size_1080p_px": 48,
+        "keyword_scale": 1.1,
+        "primary_color": "#F5F5F4",
+        "keyword_color": "#E5C07B",
         "stroke_color": "#000000",
-        "stroke_width": 4,
+        "stroke_width": 3,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "safe_y_ratio": 0.669,
@@ -2413,7 +2446,7 @@
         "punct_stripped": true,
         "measured_y_center_ratio": 0.669,
         "measured_animation_raw": "in:渐显/in:向左模糊/in:雪光模糊",
-        "safe_y_px_1080x1920": 1284,
+        "safe_y_px_1080x1920": 1370,
         "safe_y_px_1920x1080": 800,
         "shadow": true,
         "shadow_color": "#000000C8",
@@ -2559,25 +2592,18 @@
       },
       "pip_composition_spec": {
         "mode": "dark_doc_circle_avatar_pip",
-        "frame_bg_hex": "#05060A",
-        "evidence_bbox": {
-          "x": 74,
-          "y": 224,
-          "w": 932,
-          "h": 508
-        },
-        "avatar_circle_bbox": {
-          "x": 116,
-          "y": 808,
-          "w": 328,
-          "h": 328
-        },
-        "mask_shape": "circle",
-        "border_hex": "#EAD4A6",
-        "border_width": 4,
-        "dual_grid_split": true,
-        "tag_text": "卷宗物证画面",
-        "apply_on": "all_clips"
+        "top_frame_x": 76,
+        "top_frame_y": 290,
+        "top_frame_w": 928,
+        "top_frame_h": 540,
+        "avatar_cx": 215,
+        "avatar_cy": 1030,
+        "avatar_r": 122,
+        "bg_hex": "#060608",
+        "border_hex": "#C8A96A",
+        "border_width": 3,
+        "avatar_border_hex": "#E2D5B5",
+        "single_source": false
       },
       "giant_text_spec": {
         "mode": "giant_dual_clash",
@@ -2587,6 +2613,20 @@
         "stroke_hex": "#000000",
         "stroke_width": 10,
         "tag_label": "案情焦点"
+      },
+      "requires_aroll": "optional",
+      "allow_explainer_pip": false,
+      "visual_blueprint": {
+        "opening_mode": "dark_doc_panel_header",
+        "flower_mode": "doc_case_title",
+        "persistent_top_bar": true,
+        "accent_colors": [
+          "#F5F5F4",
+          "#D4AF37"
+        ],
+        "stroke_color": "#000000",
+        "stroke_width": 2,
+        "entry_anim": "fade_up"
       }
     },
     {
@@ -2629,7 +2669,7 @@
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
         "pure_kinetic_flower_flow": false,
-        "pip_mode": "white_outline_cutout_pip",
+        "pip_mode": "none",
         "giant_mode": "giant_smash_single"
       },
       "meta": {
@@ -2683,20 +2723,20 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 60,
-        "keyword_scale": 1.15,
+        "font_size_1080p_px": 52,
+        "keyword_scale": 1.12,
         "primary_color": "#FFFFFF",
-        "keyword_color": "#FF4D4F",
-        "stroke_color": "#000000",
-        "stroke_width": 4,
-        "bg_box_color": "#00000000",
-        "bg_radius": 0,
+        "keyword_color": "#7DD3FC",
+        "stroke_color": "#0F172A",
+        "stroke_width": 3,
+        "bg_box_color": "#0F172A99",
+        "bg_radius": 14,
         "safe_y_ratio": 0.721,
         "animation": "in:放大",
         "punct_stripped": true,
         "measured_y_center_ratio": 0.721,
         "measured_animation_raw": "in:放大/in:滚入/in:向右模糊 II",
-        "safe_y_px_1080x1920": 1384,
+        "safe_y_px_1080x1920": 1355,
         "safe_y_px_1920x1080": 800,
         "shadow": true,
         "shadow_color": "#000000C8",
@@ -2842,18 +2882,7 @@
         "quote_citation_card": false
       },
       "pip_composition_spec": {
-        "mode": "white_outline_cutout_pip",
-        "window_bbox": {
-          "x": 100,
-          "y": 238,
-          "w": 324,
-          "h": 416
-        },
-        "mask_shape": "white_outline_cutout",
-        "border_hex": "#FFE28A",
-        "border_width": 8,
-        "tag_text": "重点抠像",
-        "apply_on": "all_clips"
+        "mode": "none"
       },
       "giant_text_spec": {
         "mode": "giant_smash_single",
@@ -2863,6 +2892,20 @@
         "stroke_hex": "#000000",
         "stroke_width": 10,
         "tag_label": "核心干货"
+      },
+      "requires_aroll": "required",
+      "allow_explainer_pip": false,
+      "visual_blueprint": {
+        "opening_mode": "clean_minimal_title",
+        "flower_mode": "clean_accent_pill",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#FFFFFF",
+          "#38BDF8"
+        ],
+        "stroke_color": "#0F172A",
+        "stroke_width": 3,
+        "entry_anim": "fade_up"
       }
     },
     {
@@ -2903,7 +2946,7 @@
         "capsule_bg_subtitle": true,
         "black_polaroid_frame": false,
         "pure_kinetic_flower_flow": false,
-        "pip_mode": "corner_circle_evidence_pip",
+        "pip_mode": "none",
         "giant_mode": "giant_numeric_trio"
       },
       "meta": {
@@ -2957,20 +3000,20 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 58,
+        "font_size_1080p_px": 52,
         "keyword_scale": 1.12,
         "primary_color": "#FFFFFF",
-        "keyword_color": "#FFBF17",
-        "stroke_color": "#000000",
+        "keyword_color": "#FFE066",
+        "stroke_color": "#1A1A1A",
         "stroke_width": 3,
-        "bg_box_color": "#1C2426CC",
+        "bg_box_color": "#11182788",
         "bg_radius": 16,
         "safe_y_ratio": 0.695,
         "animation": "in:向下露出",
         "punct_stripped": true,
         "measured_y_center_ratio": 0.695,
         "measured_animation_raw": "in:向下露出/in:渐显/in:向右露出",
-        "safe_y_px_1080x1920": 1334,
+        "safe_y_px_1080x1920": 1350,
         "safe_y_px_1920x1080": 800,
         "shadow": true,
         "shadow_color": "#000000C8",
@@ -3117,18 +3160,7 @@
         "quote_citation_card": true
       },
       "pip_composition_spec": {
-        "mode": "corner_circle_evidence_pip",
-        "window_bbox": {
-          "x": 684,
-          "y": 234,
-          "w": 296,
-          "h": 296
-        },
-        "mask_shape": "circle",
-        "border_hex": "#FFE28A",
-        "border_width": 5,
-        "tag_text": "圆窗例证",
-        "apply_on": "all_clips"
+        "mode": "none"
       },
       "giant_text_spec": {
         "mode": "giant_numeric_trio",
@@ -3138,6 +3170,21 @@
         "stroke_hex": "#000000",
         "stroke_width": 9,
         "tag_label": "关键法则"
+      },
+      "requires_aroll": "required",
+      "allow_explainer_pip": true,
+      "visual_blueprint": {
+        "opening_mode": "clean_creator_callout",
+        "flower_mode": "soft_glass_pill",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#FFFFFF",
+          "#38BDF8",
+          "#FDE047"
+        ],
+        "stroke_color": "#1E293B",
+        "stroke_width": 3,
+        "entry_anim": "fade_up"
       }
     },
     {
@@ -3220,20 +3267,20 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 54,
+        "font_size_1080p_px": 50,
         "keyword_scale": 1.12,
-        "primary_color": "#FFFFFF",
-        "keyword_color": "#FFD54F",
-        "stroke_color": "#2A2A2A",
-        "stroke_width": 4,
-        "bg_box_color": "#00000000",
-        "bg_radius": 0,
+        "primary_color": "#111827",
+        "keyword_color": "#1D4ED8",
+        "stroke_color": "#FFFFFF",
+        "stroke_width": 3,
+        "bg_box_color": "#FFFFFFEB",
+        "bg_radius": 14,
         "safe_y_ratio": 0.76,
         "animation": "hard_cut",
         "punct_stripped": true,
         "measured_y_center_ratio": 0.815,
         "measured_animation_raw": "hard_cut",
-        "safe_y_px_1080x1920": 1459,
+        "safe_y_px_1080x1920": 1370,
         "safe_y_px_1920x1080": 832,
         "symmetry_center_x": 540,
         "symmetry_max_width_px": 640,
@@ -3375,27 +3422,24 @@
         "ai_matting_cutout": 1,
         "white_paper_outline": false,
         "mask_shapes": {},
-        "persistent_top_bar": false,
+        "persistent_top_bar": true,
         "quote_citation_card": false,
         "giant_impact_count": 2,
         "capsule_bg_subtitle": true,
         "black_polaroid_frame": false,
-        "pip_mode": "dual_rect_grid_pip",
+        "pip_mode": "minimal_white_note_card_pip",
         "giant_mode": "giant_smash_single"
       },
       "pip_composition_spec": {
-        "mode": "dual_rect_grid_pip",
-        "window_bbox": {
-          "x": 86,
-          "y": 236,
-          "w": 908,
-          "h": 440
-        },
-        "mask_shape": "rounded_rect",
-        "border_hex": "#38BDF8",
+        "mode": "minimal_white_note_card_pip",
+        "frame_x": 76,
+        "frame_y": 330,
+        "frame_w": 928,
+        "frame_h": 880,
+        "bg_hex": "#F8F8F6",
+        "border_hex": "#18181B",
         "border_width": 4,
-        "tag_text": "清单图解",
-        "apply_on": "all_clips"
+        "single_source": true
       },
       "giant_text_spec": {
         "mode": "giant_smash_single",
@@ -3405,6 +3449,20 @@
         "stroke_hex": "#0F172A",
         "stroke_width": 9,
         "tag_label": "清单必看"
+      },
+      "requires_aroll": "optional",
+      "allow_explainer_pip": true,
+      "visual_blueprint": {
+        "opening_mode": "white_note_header",
+        "flower_mode": "ink_underline_note",
+        "persistent_top_bar": true,
+        "accent_colors": [
+          "#111827",
+          "#2563EB"
+        ],
+        "stroke_color": "#FFFFFF",
+        "stroke_width": 2,
+        "entry_anim": "fade_up"
       }
     },
     {
@@ -3485,11 +3543,11 @@
         ],
         "font_weight": "Regular",
         "bilingual": false,
-        "font_size_1080p_px": 46,
-        "keyword_scale": 1.08,
-        "primary_color": "#FAFFFA",
-        "keyword_color": "#FFD54F",
-        "stroke_color": "#26251C",
+        "font_size_1080p_px": 48,
+        "keyword_scale": 1.06,
+        "primary_color": "#FBF8F1",
+        "keyword_color": "#E6C792",
+        "stroke_color": "#1C1917",
         "stroke_width": 2,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
@@ -3498,7 +3556,7 @@
         "punct_stripped": true,
         "measured_y_center_ratio": 0.693,
         "measured_animation_raw": "hard_cut",
-        "safe_y_px_1080x1920": 1382,
+        "safe_y_px_1080x1920": 1375,
         "safe_y_px_1920x1080": 778,
         "symmetry_center_x": 540,
         "symmetry_max_width_px": 640,
@@ -3642,23 +3700,11 @@
         "giant_impact_count": 2,
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
-        "pip_mode": "black_polaroid_frame_pip",
+        "pip_mode": "none",
         "giant_mode": "giant_vertical_seal"
       },
       "pip_composition_spec": {
-        "mode": "black_polaroid_frame_pip",
-        "frame_bg_hex": "#0B0E12",
-        "window_bbox": {
-          "x": 68,
-          "y": 258,
-          "w": 944,
-          "h": 1210
-        },
-        "mask_shape": "rounded_rect",
-        "border_hex": "#D4B483",
-        "border_width": 3,
-        "tag_text": "空间实景",
-        "apply_on": "all_clips"
+        "mode": "none"
       },
       "giant_text_spec": {
         "mode": "giant_vertical_seal",
@@ -3668,171 +3714,198 @@
         "stroke_hex": "#0B0E12",
         "stroke_width": 8,
         "tag_label": "空间美学"
+      },
+      "requires_aroll": "optional",
+      "allow_explainer_pip": false,
+      "visual_blueprint": {
+        "opening_mode": "cinema_serif_title",
+        "flower_mode": "minimal_serif_caption",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#F8F5EE",
+          "#E2C799"
+        ],
+        "stroke_color": "#1A1816",
+        "stroke_width": 2,
+        "entry_anim": "fade_up"
       }
     },
     {
       "style_id": "style_14",
       "index": 14,
-      "style_name_cn": "门店原生爆款风 · 居中双字号暖黄高亮（默认）",
-      "archetype_id": "arch_04_punch_talking_head",
-      "recommended_track": "store",
+      "style_name_cn": "深色控制台界面 · 工具与流程演示风",
+      "archetype_id": "arch_01_tech_ui_console",
+      "recommended_track": "creator",
       "domain_tags": [
-        "门店老板",
-        "同城获客",
-        "实拍口播",
-        "默认旗舰风格"
+        "AI工具演示",
+        "软件教程",
+        "代码图解",
+        "流程拆解"
       ],
       "source_filename": "style_14_preset",
       "meta": {
         "width": 1080,
         "height": 1920,
-        "aspect": "9:16",
+        "orientation": "portrait_9_16",
+        "aspect_ratio": "9:16",
         "fps": 30.0,
-        "duration_sec": 68.5,
-        "benchmark_source": "builtin_preset_style_14"
+        "nb_frames": 4498,
+        "duration_sec": 149.952,
+        "file_size_mb": 13.45,
+        "has_audio": true,
+        "audio_sample_rate": 48000,
+        "aspect": "9:16"
       },
       "shot_distribution": {
-        "total_shots": 45,
-        "hard_cuts": 45,
-        "jump_cuts": 24,
-        "broll_overlays": 21,
-        "median_sec": 1.67,
-        "aroll_median_sec": 1.87,
-        "broll_coverage_ratio": 0.533,
-        "fast_cuts_under_1s_ratio": 0.12
+        "total_frames_analyzed": 4498,
+        "total_shots": 16,
+        "hard_cuts": 8,
+        "jump_or_punch_cuts": 7,
+        "dissolve_or_wipe_transitions": 36,
+        "cuts_per_min": 6.0,
+        "transitions_per_min": 20.41,
+        "first_3s_cut_times_sec": [],
+        "min_sec": 1.0,
+        "p25_sec": 2.408,
+        "median_sec": 2.4,
+        "mean_sec": 9.371,
+        "p75_sec": 13.317,
+        "p90_sec": 21.017,
+        "max_sec": 36.467,
+        "pct_under_1s": 0.0,
+        "pct_1s_to_2_5s": 25.0,
+        "pct_over_2_5s": 75.0,
+        "aroll_median_sec": 2.4,
+        "broll_coverage_ratio": 0.45
       },
       "beat_alignment": {
-        "estimated_bpm": 120.0,
-        "beat_strength_score": 0.037,
+        "estimated_bpm": 112.0,
+        "beat_strength_score": 0.186,
         "bgm_presence": "continuous_bgm_bed",
-        "cut_beat_align_2f_pct": 45.8,
-        "cut_event_align_1f_pct": 37.5,
-        "cut_event_align_3f_pct": 91.7,
+        "cut_beat_align_2f_pct": 13.3,
+        "cut_event_align_1f_pct": 26.7,
+        "cut_event_align_3f_pct": 53.3,
         "j_cut_detected_pct": 0.0,
         "j_cut_median_lead_frames": 0.0,
-        "recommended_j_cut_frames": 2
+        "recommended_j_cut_frames": 0
       },
       "audio_and_sfx": {
-        "integrated_lufs": -14.0,
-        "sfx_per_min_measured": 24.0,
-        "sfx_per_min_target": 24.0,
-        "voice_bgm_snr_target_db": 11.0,
-        "dual_bgm_enabled": true
+        "integrated_lufs": -12.6,
+        "loudness_range_lu": 3.1,
+        "true_peak_dbtp": 1.1,
+        "silence_count": 2,
+        "mean_pause_sec": 0.173,
+        "sfx_transient_count": 149,
+        "sfx_per_min_measured": 59.62,
+        "sfx_per_min_target": 60
       },
       "subtitle_spec": {
         "font_family": "Alimama ShuHeiTi",
         "font_candidates": [
           "AlimamaShuHeiTi-Bold.otf",
-          "SourceHanSansCN-Bold.otf",
-          "NotoSansCJKsc-Bold.otf"
+          "SmileySans-Oblique.ttf",
+          "SourceHanSerifCN-Bold.otf"
         ],
-        "font_weight": "Bold",
-        "bilingual": false,
-        "font_size_1080p_px": 62,
-        "keyword_scale": 1.133,
-        "primary_color": "#FFFFFF",
-        "keyword_color": "#FFE28A",
-        "stroke_color": "#000000",
-        "stroke_width": 4,
-        "bg_box_color": "#00000000",
-        "bg_radius": 0,
-        "safe_y_ratio": 0.682,
-        "animation": "pop_subtle",
-        "punct_stripped": true,
-        "measured_y_center_ratio": 0.712,
+        "font_weight": "Medium",
+        "bilingual": true,
+        "font_size_1080p_px": 46,
+        "english_font_size_px": 22,
+        "keyword_scale": 1.1,
+        "primary_color": "#F8FAFC",
+        "keyword_color": "#FBBF24",
+        "stroke_color": "#09090B",
+        "stroke_width": 2,
+        "bg_box_color": "#09090BC4",
+        "bg_radius": 10,
+        "safe_y_ratio": 0.76,
+        "animation": "fade_slide_up",
+        "punct_stripped": false,
+        "measured_y_center_ratio": 0.638,
         "measured_animation_raw": "smooth_pop_or_fade",
-        "safe_y_px_1080x1920": 1310,
-        "safe_y_px_1920x1080": 799,
-        "shadow": true,
-        "shadow_color": "#000000C8",
-        "shadow_offset": [
-          2,
-          3
-        ],
-        "max_chars_per_line": 10,
+        "safe_y_px_1080x1920": 1390,
+        "safe_y_px_1920x1080": 864,
         "symmetry_center_x": 540,
-        "symmetry_max_width_px": 640
+        "symmetry_max_width_px": 640,
+        "max_chars_per_line": 10
       },
       "color_and_lut": {
-        "y_mean_255": 142.8,
-        "y_p05_255": 45.2,
-        "y_p50_255": 152.6,
-        "y_p95_255": 224.9,
-        "dynamic_range_255": 179.7,
-        "dark_ratio_pct": 8.8,
-        "bright_ratio_pct": 28.7,
+        "y_mean_255": 43.7,
+        "y_p05_255": 8.3,
+        "y_p50_255": 21.6,
+        "y_p95_255": 152.2,
+        "dynamic_range_255": 143.8,
+        "dark_ratio_pct": 78.0,
+        "bright_ratio_pct": 6.2,
         "sat_mean_pct": 20.5,
-        "warmth_index": 0.9,
-        "tone_mood": "均衡自然高通透调",
+        "warmth_index": 6.86,
+        "tone_mood": "深沉低饱和质感调",
         "shadow_rgb": [
-          45.8,
-          51.2,
-          70.3
+          19.1,
+          16.6,
+          16.3
         ],
         "midtone_rgb": [
-          140.2,
-          126.8,
-          121.4
+          139.4,
+          113.7,
+          105.6
         ],
         "highlight_rgb": [
-          219.0,
-          222.2,
-          221.8
+          232.9,
+          230.0,
+          222.7
         ],
         "top5_palette_hex": [
-          "#E8ECED",
-          "#35476E",
-          "#D1D3D3",
-          "#2B3551",
-          "#514E51"
+          "#0D0C0D",
+          "#F3F2EF",
+          "#2D2B2C",
+          "#504E4D",
+          "#73726E"
         ],
         "lut_file": "style_14.cube",
         "lut_size": 17,
-        "contrast_gain": 1.135,
+        "contrast_gain": 1.24,
         "sat_scale": 0.76,
         "shadow_tint_rgb": [
-          -0.0144,
-          -0.0006,
-          0.0481
+          0.0051,
+          -0.0013,
+          -0.0021
         ],
         "highlight_tint_rgb": [
-          -0.0054,
-          0.0015,
-          0.0007
+          0.0061,
+          -0.0002,
+          -0.0159
         ],
-        "css_filter_approx": "brightness(1.046) contrast(1.135) saturate(0.76) sepia(0.008)",
+        "css_filter_approx": "brightness(0.934) contrast(1.24) saturate(0.76) sepia(0.057)",
         "lut_relative_path": "assets/style_spectrum/luts/style_14.cube"
       },
       "opening_structure": {
-        "0_to_3s_pattern": "0.00–1.37s 主讲人在实景前正脸开讲第一句 → 1.37–2.83s 切强动作或态度的关键定格帧 + 重音起拍 → 1.53–2.83s 同步弹出多方位无底框描边花字（头顶主字 + 侧翼重点词 + 底部强调签）",
-        "hook_formula": "真实冲突瞬间 + 定格强态度 + 多方位花字连环出字 + 引子音乐切主曲",
-        "first_frame_density": "极高（实景背景 + 主体人物 + 无底框高反差红黄大字 + 利益引导）",
-        "first_3s_cuts_count": 2,
-        "hook_intro_sec": 2.83
+        "0_to_3s_pattern": "深黑框暗窗 0.2s 渐亮开场 → 0.65s 推至半身口播并顶部浮现主题白字 → 1.55s 展开金黄双行重点大字 → 2.65s 切入画中画界面或流程演示",
+        "hook_formula": "开篇悬念预览 + 干货合集指引",
+        "first_frame_density": "中等偏高（拟物暗色控制台边框 + 顶部进度栏 + 主讲人主体）",
+        "first_3s_cuts_count": 2
       },
       "title_cover_layout": {
-        "layout_id": "jianying_poster_4zone",
-        "layout_name": "门店老板白边人像 + 四区高低错落爆款封面",
-        "grid_desc": "实景铺底 + 主讲人半身主体轮廓 + 左上主标题与正红黑边大字 + 中左微倾斜明黄黑边状态签 + 底部行动引导双色大字",
-        "main_sub_ratio": 1.75,
-        "highlight_style": "正红黑边主爆字(#FF2222) + 明黄黑边倾斜贴纸(#FFE234) + 红白双色福利大字"
+        "layout_id": "top_giant_bottom_sub",
+        "layout_name": "复古胶片齿孔放映控制台",
+        "grid_desc": "深黑底色嵌双侧胶片齿孔，顶部常驻章节胶囊进度条，左侧场次数字，右侧速度表盘，片尾弹清晰评价卡",
+        "main_sub_ratio": 1.85,
+        "highlight_style": "金黄金属渐变大字 + 胶片黄黑胶囊状态标签"
       },
       "transition_and_packaging": {
-        "ui_cadence": "主轨口播物理切净气口零缝紧拼（中位1.87s），句群级特写/实景覆盖率53.3%（中位1.67s），动作指代句保留-10dB现场动作真声；开头2.8s引子音乐切正文轻快主曲；片尾2.7s独立金黄大字+评论区引导尾卡",
+        "ui_cadence": "每 15-20 秒切换一个章节阶段（01 → 02 → 03），内部画中画搭配流畅节奏演示与卡点反馈",
         "transitions": [
-          "零缝紧剪硬切",
-          "定格爆点切入",
-          "句群实拍特写画面覆盖切回"
+          "暗场淡入",
+          "胶片滚动切场",
+          "弹窗意见卡滑入"
         ],
         "elements": [
-          "无底框头顶红字爆点",
-          "左右双翼金黄花字",
-          "底部暗红印章小字",
-          "片尾金黄大字尾卡"
+          "胶片齿孔边框",
+          "胶囊场次进度条",
+          "圆环倒计时速度表",
+          "白底映后意见卡"
         ],
-        "sfx_per_min_target": 24,
-        "visual_per_min_target": 8,
-        "broll_overlay_ratio_target": 0.53
+        "sfx_per_min_target": 60,
+        "visual_per_min_target": 12
       },
       "assets": {
         "lut_cube": "luts/style_14.cube"
@@ -3845,10 +3918,9 @@
         "max_chars_per_line": 10,
         "vertical_face_avoid_only": true
       },
-      "is_default_store_style": true,
-      "broll_overlay_ratio_target": 0.53,
+      "broll_overlay_ratio_target": 0.45,
       "broll_ambient_sound_policy": {
-        "enabled": true,
+        "enabled": false,
         "gain_db": -10.0,
         "trigger_action_words": [
           "敲",
@@ -3866,7 +3938,7 @@
         ]
       },
       "dual_bgm_structure": {
-        "enabled": true,
+        "enabled": false,
         "intro_duration_sec": 2.83,
         "intro_fade_out_sec": 0.57,
         "main_bgm_gain_db": -11.0,
@@ -3879,55 +3951,54 @@
         "stamp_color": "#B71C1C",
         "end_card_color": "#FFD637",
         "stroke_color": "#000000",
-        "borderless": true
+        "borderless": false
       },
-      "plain_cn_pitch": "老板门店实景出镜，前三秒定格冲突瞬间并切轻快主音乐，过半画面穿插店内实拍并保留现场动作真声，居中暖黄大字清晰好读。",
+      "plain_cn_pitch": "深色清爽界面配顶部步骤条和键盘打字声，适合软件操作、工具演示和流程图解。",
       "commercial_safe_font": "AlimamaShuHeiTi-Bold.otf",
-      "source_jianying_font": "新青年体-文跃新青年体",
       "whitebox_source": {
         "project_name": "style_14_preset",
-        "is_whitebox_jianying": true,
-        "canvas": "1080x1920",
-        "total_tracks": 25,
-        "duration_sec": 68.5
+        "is_whitebox_jianying": false,
+        "rulebook_injected": true,
+        "canvas": "1080x1920"
       },
       "packaging_techniques": {
-        "ai_matting_cutout": 3,
-        "white_paper_outline": true,
-        "mask_shapes": {
-          "线性": 1
-        },
-        "persistent_top_bar": false,
+        "ai_matting_cutout": 0,
+        "white_paper_outline": false,
+        "mask_shapes": {},
+        "persistent_top_bar": true,
         "quote_citation_card": false,
-        "giant_impact_count": 4,
-        "capsule_bg_subtitle": false,
+        "giant_impact_count": 2,
+        "capsule_bg_subtitle": true,
         "black_polaroid_frame": false,
-        "pip_mode": "white_outline_cutout_pip",
+        "pip_mode": "none",
         "giant_mode": "giant_smash_single"
       },
-      "benchmark_reference": "builtin_store_default_preset",
       "pip_composition_spec": {
-        "mode": "white_outline_cutout_pip",
-        "window_bbox": {
-          "x": 664,
-          "y": 240,
-          "w": 324,
-          "h": 420
-        },
-        "mask_shape": "white_outline_cutout",
-        "border_hex": "#FFFFFF",
-        "border_width": 8,
-        "tag_text": "门店实拍",
-        "apply_on": "all_clips"
+        "mode": "none"
       },
       "giant_text_spec": {
         "mode": "giant_smash_single",
-        "font_size_px": 142,
-        "fg_hex": "#FFE066",
-        "accent_hex": "#FF3B30",
-        "stroke_hex": "#000000",
-        "stroke_width": 10,
-        "tag_label": "门店招牌"
+        "font_size_px": 130,
+        "fg_hex": "#38BDF8",
+        "accent_hex": "#FFF589",
+        "stroke_hex": "#0B0F19",
+        "stroke_width": 9,
+        "tag_label": "核心拆解"
+      },
+      "requires_aroll": "optional",
+      "allow_explainer_pip": true,
+      "visual_blueprint": {
+        "opening_mode": "console_step_header",
+        "flower_mode": "amber_tech_card",
+        "persistent_top_bar": true,
+        "accent_colors": [
+          "#F59E0B",
+          "#38BDF8",
+          "#F8FAFC"
+        ],
+        "stroke_color": "#09090B",
+        "stroke_width": 2,
+        "entry_anim": "slide_snap"
       }
     },
     {
@@ -3969,7 +4040,7 @@
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
         "pure_kinetic_flower_flow": true,
-        "pip_mode": "dual_rect_grid_pip",
+        "pip_mode": "none",
         "giant_mode": "giant_smash_single"
       },
       "meta": {
@@ -4023,11 +4094,11 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 60,
+        "font_size_1080p_px": 58,
         "keyword_scale": 1.15,
         "primary_color": "#FFFFFF",
-        "keyword_color": "#FFBF17",
-        "stroke_color": "#000000",
+        "keyword_color": "#FACC15",
+        "stroke_color": "#111111",
         "stroke_width": 4,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
@@ -4036,7 +4107,7 @@
         "punct_stripped": true,
         "measured_y_center_ratio": 0.693,
         "measured_animation_raw": "in:渐显/in:模糊发光/in:缩小",
-        "safe_y_px_1080x1920": 1331,
+        "safe_y_px_1080x1920": 1340,
         "safe_y_px_1920x1080": 800,
         "shadow": true,
         "shadow_color": "#000000C8",
@@ -4181,18 +4252,7 @@
         "quote_citation_card": false
       },
       "pip_composition_spec": {
-        "mode": "dual_rect_grid_pip",
-        "window_bbox": {
-          "x": 84,
-          "y": 240,
-          "w": 912,
-          "h": 456
-        },
-        "mask_shape": "rounded_rect",
-        "border_hex": "#FFBF17",
-        "border_width": 4,
-        "tag_text": "访谈特写",
-        "apply_on": "all_clips"
+        "mode": "none"
       },
       "giant_text_spec": {
         "mode": "giant_smash_single",
@@ -4202,6 +4262,21 @@
         "stroke_hex": "#000000",
         "stroke_width": 10,
         "tag_label": "高能金句"
+      },
+      "requires_aroll": "required",
+      "allow_explainer_pip": false,
+      "visual_blueprint": {
+        "opening_mode": "interview_kinetic_title",
+        "flower_mode": "elastic_gold_pop",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#FFFFFF",
+          "#FACC15",
+          "#F97316"
+        ],
+        "stroke_color": "#111111",
+        "stroke_width": 5,
+        "entry_anim": "bounce_pop"
       }
     },
     {
@@ -4299,12 +4374,12 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 60,
-        "keyword_scale": 1.15,
-        "primary_color": "#FFFFFF",
-        "keyword_color": "#FF4D4F",
+        "font_size_1080p_px": 54,
+        "keyword_scale": 1.14,
+        "primary_color": "#F8FAFC",
+        "keyword_color": "#FACC15",
         "stroke_color": "#000000",
-        "stroke_width": 4,
+        "stroke_width": 2,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "safe_y_ratio": 0.721,
@@ -4312,7 +4387,7 @@
         "punct_stripped": true,
         "measured_y_center_ratio": 0.721,
         "measured_animation_raw": "in:渐显/in:滚入/in:缩小",
-        "safe_y_px_1080x1920": 1384,
+        "safe_y_px_1080x1920": 1320,
         "safe_y_px_1920x1080": 800,
         "shadow": true,
         "shadow_color": "#000000C8",
@@ -4460,23 +4535,10 @@
       },
       "pip_composition_spec": {
         "mode": "linear_split_feather_pip",
-        "window_bbox": {
-          "x": 0,
-          "y": 140,
-          "w": 1080,
-          "h": 720
-        },
-        "book_card_bbox": {
-          "x": 144,
-          "y": 248,
-          "w": 792,
-          "h": 468
-        },
-        "mask_shape": "linear_feather",
-        "border_hex": "#D4AF37",
-        "border_width": 4,
-        "tag_text": "书摘与实证",
-        "apply_on": "all_clips"
+        "top_h": 620,
+        "feather_px": 140,
+        "bg_hex": "#050507",
+        "single_source": false
       },
       "giant_text_spec": {
         "mode": "giant_numeric_trio",
@@ -4486,6 +4548,20 @@
         "stroke_hex": "#000000",
         "stroke_width": 11,
         "tag_label": "底层逻辑"
+      },
+      "requires_aroll": "optional",
+      "allow_explainer_pip": false,
+      "visual_blueprint": {
+        "opening_mode": "dark_book_quote_giant",
+        "flower_mode": "book_quote_gold",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#FFFFFF",
+          "#EAB308"
+        ],
+        "stroke_color": "#000000",
+        "stroke_width": 2,
+        "entry_anim": "fade_up"
       }
     },
     {
@@ -4527,7 +4603,7 @@
         "capsule_bg_subtitle": true,
         "black_polaroid_frame": false,
         "pure_kinetic_flower_flow": false,
-        "pip_mode": "dual_rect_grid_pip",
+        "pip_mode": "dual_gold_frame_pip",
         "giant_mode": "giant_dual_clash"
       },
       "meta": {
@@ -4582,19 +4658,19 @@
         "font_weight": "Bold",
         "bilingual": false,
         "font_size_1080p_px": 58,
-        "keyword_scale": 1.12,
+        "keyword_scale": 1.15,
         "primary_color": "#FFFFFF",
-        "keyword_color": "#FFF589",
-        "stroke_color": "#000000",
-        "stroke_width": 3,
-        "bg_box_color": "#1B140ECC",
-        "bg_radius": 16,
+        "keyword_color": "#FDE047",
+        "stroke_color": "#1C1408",
+        "stroke_width": 4,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
         "safe_y_ratio": 0.693,
         "animation": "in:渐显",
         "punct_stripped": true,
         "measured_y_center_ratio": 0.693,
         "measured_animation_raw": "in:渐显/in:随机上升/in:收拢",
-        "safe_y_px_1080x1920": 1331,
+        "safe_y_px_1080x1920": 1345,
         "safe_y_px_1920x1080": 800,
         "shadow": true,
         "shadow_color": "#000000C8",
@@ -4738,18 +4814,15 @@
         "quote_citation_card": false
       },
       "pip_composition_spec": {
-        "mode": "dual_rect_grid_pip",
-        "window_bbox": {
-          "x": 76,
-          "y": 230,
-          "w": 928,
-          "h": 476
-        },
-        "mask_shape": "rounded_rect",
-        "border_hex": "#FFBF17",
-        "border_width": 5,
-        "tag_text": "多框细节",
-        "apply_on": "all_clips"
+        "mode": "dual_gold_frame_pip",
+        "top_y": 240,
+        "top_h": 610,
+        "bot_y": 870,
+        "bot_h": 610,
+        "border_hex": "#D4AF37",
+        "border_width": 4,
+        "bg_hex": "#100D08",
+        "single_source": false
       },
       "giant_text_spec": {
         "mode": "giant_dual_clash",
@@ -4759,6 +4832,21 @@
         "stroke_hex": "#000000",
         "stroke_width": 10,
         "tag_label": "实测硬核"
+      },
+      "requires_aroll": "optional",
+      "allow_explainer_pip": false,
+      "visual_blueprint": {
+        "opening_mode": "warm_gold_banner",
+        "flower_mode": "gold_badge_pop",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#FDE047",
+          "#FFFFFF",
+          "#F59E0B"
+        ],
+        "stroke_color": "#1C1408",
+        "stroke_width": 5,
+        "entry_anim": "bounce_pop"
       }
     },
     {
@@ -4799,7 +4887,7 @@
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
         "pure_kinetic_flower_flow": false,
-        "pip_mode": "blur_bg_center_card_pip",
+        "pip_mode": "none",
         "giant_mode": "giant_smash_single"
       },
       "meta": {
@@ -4853,12 +4941,12 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 60,
-        "keyword_scale": 1.15,
-        "primary_color": "#FFFFFF",
-        "keyword_color": "#FFBF17",
-        "stroke_color": "#000000",
-        "stroke_width": 4,
+        "font_size_1080p_px": 62,
+        "keyword_scale": 1.18,
+        "primary_color": "#FFF6CC",
+        "keyword_color": "#FFB800",
+        "stroke_color": "#3B1800",
+        "stroke_width": 5,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "safe_y_ratio": 0.695,
@@ -4866,7 +4954,7 @@
         "punct_stripped": true,
         "measured_y_center_ratio": 0.695,
         "measured_animation_raw": "in:向上露出/in:向右模糊 II/in:打字光标",
-        "safe_y_px_1080x1920": 1334,
+        "safe_y_px_1080x1920": 1335,
         "safe_y_px_1920x1080": 800,
         "shadow": true,
         "shadow_color": "#000000C8",
@@ -5011,19 +5099,7 @@
         "quote_citation_card": true
       },
       "pip_composition_spec": {
-        "mode": "blur_bg_center_card_pip",
-        "window_bbox": {
-          "x": 148,
-          "y": 246,
-          "w": 784,
-          "h": 896
-        },
-        "mask_shape": "rounded_rect",
-        "border_hex": "#FFE28A",
-        "border_width": 4,
-        "bg_blur_sigma": 18,
-        "tag_text": "实景带看",
-        "apply_on": "all_clips"
+        "mode": "none"
       },
       "giant_text_spec": {
         "mode": "giant_smash_single",
@@ -5033,6 +5109,21 @@
         "stroke_hex": "#000000",
         "stroke_width": 11,
         "tag_label": "实景探访"
+      },
+      "requires_aroll": "required",
+      "allow_explainer_pip": false,
+      "visual_blueprint": {
+        "opening_mode": "metallic_3d_gold_title",
+        "flower_mode": "metallic_3d_gold",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#FFF2A6",
+          "#F59E0B",
+          "#78350F"
+        ],
+        "stroke_color": "#451A03",
+        "stroke_width": 6,
+        "entry_anim": "zoom_smash"
       }
     },
     {
@@ -5074,7 +5165,7 @@
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
         "pure_kinetic_flower_flow": false,
-        "pip_mode": "dark_doc_circle_avatar_pip",
+        "pip_mode": "data_news_cutout_pip",
         "giant_mode": "giant_dual_clash"
       },
       "meta": {
@@ -5128,20 +5219,20 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 60,
-        "keyword_scale": 1.15,
-        "primary_color": "#FFFFFF",
-        "keyword_color": "#FFBF17",
-        "stroke_color": "#000000",
-        "stroke_width": 4,
-        "bg_box_color": "#00000000",
-        "bg_radius": 0,
+        "font_size_1080p_px": 50,
+        "keyword_scale": 1.1,
+        "primary_color": "#0F172A",
+        "keyword_color": "#0369A1",
+        "stroke_color": "#FFFFFF",
+        "stroke_width": 0,
+        "bg_box_color": "#FFFFFFE6",
+        "bg_radius": 6,
         "safe_y_ratio": 0.721,
         "animation": "in:发光模糊",
         "punct_stripped": true,
         "measured_y_center_ratio": 0.721,
         "measured_animation_raw": "in:发光模糊/in:向下滑动/in:圆柱体滚动",
-        "safe_y_px_1080x1920": 1384,
+        "safe_y_px_1080x1920": 1335,
         "safe_y_px_1920x1080": 800,
         "shadow": true,
         "shadow_color": "#000000C8",
@@ -5286,26 +5377,10 @@
         "quote_citation_card": true
       },
       "pip_composition_spec": {
-        "mode": "dark_doc_circle_avatar_pip",
-        "frame_bg_hex": "#080D16",
-        "evidence_bbox": {
-          "x": 78,
-          "y": 228,
-          "w": 924,
-          "h": 496
-        },
-        "avatar_circle_bbox": {
-          "x": 636,
-          "y": 808,
-          "w": 324,
-          "h": 324
-        },
-        "mask_shape": "circle",
-        "border_hex": "#60A5FA",
-        "border_width": 4,
-        "dual_grid_split": false,
-        "tag_text": "数据背书",
-        "apply_on": "all_clips"
+        "mode": "data_news_cutout_pip",
+        "outline_px": 0,
+        "bg_tint": "cool_news",
+        "single_source": false
       },
       "giant_text_spec": {
         "mode": "giant_dual_clash",
@@ -5315,6 +5390,21 @@
         "stroke_hex": "#000000",
         "stroke_width": 10,
         "tag_label": "专业解读"
+      },
+      "requires_aroll": "required",
+      "allow_explainer_pip": false,
+      "visual_blueprint": {
+        "opening_mode": "news_ticker_card",
+        "flower_mode": "white_strip_news",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#0F172A",
+          "#FFFFFF",
+          "#38BDF8"
+        ],
+        "stroke_color": "#0F172A",
+        "stroke_width": 2,
+        "entry_anim": "wipe_in"
       }
     },
     {
@@ -5356,7 +5446,7 @@
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
         "pure_kinetic_flower_flow": false,
-        "pip_mode": "dual_rect_grid_pip",
+        "pip_mode": "none",
         "giant_mode": "giant_vertical_seal"
       },
       "meta": {
@@ -5410,20 +5500,20 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 60,
-        "keyword_scale": 1.15,
-        "primary_color": "#FFFFFF",
-        "keyword_color": "#FFF589",
-        "stroke_color": "#000000",
-        "stroke_width": 4,
-        "bg_box_color": "#00000000",
-        "bg_radius": 0,
+        "font_size_1080p_px": 56,
+        "keyword_scale": 1.08,
+        "primary_color": "#F7EFE1",
+        "keyword_color": "#F2C97D",
+        "stroke_color": "#120D0A",
+        "stroke_width": 2,
+        "bg_box_color": "#14100DB8",
+        "bg_radius": 4,
         "safe_y_ratio": 0.693,
         "animation": "in:水墨晕开",
         "punct_stripped": true,
         "measured_y_center_ratio": 0.693,
         "measured_animation_raw": "in:水墨晕开/in:冰雪飘动/in:向右缓入",
-        "safe_y_px_1080x1920": 1331,
+        "safe_y_px_1080x1920": 1270,
         "safe_y_px_1920x1080": 800,
         "shadow": true,
         "shadow_color": "#000000C8",
@@ -5567,18 +5657,7 @@
         "quote_citation_card": false
       },
       "pip_composition_spec": {
-        "mode": "dual_rect_grid_pip",
-        "window_bbox": {
-          "x": 84,
-          "y": 240,
-          "w": 912,
-          "h": 460
-        },
-        "mask_shape": "rounded_rect",
-        "border_hex": "#D4A359",
-        "border_width": 4,
-        "tag_text": "古法细节",
-        "apply_on": "all_clips"
+        "mode": "none"
       },
       "giant_text_spec": {
         "mode": "giant_vertical_seal",
@@ -5588,6 +5667,22 @@
         "stroke_hex": "#1B120C",
         "stroke_width": 9,
         "tag_label": "传统智慧"
+      },
+      "requires_aroll": "required",
+      "allow_explainer_pip": false,
+      "visual_blueprint": {
+        "opening_mode": "guofeng_black_band",
+        "flower_mode": "guofeng_serif_seal",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#F5EBDC",
+          "#C89B54",
+          "#991B1B"
+        ],
+        "bg_slab": "rgba(18, 14, 12, 0.72)",
+        "stroke_color": "#1A120B",
+        "stroke_width": 2,
+        "entry_anim": "fade_up"
       }
     },
     {
@@ -5618,7 +5713,7 @@
       },
       "packaging_techniques": {
         "ai_matting_cutout": 7,
-        "white_paper_outline": true,
+        "white_paper_outline": false,
         "mask_shapes": {
           "线性": 1
         },
@@ -5628,7 +5723,7 @@
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
         "pure_kinetic_flower_flow": false,
-        "pip_mode": "white_outline_cutout_pip",
+        "pip_mode": "none",
         "giant_mode": "giant_smash_single"
       },
       "meta": {
@@ -5682,10 +5777,10 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 60,
+        "font_size_1080p_px": 58,
         "keyword_scale": 1.15,
         "primary_color": "#FFFFFF",
-        "keyword_color": "#FFBF17",
+        "keyword_color": "#FCD34D",
         "stroke_color": "#000000",
         "stroke_width": 4,
         "bg_box_color": "#00000000",
@@ -5695,7 +5790,7 @@
         "punct_stripped": true,
         "measured_y_center_ratio": 0.695,
         "measured_animation_raw": "in:缩小/out:渐隐/in:日出",
-        "safe_y_px_1080x1920": 1334,
+        "safe_y_px_1080x1920": 1345,
         "safe_y_px_1920x1080": 800,
         "shadow": true,
         "shadow_color": "#000000C8",
@@ -5842,18 +5937,7 @@
         "quote_citation_card": false
       },
       "pip_composition_spec": {
-        "mode": "white_outline_cutout_pip",
-        "window_bbox": {
-          "x": 664,
-          "y": 238,
-          "w": 324,
-          "h": 416
-        },
-        "mask_shape": "white_outline_cutout",
-        "border_hex": "#FFFFFF",
-        "border_width": 8,
-        "tag_text": "工艺特写",
-        "apply_on": "all_clips"
+        "mode": "none"
       },
       "giant_text_spec": {
         "mode": "giant_smash_single",
@@ -5863,6 +5947,21 @@
         "stroke_hex": "#000000",
         "stroke_width": 10,
         "tag_label": "实战特写"
+      },
+      "requires_aroll": "none",
+      "allow_explainer_pip": false,
+      "visual_blueprint": {
+        "opening_mode": "store_detail_badge",
+        "flower_mode": "warm_tag_callout",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#FFFFFF",
+          "#FCD34D",
+          "#EF4444"
+        ],
+        "stroke_color": "#18181B",
+        "stroke_width": 4,
+        "entry_anim": "bounce_pop"
       }
     },
     {
@@ -5903,7 +6002,7 @@
         "capsule_bg_subtitle": true,
         "black_polaroid_frame": false,
         "pure_kinetic_flower_flow": false,
-        "pip_mode": "corner_circle_evidence_pip",
+        "pip_mode": "top_banner_evidence_pip",
         "giant_mode": "giant_numeric_trio"
       },
       "meta": {
@@ -5957,20 +6056,20 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 58,
+        "font_size_1080p_px": 52,
         "keyword_scale": 1.12,
         "primary_color": "#FFFFFF",
-        "keyword_color": "#FFF589",
+        "keyword_color": "#FDE047",
         "stroke_color": "#000000",
         "stroke_width": 3,
-        "bg_box_color": "#1A222ECC",
-        "bg_radius": 16,
+        "bg_box_color": "#0B0D12B8",
+        "bg_radius": 10,
         "safe_y_ratio": 0.695,
         "animation": "in:开幕",
         "punct_stripped": true,
         "measured_y_center_ratio": 0.695,
         "measured_animation_raw": "in:开幕/in:缩小/in:向右露出",
-        "safe_y_px_1080x1920": 1334,
+        "safe_y_px_1080x1920": 1365,
         "safe_y_px_1920x1080": 800,
         "shadow": true,
         "shadow_color": "#000000C8",
@@ -6114,18 +6213,10 @@
         "quote_citation_card": true
       },
       "pip_composition_spec": {
-        "mode": "corner_circle_evidence_pip",
-        "window_bbox": {
-          "x": 98,
-          "y": 242,
-          "w": 292,
-          "h": 292
-        },
-        "mask_shape": "circle",
-        "border_hex": "#FFF589",
-        "border_width": 5,
-        "tag_text": "图解例证",
-        "apply_on": "all_clips"
+        "mode": "top_banner_evidence_pip",
+        "banner_h": 240,
+        "bg_hex": "#0B0D12",
+        "single_source": true
       },
       "giant_text_spec": {
         "mode": "giant_numeric_trio",
@@ -6135,6 +6226,21 @@
         "stroke_hex": "#000000",
         "stroke_width": 10,
         "tag_label": "例证拆解"
+      },
+      "requires_aroll": "none",
+      "allow_explainer_pip": false,
+      "visual_blueprint": {
+        "opening_mode": "top_banner_headline",
+        "flower_mode": "evidence_highlight_pill",
+        "persistent_top_bar": true,
+        "accent_colors": [
+          "#FFFFFF",
+          "#FACC15",
+          "#1D4ED8"
+        ],
+        "stroke_color": "#0B0D12",
+        "stroke_width": 3,
+        "entry_anim": "slide_snap"
       }
     },
     {
@@ -6175,7 +6281,7 @@
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
         "pure_kinetic_flower_flow": false,
-        "pip_mode": "black_polaroid_frame_pip",
+        "pip_mode": "none",
         "giant_mode": "giant_vertical_seal"
       },
       "meta": {
@@ -6229,12 +6335,12 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 60,
-        "keyword_scale": 1.15,
-        "primary_color": "#FFFFFF",
-        "keyword_color": "#FFE28A",
-        "stroke_color": "#000000",
-        "stroke_width": 4,
+        "font_size_1080p_px": 46,
+        "keyword_scale": 1.06,
+        "primary_color": "#FAFAF9",
+        "keyword_color": "#FDE68A",
+        "stroke_color": "#0C0A09",
+        "stroke_width": 2,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "safe_y_ratio": 0.695,
@@ -6242,7 +6348,7 @@
         "punct_stripped": true,
         "measured_y_center_ratio": 0.695,
         "measured_animation_raw": "in:渐显/in:随机上升/in:开幕",
-        "safe_y_px_1080x1920": 1334,
+        "safe_y_px_1080x1920": 1380,
         "safe_y_px_1920x1080": 800,
         "shadow": true,
         "shadow_color": "#000000C8",
@@ -6386,19 +6492,7 @@
         "quote_citation_card": true
       },
       "pip_composition_spec": {
-        "mode": "black_polaroid_frame_pip",
-        "frame_bg_hex": "#0A0C10",
-        "window_bbox": {
-          "x": 72,
-          "y": 264,
-          "w": 936,
-          "h": 1196
-        },
-        "mask_shape": "rounded_rect",
-        "border_hex": "#E2C799",
-        "border_width": 3,
-        "tag_text": "纪实画框",
-        "apply_on": "all_clips"
+        "mode": "none"
       },
       "giant_text_spec": {
         "mode": "giant_vertical_seal",
@@ -6408,6 +6502,20 @@
         "stroke_hex": "#000000",
         "stroke_width": 9,
         "tag_label": "深度旁白"
+      },
+      "requires_aroll": "none",
+      "allow_explainer_pip": false,
+      "visual_blueprint": {
+        "opening_mode": "micro_doc_title",
+        "flower_mode": "minimal_serif_caption",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#F5F5F4",
+          "#D6D3D1"
+        ],
+        "stroke_color": "#0C0A09",
+        "stroke_width": 2,
+        "entry_anim": "fade_up"
       }
     },
     {
@@ -6442,13 +6550,13 @@
         "mask_shapes": {
           "圆形": 5
         },
-        "persistent_top_bar": true,
+        "persistent_top_bar": false,
         "quote_citation_card": false,
         "giant_impact_count": 3,
         "capsule_bg_subtitle": true,
         "black_polaroid_frame": false,
         "pure_kinetic_flower_flow": false,
-        "pip_mode": "corner_circle_evidence_pip",
+        "pip_mode": "none",
         "giant_mode": "giant_smash_single"
       },
       "meta": {
@@ -6502,20 +6610,20 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 58,
-        "keyword_scale": 1.12,
+        "font_size_1080p_px": 60,
+        "keyword_scale": 1.18,
         "primary_color": "#FFFFFF",
-        "keyword_color": "#BCFF00",
+        "keyword_color": "#FFE14D",
         "stroke_color": "#000000",
-        "stroke_width": 3,
-        "bg_box_color": "#161B22CC",
-        "bg_radius": 16,
+        "stroke_width": 5,
+        "bg_box_color": "#00000000",
+        "bg_radius": 0,
         "safe_y_ratio": 0.76,
         "animation": "in:放大",
         "punct_stripped": true,
         "measured_y_center_ratio": 0.76,
         "measured_animation_raw": "in:放大/in:缩小/in:渐显",
-        "safe_y_px_1080x1920": 1459,
+        "safe_y_px_1080x1920": 1335,
         "safe_y_px_1920x1080": 800,
         "shadow": true,
         "shadow_color": "#000000C8",
@@ -6660,18 +6768,7 @@
         "quote_citation_card": false
       },
       "pip_composition_spec": {
-        "mode": "corner_circle_evidence_pip",
-        "window_bbox": {
-          "x": 688,
-          "y": 240,
-          "w": 292,
-          "h": 292
-        },
-        "mask_shape": "circle",
-        "border_hex": "#FFBF17",
-        "border_width": 5,
-        "tag_text": "高燃特写",
-        "apply_on": "all_clips"
+        "mode": "none"
       },
       "giant_text_spec": {
         "mode": "giant_smash_single",
@@ -6681,6 +6778,21 @@
         "stroke_hex": "#000000",
         "stroke_width": 10,
         "tag_label": "高燃盘点"
+      },
+      "requires_aroll": "none",
+      "allow_explainer_pip": false,
+      "visual_blueprint": {
+        "opening_mode": "faceless_giant_impact",
+        "flower_mode": "high_impact_smash",
+        "persistent_top_bar": false,
+        "accent_colors": [
+          "#FFFFFF",
+          "#FFE14D",
+          "#FF453A"
+        ],
+        "stroke_color": "#000000",
+        "stroke_width": 6,
+        "entry_anim": "zoom_smash"
       }
     }
   ]

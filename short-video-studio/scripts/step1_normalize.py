@@ -11,6 +11,8 @@ v5 升级：
 from __future__ import annotations
 
 import argparse
+import os
+import shutil
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -30,9 +32,12 @@ from common import (
     compute_centered_crop_frac,
     compute_crop_transform,
     detect_vfr_hdr,
+    estimate_task_eta,
+    fast_media_fingerprint,
     ffmpeg_has_filter,
     ffprobe_media,
     find_bin,
+    link_or_copy,
     map_eye_anchor_to_crop,
     map_norm_bbox_to_crop,
     maybe_reexec_in_venv,
@@ -44,6 +49,48 @@ from common import (
     write_json,
     write_wav_48k_stereo,
 )
+
+_AROLL_DIR_HINTS = ("口播", "主讲", "人声", "说话", "aroll", "a_roll", "talk", "host", "speech")
+_BROLL_DIR_HINTS = ("素材", "空镜", "特写", "环境", "补拍", "画面", "产品", "broll", "b_roll", "sucai", "cutaway")
+
+
+def _detect_folder_role_hint(src: Path, root_dir: Optional[Path] = None) -> Optional[str]:
+    parts: List[str] = []
+    if root_dir is not None:
+        try:
+            parts = list(src.resolve().relative_to(root_dir.resolve()).parts[:-1])
+        except Exception:
+            parts = [src.parent.name]
+    else:
+        parts = [src.parent.name]
+    joined = "/".join(parts).lower()
+    if any(k in joined for k in _BROLL_DIR_HINTS):
+        return "b_roll"
+    if any(k in joined for k in _AROLL_DIR_HINTS):
+        return "a_roll"
+    return None
+
+
+def _hardlink_or_symlink(src: Path, dst: Path) -> None:
+    """优先使用同盘硬链接零空间占用复用素材，跨盘降级软链接，最后才回退拷贝。"""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists() or dst.is_symlink():
+        try:
+            if dst.resolve() == src.resolve():
+                return
+        except Exception:
+            pass
+        dst.unlink(missing_ok=True)
+    try:
+        os.link(src, dst)
+        return
+    except OSError:
+        pass
+    try:
+        os.symlink(src.resolve(), dst)
+        return
+    except OSError:
+        link_or_copy(src, dst)
 
 
 def _build_hdr_prefix() -> str:
@@ -87,6 +134,8 @@ def normalize_single_media(
     idx: int,
     role_hint: str = "auto",
     shot_meta: Optional[Dict[str, Any]] = None,
+    shared_norm_cache: Optional[Path] = None,
+    input_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
     ffmpeg = find_bin("ffmpeg")
     if not ffmpeg:
@@ -128,6 +177,20 @@ def normalize_single_media(
         f"fps={DEFAULT_FPS},{bt709_tail}"
     )
 
+    # 跨项目共享缓存硬链接复用：相同原素材+相同裁切/色彩方案零重复转码、零额外占盘
+    cache_mp4: Optional[Path] = None
+    cache_wav: Optional[Path] = None
+    reused_from_cache = False
+    if shared_norm_cache is not None:
+        fp_sig = fast_media_fingerprint(src, salt=f"v3|{vf_chain}|{int(has_audio)}")
+        cache_mp4 = shared_norm_cache / f"{fp_sig}.mp4"
+        cache_wav = shared_norm_cache / f"{fp_sig}.wav"
+        if cache_mp4.is_file() and (not has_audio or cache_wav.is_file()):
+            _hardlink_or_symlink(cache_mp4, out_mp4)
+            if has_audio and cache_wav.is_file():
+                _hardlink_or_symlink(cache_wav, out_wav)
+            reused_from_cache = True
+
     def _build_norm_cmd(vf_str: str, include_wav: bool) -> List[str]:
         cmd = [
             ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
@@ -150,36 +213,45 @@ def normalize_single_media(
         return cmd
 
     hdr_tonemapped = bool(was_hdr and ffmpeg_has_filter("zscale"))
-    res = run_cmd(_build_norm_cmd(vf_chain, has_audio), check=False)
-    if res.returncode != 0 and was_hdr:
-        plain_vf = (
-            f"scale={crop_tx['scaled_w']}:{crop_tx['scaled_h']}:flags=lanczos,"
-            f"crop={CANVAS_WIDTH}:{CANVAS_HEIGHT}:{crop_tx['crop_x']}:{crop_tx['crop_y']},"
-            f"fps={DEFAULT_FPS},{bt709_tail}"
-        )
-        hdr_tonemapped = False
-        fb_res = None
-        if ffmpeg_has_filter("zscale"):
-            fallback_vf = (
-                f"colorspace=all=bt709:iall=bt2020:fast=1,"
-                f"{plain_vf}"
-            )
-            fb_res = run_cmd(_build_norm_cmd(fallback_vf, has_audio), check=False)
-        if fb_res is None or fb_res.returncode != 0:
-            run_cmd(_build_norm_cmd(plain_vf, has_audio), check=True)
-    elif res.returncode != 0:
-        raise RuntimeError(f"素材规整失败 ({src.name}): {(res.stderr or '')[-800:]}")
-
     stereo_diag = "ok"
-    if has_audio and out_wav.is_file():
-        # 若无线麦单边明显失效，直接用完好单声道修复归整 WAV
-        try:
-            arr_w, _ = read_wav_as_48k_stereo(out_wav, target_sr=48000)
-            arr_fixed, stereo_diag = rescue_stereo_channels(arr_w, imbalance_db=8.0)
-            if stereo_diag != "ok":
-                write_wav_48k_stereo(out_wav, arr_fixed, sr=48000)
-        except Exception:
-            pass
+    if not reused_from_cache:
+        res = run_cmd(_build_norm_cmd(vf_chain, has_audio), check=False)
+        if res.returncode != 0 and was_hdr:
+            plain_vf = (
+                f"scale={crop_tx['scaled_w']}:{crop_tx['scaled_h']}:flags=lanczos,"
+                f"crop={CANVAS_WIDTH}:{CANVAS_HEIGHT}:{crop_tx['crop_x']}:{crop_tx['crop_y']},"
+                f"fps={DEFAULT_FPS},{bt709_tail}"
+            )
+            hdr_tonemapped = False
+            fb_res = None
+            if ffmpeg_has_filter("zscale"):
+                fallback_vf = (
+                    f"colorspace=all=bt709:iall=bt2020:fast=1,"
+                    f"{plain_vf}"
+                )
+                fb_res = run_cmd(_build_norm_cmd(fallback_vf, has_audio), check=False)
+            if fb_res is None or fb_res.returncode != 0:
+                run_cmd(_build_norm_cmd(plain_vf, has_audio), check=True)
+        elif res.returncode != 0:
+            raise RuntimeError(f"素材规整失败 ({src.name}): {(res.stderr or '')[-800:]}")
+
+        if has_audio and out_wav.is_file():
+            try:
+                arr_w, _ = read_wav_as_48k_stereo(out_wav, target_sr=48000)
+                arr_fixed, stereo_diag = rescue_stereo_channels(arr_w, imbalance_db=8.0)
+                if stereo_diag != "ok":
+                    write_wav_48k_stereo(out_wav, arr_fixed, sr=48000)
+            except Exception:
+                pass
+
+        if cache_mp4 is not None and out_mp4.is_file():
+            try:
+                cache_mp4.parent.mkdir(parents=True, exist_ok=True)
+                _hardlink_or_symlink(out_mp4, cache_mp4)
+                if has_audio and cache_wav is not None and out_wav.is_file():
+                    _hardlink_or_symlink(out_wav, cache_wav)
+            except Exception:
+                pass
 
     norm_meta = ffprobe_media(out_mp4)
     nv = next(s for s in norm_meta["streams"] if s["codec_type"] == "video")
@@ -191,6 +263,7 @@ def normalize_single_media(
     shot_role = (shot_meta or {}).get("role")
     shot_ag = (shot_meta or {}).get("audio_grade")
     vis_indexed = bool((shot_meta or {}).get("visual_indexed"))
+    folder_hint = _detect_folder_role_hint(src, input_root)
     if role_hint != "auto":
         role = role_hint
     elif is_code_scene:
@@ -201,10 +274,12 @@ def normalize_single_media(
         role = "a_roll" if (shot_role == "a_roll_candidate" and has_audio) else "b_roll"
     elif not has_audio or shot_ag in ("silent", "noisy"):
         role = "b_roll"
-    elif "broll" in name_low or "b_roll" in name_low:
+    elif "broll" in name_low or "b_roll" in name_low or "sucai" in name_low or "空镜" in name_low or "素材" in name_low:
         role = "b_roll"
-    elif "aroll" in name_low or "a_roll" in name_low or "talk" in name_low or "main" in name_low:
+    elif "aroll" in name_low or "a_roll" in name_low or "talk" in name_low or "main" in name_low or "口播" in name_low:
         role = "a_roll"
+    elif folder_hint in ("a_roll", "b_roll"):
+        role = folder_hint if (folder_hint != "a_roll" or has_audio) else "b_roll"
     elif shot_role == "b_roll_candidate":
         role = "b_roll"
     elif shot_role == "a_roll_candidate":
@@ -234,12 +309,13 @@ def normalize_single_media(
         "normalized_fps": DEFAULT_FPS,
         "duration_sec": round(norm_dur, 4),
         "has_audio": has_audio,
+        "reused_from_shared_cache": reused_from_cache,
     }
     if shot_meta:
         for k in (
             "best_in_sec", "sharpness_score", "stability_score",
             "motion_speed_px", "accel_jitter_px", "camera_motion", "shot_size", "action_apex_sec",
-            "audio_grade", "video_grade", "taboo_tags", "usable", "visual_indexed",
+            "audio_grade", "video_grade", "taboo_tags", "usable", "excluded_windows", "visual_indexed",
             "semantic_tags", "manual_tags", "scene_group",
         ):
             if k in shot_meta:
@@ -278,9 +354,19 @@ def normalize_single_media(
     return item
 
 
-def run_step1(input_paths: List[Path], pipeline_dir: Path) -> Dict[str, Any]:
+def run_step1(
+    input_paths: List[Path],
+    pipeline_dir: Path,
+    shared_cache_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
     norm_dir = pipeline_dir / "01_normalized"
     norm_dir.mkdir(parents=True, exist_ok=True)
+    # 若未显式传入 shared_cache_dir，自动向上探测所属账号的 shared_cache/normalized 复用池
+    if shared_cache_dir is None:
+        cand_acc = pipeline_dir.resolve().parents[2] if len(pipeline_dir.resolve().parents) >= 3 and pipeline_dir.resolve().parents[1].name == "projects" else None
+        if cand_acc is not None:
+            shared_cache_dir = cand_acc / "shared_cache"
+    shared_norm_cache = (shared_cache_dir / "normalized") if shared_cache_dir else None
 
     shot_by_path: Dict[str, Dict[str, Any]] = {}
     shot_by_name: Dict[str, Dict[str, Any]] = {}
@@ -294,7 +380,8 @@ def run_step1(input_paths: List[Path], pipeline_dir: Path) -> Dict[str, Any]:
                 shot_by_name[str(s["filename"])] = s
 
     scene_meta_by_name: Dict[str, Dict[str, Any]] = {}
-    media_files: List[Path] = []
+    media_entries: List[Tuple[Path, Optional[Path]]] = []
+    seen_media: set[str] = set()
     for p in input_paths:
         if p.is_dir():
             sm_file = p / "scene_meta.json"
@@ -307,14 +394,29 @@ def run_step1(input_paths: List[Path], pipeline_dir: Path) -> Dict[str, Any]:
                                 scene_meta_by_name[str(fn)] = m_obj
                 except Exception:
                     pass
-            for child in sorted(p.iterdir()):
-                if child.is_file() and child.suffix.lower() in MEDIA_EXTS and "benchmark" not in child.name.lower():
-                    media_files.append(child)
+            # 递归扫描多级子目录（如 口播/ + 素材/），忽略隐藏目录并去重
+            for child in sorted(p.rglob("*")):
+                if not child.is_file():
+                    continue
+                rel_parts = child.relative_to(p).parts
+                if any(part.startswith(".") or part == "__pycache__" for part in rel_parts):
+                    continue
+                if child.suffix.lower() in MEDIA_EXTS and "benchmark" not in child.name.lower():
+                    key = str(child.resolve())
+                    if key not in seen_media:
+                        seen_media.add(key)
+                        media_entries.append((child, p))
         elif p.is_file() and p.suffix.lower() in MEDIA_EXTS and "benchmark" not in p.name.lower():
-            media_files.append(p)
+            key = str(p.resolve())
+            if key not in seen_media:
+                seen_media.add(key)
+                media_entries.append((p, p.parent))
 
-    if not media_files:
+    if not media_entries:
         raise FileNotFoundError("未找到任何可用的原始视频素材文件。")
+
+    eta = estimate_task_eta("normalize", clip_count=len(media_entries))
+    print(f"[step1] 准备规整 {len(media_entries)} 条视频素材（优先硬链接复用账号缓存），预计耗时 {eta['label_cn']} ...")
 
     def _merge_shot_meta(f: Path) -> Optional[Dict[str, Any]]:
         base = dict(shot_by_path.get(str(f.resolve())) or shot_by_name.get(f.name) or {})
@@ -324,16 +426,26 @@ def run_step1(input_paths: List[Path], pipeline_dir: Path) -> Dict[str, Any]:
         return base or None
 
     tasks = [
-        (f, idx, _merge_shot_meta(f))
-        for idx, f in enumerate(media_files, start=1)
+        (f, idx, _merge_shot_meta(f), root_p)
+        for idx, (f, root_p) in enumerate(media_entries, start=1)
     ]
     if len(tasks) > 1:
         with ThreadPoolExecutor(max_workers=min(4, len(tasks))) as pool:
-            items = list(pool.map(lambda args: normalize_single_media(args[0], norm_dir, args[1], shot_meta=args[2]), tasks))
+            items = list(pool.map(
+                lambda args: normalize_single_media(
+                    args[0], norm_dir, args[1], shot_meta=args[2],
+                    shared_norm_cache=shared_norm_cache, input_root=args[3],
+                ),
+                tasks,
+            ))
     else:
-        items = [normalize_single_media(tasks[0][0], norm_dir, tasks[0][1], shot_meta=tasks[0][2])]
+        items = [normalize_single_media(
+            tasks[0][0], norm_dir, tasks[0][1], shot_meta=tasks[0][2],
+            shared_norm_cache=shared_norm_cache, input_root=tasks[0][3],
+        )]
 
     hdr_cnt = sum(1 for it in items if it.get("hdr_tonemapped"))
+    reused_cnt = sum(1 for it in items if it.get("reused_from_shared_cache"))
     manifest = {
         "step": "01_normalize",
         "fps": DEFAULT_FPS,
@@ -341,10 +453,11 @@ def run_step1(input_paths: List[Path], pipeline_dir: Path) -> Dict[str, Any]:
         "sample_rate": 48000,
         "media_count": len(items),
         "hdr_tonemapped_count": hdr_cnt,
+        "reused_from_shared_cache_count": reused_cnt,
         "items": items,
     }
     write_json(pipeline_dir / "01_manifest.json", manifest)
-    print(f"[step1] 素材规整完成：{len(items)} 条素材已统一为 {DEFAULT_FPS}fps CFR (HDR还原 {hdr_cnt} 条) -> 01_manifest.json")
+    print(f"[step1] 素材规整完成：{len(items)} 条素材已统一为 {DEFAULT_FPS}fps CFR（共享缓存免转码复用 {reused_cnt} 条，HDR 还原 {hdr_cnt} 条）-> 01_manifest.json")
     return manifest
 
 

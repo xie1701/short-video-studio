@@ -28,7 +28,7 @@
 
 | 代表流派样式 | 真实 BGM 来源 (Freesound ID · CC0) | 物理材质 SFX 来源 (Freesound ID · CC0) |
 | :--- | :--- | :--- |
-| `style_14`（默认门店轨） | `fs:680113` Pop Guitar Loop Thing | `fs:585257` Swoosh-1 / `fs:704935` Wooden Tap / `fs:411462` Bubble Pop |
+| `style_01`（默认门店爆款风） | `fs:680113` Pop Guitar Loop Thing | `fs:585257` Swoosh-1 / `fs:704935` Wooden Tap / `fs:411462` Bubble Pop |
 | `style_02` | `fs:69195` Mix05 90BPM Hip-Hop Loop | `fs:585257` Swoosh-1 / `fs:512389` Bass Impact / `fs:878248` Micro Swish |
 | `style_03` | `fs:713517` Perspire Guitar & Piano Loop | `fs:623709` Soft Ambience Swoosh / `fs:369710` Wood Knock / `fs:704935` Wooden Tap |
 | `style_11` / `style_12`（含博主轨） | `fs:629153` Dusty Lofi Melody Loop 75 BPM | `fs:878248` Micro Swish / `fs:411462` Bubble Pop / `fs:528561` Soft UI Click |
@@ -49,8 +49,9 @@
 | :--- | :--- | :--- | :--- |
 | `assets/luts/warm_store.cube`、`clean_creator.cube` | 门店暖调 / 博主清透通用 3D LUT (`17³`) | 仓库维护脚本 `dev_tools/generate_builtin_assets.py` 生成 | **CC0 1.0 可商用** |
 | `assets/style_spectrum/luts/style_01.cube` ~ `style_24.cube` | 24 套风格谱色彩映射矩阵 (`17³`) | 基于白盒色彩锚点由 `write_cube_lut` 生成 | **CC0 1.0 可商用** |
-| `assets/style_spectrum/style_spectrum_library.json`、`assets/subtitle_templates/templates.json` | 24 套 v2.1 量化风格谱与 28 套字幕模板 | 本项目原创结构化配置（100% 绑定随仓开源商用字体，零私有字体） | **MIT / CC0 可商用** |
+| `assets/style_spectrum/style_spectrum_library.json`、`assets/style_spectrum/template_blueprints.json`、`assets/subtitle_templates/templates.json` | 24 套 v3.0 量化风格谱、1:1 模板蓝图与 28 套字幕模板 | 本项目原创结构化配置（100% 绑定随仓开源商用字体，零私有字体） | **MIT / CC0 可商用** |
 | `assets/style_spectrum/animation_sfx_pairs.json`、`sfx_intent_taxonomy.json`、`typography_cover_rules.json` | 83 组动画×音效配对、29 类语义音效表、四色排版与 3:4 封面四构图规则 | 公共领域剪辑排版数学与 CC0 音效角色映射 | **MIT / CC0 可商用** |
-| `assets/canvas_runtime/stage.js`、`anim_starter.html`、`cover_4k.html` | 确定性知识讲解动画舞台引擎与双比例 4K 代码封面模板 | 本项目原创 Canvas 2D / HTML 代码 | **MIT / CC0 可商用** |
+| `assets/canvas_runtime/stage_clock.js`、`visual_kit.js`、`anim_starter.html`、`cover_4k.html` | 内容驱动知识讲解动画舞台引擎与双比例 4K 代码封面模板 | 本项目原创 Canvas 2D / HTML 代码 | **MIT / CC0 可商用** |
+| `subskills/gbro-cover-design/` | 内置 3:4 真人出镜公众号/小红书封面设计技能（Cola 智能体自动联动） | `pyang5166/gbro-cover-design` | **MIT License** |
 
 - 7 种修辞动态补镜（`kinetic_text / data_chart / flow_diagram / proportion / day_night / chips / versus`）均由 `scripts/generate_code_broll.py`（无头 Chrome HTML + Pillow 兜底）现场原创绘制，无第三方 UI 素材版权负担。

@@ -31,8 +31,10 @@ from common import (
     CANVAS_WIDTH,
     SAFE_ZONE,
     SCRIPTS_DIR,
+    SUBSKILLS_DIR,
     bbox_iou,
     contrast_ratio,
+    detect_active_agent,
     detect_browser_renderer,
     find_bin,
     find_commercial_font,
@@ -487,11 +489,219 @@ def render_dual_4k_code_covers(
             }
 
 
+_GBRO_STYLE_CATALOG = {
+    "style-01": ("深色渐变风", "style-01-深色渐变风.md", "人物居中，大字覆盖后方，深色渐变背景，高对比强冲击"),
+    "style-02": ("纯色扁平风", "style-02-纯色扁平风.md", "人物清晰前景，纯色干净背景，清爽干练"),
+    "style-03": ("产品主视觉风", "style-03-产品主视觉风.md", "产品或证据画面占主体，人物引导手势"),
+    "style-04": ("对比卡片风", "style-04-对比卡片风.md", "人物手持两张对比卡片推向镜头，适合前后对比/算账拆解"),
+    "style-07": ("人物侧置留白风", "style-07-人物侧置留白风.md", "人物偏一侧，大面积留给大号标题，版面大气"),
+    "style-10": ("正面对视风", "style-10-正面对视风.md", "人物直视镜头建立强信任感，标题环绕四周"),
+}
+
+
+def extract_best_host_face_frame(pipeline_dir: Path) -> Optional[Dict[str, Any]]:
+    """
+    从 A-roll 口播素材中自动筛选主播五官最清晰、角度端正、曝光自然的一帧，
+    保存为 pipeline/09_host_face_ref.png，作为 gbro-cover-design 封面制作的图1人脸垫图。
+    """
+    ffmpeg = find_bin("ffmpeg")
+    if not ffmpeg:
+        return None
+    man_p = pipeline_dir / "01_manifest.json"
+    edl_p = pipeline_dir / "04_edl.json"
+    aroll_sources: List[Tuple[Path, float, float, List[Dict[str, Any]]]] = []
+    seen_paths: set[str] = set()
+
+    if man_p.is_file():
+        for it in (read_json(man_p).get("items") or []):
+            if it.get("role") != "a_roll" or it.get("usable") is False or it.get("video_grade") == "ng":
+                continue
+            mp = Path(str(it.get("normalized_mp4") or it.get("source_path") or ""))
+            if mp.is_file() and str(mp.resolve()) not in seen_paths:
+                seen_paths.add(str(mp.resolve()))
+                aroll_sources.append((mp, 0.25, max(0.8, float(it.get("duration_sec") or 4.0) - 0.25), list(it.get("excluded_windows") or [])))
+    if not aroll_sources and edl_p.is_file():
+        for c in (read_json(edl_p).get("clips") or []):
+            if c.get("track_role") != "a_roll":
+                continue
+            mp = Path(str(c.get("media_path") or ""))
+            if mp.is_file() and str(mp.resolve()) not in seen_paths:
+                seen_paths.add(str(mp.resolve()))
+                aroll_sources.append((mp, float(c.get("source_in_sec") or 0.1), float(c.get("source_out_sec") or 2.0), []))
+
+    if not aroll_sources:
+        return None
+
+    from vision_inspector import compute_laplacian_sharpness, inspect_images
+
+    with tempfile.TemporaryDirectory(prefix="svs_host_face_") as td:
+        td_p = Path(td)
+        cand_items: List[Tuple[Path, Path, float]] = []
+        per_clip = max(2, min(6, 14 // max(1, len(aroll_sources))))
+        idx_c = 0
+        for mp, t_start, t_end, excl in aroll_sources[:4]:
+            span = max(0.3, t_end - t_start)
+            for k in range(per_clip):
+                ts = round(t_start + span * ((k + 0.5) / float(per_clip)), 3)
+                if any(float(w.get("start_sec", 0)) <= ts <= float(w.get("end_sec", -1)) for w in excl):
+                    continue
+                out_f = td_p / f"face_{idx_c:02d}.png"
+                res = subprocess.run(
+                    [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{ts:.3f}", "-i", str(mp), "-frames:v", "1", str(out_f)],
+                    check=False,
+                )
+                if res.returncode == 0 and out_f.is_file():
+                    cand_items.append((out_f, mp, ts))
+                    idx_c += 1
+
+        if not cand_items:
+            return None
+
+        vis_map = inspect_images([c[0] for c in cand_items])
+        best_score = -1e9
+        best_pick: Optional[Tuple[Path, Path, float, Dict[str, Any]]] = None
+        for fpath, src_mp, ts in cand_items:
+            with Image.open(fpath) as im:
+                rgb = im.convert("RGB")
+                w, h = rgb.size
+                arr = np.asarray(rgb, dtype=np.float32)
+            vinfo = vis_map.get(str(fpath)) or vis_map.get(str(fpath.resolve())) or {}
+            faces = vinfo.get("faces") or []
+            if faces:
+                f0 = max(faces, key=lambda b: float(b.get("w", 0.0)) * float(b.get("h", 0.0)))
+                fx, fy, fw, fh = float(f0.get("x", 0.3)), float(f0.get("y", 0.15)), float(f0.get("w", 0.25)), float(f0.get("h", 0.25))
+                area = fw * fh
+                cx = fx + fw * 0.5
+                cy = fy + fh * 0.5
+                # 人脸区域裁出算五官拉普拉斯清晰度与亮度
+                x1, y1 = max(0, int(fx * w)), max(0, int(fy * h))
+                x2, y2 = min(w, int((fx + fw) * w)), min(h, int((fy + fh) * h))
+                patch = arr[y1:y2, x1:x2] if (x2 - x1 > 16 and y2 - y1 > 16) else arr
+                gray_p = 0.2126 * patch[:, :, 0] + 0.7152 * patch[:, :, 1] + 0.0722 * patch[:, :, 2]
+                sharp = float(compute_laplacian_sharpness(gray_p))
+                luma = float(np.mean(gray_p))
+                # 五官正常度：人脸面积合理(4%~35%)、位置靠中上不贴边、曝光不死黑不惨白
+                area_score = 35.0 if 0.04 <= area <= 0.35 else max(0.0, 20.0 - abs(area - 0.14) * 80.0)
+                center_score = max(0.0, 25.0 - abs(cx - 0.50) * 55.0 - abs(cy - 0.34) * 35.0)
+                edge_ok = 12.0 if (fx > 0.05 and fy > 0.04 and fx + fw < 0.95 and fy + fh < 0.85) else -20.0
+                luma_score = 18.0 if 75.0 <= luma <= 205.0 else max(-10.0, 18.0 - abs(luma - 140.0) * 0.2)
+                sharp_score = min(45.0, sharp * 0.45)
+                score = area_score + center_score + edge_ok + luma_score + sharp_score
+                meta = {"has_face": True, "face_bbox": f0, "sharpness": round(sharp, 1), "luma": round(luma, 1)}
+            else:
+                # 非 macOS 降级：取画面上中半区清晰度 + 亮度作为兜底
+                roi = arr[int(h * 0.12):int(h * 0.62), int(w * 0.18):int(w * 0.82)]
+                gray_p = 0.2126 * roi[:, :, 0] + 0.7152 * roi[:, :, 1] + 0.0722 * roi[:, :, 2]
+                sharp = float(compute_laplacian_sharpness(gray_p))
+                luma = float(np.mean(gray_p))
+                score = min(35.0, sharp * 0.35) + (15.0 if 75.0 <= luma <= 205.0 else 0.0)
+                meta = {"has_face": False, "sharpness": round(sharp, 1), "luma": round(luma, 1)}
+            if score > best_score:
+                best_score = score
+                best_pick = (fpath, src_mp, ts, meta)
+
+        if best_pick is None:
+            return None
+        ref_out = pipeline_dir / "09_host_face_ref.png"
+        shutil.copy2(best_pick[0], ref_out)
+        return {
+            "path": str(ref_out.resolve()),
+            "source_media": str(best_pick[1].resolve()),
+            "time_sec": best_pick[2],
+            "score": round(best_score, 2),
+            **best_pick[3],
+        }
+
+
+def build_gbro_cover_handoff(
+    pipeline_dir: Path,
+    title_main: str,
+    title_sub: str,
+    hook_text: str,
+    track: str = "store",
+    agent_info: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    当检测到当前运行的智能体是 Cola（PI_PROVIDER=cola / COLA_ACCOUNT_DIR / COLA_*）时，
+    自动衔接内置 gbro-cover-design 封面制作技能：
+    1. 自动从 A-roll 抽取五官最清晰自然的主播人像帧 (09_host_face_ref.png) 作为图1垫图；
+    2. 按内容自动匹配 10 套风格模板，输出可直接生图的 3:4 竖版中文提示词 (09_gbro_cover_prompt.md) 与交接单。
+    """
+    gbro_dir = SUBSKILLS_DIR / "gbro-cover-design"
+    if not (gbro_dir / "SKILL.md").is_file():
+        return None
+    face_ref = extract_best_host_face_frame(pipeline_dir)
+    # 按内容自动择优推荐风格
+    blob = f"{title_main} {title_sub} {hook_text}"
+    if any(k in blob for k in ("对比", "VS", "差价", "算账", "成本", "真相", "元", "块")):
+        rec_key = "style-04"
+    elif track == "store":
+        rec_key = "style-01"
+    else:
+        rec_key = "style-10"
+    style_cn, style_file, style_desc = _GBRO_STYLE_CATALOG[rec_key]
+    style_ref_path = gbro_dir / "references" / style_file
+
+    clean_main = title_main.replace("\n", "").strip()[:10] or "核心真相"
+    clean_sub = title_sub.strip()[:12] or "实拍干货"
+    face_line = (
+        "主体人物严格参考图1（09_host_face_ref.png）的真实五官特征、发型与神态，自然自信面朝镜头微侧身，肩部以上或半身居中靠下，皮肤质感真实自然，绝不磨皮变脸。"
+        if face_ref
+        else "主体人物为真实亲切的行业主理人形象，半身居中偏下，眼神笃定看向镜头。"
+    )
+    prompt_text = "\n".join([
+        "3:4 竖版构图",
+        "",
+        f"【风格定位】{style_cn}（{style_desc}）。",
+        f"【前景主体】{face_line} 手势自然指向或托举与「{clean_main}」相关的具象实物道具，画面层次分明，所有关键元素距四边保留至少 10% 安全边距。",
+        f"【文字排版】画面上半部分采用超粗方正中文黑体主标题「{clean_main}」（纯白粗字带轻微暗色投影），重点关键词「{clean_sub}」使用高饱和亮黄色矩形色块配黑色超粗字体突出，字号巨大、行距紧凑、强对比一眼看清，无发光特效或花哨粒子。",
+        "【光影与背景】背景采用深灰至炭黑柔和影棚渐变（或与主题契合的暗化实景虚化背景），主光打亮人物正面与道具轮廓，边缘光勾勒肩线，整体高级干净、商业感强。",
+    ])
+
+    prompt_md = pipeline_dir / "09_gbro_cover_prompt.md"
+    prompt_md.write_text(
+        "\n".join([
+            "# Cola 专属封面制作交接单（内置 `gbro-cover-design` 技能）",
+            "",
+            f"- **触发依据**：检测到宿主智能体为 `cola`（信号：`{(agent_info or {}).get('signal', 'cola')}`）",
+            f"- **内置技能入口**：`subskills/gbro-cover-design/SKILL.md`",
+            f"- **推荐封面风格**：`{style_cn}`（模板：`subskills/gbro-cover-design/references/{style_file}`）",
+            f"- **图 1（人脸参考垫图）**：`{face_ref['path']}`" if face_ref else "- **图 1（人脸参考垫图）**：当前项目无出镜 A-roll，可跳过图1或由用户补充个人照",
+            "",
+            "## 可直接用于生图模型的 3:4 竖版提示词",
+            "",
+            "```text",
+            prompt_text,
+            "```",
+            "",
+            "> 提醒：生图完成后请逐字核对画面中文标题是否有错字或多笔少笔。",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+    handoff = {
+        "enabled": True,
+        "agent": (agent_info or {}).get("agent", "cola"),
+        "signal": (agent_info or {}).get("signal", "cola"),
+        "subskill_skill_md": str((gbro_dir / "SKILL.md").resolve()),
+        "recommended_style_id": rec_key,
+        "recommended_style_name": style_cn,
+        "recommended_style_template": str(style_ref_path.resolve()) if style_ref_path.is_file() else None,
+        "figure_1_face_ref": face_ref,
+        "prompt_md": str(prompt_md.resolve()),
+        "prompt_text": prompt_text,
+    }
+    write_json(pipeline_dir / "09_gbro_cover_handoff.json", handoff)
+    print(f"[step9] 检测到 Cola 智能体 -> 已抽取主播清晰垫图并生成 gbro-cover-design 封面提示词 -> {prompt_md.name}")
+    return handoff
+
+
 def run_step9(
     pipeline_dir: Path,
     track: str = "store",
     style_id: Optional[str] = None,
     code_cover_4k: bool = False,
+    agent: Optional[str] = None,
 ) -> Dict[str, Any]:
     audio_events = read_json(pipeline_dir / "03_audio_events.json")
     edl = read_json(pipeline_dir / "04_edl.json")
@@ -963,6 +1173,19 @@ def run_step9(
         has_4k_covers=has_4k,
     )
 
+    # 若检测到当前运行的智能体是 Cola（PI_PROVIDER=cola / COLA_ACCOUNT_DIR / COLA_*），自动衔接内置 gbro-cover-design
+    agent_info = detect_active_agent(agent)
+    gbro_handoff: Optional[Dict[str, Any]] = None
+    if agent_info.get("is_cola"):
+        gbro_handoff = build_gbro_cover_handoff(
+            pipeline_dir,
+            title_main=cover_main,
+            title_sub=fit_sub,
+            hook_text=hook_clean,
+            track=track,
+            agent_info=agent_info,
+        )
+
     out = {
         "step": "09_title_cover",
         "titles": titles,
@@ -983,6 +1206,7 @@ def run_step9(
         "publish_copy_pack_json": str((pipeline_dir / "09_publish_copy_pack.json").resolve()),
         "dual_4k_covers": dual_4k_res,
         "preferred_title": copy_pack["preferred_title"],
+        "gbro_cover_handoff": gbro_handoff,
     }
     write_json(pipeline_dir / "09_title_cover.json", out)
     print(f"[step9] 黄金封面(9:16+3:4)与分平台文案包已生成 (选帧分 {best_meta.get('score', 0)}) -> 09_cover.jpg")
@@ -994,10 +1218,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Step 9: 黄金封面帧优选与去套话标题")
     parser.add_argument("--pipeline-dir", required=True)
     parser.add_argument("--track", choices=["store", "creator"], default="store")
-    parser.add_argument("--style-id", help="绑定风格谱 ID")
+    parser.add_argument("--style-id", help="绑定视觉模板 ID")
     parser.add_argument("--code-cover-4k", action="store_true", help="同时用代码绘制横版 16:9 + 竖版 3:4 双比例 4K 封面")
+    parser.add_argument("--agent", default=None, help="可选：显式指定运行智能体（如 cola 自动调用内置 gbro-cover-design）")
     args = parser.parse_args()
-    run_step9(Path(args.pipeline_dir), track=args.track, style_id=args.style_id, code_cover_4k=args.code_cover_4k)
+    run_step9(Path(args.pipeline_dir), track=args.track, style_id=args.style_id, code_cover_4k=args.code_cover_4k, agent=args.agent)
 
 
 if __name__ == "__main__":

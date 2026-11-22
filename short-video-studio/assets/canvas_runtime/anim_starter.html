@@ -2,10 +2,10 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <title>知识讲解动画舞台</title>
+  <title>内容驱动知识讲解动画舞台</title>
   <style>
     /* @fonts */
-    html, body { margin: 0; padding: 0; background: #03050a; overflow: hidden; }
+    html, body { margin: 0; padding: 0; background: #05070d; overflow: hidden; }
   </style>
 </head>
 <body>
@@ -13,6 +13,7 @@
   <script src="stage_clock.js"></script>
   <script src="visual_kit.js"></script>
   <script src="timing.js"></script>
+  <script src="custom_scenes.js"></script>
   <script>
     (function () {
       const S = window.SVSStage;
@@ -21,18 +22,14 @@
       const DIMS = { "16x9": [1920, 1080], "9x16": [1080, 1920], "1x1": [1080, 1080], "3x4": [1080, 1440] };
       const [W, H] = DIMS[RATIO] || DIMS["16x9"];
       const TDATA = window.SVS_TIMING || {
-        title: "知识讲解示例",
-        subtitle_en: "VISUAL EXPLAINER",
-        question: "为什么越直观的印象，越容易和事实相反？",
+        title: "知识拆解",
+        subtitle_en: "CONTENT EXPLAINER",
+        question: "把抽象原理变成一眼看懂的画面",
         font_mode: "sans",
         total_sec: 12,
-        palette: { bg: "#05070d", ink: "#f1f5f9", sub: "#94a3b8", accent: "#5ce1e6", accent2: "#f59e0b" },
-        lines: [
-          { id: "h1", text: "第一眼看起来[一模一样]", hook: true, start: 0.3, end: 2.3 },
-          { id: "h2", text: "真实差距却高达[14 倍]", hook: true, start: 2.6, end: 4.6 },
-          { id: "card_title", text: "知识讲解示例", card: true, start: 4.9, end: 8.1 },
-          { id: "c1", text: "换一个[观察视角]，真相立刻显形", start: 8.4, end: 11.4, scene: true },
-        ],
+        palette: { bg: "#05070d", ink: "#f1f5f9", sub: "#94a3b8", accent: "#5ce1e6", accent2: "#f59e0b", alert: "#fb7185" },
+        lines: [],
+        content_scenes: [],
       };
 
       const stage = document.getElementById("stage");
@@ -40,159 +37,621 @@
         width: W,
         height: H,
         stage,
-        seed: 29,
-        bloom: 0.92,
-        vignette: 0.56,
-        grain: 0.16,
+        seed: 31,
+        bloom: 0.72,
+        vignette: 0.48,
+        grain: 0.12,
         palette: TDATA.palette,
       });
 
       const lines = TDATA.lines || [];
       const totalDur = Math.max(4, Number(TDATA.total_sec || 12));
       K.setCaptions(lines, TDATA.font_mode || "sans");
+      // 柔和信息图表暗底背景（禁用星空噪点干扰，用细网格+微尘呈现专业质感）
       K.setAtmosphereKeys([
-        [0, { haze: 0.28, warm: 0.08, stars: 0.65, dust: 0.32, bokeh: 0.16, grid: 0.0 }],
-        [totalDur * 0.4, { haze: 0.42, warm: 0.16, stars: 0.72, dust: 0.42, bokeh: 0.24, grid: 0.25 }],
-        [totalDur, { haze: 0.32, warm: 0.2, stars: 0.6, dust: 0.3, bokeh: 0.18, grid: 0.0 }],
+        [0, { haze: 0.22, warm: 0.08, stars: 0.0, dust: 0.24, bokeh: 0.10, grid: 0.26 }],
+        [totalDur * 0.5, { haze: 0.28, warm: 0.14, stars: 0.0, dust: 0.30, bokeh: 0.14, grid: 0.32 }],
+        [totalDur, { haze: 0.22, warm: 0.12, stars: 0.0, dust: 0.22, bokeh: 0.10, grid: 0.24 }],
       ]);
 
-      const titleCard = lines.find((x) => x.card);
-      const tCardStart = titleCard ? titleCard.start : 4.8;
-      const tCardEnd = titleCard ? titleCard.end : 8.0;
+      const contentScenes = (window.SVS_SCENES && window.SVS_SCENES.length)
+        ? window.SVS_SCENES
+        : (TDATA.content_scenes || []);
 
-      // 预生成确定性轨道粒子
-      const rng = S.rng(77);
-      const orbitPts = Array.from({ length: 64 }, () => ({
-        ang: rng() * S.TAU,
-        rad: 0.62 + rng() * 0.72,
-        spd: (rng() > 0.5 ? 1 : -1) * (0.18 + rng() * 0.35),
-        sz: 2 + rng() * 5,
-      }));
+      const isPort = H > W;
+      const SAFE_CX = W / 2;
+      const SAFE_CY = H * (isPort ? 0.41 : 0.44);
+      const BOX_W = W * (isPort ? 0.86 : 0.78);
+      const BOX_H = H * (isPort ? 0.48 : 0.58);
 
-      const scenes = lines
-        .filter((l, idx) => idx === 0 || l.card || l.scene)
-        .map((l, idx, arr) => ({
-          id: l.id || `s${idx + 1}`,
-          label: l.text.replace(/[\[\]]/g, "").slice(0, 14),
-          start: l.start,
-          end: arr[idx + 1] ? arr[idx + 1].start : totalDur,
-        }));
+      function roundRectPath(c, x, y, w, h, r) {
+        const rr = Math.min(r, w / 2, h / 2);
+        c.beginPath();
+        c.moveTo(x + rr, y);
+        c.arcTo(x + w, y, x + w, y + h, rr);
+        c.arcTo(x + w, y + h, x, y + h, rr);
+        c.arcTo(x, y + h, x, y, rr);
+        c.arcTo(x, y, x + w, y, rr);
+        c.closePath();
+      }
+
+      function fitFont(c, txt, maxW, startPx, weight, fam, minPx) {
+        let px = startPx;
+        const s = String(txt || "");
+        c.font = `${weight} ${px}px ${fam}`;
+        const m = c.measureText(s).width;
+        if (m > maxW && m > 0) {
+          px = Math.max(minPx || 18, Math.floor((px * maxW) / m));
+          c.font = `${weight} ${px}px ${fam}`;
+        }
+        return px;
+      }
+
+      function drawKickerPill(c, label, x, y, col) {
+        if (!label) return;
+        c.save();
+        const fs = Math.round(Math.min(W, H) * 0.022);
+        c.font = `700 ${fs}px ${K.fontSans}`;
+        const tw = c.measureText(label).width;
+        const pw = tw + 36;
+        const ph = fs + 18;
+        roundRectPath(c, x - pw / 2, y - ph / 2, pw, ph, ph / 2);
+        c.fillStyle = K.rgba(col, 0.16);
+        c.fill();
+        c.strokeStyle = K.rgba(col, 0.65);
+        c.lineWidth = 1.6;
+        c.stroke();
+        c.fillStyle = col;
+        c.textAlign = "center";
+        c.textBaseline = "middle";
+        c.fillText(label, x, y + 1);
+        c.restore();
+      }
+
+      // --- 1. 巨型核心数字卡 (big_stat) ---
+      function drawBigStat(c, sc, p, t) {
+        const d = sc.data || {};
+        const valText = String(d.value_text || "2元");
+        const numVal = Number(d.numeric_value);
+        const hasNum = Number.isFinite(numVal) && numVal > 0 && d.unit;
+        const shown = hasNum
+          ? `${(d.prefix || "")}${Math.round(numVal * S.ease.outCubic(Math.min(1, p * 1.6)))}${d.unit}`
+          : valText;
+        const cardW = BOX_W * 0.86;
+        const cardH = BOX_H * 0.72;
+        const x0 = SAFE_CX - cardW / 2;
+        const y0 = SAFE_CY - cardH / 2;
+
+        c.save();
+        roundRectPath(c, x0, y0, cardW, cardH, 28);
+        c.fillStyle = "rgba(15, 23, 42, 0.72)";
+        c.fill();
+        c.strokeStyle = K.rgba(K.P.accent, 0.48);
+        c.lineWidth = 2.4;
+        c.stroke();
+
+        // 顶部流动扫描高亮线（持续微动防死区）
+        const scanX = x0 + 30 + ((t * 140) % Math.max(40, cardW - 140));
+        c.fillStyle = K.rgba(K.P.accent2, 0.85);
+        roundRectPath(c, scanX, y0 - 2, 84, 5, 3);
+        c.fill();
+
+        drawKickerPill(c, d.kicker || sc.kicker || "核心数据", SAFE_CX, y0 + 52, K.P.accent);
+
+        const bigPx = fitFont(c, shown, cardW * 0.82, Math.round(Math.min(W, H) * 0.15), 900, K.fontSans, 56);
+        c.textAlign = "center";
+        c.textBaseline = "middle";
+        c.shadowColor = K.rgba(K.P.accent2, 0.55);
+        c.shadowBlur = 28;
+        c.fillStyle = K.P.accent2;
+        c.fillText(shown, SAFE_CX, SAFE_CY + 6);
+        c.shadowBlur = 0;
+
+        fitFont(c, d.caption || sc.title || "", cardW * 0.84, Math.round(Math.min(W, H) * 0.036), 600, K.fontSans, 22);
+        c.fillStyle = K.rgba(K.P.ink, 0.90);
+        c.fillText(d.caption || sc.title || "", SAFE_CX, y0 + cardH - 58);
+        c.restore();
+      }
+
+      // --- 2. 价格阶梯 / 柱状对比图 (bar_compare) ---
+      function drawBarCompare(c, sc, p, t) {
+        const d = sc.data || {};
+        const bars = (d.bars && d.bars.length) ? d.bars : [
+          { label: "常规选项", value: 16, display: "16", highlight: false },
+          { label: "锚点选项", value: 18, display: "18", highlight: true },
+        ];
+        const maxV = Math.max(...bars.map((b) => Math.max(1, Number(b.value || 1))));
+        const chartW = BOX_W * 0.88;
+        const chartH = BOX_H * 0.78;
+        const x0 = SAFE_CX - chartW / 2;
+        const y0 = SAFE_CY - chartH / 2;
+        const baseY = y0 + chartH - 72;
+        const topY = y0 + 96;
+        const usableH = Math.max(120, baseY - topY);
+
+        c.save();
+        drawKickerPill(c, d.kicker || sc.title || "直观对比", SAFE_CX, y0 + 26, K.P.accent);
+
+        // 水平参考虚线
+        c.strokeStyle = "rgba(148, 163, 184, 0.20)";
+        c.lineWidth = 1.4;
+        for (let k = 0; k <= 3; k++) {
+          const gy = baseY - (usableH * k) / 3;
+          c.beginPath();
+          c.moveTo(x0, gy);
+          c.lineTo(x0 + chartW, gy);
+          c.stroke();
+        }
+
+        const n = bars.length;
+        const slotW = chartW / n;
+        const barW = Math.min(180, slotW * 0.56);
+        bars.forEach((b, i) => {
+          const prog = S.ease.outBack(S.prog(p, i * 0.12, 0.45 + i * 0.14));
+          const ratio = Math.max(0.14, Number(b.value || 1) / maxV);
+          const pulse = 1 + 0.012 * Math.sin(t * 2.6 + i);
+          const bh = usableH * ratio * Math.min(1, Math.max(0.05, prog)) * pulse;
+          const bx = x0 + slotW * i + (slotW - barW) / 2;
+          const by = baseY - bh;
+          const col = b.highlight ? K.P.accent2 : K.P.accent;
+
+          const grad = c.createLinearGradient(bx, by, bx, baseY);
+          grad.addColorStop(0, col);
+          grad.addColorStop(1, K.rgba(col, 0.24));
+          roundRectPath(c, bx, by, barW, bh, 16);
+          c.fillStyle = grad;
+          c.fill();
+          c.strokeStyle = K.rgba(col, 0.9);
+          c.lineWidth = 2;
+          c.stroke();
+
+          // 顶值标签
+          fitFont(c, String(b.display || b.value), slotW * 0.85, Math.round(Math.min(W, H) * 0.042), 800, K.fontSans, 24);
+          c.textAlign = "center";
+          c.textBaseline = "bottom";
+          c.fillStyle = b.highlight ? K.P.accent2 : "#ffffff";
+          c.fillText(String(b.display || b.value), bx + barW / 2, by - 12);
+
+          // 底部类目标签
+          fitFont(c, String(b.label || ""), slotW * 0.88, Math.round(Math.min(W, H) * 0.030), 600, K.fontSans, 18);
+          c.textBaseline = "top";
+          c.fillStyle = K.rgba(K.P.ink, 0.92);
+          c.fillText(String(b.label || ""), bx + barW / 2, baseY + 18);
+        });
+
+        // 差额连接标注（若有 delta_note）
+        if (d.delta_note && bars.length >= 2) {
+          const midX = SAFE_CX;
+          const badgeY = topY + 22 + Math.sin(t * 2.2) * 4;
+          drawKickerPill(c, d.delta_note, midX, badgeY, K.P.alert || "#fb7185");
+        }
+        c.restore();
+      }
+
+      // --- 3. 左右反差对照卡 (split_versus) ---
+      function drawSplitVersus(c, sc, p, t) {
+        const d = sc.data || {};
+        const left = d.left || { tag: "表面以为", title: "直观第一印象", desc: "容易被表象带偏" };
+        const right = d.right || { tag: "底层真相", title: "真实商业逻辑", desc: "藏在结构设计里" };
+        const gap = Math.round(W * 0.035);
+        const cardW = (BOX_W - gap) / 2;
+        const cardH = BOX_H * 0.72;
+        const y0 = SAFE_CY - cardH / 2;
+        const lx = SAFE_CX - gap / 2 - cardW;
+        const rx = SAFE_CX + gap / 2;
+
+        const pL = S.ease.outCubic(S.prog(p, 0.0, 0.35));
+        const pR = S.ease.outCubic(S.prog(p, 0.18, 0.55));
+
+        c.save();
+        [
+          { x: lx - (1 - pL) * 40, alpha: pL, obj: left, col: K.P.sub || "#94a3b8", borderCol: "rgba(148,163,184,0.45)" },
+          { x: rx + (1 - pR) * 40, alpha: pR, obj: right, col: K.P.accent2, borderCol: K.rgba(K.P.accent2, 0.85) },
+        ].forEach((side, idx) => {
+          c.save();
+          c.globalAlpha *= side.alpha;
+          roundRectPath(c, side.x, y0, cardW, cardH, 24);
+          c.fillStyle = idx === 1 ? "rgba(30, 24, 14, 0.78)" : "rgba(15, 23, 42, 0.72)";
+          c.fill();
+          c.strokeStyle = side.borderCol;
+          c.lineWidth = idx === 1 ? 3 : 2;
+          c.stroke();
+
+          drawKickerPill(c, side.obj.tag, side.x + cardW / 2, y0 + 54, idx === 1 ? K.P.accent2 : K.P.accent);
+          fitFont(c, side.obj.title, cardW * 0.84, Math.round(Math.min(W, H) * 0.044), 800, K.fontSans, 24);
+          c.textAlign = "center";
+          c.textBaseline = "middle";
+          c.fillStyle = "#ffffff";
+          c.fillText(side.obj.title, side.x + cardW / 2, y0 + cardH * 0.50);
+
+          fitFont(c, side.obj.desc || "", cardW * 0.84, Math.round(Math.min(W, H) * 0.028), 500, K.fontSans, 18);
+          c.fillStyle = K.rgba(K.P.ink, 0.78);
+          c.fillText(side.obj.desc || "", side.x + cardW / 2, y0 + cardH * 0.74);
+          c.restore();
+        });
+
+        // 居中脉冲 VS 圆章
+        const vsR = Math.round(Math.min(W, H) * 0.046) * (1 + 0.04 * Math.sin(t * 3.2));
+        c.beginPath();
+        c.arc(SAFE_CX, SAFE_CY, vsR, 0, S.TAU);
+        c.fillStyle = "#0b1120";
+        c.fill();
+        c.strokeStyle = K.P.accent2;
+        c.lineWidth = 3;
+        c.stroke();
+        c.font = `900 ${Math.round(vsR * 0.78)}px ${K.fontSans}`;
+        c.textAlign = "center";
+        c.textBaseline = "middle";
+        c.fillStyle = K.P.accent2;
+        c.fillText("VS", SAFE_CX, SAFE_CY + 2);
+        c.restore();
+      }
+
+      // --- 4. 因果/步骤机制流程图 (flow_mechanism) ---
+      function drawFlowMechanism(c, sc, p, t) {
+        const d = sc.data || {};
+        const steps = (d.steps && d.steps.length) ? d.steps : [
+          { num: "01", title: "第一步", desc: "建立锚点" },
+          { num: "02", title: "第二步", desc: "制造落差" },
+          { num: "03", title: "第三步", desc: "自然转化" },
+        ];
+        const n = steps.length;
+        c.save();
+        drawKickerPill(c, d.kicker || sc.title || "核心机制", SAFE_CX, SAFE_CY - BOX_H * 0.40, K.P.accent);
+
+        const activeIdx = Math.min(n - 1, Math.floor(((p * 1.15) % 1) * n));
+        if (!isPort) {
+          const gap = 34;
+          const nodeW = (BOX_W - gap * (n - 1)) / n;
+          const nodeH = BOX_H * 0.56;
+          const xStart = SAFE_CX - BOX_W / 2;
+          const y0 = SAFE_CY - nodeH / 2 + 24;
+          steps.forEach((st, i) => {
+            const sp = S.ease.outCubic(S.prog(p, i * 0.14, 0.34 + i * 0.14));
+            const nx = xStart + i * (nodeW + gap);
+            const isAct = i === activeIdx;
+            c.save();
+            c.globalAlpha *= sp;
+            roundRectPath(c, nx, y0 + (1 - sp) * 26, nodeW, nodeH, 20);
+            c.fillStyle = isAct ? "rgba(22, 36, 56, 0.90)" : "rgba(15, 23, 42, 0.72)";
+            c.fill();
+            c.strokeStyle = isAct ? K.P.accent2 : K.rgba(K.P.accent, 0.45);
+            c.lineWidth = isAct ? 3.2 : 1.8;
+            c.stroke();
+
+            c.font = `900 ${Math.round(Math.min(W, H) * 0.048)}px ${K.fontSans}`;
+            c.textAlign = "left";
+            c.textBaseline = "top";
+            c.fillStyle = isAct ? K.P.accent2 : K.P.accent;
+            c.fillText(st.num || `0${i + 1}`, nx + 24, y0 + 24);
+
+            fitFont(c, st.title, nodeW - 44, Math.round(Math.min(W, H) * 0.036), 800, K.fontSans, 20);
+            c.fillStyle = "#ffffff";
+            c.fillText(st.title, nx + 24, y0 + nodeH * 0.44);
+
+            fitFont(c, st.desc || "", nodeW - 44, Math.round(Math.min(W, H) * 0.024), 500, K.fontSans, 16);
+            c.fillStyle = K.rgba(K.P.ink, 0.78);
+            c.fillText(st.desc || "", nx + 24, y0 + nodeH * 0.68);
+            c.restore();
+
+            if (i < n - 1) {
+              const ax0 = nx + nodeW + 6;
+              const ax1 = nx + nodeW + gap - 6;
+              const ay = y0 + nodeH / 2;
+              K.drawLuminousLine(c, [[ax0, ay], [ax1, ay]], K.P.accent, 3, 0.85);
+              const px = S.lerp(ax0, ax1, (t * 0.9 + i * 0.3) % 1);
+              K.drawCore(c, px, ay, 6, 0.95, K.P.accent2);
+            }
+          });
+        } else {
+          // 竖屏纵向步骤流
+          const gap = 28;
+          const nodeH = Math.min(185, (BOX_H * 0.82 - gap * (n - 1)) / n);
+          const nodeW = BOX_W * 0.92;
+          const x0 = SAFE_CX - nodeW / 2;
+          const yStart = SAFE_CY - (nodeH * n + gap * (n - 1)) / 2 + 24;
+          steps.forEach((st, i) => {
+            const sp = S.ease.outCubic(S.prog(p, i * 0.14, 0.34 + i * 0.14));
+            const ny = yStart + i * (nodeH + gap);
+            const isAct = i === activeIdx;
+            c.save();
+            c.globalAlpha *= sp;
+            roundRectPath(c, x0, ny, nodeW, nodeH, 20);
+            c.fillStyle = isAct ? "rgba(22, 36, 56, 0.90)" : "rgba(15, 23, 42, 0.74)";
+            c.fill();
+            c.strokeStyle = isAct ? K.P.accent2 : K.rgba(K.P.accent, 0.45);
+            c.lineWidth = isAct ? 3 : 1.8;
+            c.stroke();
+
+            c.font = `900 44px ${K.fontSans}`;
+            c.textAlign = "left";
+            c.textBaseline = "middle";
+            c.fillStyle = isAct ? K.P.accent2 : K.P.accent;
+            c.fillText(st.num || `0${i + 1}`, x0 + 28, ny + nodeH / 2);
+
+            fitFont(c, st.title, nodeW - 140, 38, 800, K.fontSans, 22);
+            c.fillStyle = "#ffffff";
+            c.fillText(st.title, x0 + 110, ny + nodeH * 0.38);
+
+            fitFont(c, st.desc || "", nodeW - 140, 26, 500, K.fontSans, 18);
+            c.fillStyle = K.rgba(K.P.ink, 0.78);
+            c.fillText(st.desc || "", x0 + 110, ny + nodeH * 0.70);
+            c.restore();
+          });
+        }
+        c.restore();
+      }
+
+      // --- 5. 占比结构环图 (proportion_ring) ---
+      function drawProportionRing(c, sc, p, t) {
+        const d = sc.data || {};
+        const pct = Math.max(5, Math.min(95, Number(d.percent || 68)));
+        const r = Math.min(BOX_W, BOX_H) * 0.32;
+        const cx = SAFE_CX - (isPort ? 0 : BOX_W * 0.16);
+        const cy = SAFE_CY + (isPort ? -40 : 12);
+        const prog = S.ease.outCubic(Math.min(1, p * 1.4));
+        const sweep = (pct / 100) * S.TAU * prog;
+
+        c.save();
+        drawKickerPill(c, d.kicker || sc.title || "结构占比", SAFE_CX, SAFE_CY - BOX_H * 0.42, K.P.accent);
+
+        // 底环
+        c.beginPath();
+        c.arc(cx, cy, r, 0, S.TAU);
+        c.strokeStyle = "rgba(148, 163, 184, 0.22)";
+        c.lineWidth = 28;
+        c.stroke();
+
+        // 主占比亮环
+        c.beginPath();
+        c.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + sweep);
+        c.strokeStyle = K.P.accent2;
+        c.lineWidth = 28;
+        c.lineCap = "round";
+        c.stroke();
+
+        // 末端发光核心点
+        const endA = -Math.PI / 2 + sweep;
+        K.drawCore(c, cx + Math.cos(endA) * r, cy + Math.sin(endA) * r, 9, 0.95, "#ffffff");
+
+        // 环内数值
+        c.textAlign = "center";
+        c.textBaseline = "middle";
+        c.font = `900 ${Math.round(r * 0.48)}px ${K.fontSans}`;
+        c.fillStyle = "#ffffff";
+        c.fillText(`${Math.round(pct * prog)}%`, cx, cy - 6);
+        c.font = `600 ${Math.round(r * 0.17)}px ${K.fontSans}`;
+        c.fillStyle = K.P.accent2;
+        c.fillText(d.primary_label || "核心占比", cx, cy + r * 0.34);
+
+        // 右侧/下方图例卡
+        const lx = isPort ? SAFE_CX - BOX_W * 0.38 : cx + r + 76;
+        const ly = isPort ? cy + r + 52 : cy - 56;
+        const legW = isPort ? BOX_W * 0.76 : BOX_W * 0.38;
+        [
+          { col: K.P.accent2, label: d.primary_label || "主力项", val: `${pct}%` },
+          { col: K.P.accent, label: d.secondary_label || "其余项", val: `${100 - pct}%` },
+        ].forEach((row, idx) => {
+          const ry = ly + idx * 66;
+          roundRectPath(c, lx, ry, legW, 52, 12);
+          c.fillStyle = "rgba(15, 23, 42, 0.72)";
+          c.fill();
+          c.fillStyle = row.col;
+          c.fillRect(lx + 14, ry + 14, 12, 24);
+          c.textAlign = "left";
+          c.textBaseline = "middle";
+          fitFont(c, row.label, legW - 120, 26, 700, K.fontSans, 18);
+          c.fillStyle = "#ffffff";
+          c.fillText(row.label, lx + 40, ry + 26);
+          c.textAlign = "right";
+          c.fillStyle = row.col;
+          c.fillText(row.val, lx + legW - 18, ry + 26);
+        });
+        c.restore();
+      }
+
+      // --- 6. 趋势拐点折线图 (timeline_curve) ---
+      function drawTimelineCurve(c, sc, p, t) {
+        const d = sc.data || {};
+        const ptsRaw = (d.points && d.points.length >= 3) ? d.points : [
+          { label: "起点", y: 0.22 },
+          { label: "爬坡", y: 0.38 },
+          { label: "拐点", y: 0.78 },
+          { label: "放大", y: 0.92 },
+        ];
+        const cw = BOX_W * 0.86;
+        const ch = BOX_H * 0.68;
+        const x0 = SAFE_CX - cw / 2;
+        const y0 = SAFE_CY - ch / 2 + 24;
+
+        c.save();
+        drawKickerPill(c, d.kicker || sc.title || "变化趋势", SAFE_CX, y0 - 42, K.P.accent);
+
+        c.strokeStyle = "rgba(148, 163, 184, 0.25)";
+        c.lineWidth = 2;
+        c.beginPath();
+        c.moveTo(x0, y0 + ch);
+        c.lineTo(x0 + cw, y0 + ch);
+        c.moveTo(x0, y0);
+        c.lineTo(x0, y0 + ch);
+        c.stroke();
+
+        const pts = ptsRaw.map((pt, idx) => [
+          x0 + (cw * idx) / (ptsRaw.length - 1),
+          y0 + ch - pt.y * (ch - 32) - 16,
+        ]);
+        const drawCount = Math.max(2, Math.ceil(pts.length * S.ease.outCubic(Math.min(1, p * 1.4))));
+        const visPts = pts.slice(0, drawCount);
+        K.drawLuminousLine(c, visPts, K.P.accent, 4.0, 0.95);
+
+        visPts.forEach((pt, idx) => {
+          const isPeak = idx === visPts.length - 1;
+          K.drawCore(c, pt[0], pt[1], isPeak ? 10 : 6, 0.95, isPeak ? K.P.accent2 : K.P.accent);
+          c.textAlign = "center";
+          c.textBaseline = "top";
+          c.font = `600 22px ${K.fontSans}`;
+          c.fillStyle = K.rgba(K.P.ink, 0.85);
+          c.fillText(ptsRaw[idx].label || "", pt[0], y0 + ch + 14);
+        });
+
+        // 沿线移动数据微光点
+        if (visPts.length >= 2) {
+          const u = (t * 0.45) % 1;
+          const seg = Math.min(visPts.length - 2, Math.floor(u * (visPts.length - 1)));
+          const localU = u * (visPts.length - 1) - seg;
+          const mx = S.lerp(visPts[seg][0], visPts[seg + 1][0], localU);
+          const my = S.lerp(visPts[seg][1], visPts[seg + 1][1], localU);
+          K.drawCore(c, mx, my, 8, 1.0, "#ffffff");
+        }
+        c.restore();
+      }
+
+      // --- 7. 菜单/价目/卡片界面模拟 (mockup_card) ---
+      function drawMockupCard(c, sc, p, t) {
+        const d = sc.data || {};
+        const items = (d.items && d.items.length) ? d.items : [
+          { name: "基础规格", price: "¥16", tag: "常规" },
+          { name: "升级大杯", price: "¥18", tag: "主推最划算", highlight: true },
+        ];
+        const cardW = Math.min(BOX_W * 0.82, 760);
+        const cardH = Math.min(BOX_H * 0.84, 150 + items.length * 104);
+        const x0 = SAFE_CX - cardW / 2;
+        const y0 = SAFE_CY - cardH / 2;
+
+        c.save();
+        roundRectPath(c, x0, y0, cardW, cardH, 26);
+        c.fillStyle = "rgba(15, 23, 42, 0.88)";
+        c.fill();
+        c.strokeStyle = K.rgba(K.P.accent, 0.55);
+        c.lineWidth = 2.4;
+        c.stroke();
+
+        // 顶部窗口条
+        roundRectPath(c, x0, y0, cardW, 64, 26);
+        c.fillStyle = "rgba(30, 41, 59, 0.85)";
+        c.fill();
+        ["#fb7185", "#f59e0b", "#34d399"].forEach((dotC, di) => {
+          c.beginPath();
+          c.arc(x0 + 34 + di * 22, y0 + 32, 6, 0, S.TAU);
+          c.fillStyle = dotC;
+          c.fill();
+        });
+        c.textAlign = "center";
+        c.textBaseline = "middle";
+        fitFont(c, d.header || sc.title || "真实场景清单", cardW - 180, 28, 700, K.fontSans, 18);
+        c.fillStyle = "#ffffff";
+        c.fillText(d.header || sc.title || "真实场景清单", SAFE_CX, y0 + 32);
+
+        items.forEach((it, idx) => {
+          const sp = S.ease.outCubic(S.prog(p, idx * 0.14, 0.36 + idx * 0.14));
+          const ry = y0 + 88 + idx * 98;
+          const isHi = Boolean(it.highlight);
+          c.save();
+          c.globalAlpha *= sp;
+          roundRectPath(c, x0 + 28, ry, cardW - 56, 82, 16);
+          c.fillStyle = isHi ? "rgba(245, 158, 11, 0.22)" : "rgba(30, 41, 59, 0.65)";
+          c.fill();
+          c.strokeStyle = isHi ? K.P.accent2 : "rgba(148, 163, 184, 0.28)";
+          c.lineWidth = isHi ? 2.6 + 0.6 * Math.sin(t * 4.0) : 1.4;
+          c.stroke();
+
+          c.textAlign = "left";
+          c.textBaseline = "middle";
+          fitFont(c, it.name || "", cardW * 0.50, 32, 700, K.fontSans, 20);
+          c.fillStyle = "#ffffff";
+          c.fillText(it.name || "", x0 + 52, ry + 32);
+
+          if (it.tag) {
+            c.font = `600 20px ${K.fontSans}`;
+            c.fillStyle = isHi ? K.P.accent2 : K.rgba(K.P.ink, 0.65);
+            c.fillText(it.tag, x0 + 52, ry + 62);
+          }
+
+          c.textAlign = "right";
+          c.font = `900 38px ${K.fontSans}`;
+          c.fillStyle = isHi ? K.P.accent2 : K.P.accent;
+          c.fillText(it.price || "", x0 + cardW - 52, ry + 42);
+          c.restore();
+        });
+        c.restore();
+      }
+
+      // --- 8. 精排片名卡 / 金句海报 (quote_poster) ---
+      function drawQuotePoster(c, sc, p, t) {
+        const d = sc.data || {};
+        const titleTxt = String(d.headline || sc.title || TDATA.title || "知识拆解");
+        const subTxt = String(d.subline || TDATA.question || "");
+        const enTxt = String(d.en || TDATA.subtitle_en || "KNOWLEDGE EXPLAINER").toUpperCase();
+        c.save();
+        // 横向发光细线（替代旧版星球圆环）
+        const lineW = BOX_W * (0.45 + 0.35 * S.ease.outCubic(Math.min(1, p * 1.4)));
+        K.drawLuminousLine(c, [[SAFE_CX - lineW / 2, SAFE_CY - 125], [SAFE_CX + lineW / 2, SAFE_CY - 125]], K.P.accent, 2.2, 0.75);
+        K.drawLuminousLine(c, [[SAFE_CX - lineW / 2, SAFE_CY + 172], [SAFE_CX + lineW / 2, SAFE_CY + 172]], K.P.accent2, 2.2, 0.65);
+        const dotX = SAFE_CX - lineW / 2 + ((t * 180) % Math.max(40, lineW));
+        K.drawCore(c, dotX, SAFE_CY - 125, 6, 0.9, "#ffffff");
+
+        const tSize = fitFont(c, titleTxt, W * 0.84, Math.round(Math.min(W, H) * (isPort ? 0.095 : 0.11)), 900, K.fontSerif, 44);
+        c.textAlign = "center";
+        c.textBaseline = "middle";
+        c.shadowColor = K.rgba(K.P.accent, 0.65);
+        c.shadowBlur = 28;
+        c.fillStyle = "#ffffff";
+        c.fillText(titleTxt, SAFE_CX, SAFE_CY - 14);
+        c.shadowBlur = 0;
+
+        fitFont(c, enTxt, W * 0.78, Math.round(tSize * 0.22), 600, K.fontSans, 16);
+        c.fillStyle = K.rgba(K.P.accent, 0.88);
+        c.fillText(enTxt, SAFE_CX, SAFE_CY + tSize * 0.64);
+
+        if (subTxt) {
+          fitFont(c, subTxt, W * 0.82, Math.round(tSize * 0.26), 600, K.fontSans, 20);
+          c.fillStyle = K.rgba(K.P.ink, 0.88);
+          c.fillText(subTxt, SAFE_CX, SAFE_CY + tSize * 1.18);
+        }
+        c.restore();
+      }
+
+      const BUILTIN_RENDERERS = {
+        big_stat: drawBigStat,
+        bar_compare: drawBarCompare,
+        split_versus: drawSplitVersus,
+        flow_mechanism: drawFlowMechanism,
+        proportion_ring: drawProportionRing,
+        timeline_curve: drawTimelineCurve,
+        mockup_card: drawMockupCard,
+        quote_poster: drawQuotePoster,
+      };
+
+      const scenesMeta = contentScenes.length
+        ? contentScenes.map((sc, i) => ({
+            id: sc.id || `s${i + 1}`,
+            label: String(sc.title || sc.visual_type || `幕${i + 1}`).slice(0, 14),
+            start: Number(sc.start || 0),
+            end: Number(sc.end || totalDur),
+          }))
+        : [{ id: "s1", label: TDATA.title || "主场景", start: 0, end: totalDur }];
 
       function render(t) {
         K.begin(t);
         const c = K.ctx;
-        const cx = W / 2;
-        const cy = H * (H > W ? 0.38 : 0.44);
-        const baseR = Math.min(W, H) * 0.155;
+        const customMap = window.SVS_CUSTOM_RENDERERS || {};
 
-        // 1) 开篇冷开场主视觉：放大材质球 + 发光轨道 + 脉冲亮核
-        const introA = S.envelope(t, 0.0, 0.55, tCardStart - 0.1, tCardStart + 0.25);
-        if (introA > 0.002) {
+        for (const sc of contentScenes) {
+          const st = Number(sc.start || 0);
+          const en = Number(sc.end || totalDur);
+          const alpha = S.envelope(t, st, st + 0.35, Math.max(st + 0.45, en - 0.25), en + 0.08);
+          if (alpha <= 0.002) continue;
+          const p = S.clamp((t - st) / Math.max(0.2, en - st), 0, 1);
           c.save();
-          c.globalAlpha = introA;
-          const grow = 0.82 + 0.18 * S.ease.outQuint(S.prog(t, 0.0, 1.4));
-          const rr = baseR * grow;
-          // 三层发光同心椭圆弧
-          for (let i = 0; i < 3; i++) {
-            const pts = [];
-            const rx = rr * (1.25 + i * 0.28);
-            const ry = rr * (0.48 + i * 0.14);
-            const rot = t * (0.16 - i * 0.04) + i * 0.7;
-            for (let k = 0; k <= 54; k++) {
-              const a = (k / 54) * S.TAU;
-              const px = Math.cos(a) * rx;
-              const py = Math.sin(a) * ry;
-              pts.push([cx + px * Math.cos(rot) - py * Math.sin(rot), cy + px * Math.sin(rot) + py * Math.cos(rot)]);
-            }
-            K.drawLuminousLine(c, pts, i === 1 ? K.P.accent2 : K.P.accent, 2.0 - i * 0.35, 0.62 - i * 0.14);
-          }
-          K.drawMaterialOrb(c, cx, cy, rr * 0.78, { color: K.P.accent, atmo: 0.95 });
-          K.drawCore(c, cx + Math.cos(t * 0.9) * rr * 1.28, cy + Math.sin(t * 0.9) * rr * 0.42, 10, 0.95, K.P.accent2);
+          c.globalAlpha = alpha;
+          const fn = customMap[sc.id] || customMap[sc.visual_type] || BUILTIN_RENDERERS[sc.visual_type] || drawQuotePoster;
+          fn(c, sc, p, t, { W, H, SAFE_CX, SAFE_CY, BOX_W, BOX_H, K, S });
           c.restore();
         }
-
-        // 2) 片名海报卡（发光宋体大字 + 英文副标 + 核心设问）
-        const cardA = S.envelope(t, tCardStart, tCardStart + 0.45, tCardEnd - 0.35, tCardEnd);
-        if (cardA > 0.002) {
-          c.save();
-          c.globalAlpha = cardA;
-          K.drawHalo(c, cx, cy, baseR * 2.2, 0.32, K.P.accent);
-          for (let i = 0; i < 3; i++) {
-            c.strokeStyle = K.rgba(K.P.accent, 0.26 - i * 0.07);
-            c.lineWidth = 1.6;
-            c.beginPath();
-            c.arc(cx, cy, baseR * (1.15 + i * 0.32 + 0.04 * Math.sin(t * 1.2 + i)), 0, S.TAU);
-            c.stroke();
-          }
-          const tMaxW = W * 0.84;
-          const fitSize = (txt, px, weight, fam, minPx) => {
-            let s = px;
-            c.font = `${weight} ${s}px ${fam}`;
-            const m = c.measureText(txt).width;
-            if (m > tMaxW && m > 0) {
-              s = Math.max(minPx, Math.floor((s * tMaxW) / m));
-              c.font = `${weight} ${s}px ${fam}`;
-            }
-            return s;
-          };
-          const tSize = fitSize(TDATA.title || "知识讲解", Math.round(Math.min(W, H) * (H > W ? 0.11 : 0.12)), 900, K.fontSerif, 48);
-          c.textAlign = "center";
-          c.textBaseline = "middle";
-          c.shadowColor = K.rgba(K.P.accent, 0.78);
-          c.shadowBlur = 36;
-          c.fillStyle = "#ffffff";
-          c.fillText(TDATA.title || "知识讲解", cx, cy - 10);
-          c.shadowBlur = 0;
-          fitSize(String(TDATA.subtitle_en || "KNOWLEDGE EXPLAINER").toUpperCase(), Math.round(tSize * 0.22), 500, K.fontSans, 16);
-          c.fillStyle = K.rgba(K.P.accent, 0.85);
-          c.fillText(String(TDATA.subtitle_en || "KNOWLEDGE EXPLAINER").toUpperCase(), cx, cy + tSize * 0.72);
-          fitSize(TDATA.question || "", Math.round(tSize * 0.26), 500, K.fontSans, 20);
-          c.fillStyle = K.rgba(K.P.ink, 0.82);
-          c.fillText(TDATA.question || "", cx, cy + tSize * 1.22);
-          c.restore();
-        }
-
-        // 3) 机制拆解阶段：双对比光体 + 发光数据连线 + 放大镜特写
-        const bodyA = S.prog(t, tCardEnd - 0.1, tCardEnd + 0.45, S.ease.outCubic);
-        if (bodyA > 0.002) {
-          c.save();
-          c.globalAlpha = bodyA;
-          const spanX = W * (H > W ? 0.24 : 0.22);
-          const lx = cx - spanX;
-          const rx = cx + spanX;
-          const pReveal = S.ease.outQuint(S.prog(t, tCardEnd, tCardEnd + 1.8));
-          const leftR = baseR * 0.50;
-          const rightR = baseR * (0.26 + 0.40 * pReveal);
-          K.drawMaterialOrb(c, lx, cy, leftR, { color: K.P.accent2, atmo: 0.62 });
-          K.drawMaterialOrb(c, rx, cy, rightR, { color: K.P.accent, atmo: 0.78 });
-
-          // 连接弧线与粒子脉冲
-          const arcPts = [];
-          for (let k = 0; k <= 36; k++) {
-            const u = k / 36;
-            const px = S.lerp(lx + leftR * 0.8, rx - rightR * 0.8, u);
-            const py = cy - Math.sin(u * Math.PI) * baseR * 0.65;
-            arcPts.push([px, py]);
-          }
-          K.drawLuminousLine(c, arcPts, K.P.accent, 2.4, 0.85);
-          const pulseU = (t * 0.45) % 1;
-          const pIdx = Math.min(arcPts.length - 1, Math.floor(pulseU * arcPts.length));
-          K.drawCore(c, arcPts[pIdx][0], arcPts[pIdx][1], 8, 1, "#ffffff");
-
-          // 动态轨道粒子
-          for (const op of orbitPts) {
-            const a = op.ang + t * op.spd;
-            const px = rx + Math.cos(a) * rightR * op.rad * 1.4;
-            const py = cy + Math.sin(a) * rightR * op.rad * 0.9;
-            K.drawSprite(c, K.P.accent, px, py, op.sz * 2.2, 0.55, "core");
-          }
-          c.restore();
-        }
-
         K.end(t);
       }
 
-      S.mount({ width: W, height: H, fps: 30, duration: totalDur, stage, scenes, render });
+      S.mount({ width: W, height: H, fps: 30, duration: totalDur, stage, scenes: scenesMeta, render });
     })();
   </script>
 </body>

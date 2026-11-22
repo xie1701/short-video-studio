@@ -360,7 +360,7 @@ def _resolve_default_bgm(track: str) -> Path:
             return Path(prof["bgm_wav"])
     except Exception:
         pass
-    sid = "style_14" if track == "store" else "style_11"
+    sid = "style_01" if track == "store" else "style_11"
     return ASSETS_DIR / "sound_vibe" / "bgm" / f"{sid}_bgm.m4a"
 
 
@@ -684,7 +684,7 @@ def run_step3(
     dual_bgm_switch_sec: Optional[float] = None
     intro_beats: List[float] = []
     intro_downs: List[float] = []
-    active_sid = load_style_applied(pipeline_dir) or ("style_14" if track == "store" else "style_11")
+    active_sid = load_style_applied(pipeline_dir) or ("style_01" if track == "store" else "style_11")
     style_entry = load_style_spectrum_entry(active_sid) if active_sid else None
     dual_cfg = (style_entry or {}).get("dual_bgm_structure") or {}
     if bool(dual_cfg.get("enabled")) and total_dur >= 6.0:
@@ -836,6 +836,230 @@ def refine_cut_to_island_midpoint(
     return snap_cut_to_frame_grid(best_t, fps=fps)
 
 
+def patch_locked_audio_sentences(
+    pipeline_dir: Path,
+    patches: List[Dict[str, Any]],
+    track: str = "store",
+    fps: int = DEFAULT_FPS,
+) -> Dict[str, Any]:
+    """
+    增量局部改句（实测 #13 根治）：
+    仅替换指定 sentence_id 的单句文字与音频（支持传入 replacement_wav 或自动 edge-tts 局部补录），
+    其余句子保持原封不动原声切片，随后平滑平移后续句子与全部音频事件时间轴并重裁 BGM 对齐总长。
+    patches 每项格式：
+      {"sentence_id": "sent_003", "new_text": "修改后的台词", "replacement_wav": "/可选/自录新句.wav", "voice": "可选TTS音色"}
+      或 {"sentence_id": "sent_003", "delete": True} 删除该句。
+    """
+    ae_p = pipeline_dir / "03_audio_events.json"
+    voice_p = pipeline_dir / "03_locked_voice.wav"
+    bgm_p = pipeline_dir / "03_locked_bgm.wav"
+    if not ae_p.is_file() or not voice_p.is_file():
+        raise FileNotFoundError("未找到已锁定的 03_audio_events.json 或 03_locked_voice.wav，无法执行增量改句。")
+
+    ae = read_json(ae_p)
+    orig_voice, _ = load_stereo_wav_np(voice_p)
+    patch_map = {str(p.get("sentence_id")): p for p in patches if p.get("sentence_id")}
+    if not patch_map:
+        return ae
+
+    orig_sents = list(ae.get("sentences") or [])
+    new_chunks: List[np.ndarray] = []
+    new_sents: List[Dict[str, Any]] = []
+    cursor_samples = 0
+    patched_ids: List[str] = []
+    deleted_ids: List[str] = []
+
+    # 提取片头前导静音（若有）
+    lead_n = int(round(float(orig_sents[0]["start_sec"]) * SR)) if orig_sents else 0
+    if lead_n > 0:
+        new_chunks.append(orig_voice[: min(len(orig_voice), lead_n)].copy())
+        cursor_samples = len(new_chunks[-1])
+
+    for idx, sent in enumerate(orig_sents):
+        sid = str(sent.get("id") or f"sent_{idx + 1:03d}")
+        s0 = max(0, min(len(orig_voice), int(round(float(sent.get("start_sec", 0.0)) * SR))))
+        s1 = max(s0, min(len(orig_voice), int(round(float(sent.get("end_sec", 0.0)) * SR))))
+        next_s0 = (
+            max(s1, min(len(orig_voice), int(round(float(orig_sents[idx + 1].get("start_sec", 0.0)) * SR))))
+            if idx + 1 < len(orig_sents)
+            else len(orig_voice)
+        )
+        pause_slice = orig_voice[s1:next_s0].copy() if next_s0 > s1 else np.zeros((0, 2), dtype=np.float32)
+
+        patch = patch_map.get(sid)
+        if patch and patch.get("delete"):
+            deleted_ids.append(sid)
+            continue
+
+        if patch:
+            new_text = str(patch.get("new_text") or sent.get("text") or "").strip()
+            rep_wav = patch.get("replacement_wav")
+            if rep_wav and Path(str(rep_wav)).is_file():
+                seg_arr, _ = load_stereo_wav_np(Path(str(rep_wav)))
+            else:
+                # 若未提供外部替换音频，则按需调用 edge-tts 单句补录并按原句音量匹配
+                patch_dir = pipeline_dir / "02_tts_segments"
+                patch_dir.mkdir(parents=True, exist_ok=True)
+                tts_out = patch_dir / f"patch_{sid}.mp3"
+                voice_name = str(patch.get("voice") or ("zh-CN-YunxiNeural" if track == "store" else "zh-CN-XiaoxiaoNeural"))
+                try:
+                    import asyncio
+                    import edge_tts
+
+                    async def _gen() -> None:
+                        comm = edge_tts.Communicate(new_text, voice=voice_name)
+                        await comm.save(str(tts_out))
+
+                    asyncio.run(_gen())
+                    seg_arr, _ = load_stereo_wav_np(tts_out)
+                except Exception:
+                    # 无网兜底：保留原音频切片，仅修正文字（供口误同音纠错）
+                    seg_arr = orig_voice[s0:s1].copy()
+
+            # 对齐原句参考 RMS，避免补录句突兀偏大/偏小
+            orig_seg = orig_voice[s0:s1]
+            if len(orig_seg) > 160 and len(seg_arr) > 160:
+                ref_rms = float(np.sqrt(np.mean(orig_seg ** 2) + 1e-10))
+                cur_rms = float(np.sqrt(np.mean(seg_arr ** 2) + 1e-10))
+                if ref_rms > 1e-4 and cur_rms > 1e-4:
+                    gain = max(0.35, min(2.8, ref_rms / cur_rms))
+                    seg_arr = (0.95 * np.tanh((seg_arr * gain) / 0.95)).astype(np.float32)
+
+            seg_arr = apply_edge_micro_fade(seg_arr, fade_sec=0.012, sr=SR)
+            new_start_sec = round(cursor_samples / float(SR), 4)
+            new_chunks.append(seg_arr)
+            cursor_samples += len(seg_arr)
+            new_end_sec = round(cursor_samples / float(SR), 4)
+            updated_sent = dict(sent)
+            updated_sent["text"] = new_text
+            updated_sent["start_sec"] = new_start_sec
+            updated_sent["end_sec"] = new_end_sec
+            updated_sent["duration_sec"] = round(new_end_sec - new_start_sec, 4)
+            updated_sent["patched"] = True
+            # 若替换了音频，原逐字时间戳失效则按新字数均匀重估
+            if rep_wav or (new_text != sent.get("text")):
+                chars = [ch for ch in new_text if not ch.isspace()]
+                if chars:
+                    step_c = max(0.02, (new_end_sec - new_start_sec) / len(chars))
+                    updated_sent["words"] = [
+                        {
+                            "word": ch,
+                            "start_sec": round(new_start_sec + ci * step_c, 4),
+                            "end_sec": round(min(new_end_sec, new_start_sec + (ci + 1) * step_c), 4),
+                        }
+                        for ci, ch in enumerate(chars)
+                    ]
+            new_sents.append(updated_sent)
+            patched_ids.append(sid)
+        else:
+            seg_arr = orig_voice[s0:s1].copy()
+            new_start_sec = round(cursor_samples / float(SR), 4)
+            delta_shift = new_start_sec - float(sent.get("start_sec", 0.0))
+            new_chunks.append(seg_arr)
+            cursor_samples += len(seg_arr)
+            new_end_sec = round(cursor_samples / float(SR), 4)
+            updated_sent = dict(sent)
+            updated_sent["start_sec"] = new_start_sec
+            updated_sent["end_sec"] = new_end_sec
+            updated_sent["duration_sec"] = round(new_end_sec - new_start_sec, 4)
+            if abs(delta_shift) > 1e-4 and updated_sent.get("words"):
+                shifted_words = []
+                for w in updated_sent["words"]:
+                    nw = dict(w)
+                    nw["start_sec"] = round(max(0.0, float(w.get("start_sec", 0.0)) + delta_shift), 4)
+                    nw["end_sec"] = round(max(nw["start_sec"], float(w.get("end_sec", 0.0)) + delta_shift), 4)
+                    shifted_words.append(nw)
+                updated_sent["words"] = shifted_words
+            new_sents.append(updated_sent)
+
+        if len(pause_slice) > 0:
+            new_chunks.append(pause_slice)
+            cursor_samples += len(pause_slice)
+
+    if not new_sents:
+        raise RuntimeError("增量改句后有效句子为 0，已拒绝覆盖原锁轨。")
+
+    locked_voice = np.concatenate(new_chunks, axis=0) if new_chunks else np.zeros((SR, 2), dtype=np.float32)
+    total_samples = len(locked_voice)
+    total_dur = round(total_samples / float(SR), 4)
+    save_stereo_wav_np(voice_p, locked_voice, SR)
+
+    # 同步调整 BGM 长度至新总长
+    bgm_src_file = Path(str((ae.get("bgm") or {}).get("file") or ""))
+    if not bgm_src_file.is_file():
+        bgm_src_file = bgm_p if bgm_p.is_file() else _resolve_default_bgm(track)
+    bgm_arr, _ = load_stereo_wav_np(bgm_src_file)
+    bpm = float((ae.get("bgm") or {}).get("bpm") or 120.0)
+    bar_samples = int(round((60.0 / max(40.0, bpm)) * 4.0 * SR))
+    if len(bgm_arr) < total_samples:
+        bgm_arr, _ = _loop_bgm_exact_bars(bgm_arr, bar_samples, total_samples)
+    locked_bgm = bgm_arr[:total_samples].copy()
+    fo = min(len(locked_bgm), int(0.25 * SR))
+    if fo > 2:
+        locked_bgm[-fo:] *= np.linspace(1.0, 0.15, fo, dtype=np.float32)[:, None]
+    save_stereo_wav_np(bgm_p, locked_bgm, SR)
+
+    # 重建干净的句界与节拍事件表
+    new_events: List[Dict[str, Any]] = []
+    for si, s in enumerate(new_sents, start=1):
+        new_events.append({
+            "id": f"evt_{len(new_events)+1:03d}",
+            "type": "sentence_start",
+            "time_sec": s["start_sec"],
+            "frame": sec_to_frames(s["start_sec"], fps),
+            "sentence_id": s["id"],
+            "description": f"第{si}句开始",
+        })
+        if si < len(new_sents):
+            new_events.append({
+                "id": f"evt_{len(new_events)+1:03d}",
+                "type": "pause_start",
+                "time_sec": s["end_sec"],
+                "frame": sec_to_frames(s["end_sec"], fps),
+                "sentence_id": s["id"],
+                "description": f"第{si}句结束停顿",
+            })
+    for db_i, db_t in enumerate((ae.get("bgm") or {}).get("downbeat_times_sec") or []):
+        if float(db_t) <= total_dur - 0.1:
+            new_events.append({
+                "id": f"evt_{len(new_events)+1:03d}",
+                "type": "bgm_downbeat",
+                "time_sec": round(float(db_t), 4),
+                "frame": sec_to_frames(float(db_t), fps),
+                "sentence_id": None,
+                "description": f"BGM第{db_i+1}小节强拍",
+            })
+    new_events.sort(key=lambda e: (e["frame"], e["time_sec"]))
+    for ei, e in enumerate(new_events, start=1):
+        e["id"] = f"evt_{ei:03d}"
+
+    ae["locked_duration_sec"] = total_dur
+    ae["total_duration_sec"] = total_dur
+    ae["locked_duration_frames"] = sec_to_frames(total_dur, fps)
+    ae["sentences"] = new_sents
+    ae["events"] = new_events
+    ae["incremental_patch_history"] = list(ae.get("incremental_patch_history") or []) + [{
+        "patched_ids": patched_ids,
+        "deleted_ids": deleted_ids,
+    }]
+    write_json(ae_p, ae)
+
+    ffmpeg_bin = find_bin("ffmpeg")
+    blind_m4a = pipeline_dir / "03_blind_audio.m4a"
+    if ffmpeg_bin:
+        run_cmd([
+            ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
+            "-i", str(voice_p), "-c:a", "aac", "-b:a", "192k", "-ar", str(SR),
+            str(blind_m4a),
+        ], check=False)
+
+    print(
+        f"[step3] 增量改句完成：替换 {len(patched_ids)} 句 {patched_ids}，删除 {len(deleted_ids)} 句 {deleted_ids}，"
+        f"其余原声原封不动 -> 新总长 {total_dur:.2f}s"
+    )
+    return ae
+
+
 def main() -> None:
     maybe_reexec_in_venv()
     parser = argparse.ArgumentParser(description="Step 3: 锁定音轨 (零拍漂Bgm循环 + 纯净RoomTone + 过零点精剪)")
@@ -844,7 +1068,13 @@ def main() -> None:
     parser.add_argument("--bgm", help="可选：自定义 BGM 音频路径")
     parser.add_argument("--pause-sec", type=float, default=0.20, help="基准句间停顿时长 (0.14-0.32s)")
     parser.add_argument("--account-profile", help="可选：account_profile.json 路径")
+    parser.add_argument("--patch-json", help="可选：增量改句 JSON 路径（仅替换指定 sentence_id，不动其余原声）")
     args = parser.parse_args()
+    if args.patch_json:
+        patches_raw = read_json(Path(args.patch_json))
+        patches = patches_raw if isinstance(patches_raw, list) else list(patches_raw.get("patches") or [])
+        patch_locked_audio_sentences(Path(args.pipeline_dir), patches, track=args.track)
+        return
     prof = read_json(Path(args.account_profile)) if args.account_profile and Path(args.account_profile).exists() else None
     run_step3(
         Path(args.pipeline_dir),

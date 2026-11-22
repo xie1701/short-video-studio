@@ -1,12 +1,12 @@
 {
   "styles": {
-    "style_14": {
-      "bgm_wav": "sound_vibe/bgm/style_14_bgm.m4a",
+    "style_01": {
+      "bgm_wav": "sound_vibe/bgm/style_01_bgm.m4a",
       "bpm": 120.0,
       "sfx": {
-        "transition": "sound_vibe/sfx/style_14_transition.wav",
-        "accent": "sound_vibe/sfx/style_14_accent.wav",
-        "ui": "sound_vibe/sfx/style_14_ui.wav"
+        "transition": "sound_vibe/sfx/style_01_transition.wav",
+        "accent": "sound_vibe/sfx/style_01_accent.wav",
+        "ui": "sound_vibe/sfx/style_01_ui.wav"
       },
       "sfx_min_gap_sec": 7.5,
       "sfx_gain_db": -10.0,
@@ -17,7 +17,7 @@
       "bgm_wav": "sound_vibe/bgm/style_02_bgm.m4a",
       "bpm": 90.0,
       "sfx": {
-        "transition": "sound_vibe/sfx/style_14_transition.wav",
+        "transition": "sound_vibe/sfx/style_01_transition.wav",
         "accent": "sound_vibe/sfx/style_02_accent.wav",
         "ui": "sound_vibe/sfx/style_02_ui.wav"
       },
@@ -32,7 +32,7 @@
       "sfx": {
         "transition": "sound_vibe/sfx/style_03_transition.wav",
         "accent": "sound_vibe/sfx/style_03_accent.wav",
-        "ui": "sound_vibe/sfx/style_14_accent.wav"
+        "ui": "sound_vibe/sfx/style_01_accent.wav"
       },
       "sfx_min_gap_sec": 6.5,
       "sfx_gain_db": -10.0,
@@ -44,7 +44,7 @@
       "bpm": 75.0,
       "sfx": {
         "transition": "sound_vibe/sfx/style_02_ui.wav",
-        "accent": "sound_vibe/sfx/style_14_ui.wav",
+        "accent": "sound_vibe/sfx/style_01_ui.wav",
         "ui": "sound_vibe/sfx/style_12_ui.wav"
       },
       "sfx_min_gap_sec": 7.5,
@@ -97,7 +97,7 @@
     "arch_01_tech_ui_console": "style_15",
     "arch_02_high_contrast_story": "style_03",
     "arch_03_editorial_matte_depth": "style_12",
-    "arch_04_punch_talking_head": "style_14",
+    "arch_04_punch_talking_head": "style_01",
     "arch_05_cinema_slow_space": "style_06",
     "arch_06_paper_stopmotion": "style_05"
   }

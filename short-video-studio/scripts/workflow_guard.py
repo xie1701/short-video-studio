@@ -37,6 +37,7 @@ from common import (
     SCENE_CUT_THRESHOLD,
     SUBTITLE_DEFAULT_Y_CENTER,
     compute_bt709_luma,
+    estimate_task_eta,
     ffprobe_media,
     find_bin,
     find_commercial_font,
@@ -112,6 +113,9 @@ DELIVERABLE_SYNC_FILES = (
     "09_hook_v1.mp4",
     "09_hook_v2.mp4",
     "09_hook_v3.mp4",
+    "09_host_face_ref.png",
+    "09_gbro_cover_prompt.md",
+    "09_gbro_cover_handoff.json",
     "09_title_cover.md",
     "09_title_cover.json",
     "09_publish_copy_pack.md",
@@ -121,6 +125,7 @@ DELIVERABLE_SYNC_FILES = (
     "05_subtitle_check.txt",
     "03_blind_audio.m4a",
     "00_contact_sheet.jpg",
+    "00_confirm_plan.md",
     "00_script_lint.md",
     "00_口播纯享稿.txt",
     "00_拍摄执行方案.md",
@@ -164,12 +169,188 @@ def _load_lock_state(pipeline_dir: Path) -> Dict[str, Any]:
         "version": 1,
         "created_at": _now_iso(),
         "interruptions": [],
+        "plan_confirmed": False,
+        "plan_confirmed_at": None,
+        "plan_confirm_note": "",
         "plan_sha256": None,
         "locked_at": None,
         "human_approved": False,
         "approved_at": None,
         "approval_note": "",
     }
+
+
+def confirm_plan(pipeline_dir: Path, note: str = "用户已确认文案与剪辑方案") -> Dict[str, Any]:
+    """正式记录用户对文案、风格与剪辑方案的确认（严格先确认方案再开剪的硬门禁凭证）。"""
+    pipeline_dir.mkdir(parents=True, exist_ok=True)
+    st = _load_lock_state(pipeline_dir)
+    st["plan_confirmed"] = True
+    st["plan_confirmed_at"] = _now_iso()
+    st["plan_confirm_note"] = str(note or "用户已确认文案与剪辑方案").strip()
+    write_json(pipeline_dir / LOCK_FILENAME, st)
+    return st
+
+
+def is_plan_confirmed(pipeline_dir: Path) -> bool:
+    st = _load_lock_state(pipeline_dir)
+    return bool(st.get("plan_confirmed"))
+
+
+def exclude_shot_window(
+    pipeline_dir: Path,
+    filename: str,
+    start_sec: Optional[float] = None,
+    end_sec: Optional[float] = None,
+    reason: str = "人工标废",
+) -> Dict[str, Any]:
+    """将用户口头否决的整条素材或具体时间窗持久化写入 00_inventory.json / 00_shot_log.json / 01_manifest.json，确保绝不复活进片。"""
+    target_name = Path(str(filename)).name.strip()
+    target_stem = Path(target_name).stem.strip()
+    if not target_name:
+        raise ValueError("filename 不能为空")
+    is_full_clip = (start_sec is None or end_sec is None or float(end_sec) <= float(start_sec))
+    win_obj = None if is_full_clip else {
+        "start_sec": round(max(0.0, float(start_sec)), 3),
+        "end_sec": round(max(0.0, float(end_sec)), 3),
+        "reason": str(reason or "人工标废"),
+    }
+
+    def _matches(item: Dict[str, Any]) -> bool:
+        cands = [
+            str(item.get("filename") or ""),
+            Path(str(item.get("path") or "")).name,
+            Path(str(item.get("source_path") or "")).name,
+            Path(str(item.get("normalized_mp4") or "")).name,
+        ]
+        for c in cands:
+            if not c:
+                continue
+            if c == target_name or Path(c).stem == target_stem:
+                return True
+        return False
+
+    updated_files: List[str] = []
+    matched_count = 0
+
+    for fname, list_key in (
+        ("00_inventory.json", "clips"),
+        ("00_shot_log.json", "shots"),
+        ("01_manifest.json", "items"),
+    ):
+        fp = pipeline_dir / fname
+        if not fp.is_file():
+            continue
+        data = read_json(fp)
+        rows = data.get(list_key)
+        if not isinstance(rows, list):
+            rows = data.get("items") or data.get("clips") or []
+        changed = False
+        for row in rows:
+            if not isinstance(row, dict) or not _matches(row):
+                continue
+            matched_count += 1
+            changed = True
+            if is_full_clip:
+                row["usable"] = False
+                row["video_grade"] = "ng"
+                row["exclude_reason"] = str(reason or "人工标废")
+            else:
+                wins = list(row.get("excluded_windows") or [])
+                if win_obj not in wins:
+                    wins.append(win_obj)
+                row["excluded_windows"] = wins
+        if changed:
+            write_json(fp, data)
+            updated_files.append(fname)
+
+    # 同步独立留存一份排除清单，即便先于 step1 标废也能在后续步骤继承
+    ex_p = pipeline_dir / "00_excluded_shots.json"
+    ex_data = read_json(ex_p) if ex_p.is_file() else {"rules": []}
+    rules = list(ex_data.get("rules") or [])
+    rule = {
+        "filename": target_name,
+        "full_clip": is_full_clip,
+        "window": win_obj,
+        "reason": str(reason or "人工标废"),
+        "at": _now_iso(),
+    }
+    rules.append(rule)
+    ex_data["rules"] = rules
+    write_json(ex_p, ex_data)
+
+    return {
+        "filename": target_name,
+        "full_clip": is_full_clip,
+        "window": win_obj,
+        "matched_entries": matched_count,
+        "updated_files": updated_files,
+        "saved_rule_file": str(ex_p),
+    }
+
+
+def write_confirm_plan_doc(
+    pipeline_dir: Path,
+    style_id: str = "style_01",
+    eta_summary: Optional[Dict[str, Any]] = None,
+    media_gaps: Optional[List[Dict[str, Any]]] = None,
+) -> Path:
+    """生成面向小白的大白话【开剪前文案与方案确认单】(00_confirm_plan.md)，先让用户拍板再动手剪片。"""
+    pipeline_dir.mkdir(parents=True, exist_ok=True)
+    mf = read_json(pipeline_dir / "01_manifest.json") if (pipeline_dir / "01_manifest.json").is_file() else {}
+    tr = read_json(pipeline_dir / "02_transcript.json") if (pipeline_dir / "02_transcript.json").is_file() else {}
+    inv = read_json(pipeline_dir / "00_inventory.json") if (pipeline_dir / "00_inventory.json").is_file() else {}
+
+    items = mf.get("items") or inv.get("clips") or []
+    aroll_items = [x for x in items if x.get("role") == "a_roll" and x.get("video_grade", "usable") != "ng" and x.get("usable", True) is not False]
+    broll_items = [x for x in items if x.get("role") != "a_roll" and x.get("video_grade", "usable") != "ng" and x.get("usable", True) is not False]
+    ng_items = [x for x in items if x.get("video_grade") == "ng" or x.get("usable") is False]
+
+    raw_segs = tr.get("kept_segments") or tr.get("segments") or []
+    est_dur = sum(max(0.2, float(s.get("end_sec", 0.0)) - float(s.get("start_sec", 0.0))) for s in raw_segs)
+    if not eta_summary:
+        eta_summary = estimate_task_eta("full_edit", duration_sec=max(15.0, est_dur), clip_count=max(1, len(items)))
+
+    lines = [
+        "# 开剪前文案与剪辑方案确认单",
+        "",
+        "> 还没正式动剪刀！请花 30 秒核对下面的**说话文案、镜头排查结果与成片风格**，确认没问题后回复「**同意开剪**」即可自动出片。",
+        "",
+        "## 1. 素材盘点概况",
+        f"- **真人出镜口播素材**：{len(aroll_items)} 段",
+        f"- **实拍空镜/特写素材**：{len(broll_items)} 段",
+        f"- **已拦截/标记作废镜头**：{len(ng_items)} 段（不会进入成片）",
+        f"- **本次默认采用画面风格**：`{style_id}`（可随时要求更换其他款式）",
+        f"- **预计开剪后耗时**：**{eta_summary.get('eta_cn', '约 1～2 分钟')}**（{eta_summary.get('note', '含声音修顺、配画面、字幕与导出')}）",
+        "",
+        "## 2. 计划保留的说话文案（逐句核对）",
+    ]
+    if raw_segs:
+        for idx, seg in enumerate(raw_segs, start=1):
+            txt = str(seg.get("text") or "").strip()
+            if txt:
+                lines.append(f"{idx}. {txt}")
+    else:
+        lines.append("（尚未识别到口播台词，将按你确认的配音文案或纯画面节奏制作。）")
+
+    lines.append("")
+    lines.append("## 3. 镜头与台词匹配排查")
+    if media_gaps:
+        for g in media_gaps:
+            lines.append(f"- ⚠️ **可能缺对应画面**：{g.get('suggestion') or g.get('matched_cue')}")
+    else:
+        lines.append("- ✅ 台词提到的重点对象在素材池中基本有对应画面，可以直接开剪。")
+
+    lines.extend([
+        "",
+        "## 4. 下一步只需要回复一个选项",
+        "- **回 A**：文案和方案都没问题，直接按这个开剪出片",
+        "- **回 B**：有哪一句想删掉/改字，或者某段镜头（如第几秒）不要放进去，直接告诉我",
+        "- **回 C**：想先换一套画面风格，或者补几段特写素材再剪",
+        "",
+    ])
+    out_p = pipeline_dir / "00_confirm_plan.md"
+    out_p.write_text("\n".join(lines), encoding="utf-8")
+    return out_p
 
 
 def compute_plan_digest(pipeline_dir: Path) -> str:
@@ -1051,7 +1232,7 @@ def render_progress_card(
     anim_aud = read_json(anim_aud_p) if anim_aud_p.is_file() else {}
     lock_st = _load_lock_state(pipeline_dir)
 
-    eff_track = str(track or prev_card.get("track") or ("store" if edl.get("style_id") in ("style_04", "style_05", "style_07", "style_13", "style_14", "style_17", "style_18", "style_20", "style_21", "style_23") else "creator"))
+    eff_track = str(track or prev_card.get("track") or ("store" if edl.get("style_id") in ("style_01", "style_04", "style_05", "style_07", "style_13", "style_17", "style_18", "style_20", "style_21", "style_23") else "creator"))
     if user_type and user_type in USER_TYPES:
         u_type = user_type
     elif prev_card.get("user_type") in USER_TYPES:
@@ -1111,8 +1292,18 @@ def render_progress_card(
     has_final = (pipeline_dir / "output_final.mp4").is_file() or (pipeline_dir.parent / "out" / "output_final.mp4").is_file()
     is_approved = bool(lock_st.get("human_approved"))
 
-    media_items = mf.get("items") or inv.get("items") or []
-    usable_cnt = sum(1 for it in media_items if it.get("video_grade", "usable") != "ng")
+    media_items = mf.get("items") or inv.get("clips") or inv.get("items") or []
+    usable_cnt = sum(
+        1 for it in media_items
+        if it.get("video_grade", "usable") != "ng" and it.get("usable", True) is not False
+    )
+    has_confirm_plan = (pipeline_dir / "00_confirm_plan.md").is_file()
+    plan_confirmed = bool(lock_st.get("plan_confirmed"))
+    next_stage_eta = estimate_task_eta(
+        "render_final" if has_preview else ("full_edit" if has_media else "inventory"),
+        duration_sec=max(15.0, float(edl.get("total_duration_sec") or ae.get("locked_duration_sec") or 30.0)),
+        clip_count=max(1, len(media_items)),
+    )
     dur_sec = float(
         edl.get("total_duration_sec")
         or ae.get("locked_duration_sec")
@@ -1221,14 +1412,27 @@ def render_progress_card(
         remaining = "确认声音后 → 挑选顺眼的画面样式看粗剪 → 导出成品视频与封面。"
     elif has_media:
         cur_step = 1 if u_type == "footage_organizer" else 2
-        ai_status = f"已经帮你翻看完文件夹里的 {len(media_items)} 段素材，挑出了 {usable_cnt} 段清晰稳定的可用好镜头（原文件一根头发没动）。"
-        user_action = "素材已经挑好，接下来怎么推进最合你心意："
-        choices = [
-            "回 A：直接帮我修顺说话声音、排好画面出粗剪预览",
-            "回 B：我先选一款喜欢的画面样式（比如门店招牌款 / 热点虚化小窗款 / 全程不露脸快切款）",
-            "回 C：我还想再往文件夹里补几段刚拍的特写",
-        ]
-        remaining = "修顺声音并排好粗剪画面 → 导出高清成品视频与主页封面。"
+        if has_confirm_plan and not plan_confirmed:
+            ai_status = (
+                f"已经翻看完文件夹里的 {len(media_items)} 段素材，挑出 {usable_cnt} 段清晰可用镜头，"
+                "并整理好了【开剪前文案与剪辑方案确认单】（还没正式动剪刀，原文件完好未动）。"
+            )
+            user_action = f"请先核对一眼说话文案和镜头排查结果，点头后再正式开剪（预计耗时 {next_stage_eta['eta_cn']}）："
+            choices = [
+                "回 A：文案和方案没问题，立刻按这个开剪出片",
+                "回 B：想删改某句文案，或把某段废镜头/某几秒排除掉",
+                "回 C：想先换一款画面风格，或再补拍几段特写素材",
+            ]
+            remaining = f"等你确认方案 → 修顺声音并排好画面（预计 {next_stage_eta['eta_cn']}）→ 导出成品视频与封面。"
+        else:
+            ai_status = f"已经帮你翻看完文件夹里的 {len(media_items)} 段素材，挑出了 {usable_cnt} 段清晰稳定的可用好镜头（原文件一根头发没动）。"
+            user_action = f"素材已经挑好，接下来怎么推进最合你心意（后续成片预计耗时 {next_stage_eta['eta_cn']}）："
+            choices = [
+                "回 A：先给我看文案和剪辑方案确认单，我点头再开剪",
+                "回 B：我先选一款喜欢的画面样式（默认 01 号门店爆款款，也可换其他款式）",
+                "回 C：我还想再往文件夹里补几段刚拍的特写",
+            ]
+            remaining = f"确认文案与方案 → 修顺声音并排好粗剪画面（预计 {next_stage_eta['eta_cn']}）→ 导出高清成品视频与封面。"
     elif has_shot_card or has_script:
         cur_step = 2 if (u_type == "store_from_zero" and has_shot_card) else 1
         ai_status = "已经为你整理好接地气的说话台词" + ("与手机拍摄清单（标明了每段拍几秒、怎么拿手机）。" if has_shot_card else "，并避开了容易被平台限流的夸大词。")
@@ -1285,6 +1489,8 @@ def render_progress_card(
         "quick_choices": choices,
         "remaining_cn": remaining,
         "missing_items_cn": missing_items,
+        "plan_confirmed": plan_confirmed,
+        "estimated_next_eta_cn": next_stage_eta["eta_cn"],
         "human_approved": is_approved,
         "markdown_card": md_card,
     }
@@ -1343,6 +1549,17 @@ def main() -> None:
     p_st.add_argument("--user-type", choices=USER_TYPES, help="可选：显式指定 5 类用户路线")
     p_st.add_argument("--track", choices=("store", "creator"), help="可选：门店或个人账号方向")
 
+    p_cp = sub.add_parser("confirm-plan", help="确认开剪前文案与剪辑方案（解锁正式剪辑门禁）")
+    p_cp.add_argument("--pipeline-dir", required=True, type=Path)
+    p_cp.add_argument("--note", default="用户已确认文案与剪辑方案")
+
+    p_ex = sub.add_parser("exclude-shot", help="将用户否决的整条素材或时间窗持久化标废")
+    p_ex.add_argument("--pipeline-dir", required=True, type=Path)
+    p_ex.add_argument("--filename", required=True, help="素材文件名（如 clip_02.mp4）")
+    p_ex.add_argument("--start-sec", type=float, default=None, help="可选：标废起始秒")
+    p_ex.add_argument("--end-sec", type=float, default=None, help="可选：标废结束秒")
+    p_ex.add_argument("--reason", default="人工标废")
+
     args = parser.parse_args()
     if args.cmd == "record-stop":
         st = record_stop(Path(args.pipeline_dir), args.type, args.summary, args.rehearsal)
@@ -1395,6 +1612,19 @@ def main() -> None:
     elif args.cmd == "status":
         card = render_progress_card(args.pipeline_dir, user_type=args.user_type, track=args.track, write_files=True)
         print(card["markdown_card"])
+    elif args.cmd == "confirm-plan":
+        st = confirm_plan(args.pipeline_dir, note=args.note)
+        print(f"[workflow] 文案与剪辑方案已正式确认 (at={st['plan_confirmed_at']}, note={st['plan_confirm_note']})")
+    elif args.cmd == "exclude-shot":
+        res = exclude_shot_window(
+            args.pipeline_dir,
+            filename=args.filename,
+            start_sec=args.start_sec,
+            end_sec=args.end_sec,
+            reason=args.reason,
+        )
+        scope = "整条标废" if res["full_clip"] else f"{res['window']['start_sec']}s–{res['window']['end_sec']}s"
+        print(f"[workflow] 已持久化标废 {res['filename']} ({scope})，更新文件: {res['updated_files']}")
 
 
 if __name__ == "__main__":

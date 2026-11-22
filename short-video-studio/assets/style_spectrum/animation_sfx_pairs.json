@@ -38,7 +38,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "transition",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_transition.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_transition.wav",
       "sound_category": "whoosh_transition"
     },
     "模糊发光": {
@@ -50,7 +50,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "ui",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_ui.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_ui.wav",
       "sound_category": "clean_ding_pop"
     },
     "向下露出": {
@@ -62,7 +62,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "transition",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_transition.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_transition.wav",
       "sound_category": "whoosh_transition"
     },
     "向右缓入": {
@@ -86,7 +86,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "ui",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_ui.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_ui.wav",
       "sound_category": "clean_ding_pop"
     },
     "向左模糊": {
@@ -98,7 +98,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "transition",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_transition.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_transition.wav",
       "sound_category": "whoosh_transition"
     },
     "向右模糊 II": {
@@ -110,7 +110,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "transition",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_transition.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_transition.wav",
       "sound_category": "whoosh_transition"
     },
     "向右集合": {
@@ -146,7 +146,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "ui",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_ui.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_ui.wav",
       "sound_category": "clean_ding_pop"
     },
     "呐喊声波": {
@@ -206,7 +206,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "ui",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_ui.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_ui.wav",
       "sound_category": "clean_ding_pop"
     },
     "激光雕刻": {
@@ -230,7 +230,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "ui",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_ui.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_ui.wav",
       "sound_category": "clean_ding_pop"
     },
     "发光模糊": {
@@ -242,7 +242,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "ui",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_ui.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_ui.wav",
       "sound_category": "clean_ding_pop"
     },
     "雪光模糊": {
@@ -362,7 +362,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "ui",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_ui.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_ui.wav",
       "sound_category": "clean_ding_pop"
     },
     "吸入": {
@@ -446,7 +446,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "transition",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_transition.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_transition.wav",
       "sound_category": "whoosh_transition"
     },
     "跃进": {
@@ -506,7 +506,7 @@
       "sfx_vol_db": 5.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "transition",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_transition.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_transition.wav",
       "sound_category": "whoosh_transition"
     }
   },
@@ -544,7 +544,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "transition",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_transition.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_transition.wav",
       "sound_category": "whoosh_transition"
     },
     {
@@ -556,7 +556,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "transition",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_transition.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_transition.wav",
       "sound_category": "whoosh_transition"
     },
     {
@@ -568,7 +568,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "ui",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_ui.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_ui.wav",
       "sound_category": "clean_ding_pop"
     },
     {
@@ -580,7 +580,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "ui",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_ui.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_ui.wav",
       "sound_category": "clean_ding_pop"
     },
     {
@@ -592,7 +592,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "transition",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_transition.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_transition.wav",
       "sound_category": "whoosh_transition"
     },
     {
@@ -604,7 +604,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "transition",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_transition.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_transition.wav",
       "sound_category": "whoosh_transition"
     },
     {
@@ -628,7 +628,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "ui",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_ui.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_ui.wav",
       "sound_category": "clean_ding_pop"
     },
     {
@@ -640,7 +640,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "ui",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_ui.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_ui.wav",
       "sound_category": "clean_ding_pop"
     },
     {
@@ -664,7 +664,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "transition",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_transition.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_transition.wav",
       "sound_category": "whoosh_transition"
     },
     {
@@ -676,7 +676,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "transition",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_transition.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_transition.wav",
       "sound_category": "whoosh_transition"
     },
     {
@@ -688,7 +688,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "transition",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_transition.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_transition.wav",
       "sound_category": "whoosh_transition"
     },
     {
@@ -724,7 +724,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "ui",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_ui.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_ui.wav",
       "sound_category": "clean_ding_pop"
     },
     {
@@ -736,7 +736,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "ui",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_ui.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_ui.wav",
       "sound_category": "clean_ding_pop"
     },
     {
@@ -748,7 +748,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "ui",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_ui.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_ui.wav",
       "sound_category": "clean_ding_pop"
     },
     {
@@ -760,7 +760,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "ui",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_ui.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_ui.wav",
       "sound_category": "clean_ding_pop"
     },
     {
@@ -928,7 +928,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "ui",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_ui.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_ui.wav",
       "sound_category": "clean_ding_pop"
     },
     {
@@ -976,7 +976,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "ui",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_ui.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_ui.wav",
       "sound_category": "clean_ding_pop"
     },
     {
@@ -1000,7 +1000,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "transition",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_transition.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_transition.wav",
       "sound_category": "whoosh_transition"
     },
     {
@@ -1060,7 +1060,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "ui",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_ui.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_ui.wav",
       "sound_category": "clean_ding_pop"
     },
     {
@@ -1072,7 +1072,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "ui",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_ui.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_ui.wav",
       "sound_category": "clean_ding_pop"
     },
     {
@@ -1084,7 +1084,7 @@
       "sfx_vol_db": 3.5,
       "onset_offset_ms": 0.0,
       "cc0_role": "ui",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_ui.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_ui.wav",
       "sound_category": "clean_ding_pop"
     },
     {
@@ -1264,7 +1264,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "ui",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_ui.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_ui.wav",
       "sound_category": "clean_ding_pop"
     },
     {
@@ -1420,7 +1420,7 @@
       "sfx_vol_db": 0.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "transition",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_transition.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_transition.wav",
       "sound_category": "whoosh_transition"
     },
     {
@@ -1504,7 +1504,7 @@
       "sfx_vol_db": 5.0,
       "onset_offset_ms": 0.0,
       "cc0_role": "transition",
-      "cc0_vibe_sfx": "sound_vibe/sfx/style_14_transition.wav",
+      "cc0_vibe_sfx": "sound_vibe/sfx/style_01_transition.wav",
       "sound_category": "whoosh_transition"
     }
   ]
