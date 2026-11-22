@@ -745,6 +745,72 @@ class StudioTests(unittest.TestCase):
             if media_p.is_file() and media_p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp", ".mp4", ".mov"}:
                 self.fail(f"Forbidden visual media leak inside skill dir: {media_p}")
 
+    def test_progress_card_five_user_types_and_zero_jargon(self):
+        import re
+        from workflow_guard import render_progress_card
+
+        jargon_re = re.compile(
+            r"水桶流|漏斗流|痛点|人设|A-roll|B-roll|LUFS|LUT|OCR|Micro-Hook|EDL|FCPXML|WCAG|ASR|VAD|口述稿|提词器|风格谱|流派模板",
+            re.IGNORECASE,
+        )
+        protocol_md = (ROOT / "short-video-studio" / "references" / "interactive-coach-protocol.md").read_text(encoding="utf-8")
+        self.assertIsNone(jargon_re.search(protocol_md), "Jargon found in interactive-coach-protocol.md")
+
+        expected_totals = {
+            "store_from_zero": 5,
+            "creator_talking": 4,
+            "footage_organizer": 3,
+            "faceless_visual": 4,
+            "post_review": 2,
+        }
+        for u_type, total_n in expected_totals.items():
+            pdir = self.root / f"prog_{u_type}"
+            c1 = render_progress_card(pdir, user_type=u_type)
+            self.assertEqual(c1["current_step"], 1)
+            self.assertEqual(c1["total_steps"], total_n)
+            self.assertEqual(len(c1["quick_choices"]), 3)
+            for tag in ("📍 **当前进度**", "🤖 **我刚做了 / 正在做**", "👉 **现在轮到你**", "⏳ **离能发还差**"):
+                self.assertIn(tag, c1["markdown_card"])
+            self.assertIsNone(jargon_re.search(c1["markdown_card"]), f"Jargon in initial progress card for {u_type}")
+            self.assertTrue((pdir / "00_progress_card.json").is_file())
+            self.assertTrue((pdir / "00_进度看板.md").is_file())
+
+        # Verify stage progression on store_from_zero (1 -> 2 -> 3 -> 4 -> 5 -> approved)
+        sp = self.root / "prog_store_lifecycle"
+        sp.mkdir()
+        (sp / "shot_card.md").write_text("# 手机拍摄清单\n", encoding="utf-8")
+        c_shot = render_progress_card(sp, user_type="store_from_zero")
+        self.assertEqual(c_shot["current_step"], 2)
+        self.assertEqual(c_shot["progress_bar"], "[■■□□□]")
+
+        write_json(sp / "03_audio_events.json", {"locked_duration_sec": 18.5, "sentences": []})
+        c_aud = render_progress_card(sp)
+        self.assertEqual(c_aud["current_step"], 3)
+        self.assertEqual(c_aud["progress_bar"], "[■■■□□]")
+
+        write_json(sp / "04_edl.json", {
+            "total_duration_sec": 18.5,
+            "clips": [{"clip_id": "c1"}, {"clip_id": "c2"}],
+            "deictic_gaps": [{"matched_cue": "账单明细"}],
+        })
+        c_prev = render_progress_card(sp)
+        self.assertEqual(c_prev["current_step"], 4)
+        self.assertEqual(c_prev["progress_bar"], "[■■■■□]")
+        self.assertIn("账单明细", c_prev["markdown_card"])
+        self.assertIsNone(jargon_re.search(c_prev["markdown_card"]))
+
+        (sp / "output_final.mp4").write_bytes(b"final-mp4")
+        c_fin = render_progress_card(sp)
+        self.assertEqual(c_fin["current_step"], 5)
+        self.assertEqual(c_fin["progress_bar"], "[■■■■■]")
+        self.assertFalse(c_fin["human_approved"])
+
+        write_json(sp / "approval_lock.json", {"human_approved": True})
+        c_app = render_progress_card(sp)
+        self.assertTrue(c_app["human_approved"])
+        self.assertIn("圆满完工", c_app["markdown_card"])
+        self.assertIsNone(jargon_re.search(c_app["markdown_card"]))
+
 
 if __name__ == "__main__":
     unittest.main()

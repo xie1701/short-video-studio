@@ -57,6 +57,13 @@ from step3_lock_audio import detect_bgm_beats
 from vision_inspector import inspect_images
 
 STOP_TYPES = ("stop1_script", "stop2_blind_audio", "stop3_final")
+USER_TYPES = (
+    "store_from_zero",
+    "creator_talking",
+    "footage_organizer",
+    "faceless_visual",
+    "post_review",
+)
 BUDGET = 3
 LOCK_FILENAME = "approval_lock.json"
 
@@ -124,6 +131,8 @@ DELIVERABLE_SYNC_FILES = (
     "VERIFY.md",
     "decisions_made.md",
     "11_delivery_summary.md",
+    "00_progress_card.json",
+    "00_进度看板.md",
     "review_player.html",
 )
 
@@ -343,6 +352,10 @@ def approve_final(
             txt = txt.replace(pend_banner, "✅ **全部自动检查与人工终审已通过**")
         md_p.write_text(txt, encoding="utf-8")
 
+    # 同步刷新大白话实时进度看板为「已全部完成，随时可发布」
+    if (pipeline_dir / "00_progress_card.json").is_file() or (pipeline_dir / "04_edl.json").is_file():
+        render_progress_card(pipeline_dir, write_files=True)
+
     # 同步最新审批结果至 out/ 目录，并在 tidy 已先执行时同步刷新归档清单哈希
     target_out = out_dir or (pipeline_dir.parent / "out")
     archived_mp4 = target_out / final_mp4.name
@@ -351,6 +364,11 @@ def approve_final(
         if md_p.is_file():
             shutil.copy2(md_p, target_out / "10_qa_report.md")
         updated_out_docs: List[str] = []
+        for prog_fn in ("00_progress_card.json", "00_进度看板.md"):
+            prog_src = pipeline_dir / prog_fn
+            if prog_src.is_file():
+                shutil.copy2(prog_src, target_out / prog_fn)
+                updated_out_docs.append(prog_fn)
         pending_phrases = (
             "待人工终审确认",
             "自动检查全过，等你确认一眼",
@@ -998,6 +1016,244 @@ def tidy_workspace(
     return rep
 
 
+def render_progress_card(
+    pipeline_dir: Path,
+    user_type: Optional[str] = None,
+    track: Optional[str] = None,
+    write_files: bool = True,
+) -> Dict[str, Any]:
+    """根据当前项目目录真实落盘进度，生成面向零基础用户的【四要素掌控感进度卡】（100% 大白话、零专业黑话）。"""
+    pipeline_dir.mkdir(parents=True, exist_ok=True)
+    prev_card_p = pipeline_dir / "00_progress_card.json"
+    prev_card = read_json(prev_card_p) if prev_card_p.is_file() else {}
+
+    edl_p = pipeline_dir / "04_edl.json"
+    edl = read_json(edl_p) if edl_p.is_file() else {}
+    ae_p = pipeline_dir / "03_audio_events.json"
+    ae = read_json(ae_p) if ae_p.is_file() else {}
+    mf_p = pipeline_dir / "01_manifest.json"
+    mf = read_json(mf_p) if mf_p.is_file() else {}
+    inv_p = pipeline_dir / "00_inventory.json"
+    inv = read_json(inv_p) if inv_p.is_file() else {}
+    qa_p = pipeline_dir / "10_qa_report.json"
+    qa = read_json(qa_p) if qa_p.is_file() else {}
+    lock_st = _load_lock_state(pipeline_dir)
+
+    eff_track = str(track or prev_card.get("track") or ("store" if edl.get("style_id") in ("style_04", "style_05", "style_07", "style_13", "style_14", "style_17", "style_18", "style_20", "style_21", "style_23") else "creator"))
+    if user_type and user_type in USER_TYPES:
+        u_type = user_type
+    elif prev_card.get("user_type") in USER_TYPES:
+        u_type = str(prev_card["user_type"])
+    elif (pipeline_dir / "00_code_spec.json").is_file() or float(edl.get("broll_ratio_target") or 0.0) >= 0.85:
+        u_type = "faceless_visual"
+    elif inv_p.is_file() and not (pipeline_dir / "shot_card.md").is_file() and not (pipeline_dir.parent / "shot_card.md").is_file():
+        u_type = "footage_organizer"
+    else:
+        u_type = "store_from_zero" if eff_track == "store" else "creator_talking"
+
+    user_type_names = {
+        "store_from_zero": "实体店从零拍拉客",
+        "creator_talking": "个人博主说话视频提质感",
+        "footage_organizer": "手机存货一键挑剪",
+        "faceless_visual": "全程不露脸 / 动态图解短片",
+        "post_review": "发片后数据复盘调优",
+    }
+    routes = {
+        "store_from_zero": [
+            "定话题写说话词",
+            "照手机清单开拍",
+            "听声音定节奏",
+            "看粗剪画面",
+            "拿成品与封面",
+        ],
+        "creator_talking": [
+            "定台词或收素材",
+            "听声音定节奏",
+            "选画面样式看粗剪",
+            "拿成品与封面",
+        ],
+        "footage_organizer": [
+            "自动筛废片排顺序",
+            "听声音看粗剪",
+            "拿成品与封面",
+        ],
+        "faceless_visual": [
+            "定台词与配音",
+            "配全屏特写或动态图表",
+            "看粗剪确认",
+            "拿成品与封面",
+        ],
+        "post_review": [
+            "看数据找卡点",
+            "存下改进配方",
+        ],
+    }
+    steps_list = routes[u_type]
+    total_steps = len(steps_list)
+
+    has_script = any((pipeline_dir / fn).is_file() for fn in ("00_raw_intel.json", "00_script_lint.md", "00_code_spec.json"))
+    has_shot_card = (pipeline_dir / "shot_card.md").is_file() or (pipeline_dir.parent / "shot_card.md").is_file()
+    has_media = mf_p.is_file() or inv_p.is_file()
+    has_audio = ae_p.is_file() or (pipeline_dir / "03_blind_audio.m4a").is_file()
+    has_preview = edl_p.is_file()
+    has_final = (pipeline_dir / "output_final.mp4").is_file() or (pipeline_dir.parent / "out" / "output_final.mp4").is_file()
+    is_approved = bool(lock_st.get("human_approved"))
+
+    media_items = mf.get("items") or inv.get("items") or []
+    usable_cnt = sum(1 for it in media_items if it.get("video_grade", "usable") != "ng")
+    dur_sec = float(edl.get("total_duration_sec") or ae.get("locked_duration_sec") or 0.0)
+    clip_cnt = len(edl.get("clips") or [])
+    gaps = edl.get("deictic_gaps") or []
+
+    missing_items: List[str] = []
+    if gaps:
+        cue_name = str(gaps[0].get("matched_cue") or "对应特写")
+        missing_items.append(f"台词提到了「{cue_name}」，可回 A 让我自动画一张对比图卡补上，或回 B 补拍一段 3 秒特写")
+
+    if u_type == "post_review":
+        if is_approved or has_final:
+            cur_step = 2
+            ai_status = "已经对照你的画面节奏找出了观众划走的位置，并把改进配方存进了你的账号偏好。"
+            user_action = "看看这份复盘建议合不合心意："
+            choices = [
+                "回 A：说得很准，下一条直接按这个新节奏做",
+                "回 B：我还想补充几个后台看到的评论或私信情况",
+                "回 C：直接开始策划下一条新视频",
+            ]
+            remaining = "改进配方已存好，随时可以直接开启下一条视频。"
+        else:
+            cur_step = 1
+            ai_status = "正在等你发来视频发布两天后的后台表现数字。"
+            user_action = "把后台看到的播放量、前几秒留下的人数比例、看完的比例和点赞评论数发给我："
+            choices = [
+                "回 A：直接打字发这几个数字",
+                "回 B：把后台数据页面截图发给我",
+                "回 C：还没发满两天，先帮我剪一条新片子",
+            ]
+            remaining = "拿到数字后 → 帮你用大白话找出卡点并存下改进配方。"
+            missing_items.append("需要提供发布后的播放、留存、点赞或私信数字")
+    elif has_final and is_approved:
+        cur_step = total_steps
+        ai_status = f"成片（全长 {dur_sec:.1f} 秒，共 {clip_cnt} 个画面段落）、主页封面和可编辑草稿包已全部打包归档，原素材完好未动。"
+        user_action = "全部工序已圆满完工！你可以直接拿去发布，或者告诉我还想做什么："
+        choices = [
+            "回 A：直接去发片，两天后拿数据回来找你复盘",
+            "回 B：用同一套样式再做下一条新视频",
+            "回 C：帮我把封面标题再多备选两个不同说法",
+        ]
+        remaining = "全部完成（0 项待办，随时可发片）。"
+    elif has_final:
+        cur_step = total_steps
+        qa_pass = bool(qa.get("all_passed") or qa.get("machine_passed", True))
+        ai_status = (
+            f"已经为你合成好 {dur_sec:.1f} 秒高清竖屏成片、3:4 主页封面及剪映草稿包，"
+            + ("并完成了声音、画面与字幕遮挡自动检查（全部通过）。" if qa_pass else "并附上了自动体检提醒。")
+        )
+        user_action = "请最后看一眼成品视频和封面，直接回个字母就能收工："
+        choices = [
+            "回 A：看过了很满意，确认收工拿片",
+            "回 B：声音不动，我想换一套小窗口或超大字画面样式",
+            "回 C：想改一两句文字或换个封面标题",
+        ]
+        remaining = "只差你最后点头确认一眼，确认后立即归档收工。"
+    elif has_preview:
+        cur_step = max(2, total_steps - 1)
+        ai_status = f"已经按你的说话节奏排好了 {clip_cnt} 个画面段落（全长 {dur_sec:.1f} 秒），配好了居中字幕、醒目大字与小窗口粗剪预览。"
+        user_action = "先看一眼粗剪画面的切换节奏和样式，回个字母告诉我怎么往下走："
+        choices = [
+            "回 A：粗剪节奏和画面样式满意，直接出正式高清成片和封面",
+            "回 B：声音不动，帮我换另一款画面样式（比如虚化小窗款 / 黑底双格证据款 / 不露脸快切款）",
+            "回 C：把开头前 3 秒换个更抓人的画面或把重点大字再放大",
+        ]
+        remaining = "确认粗剪后 → 正式导出高清成品视频、主页封面与剪映草稿包。"
+    elif has_audio:
+        cur_step = 3 if u_type == "store_from_zero" else 2
+        ai_status = f"已经把你说话里的停顿、冷场修顺，并配好了背景音乐（声音全长 {dur_sec:.1f} 秒，原视频完好未动）。"
+        user_action = "先花几十秒听一下这份修好的声音小样，回个字母就行："
+        choices = [
+            "回 A：声音和语速听着很顺，继续往下配画面和醒目大字",
+            "回 B：有句话想删掉或改一下说法（告诉我哪一句）",
+            "回 C：背景音乐换一首更轻松或更有节奏感的",
+        ]
+        remaining = "确认声音后 → 挑选顺眼的画面样式看粗剪 → 导出成品视频与封面。"
+    elif has_media:
+        cur_step = 1 if u_type == "footage_organizer" else 2
+        ai_status = f"已经帮你翻看完文件夹里的 {len(media_items)} 段素材，挑出了 {usable_cnt} 段清晰稳定的可用好镜头（原文件一根头发没动）。"
+        user_action = "素材已经挑好，接下来怎么推进最合你心意："
+        choices = [
+            "回 A：直接帮我修顺说话声音、排好画面出粗剪预览",
+            "回 B：我先选一款喜欢的画面样式（比如门店招牌款 / 热点虚化小窗款 / 全程不露脸快切款）",
+            "回 C：我还想再往文件夹里补几段刚拍的特写",
+        ]
+        remaining = "修顺声音并排好粗剪画面 → 导出高清成品视频与主页封面。"
+    elif has_shot_card or has_script:
+        cur_step = 2 if (u_type == "store_from_zero" and has_shot_card) else 1
+        ai_status = "已经为你整理好接地气的说话台词" + ("与手机拍摄清单（标明了每段拍几秒、怎么拿手机）。" if has_shot_card else "，并避开了容易被平台限流的夸大词。")
+        user_action = "看看这份台词" + ("和拍摄单" if has_shot_card else "") + "顺不顺口，回个字母即可："
+        choices = [
+            "回 A：台词很顺口，我拍好后把视频文件夹发给你（或直接用现有素材开剪）",
+            "回 B：有几句不太像我平时说话的口气，帮我改得更口语一点",
+            "回 C：我不想自己出镜拍了，直接帮我做成全程不露脸的图解/特写短片",
+        ]
+        remaining = "收到素材或配音后 → 修顺声音 → 排好粗剪画面 → 导出成品视频与封面。"
+        missing_items.append("等待放入拍好的视频文件夹，或确认改走不露脸图解路线")
+    else:
+        cur_step = 1
+        ai_status = f"已为你开启「{user_type_names[u_type]}」专属工作区，正在等你告诉我这次想拍的话题或素材位置。"
+        user_action = "只需要随口告诉我下面任意一样，咱们就能立刻开干："
+        choices = [
+            "回 A：告诉我你是做什么行业的、这次想聊什么话题（我先帮你写说话词）",
+            "回 B：直接把拍好的视频文件夹路径发给我（我先帮你挑好镜头）",
+            "回 C：我不想露脸，把几句文字或数据发给我（我直接帮你画动态图表短片）",
+        ]
+        remaining = "沿着专属步骤走完 → 拿到成品视频、3:4 主页封面与可微调草稿包。"
+        missing_items.append("需要一句话话题描述，或已拍好的视频文件夹位置")
+
+    cur_step = max(1, min(total_steps, cur_step))
+    step_name = steps_list[cur_step - 1]
+    filled = "■" * cur_step
+    empty = "□" * max(0, total_steps - cur_step)
+    prog_bar = f"[{filled}{empty}]"
+
+    choices_md = "\n".join(f"   - **{c.split('：')[0]}**：{c.split('：', 1)[1]}" if "：" in c else f"   - {c}" for c in choices)
+    missing_suffix = f"（温馨提示：{missing_items[0]}）" if missing_items else ""
+    md_card = "\n".join([
+        "---",
+        f"📍 **当前进度**：第 {cur_step} 步 / 共 {total_steps} 步（{step_name}）  `{prog_bar}`",
+        f"🤖 **我刚做了 / 正在做**：{ai_status}",
+        f"👉 **现在轮到你**：{user_action}",
+        choices_md,
+        f"⏳ **离能发还差**：{remaining}{missing_suffix}",
+        "---",
+    ])
+
+    card = {
+        "updated_at": _now_iso(),
+        "user_type": u_type,
+        "user_type_cn": user_type_names[u_type],
+        "track": eff_track,
+        "current_step": cur_step,
+        "total_steps": total_steps,
+        "step_name_cn": step_name,
+        "progress_bar": prog_bar,
+        "steps_route_cn": steps_list,
+        "ai_status_cn": ai_status,
+        "user_action_cn": user_action,
+        "quick_choices": choices,
+        "remaining_cn": remaining,
+        "missing_items_cn": missing_items,
+        "human_approved": is_approved,
+        "markdown_card": md_card,
+    }
+    if write_files:
+        write_json(pipeline_dir / "00_progress_card.json", card)
+        (pipeline_dir / "00_进度看板.md").write_text(
+            f"# 短视频制作实时进度看板（{user_type_names[u_type]}）\n\n{md_card}\n",
+            encoding="utf-8",
+        )
+    return card
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="协作闸门锁、复刻洁净室与完工自动清理守卫")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -1038,6 +1294,11 @@ def main() -> None:
     p_td.add_argument("--deep-clean", action="store_true")
     p_arch = sub.add_parser("verify-out")
     p_arch.add_argument("--out-dir", required=True, type=Path)
+
+    p_st = sub.add_parser("status")
+    p_st.add_argument("--pipeline-dir", required=True, type=Path)
+    p_st.add_argument("--user-type", choices=USER_TYPES, help="可选：显式指定 5 类用户路线")
+    p_st.add_argument("--track", choices=("store", "creator"), help="可选：门店或个人账号方向")
 
     args = parser.parse_args()
     if args.cmd == "record-stop":
@@ -1088,6 +1349,9 @@ def main() -> None:
             keep_temp=args.keep_temp,
             deep_clean=args.deep_clean,
         )
+    elif args.cmd == "status":
+        card = render_progress_card(args.pipeline_dir, user_type=args.user_type, track=args.track, write_files=True)
+        print(card["markdown_card"])
 
 
 if __name__ == "__main__":

@@ -73,7 +73,7 @@ from step6_packaging import run_step6
 from step7_color_grade import run_step7
 from step8_mix_audio import run_step8
 from step9_title_cover import run_step9
-from workflow_guard import generate_action_strips, record_milestone, tidy_workspace, verify_lock
+from workflow_guard import generate_action_strips, record_milestone, render_progress_card, tidy_workspace, verify_lock
 
 
 def _run_script_prelint(
@@ -1332,9 +1332,12 @@ def main() -> None:
 
     if args.mode != "lock-preview":
         record_milestone(pipeline_dir, "stop3_final", res["qa_report"]["approval_status"])
+    prog_card = render_progress_card(pipeline_dir, track=args.track, write_files=True)
+    if args.mode != "lock-preview":
         tidy_workspace(pipeline_dir, out_dir=ws["out_dir"], keep_temp=args.keep_temp)
 
     print("\n[OK] 流水线执行完毕。")
+    print("\n" + prog_card["markdown_card"])
 
 
 if __name__ == "__main__":
