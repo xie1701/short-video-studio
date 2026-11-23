@@ -49,6 +49,13 @@ US = 1_000_000
 # 2026-11-24 补：**逐帧动画层**（入场「抖动下降/日出/缩小…」烘出来的 anim_*.mov）也有反方向的
 # 一帧错位，但修法不是 +1 帧而是 _ov_t0() 的「吸附帧网格 + 半帧偏置」——见那个函数的注释。
 PTS_LAG_FRAMES = 1
+# 文字层（`text_layer`）在 `_ov_t0` 之后要不要再整帧后移。
+# 依据（style_17 3.500s 那行字幕，逐帧量带内墨迹）：原版帧 105（t=3.500，正好是段起点）
+# **还没有字**，帧 106 直接满不透明（墨迹均值 198.5，之后恒定 198~199），而墨迹宽度
+# 116→109→…→93 px 在缩——也就是「尺寸在动、不透明度全程是 1」。
+# 我们的同名动画在帧 105 就把 f0 画成不透明（alpha0=1 实测），说明文字层的首帧在原版里
+# **不显示**、内容从 f1 开始。可用 REPLICA_TEXT_LAG_FRAMES=0 复现旧行为做 A/B。
+TEXT_LAG_FRAMES = int(os.environ.get("REPLICA_TEXT_LAG_FRAMES") or 1)
 _CODE_SIG = ""
 
 
@@ -836,7 +843,7 @@ def _flip_hv(clip_flip: dict | None) -> dict:
     return {"h": bool(h), "v": bool(v)}
 
 
-def _ov_t0(t_start: float, fps: float) -> float:
+def _ov_t0(t_start: float, fps: float, extra_frames: int = 0) -> float:
     """叠加层入场时间基准（覆帧网格 + 半帧偏置），供 overlay 的 setpts 用。
 
     原来什么：直接写 `setpts=PTS+{t_start:.4f}/TB`。
@@ -857,7 +864,7 @@ def _ov_t0(t_start: float, fps: float) -> float:
     9.0 / 9.333333 / 9.866667 五个值，主帧 N 都是 f0（透明）、N+1 是 f1、N+2 是 f2。
     """
     n = int(round(t_start * fps))
-    return (n + 0.5) / fps
+    return (n + 0.5 + int(extra_frames)) / fps
 
 
 def _anim_base_png(src: str, mat: dict, geom: dict, out_png: Path, flip: dict | None = None) -> Path:
@@ -2520,7 +2527,9 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                     # 贴纸入场/出场（10.433s 那条「向下滑动」）是拿 `+{t_start:.4f}/TB + 1 帧` 反解出来的，
                     # 再往后再推半帧 → 12.517–12.583s 这 5 帧 MAE 3.7 → 13.7（实测）。
                     # 只有没自带标定的缓存层（视频/照片/逐帧动画）才用 _ov_t0。
-                    _t0_ov = u["t_start"] if u.get("pts_lag") else _ov_t0(u["t_start"], fps)
+                    _t0_ov = (u["t_start"] if u.get("pts_lag")
+                              else _ov_t0(u["t_start"], fps,
+                                          TEXT_LAG_FRAMES if u.get("text_layer") else 0))
                     fc_parts.append(f"[{seg_i}:v]fps={fps},setpts=PTS+{_t0_ov:.6f}/TB{_lag},format=rgba[cut{n}]")
             if _skf:
                 # 缩放关键帧逐帧：一路输入 split 成 K 支，每支 trim 出自己那几帧、各自 scale 到
@@ -2531,7 +2540,8 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 # 渐隐/透明度必须留在 split 之前：fade 是按绝对时间算的，切片后每段起点不同会算错。
                 _K = len(_skf)
                 _t0u = u["t_start"]          # 切片帧号口径：仍用未吸附的真值（_fa/_fb 由它算）
-                _t0s = _ov_t0(_t0u, fps)       # 流平移口径：吸附到帧网格 + 半帧（见 _ov_t0 注释）
+                _t0s = _ov_t0(_t0u, fps,        # 流平移口径：吸附到帧网格 + 半帧（见 _ov_t0 注释）
+                              TEXT_LAG_FRAMES if u.get("text_layer") else 0)
                 # 时间轴：整条流一次性平移到 t_start，**切片不再各自 setpts**。
                 # 为什么不能逐片 setpts：`setpts=PTS+{ta:.4f}/TB` 的 ta/TB 会截断成整数帧号，
                 # ta=0.0833 → 4.998 → 4（早了整整一帧），于是首片之后就整体领先原版 1 帧

@@ -164,13 +164,29 @@ def edge_density(gray: np.ndarray) -> float:
     return float((gx.mean() + gy.mean()) / 2.0 / 255.0)
 
 
-def extract_frames(path: Path, fps: float, width: int, height: int, outdir: Path) -> List[np.ndarray]:
+def extract_frames(path: Path, fps: float, width: int, height: int, outdir: Path,
+                   src_fps: float | None = None) -> List[np.ndarray]:
+    """按**帧号**抽样（不是按时间重新栅格化）。
+
+    原来什么：`-vf fps=2` —— 让 ffmpeg 把时间轴重新栅格化成 2fps，取的是「PTS 最接近 2fps 格点
+    的那一帧」。原版与复刻各自独立栅格化，只要两条片子的首帧 PTS / 帧率有一点差，同一次抽样
+    就可能取到相差 1 帧的画面。
+    为什么必须改（实测）：style_17 3.50s 原版字幕**正好在这一帧整块出现**（帧 105 带内亮度 5.7、
+    帧 106 → 12.7，一跳到底），旧抽样把我们帧 107 和原版帧 106 放在一起比，量出「字幕带差 8.66 级」；
+    改成帧号对齐后同一处只差 0.76 级，8.66 那个数**是抽样错位造出来的假差**。
+    改成什么：`select='not(mod(n,step))'` + `-fps_mode passthrough`，step = round(源帧率/目标帧率)，
+    两边同一帧号直接对齐（源帧率取自 probe）。
+    """
     outdir.mkdir(parents=True, exist_ok=True)
     for old in outdir.glob("*.png"):
         old.unlink()
+    step = 1
+    if src_fps and fps > 0:
+        step = max(1, int(round(float(src_fps) / float(fps))))
     run([
         "ffmpeg", "-y", "-v", "error", "-i", str(path),
-        "-vf", f"fps={fps},scale={width}:{height}:flags=area",
+        "-vf", f"select='not(mod(n\\,{step}))',scale={width}:{height}:flags=area",
+        "-fps_mode", "passthrough",
         "-start_number", "0", str(outdir / "%05d.png"),
     ])
     frames = []
@@ -213,8 +229,8 @@ def compute_metrics(orig: Path, rep: Path, samp_fps: float = 2.0) -> Dict:
     po, pr = probe(orig), probe(rep)
     w, h = 270, 480
     with tempfile.TemporaryDirectory(prefix="ssim_") as td:
-        fo = extract_frames(orig, samp_fps, w, h, Path(td) / "o")
-        fr = extract_frames(rep, samp_fps, w, h, Path(td) / "r")
+        fo = extract_frames(orig, samp_fps, w, h, Path(td) / "o", src_fps=po["fps"])
+        fr = extract_frames(rep, samp_fps, w, h, Path(td) / "r", src_fps=pr["fps"])
         n = min(len(fo), len(fr))
         if n == 0:
             raise RuntimeError("抽帧为空，无法比对")
