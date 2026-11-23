@@ -79,10 +79,10 @@ CALIBRATION: Dict[str, dict] = {
     #
     # 用原版帧反解的「向下滑动」出场（style_21 手机边框）：草稿写 duration=0.5，
     # 但实测 12.45s 还是静止、12.85s 已完全移出 → 真实时长约 0.6×，起点比「段尾减时长」晚约 0.08s。
-    "向下滑动": {"slide_gain": 0.8, "out_dur_scale": 0.6, "out_start_slack": 0.08},
+    "向下滑动": {"slide_gain": 0.8, "out_dur_scale": 0.6, "out_start_slack": 0.03},
     # 「缩小」入场（同一处手机边框）：14 组参数扫下来 a0=0 s0=1.3 最优——
     # 起手是「从大处淡入」，10.45s 原版几乎还看不见边框，所以起点透明度必须是 0。
-    "缩小": {"scale0": 1.3, "alpha0": 0.0},
+    "缩小": {"scale0": 1.3, "alpha0": 0.0, "in_dur_scale": 0.88},
 }
 
 # 按「宿主」分的幅度表。剪映同名动画在贴纸 / 视频图层 / 文字上幅度不同（贴纸 PNG 自带透明
@@ -305,8 +305,10 @@ def anim_state(specs: List[AnimSpec], t_local: float, seg_dur: float,
     for sp in specs:
         cfg = _cfg(sp.name, ctx)
         if sp.kind == "in":
-            t0, t1 = sp.start or 0.0, (sp.start or 0.0) + sp.duration
-            p_raw = (t_local - t0) / max(1e-6, sp.duration)
+            dur_i = sp.duration * float(cfg.get("in_dur_scale") or 1.0)
+            t0 = (sp.start or 0.0) + float(cfg.get("in_start_shift") or 0.0)
+            t1 = t0 + dur_i
+            p_raw = (t_local - t0) / max(1e-6, dur_i)
             p = 0.0 if p_raw < 0 else (1.0 if p_raw > 1 else p_raw)
             # 起点权重 = 1 - p，终点归位
             w = 1.0 - p
