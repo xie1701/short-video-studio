@@ -1642,11 +1642,15 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             if not spec["text"].strip():
                 continue
             if float(spec.get("alpha", 1.0)) <= 0.005:
-                # 素材级 global_alpha=0：剪映里这行字根本不显示（style_21 的「创」「原」两段水印字），
-                # 不是未实现，也不该偷画。逐帧图层路径会因「全透明空壳」直接报错，必须在这里先掉。
-                report.setdefault("notes", []).append(
-                    f"文本 {spec['text'][:6]!r}: global_alpha=0，按原版不显示")
-                continue
+                # 素材级 global_alpha=0 有两层含义，必须靠段上的关键帧区分：
+                #  · 没有 KFTypeGlobalAlpha → 剪映里这行字确实不显示，不偷画；
+                #  · 有 KFTypeGlobalAlpha → material 里的 0 是「静态终态」，真值是曲线
+                #    （style_21 的「创」「原」水印字：0.703 → 0，原版 6.8–8.2s 明明白白可见）。
+                if not _kf_rel(s, "KFTypeGlobalAlpha", 0.0):
+                    report.setdefault("notes", []).append(
+                        f"文本 {spec['text'][:6]!r}: global_alpha=0，按原版不显示")
+                    continue
+                spec["alpha"] = 1.0
             tgt = s.get("target_timerange") or {}
             t_start = float(tgt.get("start") or 0) / US
             t_dur = float(tgt.get("duration") or 0) / US
