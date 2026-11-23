@@ -497,12 +497,33 @@ class _Pool:
                                "cursor": 0.0, "uses": 0})
         self.rot = 0
 
+    def _take(self, item: dict, want: float, min_take: float) -> dict:
+        """从一条素材上切一段（推进它的读头）。`fill()` 与 `fill_path()` 共用。"""
+        avail = item["dur"] - item["cursor"]
+        wrapped = False
+        if avail < min(want, min_take):
+            item["cursor"] = 0.0
+            avail = item["dur"]
+            wrapped = True
+        take = max(0.05, min(want, avail))
+        src_in = item["cursor"]
+        item["cursor"] = min(item["dur"], src_in + take)
+        reused = item["uses"] > 0
+        item["uses"] += 1
+        return {"path": item["path"], "src_in": src_in, "take": take,
+                "reused": reused, "wrapped": wrapped, "conflict_skipped": 0,
+                "w": item["w"], "h": item["h"],
+                "is_image": bool(item.get("is_image")),
+                "asset_dur": float(item["dur"]),
+                "rotation": int(item.get("rotation") or 0)}
+
     def fill(self, want: float, min_take: float = 0.2,
              avoid: Optional[set] = None) -> Optional[dict]:
         """取一段：返回 {path, src_in, take, reused, wrapped}；池空返回 None。
 
-        `avoid` 是**硬约束**：这些素材文件不许再取（用于「时间上重叠的叠层绝不同源」）。
-        整池都在 avoid 里就返回 None——宁可让该段留空并计数，也不拿同源素材叠出重影。
+        `avoid` 是**硬约束**：这些素材文件不许再取（用于「时间上重叠的叠层绝不同源」和
+        「同一张图全片只用一次」）。整池都在 avoid 里就返回 None——宁可让该段留空并计数，
+        也不拿同源素材叠出重影。
         """
         if not self.items:
             return None
@@ -519,24 +540,30 @@ class _Pool:
             break
         if item is None:
             return None
-        avail = item["dur"] - item["cursor"]
-        wrapped = False
-        if avail < min(want, min_take):
-            item["cursor"] = 0.0
-            avail = item["dur"]
-            wrapped = True
-        take = max(0.05, min(want, avail))
-        src_in = item["cursor"]
-        item["cursor"] = min(item["dur"], src_in + take)
-        reused = item["uses"] > 0
-        item["uses"] += 1
-        return {"path": item["path"], "src_in": src_in, "take": take,
-                "reused": reused, "wrapped": wrapped,
-                "conflict_skipped": skipped_conflict,
-                "w": item["w"], "h": item["h"],
-                "is_image": bool(item.get("is_image")),
-                "asset_dur": float(item["dur"]),
-                "rotation": int(item.get("rotation") or 0)}
+        fill = self._take(item, want, min_take)
+        fill["conflict_skipped"] = skipped_conflict
+        return fill
+
+    def peek(self, avoid: Optional[set] = None) -> Optional[dict]:
+        """看一眼「下一次 fill 会取到哪一条」但**不推进**读头（只用于记账）。
+
+        用途：照片层全局去重时回答「这次本来会分到的那张图，是不是已经在时间线别处用过」，
+        从而把「挡住了一次重复分配」计成 `duplicate_photo_blocked`。
+        """
+        n = len(self.items)
+        for step in range(n):
+            cand = self.items[(self.rot + step) % n]
+            if avoid and cand["path"] in avoid:
+                continue
+            return cand
+        return None
+
+    def fill_path(self, path: str, want: float, min_take: float = 0.2) -> Optional[dict]:
+        """取**指定的**那一条（照片层「原版这两层是同一张图」→ 复用同一张新图走这里）。"""
+        for item in self.items:
+            if item["path"] == path:
+                return self._take(item, want, min_take)
+        return None
 
 
 def _anchor_map_builder(old_b: List[Tuple[float, float]], new_b: List[Tuple[float, float]], new_total: float):
@@ -1076,6 +1103,68 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
                 return fill
         return None
 
+    # ---- 照片层的全局去重账本（跨复合片段、跨层级、跨时间窗）----
+    #
+    # 原来什么：照片层只用了 `_taken_near()`（“这段时间窗里已经被占住的图”）当硬约束。
+    # 复合片段是按父段顺序逐个解析的，后面的片段在前一个**分完之后**才登记窗口，而且两个
+    # 片段的窗口根本不需要重叠——于是 2.9s 那个 7 图拼贴跟 0.45s 那个 5 图拼贴分到了两张
+    # 同一张图（实测 `绘画.png` / `汽车.jpg` 各出现两次，重影检查看不见：它们不同时上屏）。
+    # 观众看到的是“同一张图又来了”，这就是真 bug。
+    #
+    # 改成什么：全片一本账。同一张**新图**在整条时间线上只能用一次；只有原版本来就是同一张图
+    # （`material_fingerprint` 相同）才显式放行并计 `duplicate_photo_allowed`。池子真不够就
+    # 留空（调用方计 `photo_layer_no_image`），绝不拿已经在别处出现过的图去填。
+    photo_used: Dict[str, str] = {}    # 新图路径 → 第一次分给它的段 key
+    photo_by_fp: Dict[str, str] = {}   # 原版素材指纹 → 分给它的新图路径
+    photo_alloc: List[dict] = []       # 逐层台账（脱敏 ref + 指纹 ref），供报告对账
+    rep.setdefault("duplicate_photo_blocked", 0)
+    rep.setdefault("duplicate_photo_allowed", 0)
+    rep.setdefault("duplicate_photo_blocked_detail", [])
+    rep.setdefault("photo_layers_unfilled", 0)
+
+    def take_unique_photo(want: float, overlap_avoid: Optional[set] = None, *,
+                         fingerprint: Optional[str] = None,
+                         key: str = "") -> Optional[dict]:
+        """照片层取图：**全片唯一**（跨复合片段/跨层级/跨时间窗）。
+
+        · 原版这两层是同一张图（`material_fingerprint` 相同）→ 复用同一张新图，
+          计 `duplicate_photo_allowed`（这是原版设计，不是重复）；
+        · 否则只从「没被别处用过」的图里取；本来轮到的那张若已经用过，计
+          `duplicate_photo_blocked` 后改取下一张；整池都用过 → 返回 None（留空）。
+        """
+        pool = pools.get("photo")
+        if pool is None or not pool.items:
+            return None
+        if fingerprint and fingerprint in photo_by_fp:
+            fill = pool.fill_path(photo_by_fp[fingerprint], want)
+            if fill is not None:
+                fill["used_role"] = "photo"
+                rep["asset_reused"] += 1
+                rep["duplicate_photo_allowed"] += 1
+                photo_alloc.append({"key": key, "asset_ref": _asset_ref(fill["path"]),
+                                    "fingerprint_ref": fingerprint, "reused_original_same": True})
+                return fill
+        overlap = set(overlap_avoid or ())
+        naive = pool.peek(avoid=overlap)
+        if naive is not None and naive["path"] in photo_used:
+            rep["duplicate_photo_blocked"] += 1
+            rep["duplicate_photo_blocked_detail"].append({
+                "key": key, "blocked_ref": _asset_ref(naive["path"]),
+                "first_used_by": photo_used[naive["path"]]})
+        fill = pool.fill(want, avoid=overlap | set(photo_used))
+        if fill is None:
+            rep["photo_layers_unfilled"] += 1
+            return None
+        fill["used_role"] = "photo"
+        if fill["reused"]:
+            rep["asset_reused"] += 1
+        photo_used.setdefault(fill["path"], key or "?")
+        if fingerprint:
+            photo_by_fp.setdefault(fingerprint, fill["path"])
+        photo_alloc.append({"key": key, "asset_ref": _asset_ref(fill["path"]),
+                            "fingerprint_ref": fingerprint, "reused_original_same": False})
+        return fill
+
     # 媒体落盘：同源文件只拷一次
     copied: Dict[str, tuple] = {}  # 源绝对路径 -> (文件名, 子目录)
 
@@ -1105,7 +1194,12 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
         asset_role = seg.get("asset_role") or role
         if asset_role not in ("a_roll", "b_roll", "photo"):
             asset_role = "a_roll"
-        fill = take_for(asset_role, want)
+        if asset_role == "photo":
+            # 驱动轨本身就是静图（照片翻页类模版）：同样走「全片唯一」这条账
+            fill = take_unique_photo(want, fingerprint=seg.get("material_fingerprint"),
+                                     key=seg["key"])
+        else:
+            fill = take_for(asset_role, want)
         if fill is None:
             rep["skipped"]["a_roll_no_asset"] = rep["skipped"].get("a_roll_no_asset", 0) + 1
             continue
@@ -1375,7 +1469,12 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
                     row["backdrop_asset_ref"] = row.get("asset_ref")
             continue
         avoid = _taken_near(new_start, new_dur)
-        fill = take_for(role if role in ROLE_FALLBACK else "b_roll", new_dur, avoid=avoid)
+        if role == "photo":
+            fill = take_unique_photo(new_dur, avoid,
+                                     fingerprint=seg.get("material_fingerprint"),
+                                     key=seg["key"])
+        else:
+            fill = take_for(role if role in ROLE_FALLBACK else "b_roll", new_dur, avoid=avoid)
         if fill is None:
             _blank_overlay(seg, "asset_pool_exhausted_avoid_same_source", new_start, new_dur,
                            ghost=True, cover_ratio=round(info["cover"], 3),
@@ -1486,9 +1585,13 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
                 _skip("effect_track_in_compound")
                 continue
             if kind == "photo" or role == "photo":
-                # 照片层：只取图片（角色规则见上面注释）
+                # 照片层：只取图片（角色规则见上面注释）+ **全片唯一**（见 take_unique_photo）：
+                # 原来只避开「时间窗重叠」的层，于是两个不同复合片段会拿到同一张图；
+                # 现在全片一本账，同一张图只能用一次（原版同比图例外）。
                 avoid = _taken_near(parent_start, parent_dur) | {x["path"] for x in local_taken}
-                fill = take_for("photo", dur, avoid=avoid)
+                fill = take_unique_photo(dur, avoid,
+                                         fingerprint=s.get("material_fingerprint"),
+                                         key=f"{seg['key']}#sub{t_i}")
                 if fill is None:
                     _skip("photo_layer_no_image")
                     continue
@@ -1806,7 +1909,11 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
                                 "old_start": old_start, "old_dur": old_dur}
             continue
         if kind in ("video", "photo") or role in ("b_roll", "overlay_card", "photo"):
-            fill = take_for(role if role in ROLE_FALLBACK else "b_roll", new_dur)
+            if kind == "photo" or role == "photo":
+                fill = take_unique_photo(new_dur, fingerprint=seg.get("material_fingerprint"),
+                                         key=seg["key"])
+            else:
+                fill = take_for(role if role in ROLE_FALLBACK else "b_roll", new_dur)
             if fill is None:
                 rep["skipped"]["b_roll_no_asset"] = rep["skipped"].get("b_roll_no_asset", 0) + 1
                 continue
@@ -2313,6 +2420,18 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
         "compound_applied_detail": rep.get("compound_applied_detail", []),
         "sub_segments_total": rep.get("sub_segments_total", 0),
         "photo_layers_mapped": rep.get("photo_layers_mapped", 0),
+        # 照片全局唯一台账（跨复合片段/跨层级的同一本账）：
+        #   duplicate_photo_blocked：本来要分到、但那张图已经在时间线别处用过 → 改派/留空的次数
+        #   duplicate_photo_allowed：原版这两层就是同一张图（material_fingerprint 相同）→ 显式复用
+        #   photo_layers_unfilled  ：池子里的图全用过了 → 只能留空的照片层数
+        #   photo_assets_distinct  ：实际用到几张不同的图
+        "duplicate_photo_blocked": rep.get("duplicate_photo_blocked", 0),
+        "duplicate_photo_blocked_detail": rep.get("duplicate_photo_blocked_detail", []),
+        "duplicate_photo_allowed": rep.get("duplicate_photo_allowed", 0),
+        "photo_allocations": photo_alloc,
+        "photo_layers_unfilled": rep.get("photo_layers_unfilled", 0),
+        "photo_assets_distinct": len(photo_used),
+        "photo_pool_size": len((pools.get("photo").items if pools.get("photo") else [])),
         "compound_photo_layers_in_template": (template.get("counts") or {}).get(
             "compound_photo_layers", 0),
         "compound_anim_clamped": rep.get("compound_anim_clamped", 0),

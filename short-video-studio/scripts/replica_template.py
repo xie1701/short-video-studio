@@ -284,6 +284,22 @@ def font_ref_of(mat: dict) -> Optional[dict]:
             "styles_with_font": len(names), "distinct": len({n for n, _ in names})}
 
 
+def material_fingerprint(path: str) -> str | None:
+    """原始素材的**身份指纹**：只有哈希，不含路径也不含文件名。
+
+    为什么需要它：模版里 `file_slot` 只在**本层**内有效（每层一条文件槽表），所以跨复合
+    片段比对「这两层原版用的是不是同一张图」时它给不出答案。指纹按**文件名**算，因为复合
+    片段的子草稿里同一张图会挂在不同占位根下（整条路径各不相同），而文件名在实际素材库里
+    就是那把钥匙。套用端拿它区分：
+      · 原版这两层本来就是同一张图 → 该复用到同一张新图（显式放行）；
+      · 两张不同的图 → 绝不许被套用端复用成同一张（全局唯一）。
+    """
+    name = Path(str(path or "")).name
+    if not name:
+        return None
+    return "fp:" + hashlib.sha1(name.casefold().encode("utf-8")).hexdigest()[:12]
+
+
 def text_layout_capacity(style: dict, canvas_w: float, src_lines: int = 1) -> dict:
     """文字位容量：**由版式算**，不再拿源文案长度当上限。
 
@@ -831,6 +847,9 @@ def _extract_level(draft: dict, *, depth: int = 0) -> dict:
                 "requires_review": bool(seg_reasons),
                 "review_reasons": seg_reasons,
                 "file_slot": _file_slot(str(mat.get("path") or "")) if kind in ("video", "photo") else None,
+                # 原始素材身份指纹（跨层可比、不含路径）：套用端靠它判断「原版同图 → 复用」
+                "material_fingerprint": (material_fingerprint(str(mat.get("path") or ""))
+                                         if kind in ("video", "photo") else None),
             })
 
             # 素材 → 角色（同一素材出现在多轨时：a_roll 优先，其次 overlay_card/b_roll）

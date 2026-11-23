@@ -173,8 +173,9 @@ def template_need(tpl: dict) -> dict:
         return p
 
     photo_peak = 0
+    photo_fps: set = set()
 
-    def _walk(child_segs: List[dict]) -> None:
+    def _walk(child_segs: List[dict], depth: int = 0) -> None:
         nonlocal photo_peak
         for s in child_segs:
             comp = s.get("compound")
@@ -183,9 +184,17 @@ def template_need(tpl: dict) -> dict:
             sub = comp.get("segments") or []
             photos = [x for x in sub if (x.get("asset_role") or x.get("kind")) == "photo"]
             photo_peak = max(photo_peak, _peak_of(photos))
-            _walk(sub)
+            for x in photos:
+                fp = x.get("material_fingerprint")
+                photo_fps.add(fp or f"anon:{depth}:{x.get('key')}")
+            _walk(sub, depth + 1)
 
     _walk(tpl.get("segments") or [])
+    # 照片池要多大：**不能只看同时层数**。套用端对照片层施行「全片唯一」（同一张图在整条
+    # 时间线上只能用一次，跨复合片段、跨层级）——所以需求是「原版一共用了几张**不同**的照片」，
+    # 而不是「同一时刻最多几层」。原来按同时层数算（峰值 7 → 要 9 张），实采 14 张仍然不够
+    # 16 个照片层，最后两层只能留空（photo_layer_no_image），拼贴就少了带子。
+    photo_distinct = len(photo_fps) if photo_fps else photo_peak
     return {
         "video_slots": len(segs),
         "driver_segments": sum(1 for s in segs if s.get("track_index") == driver_idx),
@@ -194,7 +203,8 @@ def template_need(tpl: dict) -> dict:
         "a_roll_want": max(2, peak) + 2,
         "b_roll_want": max(2, peak) + 2,
         "max_concurrent_photo_layers": photo_peak,
-        "photo_want": max(0, photo_peak) + 2 if photo_peak else 0,
+        "photo_distinct_needed": photo_distinct,
+        "photo_want": max(photo_distinct, max(0, photo_peak) + 2) if photo_peak else 0,
     }
 
 
@@ -392,13 +402,15 @@ def main() -> int:
                        "got_a": len(assets["a_roll"]), "got_b": len(assets["b_roll"]),
                        "got_photo": len(assets.get("photo") or []),
                        "shortfall": {"a_roll": short_a, "b_roll": short_b,
-                                     "photo": max(0, int(need.get("max_concurrent_photo_layers") or 0)
+                                     "photo": max(0, int(need.get("photo_distinct_needed")
+                                           or need.get("max_concurrent_photo_layers") or 0)
                                                   - len(assets.get("photo") or []))}}
         notes.append(f"模版同时叠层峰值 {need['max_concurrent_video_layers']} 层 → 至少要 "
                      f"{need['distinct_assets_needed']} 条不同素材；实采 a_roll {len(assets['a_roll'])} 条 / "
                      f"b_roll {len(assets['b_roll'])} 条")
         if need.get("max_concurrent_photo_layers"):
-            notes.append(f"复合片段照片层最多同时 {need['max_concurrent_photo_layers']} 层 → "
+            notes.append(f"复合片段照片层同时最多 {need['max_concurrent_photo_layers']} 层，"
+                         f"但全片一共用了 {need.get('photo_distinct_needed')} 张不同原图（照片层全片唯一）→ "
                          f"photo 池要 {need.get('photo_want')} 张图；实采 {len(assets.get('photo') or [])} 张")
         if short_a or short_b:
             notes.append(f"素材不足：还差 a_roll {short_a} 条 / b_roll {short_b} 条，"
