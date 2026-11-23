@@ -89,6 +89,21 @@ let transformedSize = naturalSize.applying(prefTransform)
 let width = max(2, Int(abs(transformedSize.width).rounded()) & ~1)
 let height = max(2, Int(abs(transformedSize.height).rounded()) & ~1)
 
+// 前导「空 edit（elst）」会让 AVAssetReader 在轨道起点**合成一帧全黑样本**（PTS=0）。
+// 实测证据（修复前的抽段 mp4）：track.segments = [empty [0,0.033), real [0.033,1.733)]，
+// 读到的第 0 个 sample PTS=0、BGRA 均值 0.0 / max=2，第 1 个 sample 才是真画面；
+// 而修复后的抽段（setpts=PTS-STARTPTS 从源头归零）segments = [real [0,1.7)]，无补黑帧。
+// Vision 对全黑帧返回空 mask → matte 前 1–2 帧全 0、撕纸人像层整层缺失，成片 0.0s 的差就从这来。
+// 抽段端已经修了；这里按空 edit 时长把补黑样帧丢掉，作为第二道防线（旧缓存 / 外部素材仍可能带 elst）。
+var emptyLeadSec = 0.0
+for seg in track.segments {
+    if seg.isEmpty {
+        emptyLeadSec += CMTimeGetSeconds(seg.timeMapping.target.duration)
+    } else {
+        break
+    }
+}
+
 guard let reader = try? AVAssetReader(asset: asset) else {
     die("Failed to create AVAssetReader")
 }
@@ -203,6 +218,8 @@ func renderCI(_ ci: CIImage, into adaptor: AVAssetWriterInputPixelBufferAdaptor,
 while reader.status == .reading {
     guard let sampleBuf = readerOutput.copyNextSampleBuffer() else { break }
     let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuf)
+    // 丢掉前导空 edit 合成的补黑样帧（见上：其 PTS 落在 [0, emptyLeadSec)）。
+    if emptyLeadSec > 1e-6 && CMTimeGetSeconds(pts) + 1e-6 < emptyLeadSec { continue }
     // 输入首帧 PTS 常不为 0（剪映源素材 start_time=0.033，ffmpeg 抽段会把它带下来）。
     // 若直接按原 PTS 喂给 startSession(.zero) 的 writer，AVAssetWriter 会拿**黑帧**去填
     // [0, firstPTS) 这段空洞，帧率越高填得越多：60fps 输入补 2 帧、30fps 补 1 帧实测。

@@ -907,6 +907,45 @@ def _animbake_media(src: str, s_in: float, dur: float, specs: list, seg_dur: flo
     return out
 
 
+def _effect_blur_steps(seg: dict, effect: dict, t_start: float, dur: float, fps: int,
+                       layer_w: int = CANVAS_W, layer_h: int = CANVAS_H) -> list:
+    """effect 轨「模糊」→ [(t0, t1, sigma)] 时间表，**按 effects_adjust_blur 关键帧逐帧算**。
+
+    原来什么：把整段当成一个常数 sigma，窗口内一刀切。style_21 的 effect 段（1.667s，时长 0.167s）
+    带关键帧 0.5 →（0.1667s）0.0，等于开帧满模糊、逐帧衰减到零；旧实现整段都按 0.5 的 σ=14.4，
+    画面到窗口末尾该清晰了还糊着，第一帧的字幕也被一起糊掉。
+    改成什么：把关键帧线性插值成逐帧值，每帧一个 σ（60fps 下 10 帧就 10 段），
+    时间窗按帧切开（[t0+k/fps, t0+(k+1)/fps]），交给 gblur 的 enable 窗口。
+    """
+    base = 0.5
+    for p in effect.get("adjust_params") or []:
+        if p.get("name") == "effects_adjust_blur":
+            v = p.get("value")
+            base = float(v if v is not None else (p.get("default_value") or 0.5))
+    kfs = _kf_pts(seg, "effects_adjust_blur")   # [(段内相对秒, 值)]
+    if not kfs:
+        return [(t_start, t_start + dur, yes_blur_sigma(base, layer_w, layer_h))]
+
+    def _val(rel: float) -> float:
+        if rel <= kfs[0][0]:
+            return kfs[0][1]
+        if rel >= kfs[-1][0]:
+            return kfs[-1][1]
+        for (a, va), (b, vb) in zip(kfs, kfs[1:]):
+            if a <= rel <= b:
+                u = 0.0 if b <= a else (rel - a) / (b - a)
+                return va + (vb - va) * u
+        return kfs[-1][1]
+
+    n = max(1, int(round(dur * fps)))
+    n = min(n, 24)   # 长窗口（如 5s 淡出）不能一帧一个滤镜：最多 24 段，σ 阶梯在 0.2s 内人眼看不出
+    out = []
+    for i in range(n):
+        s = yes_blur_sigma(_val((i + 0.5) * dur / n), layer_w, layer_h)
+        out.append((t_start + i * dur / n, t_start + (i + 1) * dur / n, s))
+    return out
+
+
 def _seg_blur_sigma_of(seg: dict, vfx: dict, layer_size: tuple | None = None):
     """段级画面特效真值：extra_material_refs 里的 video_effects（如「模糊」）。"""
     for _ref in seg.get("extra_material_refs") or []:
@@ -1824,13 +1863,18 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                                     "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "14",
                                     "-pix_fmt", "yuv420p", str(seg_p)])
                     else:
-                        # `setpts=PTS-STARTPTS` 不能省：源素材的 stream start_time 是 0.033s，
-                        # `-ss` 抽段后 fps 滤镜把首帧 PTS 留在 0.033，mp4 里就多出一帧「0–0.033 空洞」。
-                        # 实测（源草稿 A 的 30fps→60fps 抽段）：不加 setpts 时 start_time=0.033008，
-                        # AVFoundation 读到的那一帧是**全 0 黑帧**（BGRA 采样均值 0.0），
-                        # Vision 抠像对它返回空 mask → matte 前 2 帧全黑（后续帧覆盖率 34%），
-                        # 撕纸描边层跟着前 2 帧全透明，成片 0.0/0.0167s 少了整张纸边人像层。
-                        # 加上后 start_time=0.000000，帧数不变（74），首帧即真画面。
+                        # `setpts=PTS-STARTPTS` 不能省。真正机理是 mp4 的**空 edit（elst）**：
+                        # 抽段首帧 PTS 不为 0（源视频流 start_time=0.033 带下来）时，muxer 会写
+                        # 「empty edit [0,0.033) + real edit [0.033,…)」。ffmpeg 自己解码看不出异常，
+                        # 但 AVFoundation 会把空 edit 补成一帧**全黑样本**（PTS=0、BGRA 均值 0.0/max=2，
+                        # 下一帧才是真画面）；Vision 对纯黑帧返回空 mask → matte 前 1–2 帧全 0，
+                        # 撕纸人像层前 2 帧整层缺失（成片 0.0s 的差就是它）。
+                        # 实测：旧产物 stream start_time=0.033008、nb_frames=102、
+                        # track.segments=[empty(0.033), real(1.7)]；加 setpts 后 start_time=0.000000、
+                        # segments=[real(1.7)]、AVAssetReader 首帧均值 160（>=100），matte 首两帧
+                        # 覆盖率正常（84.7/84.8，之前是 0.0/84.7 且多一帧）。
+                        # 注意：改完后必须让 _cache_tag 失效重烘——上一轮就是复用了修复前的
+                        # 旧抽段（hash 未含本脚本源码前生成），才看到「setpts 加了 start_time 没变」。
                         run_ffmpeg([ffmpeg_bin, "-y", "-ss", f"{s_in:.4f}", "-t", f"{max(0.05, s_dur):.4f}", "-i", src,
                                     "-vf", f"fps={fps},setpts=PTS-STARTPTS{_pre}",
                                     "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "14",
@@ -1969,7 +2013,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 units.append((t_idx, o, {
                     "kind": "video", "seg": _tmov, "matte": None, "t_start": t_start, "t_dur": t_dur,
                     "scale": 1.0, "lw": W, "lh": H, "tx": 0.0, "ty": 0.0, "alpha": 1.0,
-                    "fade": None, "pos_kf": None, "anim": True,
+                    "fade": None, "pos_kf": None, "anim": True, "text_layer": True,
                 }))
                 if depth == 0:
                     report["text_segments"] += 1
@@ -2030,7 +2074,36 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
     # 下游所有 enable(t,…) 都会早/晚一帧。强制重采样到目标帧率再叠。
     fc_parts.append(f"[0:v]fps={fps},setpts=PTS-STARTPTS[basecfr]")
     cur = "[basecfr]"
+    # 草稿 effect 轨真值：整画面模糊只作用于**视频合成层**（主轨 + 叠加视频），不糊字幕/贴纸。
+    # 剪映把画面特效挂在自己的 effect 轨（这里 render_index=7），字幕轨在它上面；实测原版
+    # 1.683s 背景已重糊、字幕「粉丝认可度」依然清晰，而我们旧做法把 gblur 放在合成链最末端，
+    # 等于连字幕一起糊——σ 从 5 放大到 14.4 后，这一帧的字幕直接不可读（0.0s 之外唯一变差的一帧）。
+    # 所以在「视频单元结束、第一个文字/贴纸单元之前」插入模糊链；σ 按 effects_adjust_blur
+    # 关键帧逐帧衰减（见 _effect_blur_steps）。
+    _effect_blur = []
+    for _ti, _esegs in cls.get("effects") or []:
+        for _s in _esegs:
+            _e = vfx_by_id.get(_s.get("material_id")) or {}
+            if "模糊" not in str(_e.get("name") or ""):
+                continue
+            _trr = _s.get("target_timerange") or {}
+            _st = float(_trr.get("start") or 0) / US
+            _dur = float(_trr.get("duration") or 0) / US
+            if _dur <= 0:
+                continue
+            for _a, _b, _sg in _effect_blur_steps(_s, _e, _st, _dur, fps, W, H):
+                if _sg > 0.35:
+                    _effect_blur.append(
+                        f"gblur=sigma={_sg:.2f}:enable='between(t,{_a:.4f},{_b:.4f})'")
+    _video_done = False
     for n, (_t, _o, u) in enumerate(units):
+        # 动画文字也是 kind="video"（逐帧烘成图层），但它在剪映里仍然属于文字层，
+        # 不能被 effect 轨的模糊盖住——所以接 text_layer 标记一起算作「视频层结束」。
+        if (u["kind"] != "video" or u.get("text_layer")) and not _video_done:
+            for _k, _f in enumerate(_effect_blur):
+                fc_parts.append(f"{cur}{_f}[veff{_k}]")
+                cur = f"[veff{_k}]"
+            _video_done = True
         en = f"enable='between(t,{u['t_start']:.4f},{min(u['t_start'] + u['t_dur'], total_sec):.4f})'"
         if u["kind"] == "video":
             seg_i = n_in
@@ -2103,24 +2176,18 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             fc_parts.append(f"{cur}{lbl}overlay=x={ox}:y={oy}:{en}[v{n}]")
         cur = f"[v{n}]"
 
+    if not _video_done:
+        for _k, _f in enumerate(_effect_blur):
+            fc_parts.append(f"{cur}{_f}[veff{_k}]")
+            cur = f"[veff{_k}]"
     tail = f"{cur}null"   # 无叠加单元时 cur 就是 [basecfr]，直接消费它
-    # 草稿 effect 轨真值：整画面特效按源窗口直接上（剪映「模糊」≈ gblur），不再蹭风格配置推断
-    _vfx_by_id = vfx_by_id
+    # 模糊已在上面的「视频层」插入；这里只把未实现的其它特效计进 unrealized，不静默跳过。
     for _ti, _esegs in cls.get("effects") or []:
         for _s in _esegs:
-            _e = _vfx_by_id.get(_s.get("material_id")) or {}
-            _nm = str(_e.get("name") or "")
-            _trr = _s.get("target_timerange") or {}
-            _st = float(_trr.get("start") or 0) / US
-            _en = _st + float(_trr.get("duration") or 0) / US
-            if "模糊" in _nm:
-                _bv = 0.5
-                for _p in _e.get("adjust_params") or []:
-                    if _p.get("name") == "effects_adjust_blur":
-                        _bv = float(_p.get("value") if _p.get("value") is not None else (_p.get("default_value") or 0.5))
-                tail += f",gblur=sigma={yes_blur_sigma(_bv, W, H):.2f}:enable='between(t,{_st:.3f},{_en:.3f})'"
-            else:
-                report["unrealized"]["effect_not_implemented"] = report["unrealized"].get("effect_not_implemented", 0) + 1
+            _e = vfx_by_id.get(_s.get("material_id")) or {}
+            if "模糊" not in str(_e.get("name") or ""):
+                report["unrealized"]["effect_not_implemented"] = \
+                    report["unrealized"].get("effect_not_implemented", 0) + 1
     fc_parts.append(tail + "[vout]")
     fc = ";".join(fc_parts)
     fscript = work / "composite_filter.txt"
