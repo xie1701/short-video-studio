@@ -23,8 +23,17 @@
 
 指标阈值（PLAN_v4.3 §1.4）
 ──────────────────────────
-SSIM < 0.90 / 字幕带边缘密度差 > 15% / 调色 p05·p50·p95 差 > 6 级 /
+SSIM < 0.90 / 字幕带**带内绝对差** > 5 级 / 调色 p05·p50·p95 差 > 6 级 /
 切点错位 > 0.15s / LUFS 差 > 1.5 LU / 时长差 > 0.1s —— 任一项超了记 `flag`。
+
+字幕带为什么不用「相对边缘密度差」判
+──────────────────────────────────────
+旧口径 = 带内 Sobel 边缘密度之比 |b-a|/max(a,b)，取全片最差的帧。比例的分母可以是近零：
+实测该片 5.0/5.5s 带内亮度只有 0.12 级（纯黑），边缘密度 1.9e-4 对 1.6e-4 —— 绝对差只有
+0.03 级（肉眼不可见），比例却是 14.7%；4.5s 是 33%，6.0s 是 37%。反过来，真有差字的帧
+（3.5s 带内 6.8% 像素差 >5 级、6.3% 差 >20 级）比例只有 1.7%。即旧口径的排序与可见差
+不相关，它在给「全黑的带」记差账。所以闸门改成带内**亮度绝对差（0-255 级）**，同一指标
+族里跟调色分位差一样用「级」说话；旧比例仍然写进 JSON（`subtitle_band_rel_max`）留档对照。
 """
 
 from __future__ import annotations
@@ -47,7 +56,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 THRESH = {
     "ssim_min": 0.90,
-    "sub_band_rel": 0.15,
+    # 字幕带：带内亮度平均绝对差（0-255 级）。5 级 ≈ 屏幕 2% 亮度差 —— 暗部刚可辨的上沿。
+    "sub_band_abs_lv": 5.0,
+    "sub_band_rel": 0.15,   # 旧闸门（相对边缘密度），只留作对照，不再参与判定
     "grade_levels": 6.0,
     "cut_delta_s": 0.15,
     "lufs_delta": 1.5,
@@ -208,6 +219,7 @@ def compute_metrics(orig: Path, rep: Path, samp_fps: float = 2.0) -> Dict:
         if n == 0:
             raise RuntimeError("抽帧为空，无法比对")
         ssims, band_bot, band_top = [], [], []
+        band_abs: List[Tuple[float, float, float]] = []   # (平均绝对差级, >20级占比, 带内亮度)
         pix_o, pix_r = [], []
         for i in range(n):
             a, b = fo[i], fr[i]
@@ -218,6 +230,9 @@ def compute_metrics(orig: Path, rep: Path, samp_fps: float = 2.0) -> Dict:
             band_bot.append((edge_density(ga[y0b:y1b]), edge_density(gb[y0b:y1b])))
             y0t, y1t = int(0.02 * h), int(0.30 * h)
             band_top.append((edge_density(ga[y0t:y1t]), edge_density(gb[y0t:y1t])))
+            dab = np.abs(ga[y0b:y1b] - gb[y0b:y1b])
+            band_abs.append((float(dab.mean()), float((dab > 20).mean()),
+                             float(ga[y0b:y1b].mean())))
             pix_o.append(a.reshape(-1, 3)[::7])
             pix_r.append(b.reshape(-1, 3)[::7])
     # 字幕带 / 顶部标题带：相对差取全片最大（任一处字幕没画对都算账）
@@ -233,6 +248,13 @@ def compute_metrics(orig: Path, rep: Path, samp_fps: float = 2.0) -> Dict:
         return worst, at
     sub_rel, sub_at = worst_rel(band_bot)
     top_rel, top_at = worst_rel(band_top)
+    # 字幕带绝对口径：全片最差那一帧的「带内亮度平均绝对差」（级）
+    sub_abs_lv, sub_abs_i = 0.0, 0
+    for i, (v, _, _) in enumerate(band_abs):
+        if v > sub_abs_lv:
+            sub_abs_lv, sub_abs_i = v, i
+    sub_vis = max((v[1] for v in band_abs), default=0.0)
+    sub_edge_abs_lv = max((abs(x - y) for x, y in band_bot), default=0.0) * 255.0
     # 调色分位
     o = np.concatenate(pix_o).astype(np.float32)
     r = np.concatenate(pix_r).astype(np.float32)
@@ -251,8 +273,13 @@ def compute_metrics(orig: Path, rep: Path, samp_fps: float = 2.0) -> Dict:
         "style_frames_compared": n,
         "ssim_mean": round(float(np.mean(ssims)), 4),
         "ssim_min": round(float(np.min(ssims)), 4),
-        "subtitle_band_rel_max": round(sub_rel, 4),
-        "subtitle_band_at_s": round(sub_at, 2),
+        "subtitle_band_abs_lv_max": round(sub_abs_lv, 2),
+        "subtitle_band_abs_at_s": round(sub_abs_i / samp_fps, 2),
+        "subtitle_band_abs_band_luma": round(band_abs[sub_abs_i][2], 2) if band_abs else 0.0,
+        "subtitle_band_visible_frac_max": round(sub_vis, 4),
+        "subtitle_band_edge_abs_lv_max": round(sub_edge_abs_lv, 2),
+        "subtitle_band_rel_max": round(sub_rel, 4),      # 旧口径，仅留档对照
+        "subtitle_band_at_s": round(sub_at, 2),          # 旧口径最差帧
         "title_band_rel_max": round(top_rel, 4),
         "title_band_at_s": round(top_at, 2),
         "grade_max_level_delta": round(grade, 2),
@@ -278,8 +305,13 @@ def compute_metrics(orig: Path, rep: Path, samp_fps: float = 2.0) -> Dict:
     flags = []
     if res["ssim_mean"] < THRESH["ssim_min"]:
         flags.append(f"SSIM {res['ssim_mean']} < {THRESH['ssim_min']}")
-    if res["subtitle_band_rel_max"] > THRESH["sub_band_rel"]:
-        flags.append(f"字幕带边缘密度差 {res['subtitle_band_rel_max']:.0%} > 15%（{res['subtitle_band_at_s']}s）")
+    if res["subtitle_band_abs_lv_max"] > THRESH["sub_band_abs_lv"]:
+        flags.append(
+            f"字幕带绝对差 {res['subtitle_band_abs_lv_max']} 级 > {THRESH['sub_band_abs_lv']} 级"
+            f"（{res['subtitle_band_abs_at_s']}s，带内亮度 {res['subtitle_band_abs_band_luma']} 级，"
+            f">20 级像素占 {res['subtitle_band_visible_frac_max']:.1%}；"
+            f"旧相对口径 {res['subtitle_band_rel_max']:.0%}@{res['subtitle_band_at_s']}s 不计入判定）"
+        )
     if res["grade_max_level_delta"] > THRESH["grade_levels"]:
         flags.append(f"调色分位差 {res['grade_max_level_delta']} > 6 级")
     if res["cut_max_delta_s"] > THRESH["cut_delta_s"]:
@@ -523,7 +555,8 @@ def main() -> None:
         w.writerow(row)
 
     print(json.dumps({k: metrics[k] for k in (
-        "verdict", "ssim_mean", "subtitle_band_rel_max", "grade_max_level_delta",
+        "verdict", "ssim_mean", "subtitle_band_abs_lv_max", "subtitle_band_abs_at_s",
+        "subtitle_band_rel_max", "grade_max_level_delta",
         "cut_max_delta_s", "lufs_delta", "duration_delta_s", "flags")},
         ensure_ascii=False, indent=2))
     if args.metrics_only:
