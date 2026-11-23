@@ -47,7 +47,7 @@ from common import (
     resolve_default_workspace_root,
 )
 
-CORE_PIP_PKGS = ["pillow", "numpy", "scipy", "edge-tts", "fonttools"]
+CORE_PIP_PKGS = ["pillow", "numpy", "scipy", "edge-tts", "fonttools", "pypinyin"]
 HEAVY_ML_PKGS = ["faster-whisper", "librosa"]
 
 
@@ -70,9 +70,22 @@ def try_install_ffmpeg(sys_name: str) -> None:
             ["winget", "install", "Gyan.FFmpeg", "--silent", "--accept-package-agreements", "--accept-source-agreements"],
             check=False,
         )
+        # winget 装完不会刷新当前进程的 PATH，紧接着的探测仍然 MISSING，
+        # 后面 exit(1) 把整个安装打回去。这里把 winget 的默认安装位置补进 PATH 再探一次。
+        for extra in (
+            os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Packages"),
+            os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WindowsApps"),
+        ):
+            if os.path.isdir(extra):
+                for root, _dirs, files in os.walk(extra):
+                    if "ffmpeg.exe" in files:
+                        os.environ["PATH"] = root + os.pathsep + os.environ.get("PATH", "")
+                        break
     elif sys_name == "Linux" and find_bin("apt-get"):
         subprocess.run(["sudo", "apt-get", "update"], check=False)
         subprocess.run(["sudo", "apt-get", "install", "-y", "ffmpeg"], check=False)
+        print("[setup] 注意：Ubuntu 22.04 自带的 ffmpeg 4.4 不认 -fps_mode，本工具会自动改用 -vsync；"
+              "想要新版请装 ffmpeg>=5.1")
 
 
 def _run_pip_install(
@@ -229,6 +242,18 @@ def main() -> None:
     )
 
     print(f"ffmpeg      : {ffmpeg_path}")
+    try:
+        from platform_probe import probe_platform
+        _pp = probe_platform()
+        _ff = _pp.get("ffmpeg") or {}
+        if _ff.get("vendor_bin_broken"):
+            print("[提示] 离线包自带的 ffmpeg 在本机跑不起来（架构/dylib 不匹配），已回落到系统 PATH")
+        if _ff.get("major_minor") and not _ff.get("fps_mode"):
+            print(f"[提示] ffmpeg {_ff.get('major_minor')} 太老，渲染会用 -vsync 兼容模式")
+        for _k, _note in (_pp.get("degradations") or {}).items():
+            print(f"[降级] {_k}：{_note}")
+    except Exception as _exc:
+        print(f"[提示] 平台体检未跑通：{_exc}")
     print(f"ffprobe     : {ffprobe_path}")
     print(f"node / npm  : {node_path} / {npm_path}")
     print(f"uv          : {uv_path}")
@@ -246,7 +271,7 @@ def main() -> None:
 
     check_code = (
         "import importlib.util, json; "
-        "pkgs=['PIL','numpy','scipy','edge_tts','fontTools','faster_whisper','librosa']; "
+        "pkgs=['PIL','numpy','scipy','edge_tts','fontTools','pypinyin','faster_whisper','librosa']; "
         "res={p: bool(importlib.util.find_spec(p)) for p in pkgs}; "
         "print(json.dumps(res))"
     )

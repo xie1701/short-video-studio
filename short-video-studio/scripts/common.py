@@ -303,6 +303,10 @@ SFX_AUDIT_POST_SEC = 0.16
 
 MEDIA_EXTS = {".mp4", ".mov", ".m4v", ".mkv", ".avi", ".webm"}
 
+# 图片素材（用户实测 P0-2：iPhone 默认存 HEIC，以前整批图片进不了盘点、进不了图卡）
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".bmp", ".tif", ".tiff"}
+ALL_MEDIA_EXTS = MEDIA_EXTS | IMAGE_EXTS
+
 BT709_FFMPEG_ARGS = [
     "-pix_fmt", "yuv420p",
     "-color_range", "tv",
@@ -430,15 +434,40 @@ def maybe_reexec_in_venv(extra_modules: Tuple[str, ...] = ()) -> None:
         os.execvpe(preferred, _reexec_argv(preferred), env)
 
 
+_VENDOR_BIN_OK: Dict[str, bool] = {}
+
+
+def _vendor_bin_usable(path: Path) -> bool:
+    """离线包里的二进制「在」不等于「能跑」。
+
+    实测教训：mac 离线包里那个 `vendor/bin/ffmpeg` 只有 426 KB，`otool -L` 全是
+    `/opt/homebrew/Cellar/ffmpeg/9.0.2_1/lib/libav*.dylib` —— 是 Homebrew 的动态链接版。
+    换到没装同版本 Homebrew 的机器（干净的 arm Mac、Intel Mac、Linux）上，
+    dyld 直接失败。所以这里只对 ffmpeg/ffprobe 真跑一次 `-version` 验活，结果缓存。
+    """
+    key = str(path)
+    if key in _VENDOR_BIN_OK:
+        return _VENDOR_BIN_OK[key]
+    ok = path.is_file() and os.access(path, os.X_OK)
+    if ok and path.name.lower().startswith(("ffmpeg", "ffprobe")):
+        try:
+            res = subprocess.run([str(path), "-version"], capture_output=True, text=True, timeout=20)
+            ok = res.returncode == 0 and "ffmpeg version" in (res.stdout or "")
+        except Exception:
+            ok = False
+    _VENDOR_BIN_OK[key] = ok
+    return ok
+
+
 def find_bin(name: str) -> Optional[str]:
-    """查找二进制可执行文件：优先命中离线包内置 vendor/bin/，再查找系统 PATH。"""
+    """查找二进制可执行文件：优先命中离线包内置 vendor/bin/（且验活），再查找系统 PATH。"""
     vendor_bin_dir = VENDOR_DIR / "bin"
     if vendor_bin_dir.is_dir():
         cands = [vendor_bin_dir / name]
         if sys.platform == "win32" and not name.lower().endswith(".exe"):
             cands.insert(0, vendor_bin_dir / f"{name}.exe")
         for c in cands:
-            if c.is_file():
+            if _vendor_bin_usable(c):
                 return str(c.resolve())
     return shutil.which(name)
 
@@ -1608,6 +1637,51 @@ def resolve_workspace_paths(
         "redirected_from_raw": redirected,
         "workspace_fallback": ws_fallback,
     }
+
+
+def ensure_image_decodable(path: Path, cache_dir: Optional[Path] = None) -> Optional[Path]:
+    """把 ffmpeg/PIL 读不了的图片（主要是 iPhone 的 HEIC）转成可读的 jpg，返回影子文件路径。
+
+    ffmpeg 默认没有 HEIC 解码器；macOS 自带 `sips` 能转，跨平台则用 pillow-heif（装了才走）。
+    转出来的影子文件写在 cache_dir（默认与源文件同目录的 .svs_decoded/），源文件一个字节都不动。
+    """
+    path = Path(path)
+    if not path.is_file():
+        return None
+    ext = path.suffix.lower()
+    if ext not in IMAGE_EXTS:
+        return None
+    if ext not in {".heic", ".heif"}:
+        return path  # jpg/png 本来就能读
+    out_dir = Path(cache_dir) if cache_dir else (path.parent / ".svs_decoded")
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        out_dir = Path(tempfile.gettempdir()) / "svs_decoded"
+        out_dir.mkdir(parents=True, exist_ok=True)
+    target = out_dir / (path.stem + ".jpg")
+    if target.is_file() and target.stat().st_size > 0:
+        return target
+    if sys.platform == "darwin":
+        try:
+            res = subprocess.run(["sips", "-s", "format", "jpeg", str(path), "--out", str(target)],
+                                 capture_output=True, timeout=60, check=False)
+            if res.returncode == 0 and target.is_file() and target.stat().st_size > 0:
+                return target
+        except Exception:
+            pass
+    try:  # 跨平台可选依赖
+        from pillow_heif import register_heif_opener  # type: ignore
+        from PIL import Image
+
+        register_heif_opener()
+        with Image.open(path) as im:
+            im.convert("RGB").save(target, "JPEG", quality=92)
+        if target.is_file() and target.stat().st_size > 0:
+            return target
+    except Exception:
+        return None
+    return None
 
 
 def compute_bt709_luma(rgb_arr: Any) -> Any:

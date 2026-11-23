@@ -49,6 +49,7 @@ from common import (
     sha256_file,
     write_json,
 )
+from platform_probe import fps_mode_args
 
 if __name__ == "__main__":
     maybe_reexec_in_venv()
@@ -1004,7 +1005,7 @@ def generate_action_strips(
                     "-i", str(video_path),
                     "-t", f"{max_end_t:.3f}",
                     "-vf", f"select='{select_expr}',scale=240:-2",
-                    "-fps_mode", "passthrough",
+                    *fps_mode_args("passthrough"),
                     "-q:v", "4",
                     str(td_path / "strip_%03d.jpg"),
                 ],

@@ -22,6 +22,7 @@ SCRIPTS_ROOT = Path(__file__).resolve().parent
 if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
+from platform_probe import fps_mode_args
 from common import (
     BT709_FFMPEG_ARGS,
     BT709_VF_SUFFIX,
@@ -198,7 +199,7 @@ def normalize_single_media(
             "-map", "0:v:0",
             "-vf", vf_str,
             "-an",
-            "-fps_mode", "cfr",
+            *fps_mode_args("cfr"),
             "-r", str(DEFAULT_FPS),
             "-c:v", "libx264", *BT709_FFMPEG_ARGS, "-preset", "fast", "-crf", "18",
             str(out_mp4),

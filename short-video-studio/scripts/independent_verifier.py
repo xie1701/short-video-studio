@@ -63,6 +63,7 @@ from common import (
     run_cmd,
     write_json,
 )
+from platform_probe import fps_mode_args
 
 if __name__ == "__main__":
     maybe_reexec_in_venv()
@@ -765,7 +766,7 @@ def verify_cut_spot_blackbox(video_path: Path, pipeline_dir: Optional[Path], tmp
             ffmpeg, "-y", "-hide_banner", "-loglevel", "info",
             "-i", str(video_path),
             "-vf", f"select={sel_expr},showinfo,scale=270:480",
-            "-fps_mode", "passthrough", "-q:v", "3",
+            *fps_mode_args("passthrough"), "-q:v", "3",
             str(batch_dir / "sp_%04d.jpg"),
         ], check=False)
 

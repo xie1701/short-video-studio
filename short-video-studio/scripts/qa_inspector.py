@@ -632,6 +632,38 @@ def inspect_video(
                 "所选风格的库参数逐项一致，或偏离项都有用户同意的豁免记录",
             ))
 
+        # 片尾收没收住：话没说完 / 没有行动指引 = 观众划走
+        try:
+            _pk = json.loads((pipeline_dir / "06_packaging.json").read_text(encoding="utf-8")) \
+                if (pipeline_dir / "06_packaging.json").is_file() else {}
+            _ep = (_pk.get("ending_plan") or {})
+            _verdict = str(_ep.get("verdict") or "unknown")
+            _card = any(str(e.get("kind")) == "end_card_cta" for e in (_pk.get("visual_elements") or []))
+            _fm = _ep.get("framework_map") or {}
+            if _verdict == "closed" or _card:
+                _st = "PASS"
+                _detail = "末句已收住" + ("，并挂了片尾收尾卡" if _card and _verdict != "closed" else "")
+            elif _verdict == "soft":
+                _st = "WARN"
+                _detail = str(_ep.get("reason") or "收尾偏软")
+            else:
+                _st = "FAIL"
+                _detail = str(_ep.get("reason") or "片尾没有收住，也没告诉观众下一步做什么")
+            if _fm.get("missing"):
+                _detail += f"；台词五格缺：{'、'.join(_fm['missing'])}"
+            checks.append(_mk_check(
+                "ending_complete",
+                "片尾收住了，观众知道下一步做什么",
+                _st,
+                _detail,
+                "末句是转化指令 / 互动提问 / 金句或人设收尾，或已在片尾挂上收尾卡",
+            ))
+        except Exception as exc:
+            checks.append(_mk_check(
+                "ending_complete", "片尾收住了，观众知道下一步做什么", "FAIL",
+                f"片尾检查没跑通：{exc}", "末句收住或已挂收尾卡",
+            ))
+
         # 12–22. 独立黑盒外部验收（复用 audio_ctx，严格 Fail-Closed 三态）
         bb_res = run_blackbox_verification(
             video_path,
@@ -783,6 +815,7 @@ def inspect_video(
         "forbidden_meta_text": "画面和文案没有多余乱码或模板字样",
         "residual_repeat_scan": "没有漏剪的口误重说和半截话",
         "style_lock_intact": "画面样式严格按你选的那套来，没被偷偷改",
+        "ending_complete": "片尾收住了，观众知道下一步做什么",
         "bb_audio_master": "成品声音饱满清晰、无爆音无穿帮",
         "bb_ocr_av_loop": "成片字幕实测正中对齐、字句准确",
         "bb_pixel_readability": "字幕不挡脸且对比清晰好认",

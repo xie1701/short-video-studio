@@ -223,6 +223,21 @@ python3 scripts/style_lock.py --pipeline-dir ./output/<项目目录>/pipeline \
 JY_DRAFT_ROOT=<剪映草稿目录> python3 dev_tools/measure_text_style_truth.py
 ```
 
+## 五之四之二、 按你的背景资料纠 ASR 的错（v4.1 新增）
+
+Whisper 对店名、人名、行话、品牌词几乎必错。在两个目录里放文件，就会被用上（先放先用）：
+`<项目>/pipeline/`、`<素材目录>/`。
+
+| 文件 | 作用 |
+| :--- | :--- |
+| `背景资料.md` | 自由文本，取前 400 字拼进 ASR 提示词（"这些词会出现在这段话里"） |
+| `术语表.txt` | 一行一个词；`错词 => 正词` 是硬映射；`#` 开头是注释 |
+| `glossary.json` | `{"terms": ["羊排"], "replacements": {"炭火": "碳火"}}` |
+
+转写后按术语表逐条比对：**3 字以上**只差一个字、且共有字 ≥2/3 才改；**2 字词**必须整词同音
+（`碳火 → 炭火`，靠 `pypinyin`，已随包安装）才改，否则一律不动。每一次替换都写进
+`02_transcript.json` 的 `asr_corrections`，能反查"这句改过哪里"。
+
 ## 五之五、 过程文件不许撒进你的素材目录（v4.1 纠正）
 
 - 默认写到 `~/.short-video-studio/workspaces`（可用 `--workspace-root` 或 `SVS_WORKSPACE_ROOT` 改）。
@@ -230,6 +245,50 @@ JY_DRAFT_ROOT=<剪映草稿目录> python3 dev_tools/measure_text_style_truth.py
   `pipeline/ state/ out/` 全在这一个目录下面。
 - 素材目录根上不会多出任何文件；连「素材说明」填空骨架也写进 `_SVS工作区/素材说明_待填写.txt`，
   想贴着素材放就用 `--notes-out <路径>` 自己指定。
+
+## 五之六、 片尾要收住，别让话断在半截（v4.2 新增）
+
+拿现成素材剪的片子，末句常常停在半截事实上——「这个价格就这样」——既没把话题收回去，
+也没告诉人下一步做什么。框架里「水桶流」公式最后一格是**转化指令**，这一格经常是空的，
+而且没人会提醒你。
+
+现在 `step6` 会做三件事：
+
+1. **判收尾**（`scripts/ending_plan.py`）：看最后三句，落 `closed` / `soft` / `none` 三档，
+   并把让你觉得没说完的那一句原样引出来。
+2. **补一张收尾卡**：真没收住就在片尾挂 1.4–2.2 秒的 CTA 卡，主句 + 副行（地址/条件落副行）。
+   卡上那句话用账号资料里的店名、城市、主打服务填实，不写「点赞关注」这种空话；
+   元素带 `deviation_from_style_source: true` 标记，不是源草稿语法，可以删。
+   `--no-flower-text` 时不硬塞。
+3. **台词五格体检**：把现成台词对到「开篇钩子 / 细节展示 / 人格化表达 / 价值说明 / 转化指令」，
+   缺哪一格点名——空着可以，但得知道自己缺的是哪一格。三句候选 CTA 会写进
+   `09_publish_copy_pack.md` 的「四、片尾与下次拍摄补一句」，下次拍照着说一句就行。
+
+`qa_inspector` 新增 `ending_complete`（PASS / WARN / FAIL），片尾没交代清楚过不了门禁。
+
+## 五之七、 这套东西能装在哪台机器上（v4.2 新增）
+
+一句话：**渲染链路到处能跑，Apple Vision 那几件事只有 mac 有。**
+
+```bash
+# 先问清楚这台机器能跑到哪步、哪几步会降级
+python3 short-video-studio/scripts/platform_probe.py
+```
+
+| 能力 | macOS arm64 | macOS Intel | Windows x64 | Windows arm64 | Linux x64 |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| 渲染 / 字幕 / 调色 / 混音 | 能 | 能（最慢） | 能 | 能（需轮子） | 能（ffmpeg≥5.1） |
+| 自动转写（faster-whisper） | 能 | 视轮子 | 能 | **多半装不上** | 能（联网装） |
+| OCR / 人脸构图 / 人像抠像 | 能 | 能 | **降级**：构图退回居中、质检转人工 | 降级 | 降级 |
+| 纯配音 TTS | 能 | 能 | 只有 edge-tts（要联网） | 同 | 同 |
+| 离线包 | 有 | **没有** | 有（不含 ffmpeg） | **没有** | **没有** |
+
+「降级」不是崩：成片照出，但小窗里人物可能不居中、封面不自动选脸、黑盒质检三项要人工签字。
+想把这些在非 mac 上补回来要换技术选型（OCR→RapidOCR、人脸→YuNet/mediapipe、抠像→u2net onnx），
+不是装个包的事。完整证据见 [reports/platform_portability_2026-11-23.md](reports/platform_portability_2026-11-23.md)。
+
+本轮还顺手修了四件会让安装直接失败的事：离线包里的 ffmpeg 其实是 Homebrew 动态链接版（换机器 dyld 就崩）、
+`find_bin` 只看文件在不看能不能跑、Ubuntu 22.04 的 ffmpeg 4.4 不认 `-fps_mode`、winget 装完 PATH 不刷新。
 
 ## 六、 可商用内置资产与风格谱复刻库
 

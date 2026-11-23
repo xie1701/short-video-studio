@@ -415,6 +415,30 @@ def build_publish_copy_pack(
         *[f"- [ ] {chk}" for chk in pack["fact_checklist"]],
         "",
     ]
+    # 片尾与「下次拍摄补一句」：现成素材最难对上的就是框架最后那一格
+    _pk_p = pipeline_dir / "06_packaging.json"
+    if _pk_p.is_file():
+        try:
+            _ep = (read_json(_pk_p).get("ending_plan") or {})
+        except Exception:
+            _ep = {}
+        if _ep:
+            _fm = _ep.get("framework_map") or {}
+            md_lines += [
+                "## 四、片尾与下次拍摄补一句",
+                f"- **这次片尾**：{_ep.get('verdict')} —— {_ep.get('reason')}",
+                (
+                    f"- **五格结构**：缺「{'、'.join(_fm['missing'])}」；"
+                    f"有素材的是「{'、'.join(_fm.get('covered') or [])}」"
+                    if _fm else "- **五格结构**：未体检"
+                ),
+                "- **下次拍的时候，末句挑一句这样说**（现在是剪进去的，不改原声）：",
+                *[
+                    f"  {i + 1}. 【{c.get('type')}】{c.get('text')}"
+                    for i, c in enumerate(_ep.get("candidates") or [])
+                ],
+                "",
+            ]
     (pipeline_dir / "09_publish_copy_pack.md").write_text("\n".join(md_lines), encoding="utf-8")
     write_json(pipeline_dir / "09_publish_copy_pack.json", pack)
     return pack

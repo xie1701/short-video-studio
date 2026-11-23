@@ -1,9 +1,9 @@
-> **说明**：本文为 `short-video-studio` 初版立项设计简报（历史归档）。现行完整架构（含 5 类小白掌控感分流、七大执行模式、知识讲解动画引擎、口播增强套件与 23 项独立质检）请以 [README.md](README.md) 与 [short-video-studio/SKILL.md](short-video-studio/SKILL.md) 为准。
+> **说明**：本文为 `short-video-studio` 初版立项设计简报（历史归档）。现行完整架构（5 类小白分流、多种执行模式、知识讲解动画、口播增强与独立质检）请以 [README.md](README.md) 与 [short-video-studio/SKILL.md](short-video-studio/SKILL.md) 为准。
 
 构建一个名为 `short-video-studio` 的 Agent Skill，采用 Claude Code skills 格式：`SKILL.md` + `references/` + `scripts/` + `assets/`。任何装有 Claude Code 的电脑都可以用一条安装脚本复用它。
 
 目标用户不懂拍摄、剪辑和包装，分两条轨：
-- 门店轨：实体店老板，做同城获客。成功的标准是评论区咨询、私信和到店（默认旗舰风格谱 `style_14`）。
+- 门店轨：实体店老板，做同城获客。成功的标准是评论区咨询、私信和到店（默认旗舰风格谱以现行风格库 `default_style_id` 为准）。
 - 博主轨：个人创作者，追泛流量。成功的标准是 3 秒留存、完播率和涨粉（默认风格谱 `style_11`）。
 首次对话时先猜后确认，判定用户属于哪一轨。
 

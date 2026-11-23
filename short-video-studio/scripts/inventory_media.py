@@ -25,7 +25,9 @@ if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
 from common import (
+    ALL_MEDIA_EXTS,
     MEDIA_EXTS,
+    ensure_image_decodable,
     WORK_DIR_NAME,
     compute_bt709_luma,
     detect_vfr_hdr,
@@ -59,8 +61,11 @@ def _collect_media_files_recursive(input_dir: Path) -> List[Path]:
         rel_parts = p.relative_to(input_dir).parts
         if any(part.startswith(".") or part == "__pycache__" for part in rel_parts):
             continue
-        if p.suffix.lower() not in MEDIA_EXTS:
+        if p.suffix.lower() not in ALL_MEDIA_EXTS:
             continue
+        if p.suffix.lower() in {".heic", ".heif"}:
+            # iPhone 默认存 HEIC，ffmpeg 读不了；转一张 jpg 影子文件再走后面的流程
+            ensure_image_decodable(p, cache_dir=input_dir / WORK_DIR_NAME / "decoded_images")
         if "benchmark" in p.name.lower():
             continue
         key = str(p.resolve())
@@ -926,11 +931,14 @@ def inventory_directory(
             })
 
             if ffmpeg and dur > 0.1:
+                # 抽密帧：以前每段只抽 1–2 帧，画面里有什么基本靠猜，才会配错镜。
+                # 现在按时长抽 2–6 帧（越长越密），全部过一遍本地视觉分类 + OCR。
                 sample_ts = [quality["best_in_sec"]]
-                if dur >= 4.0:
-                    mid_ts = round(min(dur - 0.3, max(quality["best_in_sec"] + 1.2, dur * 0.55)), 2)
-                    if abs(mid_ts - sample_ts[0]) >= 0.8:
-                        sample_ts.append(mid_ts)
+                n_extra = 1 if dur < 4.0 else (2 if dur < 8.0 else (3 if dur < 20.0 else 5))
+                for k in range(1, n_extra + 1):
+                    ts = round(min(dur - 0.3, max(0.2, dur * (k / (n_extra + 1)))), 2)
+                    if all(abs(ts - t) >= 0.6 for t in sample_ts):
+                        sample_ts.append(ts)
                 for s_i, ts in enumerate(sample_ts):
                     rep_jpg = td_path / f"rep_{clip_idx:03d}_{s_i}.jpg"
                     run_cmd([
@@ -943,6 +951,7 @@ def inventory_directory(
                         idx_to_frames.setdefault(clip_idx, []).append(rep_jpg)
 
         vis_map = inspect_images(rep_frames)
+        from vision_scene_labels import labels_to_tags, tag_groups
         for c_idx in range(len(clips)):
             f_list = idx_to_frames.get(c_idx, [])
             best_vr: Dict[str, Any] = {}
@@ -959,6 +968,14 @@ def inventory_directory(
                 if not best_vr or (vr.get("faces") and not best_vr.get("faces")):
                     best_vr = vr
             faces = best_vr.get("faces", [])
+            all_labels: List[Dict[str, Any]] = []
+            for fp in f_list:
+                for lb in (vis_map.get(str(fp), {}) or {}).get("labels") or []:
+                    all_labels.append(lb)
+            scene_tags, label_evidence = labels_to_tags(all_labels)
+            clips[c_idx]["scene_tags_zh"] = scene_tags
+            clips[c_idx]["scene_tag_groups"] = tag_groups(scene_tags)
+            clips[c_idx]["scene_label_evidence"] = label_evidence[:6]
             clips[c_idx]["faces"] = faces
             ve = clips[c_idx].get("_v_idx_entry")
             if not (ve and ve.get("shot_size")):

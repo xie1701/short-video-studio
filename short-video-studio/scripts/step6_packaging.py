@@ -769,6 +769,80 @@ def run_step6(
                     "reason": "片尾收束互动召唤大字（绑定末句起声帧）",
                 })
 
+    # ── 片尾收尾诊断：话没说完、没有行动指引的，补一张 CTA 尾卡（不改台词、不改原声）──
+    ending = None
+    try:
+        import ending_plan as EP
+        tr_p = pipeline_dir / "02_transcript.json"
+        transcript = read_json(tr_p) if tr_p.is_file() else {}
+        segs = transcript.get("segments") or [{"text": str((audio_events["sentences"][-1] or {}).get("text") or "")}]
+        profile = {}
+        for cand in (pipeline_dir / "00_account_profile.json", pipeline_dir.parent / "content-log" / "account_profile.json"):
+            if cand.is_file():
+                try:
+                    profile = read_json(cand)
+                except Exception:
+                    profile = {}
+                break
+        topic_hint = ""
+        if len(segs) >= 2:
+            topic_hint = str((audio_events["sentences"][-2] or {}).get("text") or "")
+        ending = EP.analyze_ending(segs, profile=profile, topic_hint=topic_hint)
+        ending["framework_map"] = EP.map_framework(segs)
+        if ending["framework_map"]["missing"]:
+            print(f"[step6] 台词五格体检：缺「{'、'.join(ending['framework_map']['missing'])}」")
+        has_end_card = any(str(e.get("kind")) == "end_card_cta" for e in visual_elements)
+        # 用户显式关了花字（--no-flower-text）就不硬塞尾卡，只在报告里点名"片尾没收住"
+        if (ending["verdict"] != "closed" and not has_end_card and not no_flower_text
+                and len(visual_elements) < max_visual_budget):
+            total_frames = int(round(total_dur * fps))
+            sf, ef = EP.card_frames(ending, total_frames, fps)
+            if ef - sf >= int(1.2 * fps):
+                text = EP.best_card_text(ending)
+                _card_main, _card_sub = EP.split_card_text(text)
+                fs_try = 46
+                bw = _measure_pkg_badge_width(text[:16], pkg_font_path, SUBTITLE_SYMMETRIC_MAX_W, target_fs=fs_try, min_w=520)
+                bh = 132
+                bx = SUBTITLE_CENTER_X - bw // 2
+                bb = {"x": bx, "y": 820, "w": bw, "h": bh}
+                active_f = []
+                for c in edl.get("clips", []):
+                    if int(c["timeline_in_frame"]) < ef and int(c["timeline_out_frame"]) > sf:
+                        active_f.extend(faces_by_mp4.get(str(c.get("media_path", "")), []))
+                bb = _avoid_faces_for_pkg(bb, active_f)
+                ok_card, _ = check_bbox_in_safe_zone(bb)
+                visual_elements.append({
+                    "id": f"pkg_{len(visual_elements)+1:03d}",
+                    "kind": "end_card_cta",
+                    "overlay_mode": "borderless",
+                    "fg_hex": str(flower_spec.get("end_card_color") or "#FFE28A"),
+                    "stroke_hex": str(flower_spec.get("stroke_color") or "#000000"),
+                    "text_or_asset": _card_main,
+                    "subtext": _card_sub,
+                    "start_frame": sf,
+                    "end_frame": ef,
+                    "read_hold_sec": round((ef - sf) / float(fps), 2),
+                    "aligned_sfx_or_accent_frame": sf,
+                    "alignment_error_frames": 0,
+                    "bbox": bb,
+                    "final_bbox": bb,
+                    "safe_zone_ok": ok_card,
+                    "jianying_anim_name": default_jy_anim,
+                    "anim_duration_ms": int(matched_pair.get("anim_duration_ms", 400)),
+                    "paired_jianying_sfx": str(matched_pair.get("jianying_sfx_name", "“呼”的转场音效")),
+                    "reason": f"片尾收尾补位：{ending['reason']}",
+                    # 这一条不是源草稿里的语法，是为了"话没说完"补的内容件，单独打标好审好删
+                    "deviation_from_style_source": True,
+                })
+                ending["card_added"] = True
+                print(f"[step6] 片尾补了一张收尾卡（{ending['verdict']}）：{text[:20]}")
+        else:
+            ending["card_added"] = has_end_card
+        if ending.get("needs_operator_line") and not ending.get("card_added"):
+            print(f"[step6] [提示] {ending['reason']}；下次拍的时候末句可以补一句行动指引")
+    except Exception as exc:
+        ending = {"verdict": "unknown", "reason": f"收尾诊断不可用：{type(exc).__name__}: {exc}"}
+
     packaging = {
         "step": "06_packaging",
         "style_id": style_id,
@@ -782,6 +856,7 @@ def run_step6(
         },
         "sfx_cues": sfx_cues,
         "visual_elements": visual_elements,
+        "ending_plan": ending,
     }
     write_json(pipeline_dir / "06_packaging.json", packaging)
     print(

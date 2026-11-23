@@ -43,6 +43,7 @@ ALL_OFFLINE_PKGS = [
     "fonttools",
     "faster-whisper",
     "librosa",
+    "pypinyin",
 ]
 
 PLATFORM_SPECS = {
@@ -157,10 +158,29 @@ def _stage_ffmpeg_bins(target_key: str, bin_dir: Path, custom_bin_dir: Optional[
         for name in ("ffmpeg", "ffprobe"):
             fb = find_bin(name)
             if fb and Path(fb).is_file():
-                # 仅复制真实静态或独立二进制；Homebrew 动态链接版做提醒
+                # 只收「真能脱离这台机器跑」的二进制。实测：Homebrew 的 ffmpeg 只有 426 KB，
+                # otool -L 全是 /opt/homebrew/Cellar/... —— 打进包里等于只在这台机器上能跑。
+                if _is_dynamic_homebrew_bin(Path(fb).resolve()):
+                    print(f"[build-zip] 跳过 {name}：这是 Homebrew 动态链接版，"
+                          f"换台机器会 dyld 失败。要内置请用静态构建（--ffmpeg-bin-dir 指定）")
+                    continue
                 shutil.copy2(Path(fb).resolve(), bin_dir / name)
                 copied += 1
     return copied
+
+
+def _is_dynamic_homebrew_bin(path: Path) -> bool:
+    """判断一个 mac 二进制是否依赖 /opt/homebrew 或 /usr/local 的 dylib。
+
+    非 Darwin 或无 otool 时按「小体积 + 无内置依赖」的保守规则返回 False（交给上层决定）。
+    """
+    if platform.system() != "Darwin":
+        return False
+    try:
+        out = subprocess.run(["otool", "-L", str(path)], capture_output=True, text=True, timeout=30).stdout
+    except Exception:
+        return False
+    return any(("/opt/homebrew/" in ln) or ("/usr/local/Cellar/" in ln) for ln in out.splitlines())
 
 
 def build_target_zip(

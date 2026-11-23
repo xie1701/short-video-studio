@@ -44,6 +44,7 @@ from common import (
     write_wav_48k_stereo,
 )
 from compliance_guard import audit_script_compliance, write_compliance_report_files
+import asr_glossary
 
 if __name__ == "__main__":
     maybe_reexec_in_venv(("faster_whisper",))
@@ -84,6 +85,10 @@ _PUNCT_STRIP_SET = set(" \t\r\n，。！？、；：“”‘’（）().,!?;:\"
 
 def _clean_zh_text(text: str) -> str:
     return re.sub(r"[\s，。！？、；：“”‘’（）().,!?;:\"'《》【】\[\]]+", "", text).lower()
+
+
+# 当前这次转写要用的「用户背景资料 / 术语表」（由 run_step2 载入；空表就是空 dict）
+_ACTIVE_GLOSSARY: Dict[str, Any] = {}
 
 
 def is_filler_or_director_cue(text: str) -> bool:
@@ -390,6 +395,7 @@ def try_faster_whisper(
         model = _get_whisper_model(chosen)
         lang_code = "yue" if str(dialect or "").lower() == "cantonese" else "zh"
         anchor_hint = f"相关品牌或门店关键词：{store_anchor}。" if store_anchor else ""
+        anchor_hint += asr_glossary.asr_prompt_suffix(_ACTIVE_GLOSSARY)
         prompt = (
             f"以下为粤语真实口播内容，请保留准确口语词。{anchor_hint}"
             if lang_code == "yue"
@@ -650,6 +656,37 @@ def split_segments_at_pauses(
     return out
 
 
+# 明确的自纠错信号：说错了马上重来。前一句必须丢，cue 自己也不该留在片子里。
+SELF_CORRECTION_CUES = (
+    "不对", "不是", "说错", "重来", "再来一遍", "再说一遍", "我重说", "重新说",
+    "等一下", "等等", "卡了", "忘词", "重新来", "刚才那句", "刚才那句不算",
+)
+
+
+def is_self_correction_cue(text: str) -> bool:
+    """短句且以自纠错词开头，才算 cue（"不对吗" 这种问句不算）。"""
+    cleaned = _clean_zh_text(text)
+    if not cleaned or len(cleaned) > 10:
+        return False
+    return any(cleaned.startswith(cue) or (len(cleaned) <= 5 and cue in cleaned) for cue in SELF_CORRECTION_CUES)
+
+
+def collect_ng_report(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """把被判为 NG 的句子整理成一份可核对的清单（谁被丢、为什么、被哪句顶替）。"""
+    out: List[Dict[str, Any]] = []
+    for seg in segments:
+        reason = str(seg.get("drop_reason") or "")
+        if not reason.startswith(("ng_retake", "ng_self_correction", "ng_restart")):
+            continue
+        out.append({
+            "id": seg.get("id"),
+            "text": seg.get("text"),
+            "reason": reason,
+            "at_sec": round(float(seg.get("start_sec") or 0.0), 2),
+        })
+    return out
+
+
 def filter_offcamera_and_retakes(
     segments: List[Dict[str, Any]],
     audio_cache: Optional[Dict[str, Tuple[np.ndarray, int]]] = None,
@@ -707,6 +744,27 @@ def filter_offcamera_and_retakes(
                 seg["drop_reason"] = f"offcamera_speaker (rms_drop={db_drop:.1f}dB, spec_dist={spec_dist:.2f})"
                 offcam_dropped += 1
 
+    # ── 自纠错（说错了立刻重来）：cue 本身丢掉，cue 前那半句也按 NG 丢 ──
+    # 老逻辑只看「两句文字相似」，碰上"不对，重来"这种明说的情况反而留着前一句错的。
+    self_correction_dropped = 0
+    last_active = -1
+    for i, seg in enumerate(segments):
+        if seg.get("is_filler"):
+            continue
+        if is_self_correction_cue(seg.get("text") or ""):
+            seg["is_filler"] = True
+            seg["emotion"] = "filler"
+            seg["drop_reason"] = "ng_self_correction (cue)"
+            self_correction_dropped += 1
+            if last_active >= 0 and not segments[last_active].get("is_filler"):
+                prev = segments[last_active]
+                prev["is_filler"] = True
+                prev["emotion"] = "filler"
+                prev["drop_reason"] = f"ng_self_correction (superseded_by={seg.get('id')})"
+                self_correction_dropped += 1
+            continue
+        last_active = i
+
     active_indices = [i for i, s in enumerate(segments) if not s.get("is_filler")]
     retake_dropped = 0
     for pos_a in range(len(active_indices)):
@@ -718,7 +776,8 @@ def filter_offcamera_and_retakes(
             continue
 
         group = [i]
-        for pos_b in range(pos_a + 1, min(len(active_indices), pos_a + 5)):
+        # 窗口从 5 句放宽到 12 句：真实现场「说错 → 停 → 重新讲」往往隔了十来句
+        for pos_b in range(pos_a + 1, min(len(active_indices), pos_a + 12)):
             j = active_indices[pos_b]
             if segments[j].get("is_filler"):
                 continue
@@ -733,7 +792,7 @@ def filter_offcamera_and_retakes(
                 else:
                     break
             # 防排比句误杀：需整句高相似 >=0.76，或前缀重合>=5字且后句明显覆盖前句
-            if sim >= 0.76 or (common_pref >= 5 and len(cj) > len(ci)):
+            if sim >= 0.76 or (common_pref >= 3 and len(cj) >= len(ci)):
                 group.append(j)
 
         if len(group) > 1:
@@ -759,7 +818,8 @@ def filter_offcamera_and_retakes(
                     segments[gi]["drop_reason"] = f"ng_retake (superseded_by={segments[best_idx]['id']})"
                     retake_dropped += 1
 
-    return {"offcamera_dropped": offcam_dropped, "retake_dropped": retake_dropped}
+    return {"offcamera_dropped": offcam_dropped, "retake_dropped": retake_dropped,
+            "self_correction_dropped": self_correction_dropped}
 
 
 NEGATION_CHARS = set("不没别非无莫唔冇")
@@ -1395,8 +1455,20 @@ def run_step2(
     dialect: str = "mandarin",
     store_anchor: Optional[str] = None,
     multi_speaker: bool = False,
+    glossary_dirs: Optional[List[Optional[Path]]] = None,
 ) -> Dict[str, Any]:
     from compliance_guard import audit_script_compliance
+
+    # 用户背景资料 / 术语表：喂给 ASR 当提示，也用来在转写后硬纠错（本地、零联网）
+    global _ACTIVE_GLOSSARY
+    scan_dirs: List[Optional[Path]] = [pipeline_dir]
+    if glossary_dirs:
+        scan_dirs.extend(glossary_dirs)
+    _ACTIVE_GLOSSARY = asr_glossary.load_glossary(scan_dirs)
+    if _ACTIVE_GLOSSARY.get("sources"):
+        print(f"[step2] 读到背景资料/术语表 {len(_ACTIVE_GLOSSARY['sources'])} 份"
+              f"（术语 {len(_ACTIVE_GLOSSARY.get('terms') or [])} 条、硬映射 {len(_ACTIVE_GLOSSARY.get('replacements') or {})} 条）"
+              f"，会用来纠正常见同音错字")
 
     mf_path = pipeline_dir / "01_manifest.json"
     if mf_path.exists():
@@ -1584,10 +1656,14 @@ def run_step2(
         source_type = "tts"
         primary_audio = str(master_tts_wav.resolve())
         filter_stats = {"offcamera_dropped": 0, "retake_dropped": 0, "stumbles_dropped": 0, "silence_retimed": 0}
+        glossary_log: List[Dict[str, Any]] = []
+        ng_report: List[Dict[str, Any]] = []
         compliance_report = pre_comp
         write_compliance_report_files(pipeline_dir, compliance_report)
         speech_islands_map: Dict[str, List[Dict[str, Any]]] = {}
     else:
+        glossary_log = []
+        ng_report = []
         segments = []
         source_types: List[str] = []
         total_dur = 0.0
@@ -1662,7 +1738,14 @@ def run_step2(
             wk = str(Path(ar["normalized_wav"]).resolve())
             ar_slice = [s for s in segments if s.get("source_audio") == wk]
             compute_prosody_for_segments(Path(ar["normalized_wav"]), ar_slice, audio_pair=audio_cache.get(wk))
+        # 先按用户术语表纠正同音错字，再做画外声/NG 择优（错误的字会影响相似度判断）
+        glossary_log = asr_glossary.apply_to_transcript(segments, _ACTIVE_GLOSSARY)
+        if glossary_log:
+            print(f"[step2] 按你的背景资料纠正了 {len(glossary_log)} 句里的 {sum(len(x['corrections']) for x in glossary_log)} 处同音错字"
+                  f"（逐句留痕在 02_transcript.json 的 asr_corrections）")
         filter_stats = filter_offcamera_and_retakes(segments, audio_cache=audio_cache, multi_speaker=multi_speaker)
+        ng_report = collect_ng_report(segments)
+        filter_stats["ng_lines"] = len(ng_report)
         stumble_cnt = detect_prompt_stumbles(segments)
         filter_stats["stumbles_dropped"] = stumble_cnt
         filter_stats["silence_retimed"] = retimed_cnt
@@ -1705,6 +1788,9 @@ def run_step2(
         "compliance_passed": compliance_report.get("passed", True),
         "compliance_report": str((pipeline_dir / "00_compliance_report.json").resolve()),
         "sanity_warnings": sanity_warnings,
+        "asr_glossary": asr_glossary.summarize(_ACTIVE_GLOSSARY, glossary_log if source_type != "tts" else []),
+        "asr_corrections": (glossary_log if source_type != "tts" else []),
+        "ng_report": ng_report if source_type != "tts" else [],
         "speech_islands": speech_islands_map,
         "paper_edit_suggestions": _build_paper_edit_suggestions(segments),
         "segments": segments,
@@ -1717,6 +1803,12 @@ def run_step2(
         f"提词半截={filter_stats['stumbles_dropped']}, 静音重计时={filter_stats['silence_retimed']}, "
         f"实拍合规弃用={len(compliance_report.get('dropped_real_voice_ids', []))}) -> 02_transcript.json"
     )
+    if ng_report:
+        print(f"[step2] NG 片段 {len(ng_report)} 句已剔除（说错重来/重复录制），逐句见 02_transcript.json 的 ng_report：")
+        for item in ng_report[:12]:
+            print(f"        - #{item['id']} @{item['at_sec']}s 「{str(item['text'])[:24]}」 {item['reason']}")
+        if len(ng_report) > 12:
+            print(f"        …… 还有 {len(ng_report) - 12} 句")
     return transcript
 
 

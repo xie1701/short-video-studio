@@ -120,7 +120,16 @@ DispatchQueue.concurrentPerform(iterations: args.count) { idx in
     ocrReq.recognitionLanguages = ["zh-Hans", "en-US"]
     ocrReq.usesLanguageCorrection = true
 
+    // 场景/物体分类：Apple 内置的 ImageNet 级分类器，标签是英文，覆盖 1000+ 常见场景与物件
+    // （椅子/沙发/床/桌子/汽车/食物/厨房/街道…）。这是「本地能看懂画面是什么」的唯一靠谱来源，
+    // 也是 B-roll 配错镜的根子上的一手证据：以前只能靠文件名和 OCR，画面里是什么完全不知道。
+    var classifyReq: VNClassifyImageRequest? = nil
+    if #available(macOS 10.15, *) {
+        classifyReq = VNClassifyImageRequest()
+    }
+
     var requests: [VNRequest] = [faceReq, ocrReq]
+    if let cr = classifyReq { requests.append(cr) }
     var salReq: VNGenerateAttentionBasedSaliencyImageRequest? = nil
     if #available(macOS 10.15, *) {
         let sr = VNGenerateAttentionBasedSaliencyImageRequest()
@@ -132,7 +141,7 @@ DispatchQueue.concurrentPerform(iterations: args.count) { idx in
     do {
         try handler.perform(requests)
     } catch {
-        let errItem: [String: Any] = ["file": path, "width": dispWidth, "height": dispHeight, "faces": [], "saliency": NSNull(), "texts": [], "read_error": true, "error": "\(error)"]
+        let errItem: [String: Any] = ["file": path, "width": dispWidth, "height": dispHeight, "faces": [], "saliency": NSNull(), "texts": [], "labels": [], "read_error": true, "error": "\(error)"]
         if let d = try? JSONSerialization.data(withJSONObject: errItem),
            let s = String(data: d, encoding: .utf8) {
             lock.lock(); outputs[idx] = s; errCount += 1; lock.unlock()
@@ -191,13 +200,22 @@ DispatchQueue.concurrentPerform(iterations: args.count) { idx in
         }
     }
 
+    var labelsOut: [[String: Any]] = []
+    if #available(macOS 10.15, *), let cr = classifyReq, let res = cr.results {
+        for obs in res.prefix(8) {
+            if obs.confidence < 0.06 { continue }
+            labelsOut.append(["label": obs.identifier, "conf": Double(obs.confidence)])
+        }
+    }
+
     let out: [String: Any] = [
         "file": path,
         "width": dispWidth,
         "height": dispHeight,
         "faces": facesOut,
         "saliency": salOut,
-        "texts": textsOut
+        "texts": textsOut,
+        "labels": labelsOut
     ]
     if let data = try? JSONSerialization.data(withJSONObject: out),
        let s = String(data: data, encoding: .utf8) {

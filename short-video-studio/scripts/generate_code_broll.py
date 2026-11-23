@@ -46,6 +46,7 @@ from common import (
     maybe_reexec_in_venv,
     write_json,
 )
+from platform_probe import fps_mode_args
 
 
 def ease_out_cubic(t: float) -> float:
@@ -388,7 +389,7 @@ def render_broll_clip_pillow(
         "-r", str(fps),
         "-i", "pipe:0",
         "-c:v", "libx264", *BT709_FFMPEG_ARGS, "-preset", "fast", "-crf", "17",
-        "-r", str(fps), "-fps_mode", "cfr",
+        "-r", str(fps), *fps_mode_args("cfr"),
         str(output_mp4),
     ]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)

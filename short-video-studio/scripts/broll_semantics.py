@@ -176,6 +176,19 @@ def describe_clip(item: Dict[str, Any]) -> str:
         stem = Path(str(src)).stem
         for tok in re.findall(r"[\u4e00-\u9fff]{2,8}", stem):
             parts.append(tok)
+    # 本地视觉分类（Apple Vision 的 ImageNet 级分类器）→ 中文语义标签：
+    # 这是「画面里到底是什么」的一手证据，iPhone 原始命名 + 没写素材说明时全靠它
+    for t in item.get("scene_tags_zh") or []:
+        t_s = str(t).strip()
+        if t_s:
+            parts.append(t_s)
+    for ev in (item.get("scene_label_evidence") or [])[:4]:
+        lab = str((ev or {}).get("label") or "").strip()
+        if lab:
+            parts.append(lab)
+    vlm_desc = str(item.get("vlm_description") or "").strip()
+    if vlm_desc:
+        parts.append(vlm_desc[:80])
     if item.get("faces"):
         parts.append("真人出镜")
     if float(item.get("duration_sec") or 0.0) > 0:

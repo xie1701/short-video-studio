@@ -18,6 +18,16 @@
 
 from __future__ import annotations
 
+import platform
+
+
+def _jy_os_value() -> str:
+    """剪映草稿里的 `os` 字段：mac 上写 mac，Windows 上写 windows。
+
+    以前写死 "mac"——导到 Windows 版剪映里认不认没人验过，至少别把平台写错。
+    """
+    return "windows" if platform.system() == "Windows" else "mac"
+
 import argparse
 import json
 import shutil
@@ -550,7 +560,7 @@ def export_native_draft(pipeline_dir: Path, out_dir: Optional[Path] = None) -> D
             "adjusts": [], "audios": [], "effects": [], "filters": [],
             "handwrites": [], "stickers": [], "texts": [], "videos": [],
         },
-        "last_modified_platform": {"app_id": 3704, "app_source": "lv", "app_version": "11.8.0", "os": "mac"},
+        "last_modified_platform": {"app_id": 3704, "app_source": "lv", "app_version": "11.8.0", "os": _jy_os_value()},
         "materials": {
             "audios": audios,
             "beats": [],
@@ -569,7 +579,7 @@ def export_native_draft(pipeline_dir: Path, out_dir: Optional[Path] = None) -> D
         "name": proj_name,
         "new_version": "125.0.0",
         "path": "",
-        "platform": {"app_id": 3704, "app_source": "lv", "app_version": "11.8.0", "os": "mac"},
+        "platform": {"app_id": 3704, "app_source": "lv", "app_version": "11.8.0", "os": _jy_os_value()},
         "relationships": [],
         "render_index_track_mode_on": True,
         "retouch_cover": None,

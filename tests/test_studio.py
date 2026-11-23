@@ -1,10 +1,12 @@
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 import wave
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1909,7 +1911,13 @@ class StudioTests(unittest.TestCase):
             "clips": [{"clip_id": "c1", "track_role": "a_roll", "media_path": "", "timeline_in_sec": 0.0, "timeline_out_sec": 6.0, "timeline_in_frame": 0, "timeline_out_frame": 180, "cut_event_frame": 0, "cut_event_id": "e1"}],
         })
         res_s03 = run_step6(pdir, style_id="style_03")
-        self.assertEqual(len(res_s03["visual_elements"]), 0)
+        # v4.2：顶部冗余花字条仍然不许生成；片尾那句没收住，会补一张带
+        # deviation_from_style_source 标记的收尾卡（用户可删，qa 会点名）
+        kinds = [str(e.get("kind")) for e in res_s03["visual_elements"]]
+        self.assertNotIn("persistent_top_bar", kinds)
+        self.assertEqual(kinds.count("end_card_cta"), 1, kinds)
+        self.assertEqual(len(kinds), 1, kinds)
+        self.assertIs(res_s03["ending_plan"]["needs_operator_line"], True)
 
     def test_v31_xfade_transition_zero_frame_drift(self):
         import wave
@@ -2901,6 +2909,255 @@ class WorkspaceHygieneTests(unittest.TestCase):
         self.assertIn(WORK_DIR_NAME, str(default_skeleton))
         self.assertNotEqual(default_skeleton.parent, raw)
         self.assertTrue(inv is not None)
+
+
+class AsrGlossaryTests(unittest.TestCase):
+    """转录必须按用户背景资料纠错（用户实测：很多转录没有针对他的背景资料纠错）。"""
+
+    def _glossary(self, terms: str):
+        import asr_glossary as AG
+        tmp = Path(tempfile.mkdtemp())
+        (tmp / "术语表.txt").write_text(terms, encoding="utf-8")
+        (tmp / "背景资料.md").write_text("我们是珠海香洲的烧烤店，主打清晨市场鲜羊排。", encoding="utf-8")
+        return AG, AG.load_glossary([tmp])
+
+    def test_terms_go_into_asr_prompt(self):
+        AG, g = self._glossary("羊排\n炭火\n")
+        prompt = AG.asr_prompt_suffix(g)
+        self.assertIn("羊排", prompt)
+        self.assertIn("珠海香洲", prompt, "背景资料要进 ASR 提示词")
+
+    def test_three_char_homophone_typo_is_fixed_and_words_synced(self):
+        AG, g = self._glossary("全屋定制\n")
+        segs = [{"id": "s1", "text": "全屋定置也做", "words": [{"word": "全屋定置"}, {"word": "也做"}]}]
+        log = AG.apply_to_transcript(segs, g)
+        self.assertEqual(segs[0]["text"], "全屋定制也做")
+        self.assertEqual("".join(w["word"] for w in segs[0]["words"]), "全屋定制也做", "落字必须同步改")
+        self.assertEqual(log[0]["corrections"], [{"from": "全屋定置", "to": "全屋定制"}])
+        # 无关词不许动
+        segs2 = [{"id": "s2", "text": "这家店的老板很实在", "words": []}]
+        self.assertEqual(AG.apply_to_transcript(segs2, g), [])
+
+    def test_hard_mapping_wins(self):
+        AG, g = self._glossary("炭火 => 碳火\n")
+        segs = [{"id": "s1", "text": "用炭火烤", "words": [{"word": "用"}, {"word": "炭火"}, {"word": "烤"}]}]
+        AG.apply_to_transcript(segs, g)
+        self.assertEqual(segs[0]["text"], "用碳火烤")
+
+    def test_short_words_need_same_pronunciation(self):
+        """2 字词只差一字太危险：没同音证据不许改。"""
+        AG, g = self._glossary("炭火\n")
+        segs = [{"id": "s1", "text": "这家店和大火都旺", "words": []}]
+        AG.apply_to_transcript(segs, g)
+        self.assertEqual(segs[0]["text"], "这家店和大火都旺", "「大火」不该被改成「炭火」")
+
+
+class NgTakeTests(unittest.TestCase):
+    """NG 片段（说错重来 / 重复录制）要能识别、能剔除、能说清原因。"""
+
+    def test_self_correction_cue_drops_cue_and_previous_take(self):
+        import step2_transcribe as S2
+        segs = [
+            {"id": "n1", "text": "这家店开了八年", "start_sec": 1.0, "end_sec": 2.5},
+            {"id": "n2", "text": "不对，重来", "start_sec": 3.0, "end_sec": 3.8},
+            {"id": "n3", "text": "这家店开了八年了", "start_sec": 5.0, "end_sec": 6.5},
+        ]
+        stats = S2.filter_offcamera_and_retakes(segs)
+        self.assertEqual(stats.get("self_correction_dropped"), 2)
+        dropped = [s["id"] for s in segs if s.get("is_filler")]
+        self.assertEqual(dropped, ["n1", "n2"], "错的半句和「重来」本身都不该留在片子里")
+        self.assertFalse(segs[2].get("is_filler"), "重录那句要留下")
+        report = S2.collect_ng_report(segs)
+        self.assertEqual(len(report), 2)
+        self.assertTrue(all(x["reason"].startswith("ng_self_correction") for x in report))
+
+    def test_question_with_negative_word_is_not_a_cue(self):
+        import step2_transcribe as S2
+        self.assertFalse(S2.is_self_correction_cue("这家店不对吗"))
+        self.assertTrue(S2.is_self_correction_cue("说错了，重来一遍"))
+
+    def test_repeated_take_far_apart_is_still_caught(self):
+        """现场说错→停→重新讲，中间常隔十来句；窗口不能只看 5 句。"""
+        import step2_transcribe as S2
+        segs = [{"id": "a0", "text": "我们先看一下价格", "start_sec": 0.0, "end_sec": 1.0}]
+        for k in range(8):
+            segs.append({"id": f"m{k}", "text": f"中间闲话第{k}句内容不一样", "start_sec": 1.0 + k, "end_sec": 2.0 + k})
+        segs.append({"id": "b0", "text": "我们先看一下价格", "start_sec": 12.0, "end_sec": 13.0})
+        stats = S2.filter_offcamera_and_retakes(segs)
+        self.assertGreaterEqual(stats.get("retake_dropped", 0), 1, "隔 9 句的重录也要认出来")
+        self.assertTrue(segs[0].get("is_filler"))
+        self.assertFalse(segs[-1].get("is_filler"))
+
+
+class SceneLabelTests(unittest.TestCase):
+    """配错镜的根子是"画面里是什么没人知道"：本地视觉分类标签必须能变成可检索的中文语义。"""
+
+    def test_english_labels_become_chinese_concepts(self):
+        from vision_scene_labels import labels_to_tags, tag_groups
+        labels = [{"label": "sofa", "conf": 0.71}, {"label": "couch", "conf": 0.62},
+                  {"label": "furniture", "conf": 0.55}, {"label": "living room", "conf": 0.4},
+                  {"label": "junk", "conf": 0.02}]
+        tags, ev = labels_to_tags(labels)
+        self.assertIn("沙发", tags)
+        self.assertIn("家具", tags)
+        self.assertTrue(all(e["conf"] >= 0.18 for e in ev), "低置信度标签不许进证据")
+        self.assertIn("goods", tag_groups(tags))
+
+    def test_scene_tags_make_broll_matchable(self):
+        """有了画面标签，沙发那句才能配到沙发素材；办公区素材必须仍是「无依据」。"""
+        import broll_semantics as B
+        sofa = {"filename": "IMG_1938.MOV", "scene_tags_zh": ["沙发", "家具", "客厅"]}
+        office = {"filename": "IMG_2001.MOV", "scene_tags_zh": ["办公桌", "办公"]}
+        line = "一张沙发一张沙发的坐，慢慢挑"
+        good = B.relate(line, sofa)
+        bad = B.relate(line, office)
+        self.assertEqual(good["verdict"], "hit")
+        self.assertTrue(good["basis"])
+        self.assertEqual(bad["verdict"], "none", "画面里没有沙发就不许配沙发这句")
+        self.assertEqual(bad["basis"], [])
+
+    def test_heic_decode_helper_keeps_source_untouched(self):
+        from common import ensure_image_decodable
+        tmp = Path(tempfile.mkdtemp())
+        jpg = tmp / "a.jpg"
+        jpg.write_bytes(b"\xff\xd8\xff\xd9")
+        self.assertEqual(ensure_image_decodable(jpg), jpg, "jpg 本来就可读，直接返回原路径")
+        fake_heic = tmp / "b.heic"
+        fake_heic.write_bytes(b"not really heic")
+        out = ensure_image_decodable(fake_heic, cache_dir=tmp / "dec")
+        self.assertIsNone(out, "解不出来的 HEIC 要如实返回 None，不许假装成功")
+        self.assertTrue(fake_heic.is_file(), "源文件必须原封不动")
+
+    def test_tag_frames_dense_sampling_reaches_multiple_points(self):
+        import tag_frames as TF
+        times = TF._frame_times(12.0, 6)
+        self.assertEqual(len(times), 6)
+        self.assertTrue(all(0 <= t <= 12.0 for t in times))
+        self.assertGreater(max(times) - min(times), 8.0, "密帧要铺开整段，不能全挤在开头")
+
+
+class EndingPlanTests(unittest.TestCase):
+    """片尾收尾：话没说完要能说清，收住了不许瞎补。"""
+
+    PROFILE = {"store_name": "老杨家烧烤", "city": "珠海", "main_service": "烧烤",
+               "address": "香洲区凤凰路 12 号"}
+
+    def test_unfinished_ending_is_flagged_with_reason(self):
+        import ending_plan as EP
+
+        segs = [{"text": "开了八年烧烤店"}, {"text": "从来不用冻肉"}, {"text": "这个价格就这样"}]
+        plan = EP.analyze_ending(segs, profile=self.PROFILE)
+        self.assertIn(plan["verdict"], ("soft", "none"))
+        self.assertFalse(plan["has_cta"])
+        self.assertTrue(plan["needs_operator_line"])
+        self.assertIn("这个价格就这样", plan["reason"])
+
+    def test_card_text_uses_real_store_facts_not_platitudes(self):
+        import ending_plan as EP
+
+        segs = [{"text": "开了八年烧烤店"}, {"text": "这个价格就这样"}]
+        text = EP.best_card_text(EP.analyze_ending(segs, profile=self.PROFILE))
+        self.assertIn("珠海", text)
+        self.assertIn("老杨家烧烤", text)
+        self.assertIn("凤凰路", text)
+        self.assertNotIn("点赞关注", text)
+
+    def test_already_closed_ending_adds_no_line(self):
+        import ending_plan as EP
+
+        segs = [{"text": "开了八年烧烤店"}, {"text": "想吃的来香洲凤凰路找我，报我名字"}]
+        plan = EP.analyze_ending(segs, profile=self.PROFILE)
+        self.assertEqual(plan["verdict"], "closed")
+        self.assertFalse(plan["needs_operator_line"])
+
+    def test_framework_map_names_the_missing_slot(self):
+        import ending_plan as EP
+
+        segs = [{"text": "这家店一开就是八年"}, {"text": "穿串要两小时，温度控制在两百度"},
+                {"text": "我这个人做事实在"}, {"text": "所以贵一点但省你时间"}]
+        fm = EP.map_framework(segs)
+        self.assertIn("开篇钩子", fm["covered"])
+        self.assertIn("细节展示", fm["covered"])
+        self.assertIn("人格化表达", fm["covered"])
+        self.assertEqual(fm["missing"], ["转化指令"])
+
+
+class EndingGateTests(unittest.TestCase):
+    """片尾没挂上收尾就没过门禁。"""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.pipe = Path(self.temp.name) / "pipeline"
+        self.pipe.mkdir(parents=True)
+
+    def test_names_the_missing_ending_in_plain_words(self):
+        import qa_inspector
+
+        labels = Path(qa_inspector.__file__).read_text(encoding="utf-8")
+        self.assertIn("ending_complete", labels)
+        self.assertIn("片尾收住了，观众知道下一步做什么", labels)
+
+
+class CrossPlatformTests(unittest.TestCase):
+    """跨平台：能跑 / 会静默降级 / 必须换技术选型，三种情况要分得清。"""
+
+    def test_old_ffmpeg_falls_back_to_vsync(self):
+        import platform_probe as PP
+
+        PP._CAPS_CACHE.clear()
+        try:
+            PP._CAPS_CACHE[""] = {"path": "/usr/bin/ffmpeg", "version": "ffmpeg version 4.4",
+                                  "major_minor": (4, 4), "fps_mode": False, "usable_bins": []}
+            self.assertEqual(PP.fps_mode_args("cfr"), ["-vsync", "cfr"])
+            self.assertEqual(PP.fps_mode_args("passthrough"), ["-vsync", "passthrough"])
+            PP._CAPS_CACHE[""] = {"path": "x", "version": "ffmpeg version 7.1",
+                                  "major_minor": (7, 1), "fps_mode": True, "usable_bins": []}
+            self.assertEqual(PP.fps_mode_args("cfr"), ["-fps_mode", "cfr"])
+        finally:
+            PP._CAPS_CACHE.clear()
+
+    def test_probe_platform_speaks_plain_chinese_about_degradation(self):
+        import platform_probe as PP
+
+        rep = PP.probe_platform()
+        self.assertIn("platform", rep)
+        self.assertIn("ffmpeg", rep)
+        for feat in ("vision_ocr", "vision_face", "asr", "tts", "browser"):
+            self.assertIn(feat, rep["features"])
+        for note in (rep.get("degradations") or {}).values():
+            self.assertTrue(any("\u4e00" <= ch <= "\u9fff" for ch in note), note)
+
+    def test_broken_vendor_binary_is_skipped(self):
+        """离线包自带一个跑不起来的 ffmpeg（架构不对）时，必须回落系统 PATH。"""
+        import common
+
+        with tempfile.TemporaryDirectory() as td:
+            bin_dir = Path(td) / "vendor" / "bin"
+            bin_dir.mkdir(parents=True)
+            fake = bin_dir / "ffmpeg"
+            fake.write_text("#!/bin/sh\nexit 127\n", encoding="utf-8")
+            fake.chmod(0o755)
+            common._VENDOR_BIN_OK.clear()
+            with unittest.mock.patch.object(common, "VENDOR_DIR", Path(td) / "vendor"):
+                got = common.find_bin("ffmpeg")
+            common._VENDOR_BIN_OK.clear()
+        self.assertNotEqual(got, str(fake.resolve()), "跑不起来的 vendor 二进制不许被当成可用")
+
+    def test_pkg_skips_homebrew_dynamic_ffmpeg(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "build_release_zips", str(ROOT / "dev_tools" / "build_release_zips.py"))
+        mod = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(mod)
+        except SystemExit:
+            pass
+        self.assertTrue(callable(getattr(mod, "_is_dynamic_homebrew_bin", None)))
+        # 非 Darwin 平台不判，直接放过（否则 Linux/Windows 打包会误伤）
+        if platform.system() != "Darwin":
+            self.assertFalse(mod._is_dynamic_homebrew_bin(Path("/bin/ls")))
 
 
 if __name__ == "__main__":
