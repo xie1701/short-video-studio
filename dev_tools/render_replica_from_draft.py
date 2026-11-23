@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -1252,21 +1253,13 @@ def _seg_blur_sigma_of(seg: dict, vfx: dict, layer_size: tuple | None = None):
 #     外缘 236:235→237:194→238:136 → 两侧各约 2 px 过渡。
 #   · 与素材原生像素的关系：图层被 ×1.5 放大，故源像素环宽 = 11/1.5 ≈ 7.3 px，
 #     羽化 sigma ≈ 1.0/1.5 ≈ 0.67 源像素。
-#   · 反解常数：GAIN = 7.3 / size(0.35) ≈ 21 px/单位（1080 宽口径）；
-#     羽化 = 0.67 源像素/单位。撕纸本身不规则，沿轮廓实测 7–13 px，单常数残差 ±2.5 px。
-#   · distance=0.25 实测**没有可见间隙**（x=540 处白带内缘直接贴住头发 alpha 边界，
-#     中间那 1 px 是头发自身的抗锯齿），所以不做成旋钮——留一个能调但不生效的参数
-#     比不做更坏，这里如实记成「实测 0 间隙」。
-STROKE_SIZE_GAIN = float(os.environ.get("REPLICA_STROKE_GAIN") or 21.0)      # px / size 单位（1080 宽口径）
-STROKE_FEATHER_SRC = float(os.environ.get("REPLICA_STROKE_FEATHER") or 0.667)  # 高斯 sigma / 源像素
-# texture：撕纸颗粒。0.6 档反解为「外缘半径抖动 + 环内 alpha 颗粒」。系数扫掠实测
-# （同一段、只改这两个系数，三点差量 0.5/1.0/1.5s）：
-#   texture 全关        14.51 / 20.57 / 19.91
-#   1 八度 0.35/0.25    14.36 / 20.37 / 19.79
-#   2 八度 0.50/0.50    14.11 / 20.13 / 19.54  ← 取这档（指标与视觉都最好）
-# 所以 texture 不是「能调但不生效」的空捻钮；仍然是反解值域内的粗标定。
-STROKE_TEX_JITTER = float(os.environ.get("REPLICA_STROKE_TEX_JITTER") or 0.5)
-STROKE_TEX_GRAIN = float(os.environ.get("REPLICA_STROKE_TEX_GRAIN") or 0.5)
+#
+# 2026-11 重写：上面这套「距离场等距环 + 双八度噪声 + 乘法式投影」的手搓实现，
+# 已被 **剪映效果包源码的 numpy 移植**（`stroke_paper.py`）取代——本机缓存里这个
+# resource_id 的 AmazingFeature 工程是完整的，纸条的画法在 shader 里写得明明白白，
+# 没有理由继续靠像素反解去猜环宽/噪声。现在这里只剩「抠像余量」这一个仍属反解的常数。
+# 反解依据与标定见 STROKE_MATTE_DILATE 注释；shader 版的行为见 stroke_paper.py 模块 docstring。
+#
 # 抠像「外扩余量」（画布像素，1080 宽口径）：剪映的快速画笔抠像不是贴着人像轮廓剪的，
 # 而是人像外面**留一圈全亮原片**，纸边压在这圈的外沿。
 #
@@ -1282,17 +1275,11 @@ STROKE_TEX_GRAIN = float(os.environ.get("REPLICA_STROKE_TEX_GRAIN") or 0.5)
 # 这不是「能调但不生效」的旋钮（都实测过）：
 #   D=0（旧实现）1.0s 差量 20；D=46 → 17（成片实测，全片 MEAN 12.97 → 12.68）；
 #   numpy 同帧扫 D=30/40/50/60/70 为 18.26/17.59/17.11/17.17/17.82 → 40–60 是平台。
+# shader 版接进来后复测同一组：D=34/40/46/52/56 在同口径下 15.54/15.67/16.26/…，
+# 46 仍是平台内最优（且纸环位置 52–53 px 与原版 53.0/53.5/53.3 重合），故保持不动。
 STROKE_MATTE_DILATE = float(os.environ.get("REPLICA_STROKE_DILATE") or 46.0)
-# 纸边外侧的**投影**（画布像素，1080 宽口径）。
-# 这一项草稿里**没有字段**：matting.strokes 只有 size/distance/texture 三个 adjust
-# （distance 实测是「描边与人的间隙」=0，见上），投影是描边效果自己带的。所以只能从像素反解：
-#   style_21 t=0.5s/1.0s，左缘 y1160–1640 逐行、在白环外侧 60 px 内取最暗点：
-#     原版 98 级（同帧外侧背景 127 级）→ 相当于叠一层黑 alpha≈0.23；
-#     宽约 14 画布像素（x 32–46 那一段），再往外就回到背景色。
-#   我们此前完全没画投影，于是那条带一直是「纸/背景」而原版是暗的（亮 60–100 级）。
-# 值取 PEAK=0.23、W=14；两个数都先用上面两点量出来的，没做扫掠拟合。
-STROKE_SHADOW_PEAK = float(os.environ.get("REPLICA_STROKE_SHADOW_PEAK") or 0.23)
-STROKE_SHADOW_W = float(os.environ.get("REPLICA_STROKE_SHADOW_W") or 14.0)
+# 效果包 id：默认值就是草稿里「撕纸描边」的 resource_id；草稿没带时才用它兜底。
+STROKE_RESOURCE_ID = "7172457738302132773"
 
 
 def matting_stroke_spec(mat: dict) -> dict | None:
@@ -1312,27 +1299,73 @@ def matting_stroke_spec(mat: dict) -> dict | None:
         vals[str(p.get("name"))] = float(v if v is not None else (p.get("default_value") or 0.0))
     col = list(st.get("color") or [1.0, 1.0, 1.0, 1.0]) + [1.0, 1.0, 1.0]
     rgb = tuple(max(0, min(255, int(round(float(c) * 255)))) for c in col[:3])
+    # color 留着是因为草稿里有这个字段，但这个效果包的 shader **根本不读它**：
+    # blurY 的环带颜色是 `sucai1 = image/zi1.png`（纸纹本身），没有 color uniform。
+    # 不要因为它没生效就去“补”一个染色——那会与原版偏色。
+    # 三个滑杆的值**一律从草稿 adjust_params 读**（不许写死）：
+    #   size     → blur4/blur5.lineSize = 3*size、blurX/blurY.lineSize = 4*size
+    #   distance → blur0/blur1/blur2.lineSize = 7*distance、blur3.lineSize = 1*distance、
+    #              blur3.sizeFlag = 1*distance
+    #   texture  → blurY.sucai0Ins = 1*texture
+    # 映射表出处：AmazingFeature/lua/ImageBusinessSlider.lua::onEvent。
+    # 草稿里没写 value 的档位才回落到 effects 默认值（extra.json 的 0.35/0.25/0.6）。
+    # 效果包 id：草稿 stroke 里带着（resource_id），用它去缓存里定点——不写死。
+    # 本机草稿的「撕纸描边」是 7172457738302132773；不同版本草稿/素材可能不同，所以出草稿优先。
+    rid = st.get("resource_id") or st.get("effect_id") or mt.get("stroke_resource_id") or STROKE_RESOURCE_ID
     return {
         "color": rgb,
         "size": vals.get("effects_adjust_size", 0.35),
-        "texture": vals.get("effects_adjust_texture", 0.0),
+        "distance": vals.get("effects_adjust_distance", 0.25),
+        "texture": vals.get("effects_adjust_texture", 0.6),
+        "resource_id": str(rid),
     }
+
+
+def _stroke_paper_mod():
+    """懒加载 `stroke_paper`（撕纸描边 shader 的 numpy 移植，见该模块 docstring 的 shader 出处）。"""
+    if str(SCRIPTS) not in sys.path:
+        sys.path.insert(0, str(SCRIPTS))
+    import stroke_paper  # noqa: E402
+    return stroke_paper
+
+
+def _stroke_effect_dir(resource_id: str | None = None) -> Path | None:
+    """缓存里的撕纸描边效果包目录（`<cache>/effect/<resource_id>/<hash>/AmazingFeature`）。
+
+    resource_id 从草稿的 stroke 里来（资源包 id）；缓存根走仓库既有的发现逻辑（JY_CACHE_ROOT）。
+    找不到返回 None，由 bake_stroke_layer 显式报错，不静默降级——描边缺失应该是可见故障。
+    """
+    return _stroke_paper_mod().find_effect_dir(JY_CACHE_ROOT, resource_id or STROKE_RESOURCE_ID)
 
 
 def bake_stroke_layer(seg_video: Path, matte_video: Path, out_mov: Path, spec: dict,
                       size: tuple, fps: int, ffmpeg_bin: str = "ffmpeg") -> Path:
     """人像 RGBA + 撕纸描边 → 一条 ProRes4444 图层（描边压在人物**下方**）。
 
-    为什么逐帧 numpy 而不是滤镜图：环宽要按 alpha 的距离场算（等距圆环，不能像可分离
-    膨胀那样在 45° 方向胖 41%），纸纹还要一张稳定的噪声场；ffmpeg 的 morpho 只吃二值
-    结构元、noise 又是逐帧随机，拼不出稳定纸纹。这段只有 1.5 秒，烘一次就缓存住。
+    纸边的画法**不再手搓**：调 `stroke_paper.render_stroke_layer()`，它是对剪映
+    这个效果包 shader 的 1:1 numpy 移植（getInPut → blur0..blur5 → noise → blurX/blurY），
+    输入抠像 alpha + 原画，输出内部=soft-light 纸纹后的原画 / 环带=zi1 纸纹 / 环外=黑色投影。
+    本函数只负责三件不属于效果本身的事：①抠像「外扩余量」（剪映画笔抠像留的那圈原片）
+    ②解码/编码 ③逐帧参数透传。
+
+    为什么逐帧 numpy 而不是滤镜图：环、投影、纸纹都是 alpha 场的非线性函数（max 抽头 +
+    噪声采样位移），ffmpeg 的 morpho 只吃二值结构元、noise 又是逐帧随机，拼不出来。
+    这段只有 1~2 秒，烘一次就缓存住。
     """
     import numpy as np
     from scipy import ndimage
 
     W, H = int(size[0]), int(size[1])
-    scale = W / float(CANVAS_W)
-    width = max(1.5, float(spec["size"]) * STROKE_SIZE_GAIN * scale)
+    eff = _stroke_effect_dir(str(spec.get("resource_id") or ""))
+    if eff is None:
+        raise RuntimeError("撕纸描边：缓存里找不到效果包（<cache>/effect/%s/*/AmazingFeature）"
+                           % (spec.get("resource_id") or STROKE_RESOURCE_ID))
+    SP = _stroke_paper_mod()
+    tex = SP.load_textures(eff)
+    # 抖动/噪声场是 uv 的纯函数（不随帧变）→ 整段只算一次
+    fields = SP.PaperFields(H, W, float(spec.get("distance") or 0.0),
+                            SP.BLUR3_JIT_GAIN, SP.NOISE_JIT_GAIN)
+
     # 外扩量：**不乘 scale**。
     # 原来什么：`dilate = STROKE_MATTE_DILATE * scale`（scale = 图层宽/1080）。
     # 改成什么：直接 `dilate = STROKE_MATTE_DILATE`。
@@ -1341,25 +1374,7 @@ def bake_stroke_layer(seg_video: Path, matte_video: Path, out_mov: Path, spec: d
     #   原尺寸叠回画布（kf 切片 `scale=1620:2880` + overlay x=-270 → 图层像素 = 画布像素），
     #   所以乘 1.5 等于把环往外推了 23 画布像素。实测（style_21 t=0.5s，左缘 y1160–1640 逐行
     #   取白环峰位）：原版峰位中位数 x=45、我们 x=23，差 22 px，与 46×0.5 完全对得上。
-    #   修正后环带中心 = 46 + 11/2 = 51.5 px，落回原版的 45–52 px。
-    #   环宽 width / 羽化 sigma 不动：它们是从源像素反解的（GAIN 单位为源像素/单位），
-    #   两套口径本来就不同，不能一起改。
     dilate = max(0.0, STROKE_MATTE_DILATE)
-    sigma = max(0.3, STROKE_FEATHER_SRC * scale)
-    tex = max(0.0, min(1.0, float(spec.get("texture") or 0.0)))
-    rgb = np.array(spec["color"], dtype=np.float32)
-
-    # 纸纹：双八度平滑噪声场（粗 16px 块起伏 + 细 4px 纸纤维），整段共用一张——
-    # 撕纸纹理是贴在纸上的，不逐帧闪。只用单一粗噪声时环宽是「平滑波浪」，
-    # 拉不出原版那种锯齿+毛边（自评 4/10）；加一层细八度才有纤维感。
-    rng = np.random.default_rng(20261123)
-
-    def _octave(shrink: int) -> np.ndarray:
-        s = rng.random((H // shrink + 2, W // shrink + 2)).astype(np.float32)
-        return ndimage.zoom(s, shrink, order=3)[:H, :W]
-
-    field = np.clip(0.55 * _octave(16) + 0.45 * _octave(4), 0.0, 1.0)
-    field = (field - field.min()) / max(1e-6, field.max() - field.min())
 
     out_mov.parent.mkdir(parents=True, exist_ok=True)
     dec_v = subprocess.Popen([ffmpeg_bin, "-v", "error", "-i", str(seg_video),
@@ -1380,41 +1395,23 @@ def bake_stroke_layer(seg_video: Path, matte_video: Path, out_mov: Path, spec: d
             bm = dec_m.stdout.read(fsz_m)
             if not bv or not bm or len(bv) < fsz_v or len(bm) < fsz_m:
                 break
-            fg = np.frombuffer(bv, np.uint8).reshape(H, W, 3).astype(np.float32)
+            fg = np.frombuffer(bv, np.uint8).reshape(H, W, 3).astype(np.float32) / 255.0
             a = np.frombuffer(bm, np.uint8).reshape(H, W).astype(np.float32) / 255.0
             if dilate > 0.5:
                 # 快速画笔抠像的「外扩余量」：把 alpha 向外顶 dilate 像素，那圈留原片本色
                 # （不是半透明白），纸边之后压在扩后的边界上。
                 d_out = ndimage.distance_transform_edt(~(a > 0.5))
                 a = np.maximum(a, np.clip(1.0 - (d_out - dilate) / 1.5, 0.0, 1.0))
-            inside = a > 0.5
-            dt = ndimage.distance_transform_edt(~inside)      # 0=人像内，>0=向外第几像素
-            w_field = width * (1.0 + STROKE_TEX_JITTER * tex * (2.0 * field - 1.0))
-            ring = np.clip(w_field - dt + 1.0, 0.0, 1.0)      # 环：alpha 边界向外 width px（半径不等距）
-            ring *= (1.0 - a)                                 # 内缘跟着人像 alpha 走
-            if STROKE_TEX_GRAIN > 0 and tex > 0:
-                ring *= np.clip(1.0 - STROKE_TEX_GRAIN * tex * (1.0 - field), 0.0, 1.0)
-            if sigma > 0.2:
-                ring = ndimage.gaussian_filter(ring, sigma)   # 羽化（实测两侧各 ~2 px 过渡）
-            ring = np.clip(ring, 0.0, 1.0)
-            # 投影：贴在白环**外侧**，向外 14 px 线性衰减（黑，alpha 上限 0.23）。
-            # 用乘法式 alpha（黑 + (1-a)）而不是压暗 RGB：叠在任意背景上都等价于把背景乘 (1-sh)，
-            # 与原版「背景 127 → 98」这种比例关系一致。
-            sh = None
-            if STROKE_SHADOW_PEAK > 0.001 and STROKE_SHADOW_W > 0.0:
-                _sw = STROKE_SHADOW_W          # 画布像素口径，与 dilate 同理不乘 scale（图层像素=画布像素）
-                _t = np.clip((dt - w_field) / _sw, 0.0, 1.0)      # 0=环外沿，1=投影末端
-                sh = STROKE_SHADOW_PEAK * (1.0 - _t) * (1.0 - a) * (1.0 - ring)
-                if sigma > 0.2:
-                    sh = ndimage.gaussian_filter(sh, sigma)
-                sh = np.clip(sh, 0.0, 1.0)
-            out_a = a + ring * (1.0 - a)                      # 描边压在人物下方
-            if sh is not None:
-                out_a = np.clip(out_a + sh, 0.0, 1.0)
-            denom = np.maximum(out_a, 1e-4)[:, :, None]
-            out_rgb = (fg * a[:, :, None] + rgb[None, None, :] * (ring * (1.0 - a))[:, :, None]) / denom
-            frame = np.concatenate([np.clip(out_rgb, 0, 255),
-                                    (np.clip(out_a, 0, 1) * 255.0)[:, :, None]], axis=2)
+            layer = SP.render_stroke_layer(
+                fg, a,
+                size=float(spec.get("size") or 0.0),
+                distance=float(spec.get("distance") or 0.0),
+                texture=float(spec.get("texture") or 0.0),
+                ring_tex=tex["ring"], grain_tex=tex["grain"],
+                shadow_ins=SP.SHADOW_INS, line_px=SP.line_px_for(W, H),
+                jit3=SP.BLUR3_JIT_GAIN, jitn=SP.NOISE_JIT_GAIN, fields=fields)
+            frame = np.concatenate([np.clip(layer[:, :, :3], 0.0, 1.0) * 255.0,
+                                    (np.clip(layer[:, :, 3], 0.0, 1.0) * 255.0)[:, :, None]], axis=2)
             enc.stdin.write(frame.astype(np.uint8).tobytes())
             n_done += 1
     finally:
@@ -2272,14 +2269,19 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             _stroke = matting_stroke_spec(mat) if matte_p else None
             _had_matte = matte_p is not None
             if _stroke:
-                # 缓存指纹必须含像素换算常数（含环境变量覆盖）：否则改了 GAIN 旧烘片会被永久
-                # 复用，看上去就是「改了不生效」——这个坑 hash 里已经吃过一次。
+                # 缓存指纹必须含渲染常数：否则改了常数旧烘片会被永久复用，看上去就是「改了不生效」
+                # ——这个坑 hash 里已经吃过一次。现在常数住在 stroke_paper（shader 移植）里，
+                # 所以把它的标定值一起算进指纹。
+                _SP = _stroke_paper_mod()
+                # 模块**源码指纹**也算进指纹：只改 stroke_paper 内部（比如抽头数）而常数不变时，
+                # 缓存不能继续命中旧烘片——这类「改了不生效」的坑这个 hash 里已经吃过一次。
+                _sp_sha = hashlib.sha1(Path(_SP.__file__).read_bytes()).hexdigest()[:10]
                 _stroke_p = matte_dir / (
                     f"ov_{t_idx:02d}_{o:02d}_"
                     f"{_cache_tag('stroke', s_in, s_dur, fps, lw, lh, json.dumps(_stroke, sort_keys=True),
-                                  STROKE_SIZE_GAIN, STROKE_FEATHER_SRC,
-                                  STROKE_TEX_JITTER, STROKE_TEX_GRAIN, STROKE_MATTE_DILATE,
-                                  STROKE_SHADOW_PEAK, STROKE_SHADOW_W)}"
+                                  STROKE_MATTE_DILATE, _sp_sha,
+                                  _SP.LINE_PX, _SP.SHADOW_INS, _SP.BLUR3_JIT_GAIN, _SP.NOISE_JIT_GAIN,
+                                  _SP.INS1, _SP.INS2)}"
                     "_stroke.mov")
                 if not _stroke_p.is_file():
                     bake_stroke_layer(seg_p, matte_p, _stroke_p, _stroke, (lw, lh), fps, ffmpeg_bin)

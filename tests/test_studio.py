@@ -3365,6 +3365,41 @@ class OverlayFrameRenderTests(unittest.TestCase):
             self.assertFalse((Path(td) / "f00002.png").exists())
 
 
+class StrokePaperTests(unittest.TestCase):
+    """撕纸描边：1:1 移植效果包 shader，几何量必须从 shader 推、不能写死。"""
+
+    def test_line_px_derived_from_layer_geometry(self):
+        from stroke_paper import line_px_for
+        # offset = lineSize / (720*h/min) 在高度 h 的贴图上 → min(w,h)/720 像素/单位
+        self.assertAlmostEqual(line_px_for(1620, 2880), 2.25)   # 9:16、canvas 的 1.5 倍
+        self.assertAlmostEqual(line_px_for(1080, 1920), 1.5)
+        self.assertAlmostEqual(line_px_for(720, 1280), 1.0)     # 720 口径才是 1.0
+        # 横屏同一条公式反向（min = 高）
+        self.assertAlmostEqual(line_px_for(1920, 1080), 1.5)
+        # 拿不到尺寸时兜底不抛错
+        self.assertEqual(line_px_for(0, 0), 1.0)
+
+    def test_ring_widens_with_line_px(self):
+        """paper 环的外沿必须随 line_px 线性变宽——写死 1.0 时它只有原版 1/3 厚。"""
+        import numpy as np
+        from stroke_paper import render_stroke_layer
+        h, w = 180, 180
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        alpha = ((yy - 90) ** 2 + (xx - 90) ** 2 < 20 ** 2).astype(np.float32)
+        fg = np.dstack([alpha, alpha, alpha])
+        ring = np.ones((h, w, 3), np.float32)
+        grain = np.full((h, w, 3), 0.5, np.float32)
+        ext = {}
+        for lp in (1.0, 2.25):
+            out = render_stroke_layer(fg, alpha, size=0.35, distance=0.25, texture=0.6,
+                                      ring_tex=ring, grain_tex=grain, line_px=lp,
+                                      jit3=0.0, jitn=0.0)
+            ext[lp] = float(out[:, :, 3].sum())
+        # 环更宽 → 非零 alpha 面积更大（同半径圆之外多扩 6*3s*lp 像素）
+        self.assertGreater(ext[2.25], ext[1.0] * 1.15)
+        self.assertGreater(ext[1.0], 0.0)
+
+
 class ReplicaTemplateTests(unittest.TestCase):
     """复刻模版：提取（与素材无关）→ 套用（时间轴锚点重映射）→ 可编辑原生草稿。
 

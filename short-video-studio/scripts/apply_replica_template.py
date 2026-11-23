@@ -1363,6 +1363,17 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
         want = float(seg.get("duration_sec") or 0.0)
         role = seg.get("role") or "a_roll"
         asset_role = seg.get("asset_role") or role
+        if seg.get("kind") == "compound":
+            # 驱动轨上的**复合片段**（内嵌子时间线，例如 style_15 的 16 段照片翻页块）：
+            # 它占的是一段时间轴，内容是子时间线自己，**不是一条可以换掉的 B-roll**。
+            # 原来这里照样 take_for(a_roll) 分一条新素材，等于把整块复合片段换成了普通视频，
+            # 子层结构（照片拼贴/多图层/音效）连同 z 序一起丢。现在只推进时间槽位、
+            # 记锚点，素材与子草稿交给下面 2b 的 compound 通道。
+            s0 = float(seg.get("start_sec") or 0.0)
+            old_b.append((s0, s0 + want))
+            new_b.append((cursor, cursor + want))
+            cursor += want
+            continue
         if asset_role not in ("a_roll", "b_roll", "photo"):
             asset_role = "a_roll"
         if asset_role == "photo":
@@ -1436,6 +1447,13 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
     overlay_infos: List[dict] = []
     for seg in segments:
         if seg["track_index"] == driver_idx or seg.get("kind") not in ("video", "photo"):
+            continue
+        # 复合片段（内嵌子时间线）不参与「抠像/背景板/普通 B-roll」这一遍的素材分配：
+        # 它的素材由子时间线自己按层分配，几何也由父段的占位素材承载。放进来会被当成
+        # 一张普通 B-roll 分素材，或当背景板切成 pieces——两条路都丢结构，且 plan 里
+        # 的 compound 字段（mat_id / placeholder / compound_ref）会被覆盖掉。
+        # 交给 2b 的 compound 通道（下面 `if kind == "compound"` 那段）统一建子草稿。
+        if seg.get("kind") == "compound":
             continue
         old_start = float(seg.get("start_sec") or 0.0)
         old_dur = float(seg.get("duration_sec") or 0.0)
@@ -1995,7 +2013,12 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
     # ---- 2. 其余轨：锚点映射 + 段内比例 ----
     skipped_text_no_slot = 0
     for seg in segments:
-        if seg["track_index"] == driver_idx or seg["key"] in plan:
+        on_driver = seg["track_index"] == driver_idx
+        if seg["key"] in plan:
+            continue
+        # 驱动轨上的复合片段必须放行到 compound 通道（见驱动轨那段注释），
+        # 其余驱动轨段已经在 plan 里，不会走到这里。
+        if on_driver and seg.get("kind") != "compound":
             continue
         role = seg.get("asset_role") or seg.get("role") or ""
         kind = seg.get("kind")
@@ -2278,7 +2301,12 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
             # 复合片段（内嵌子时间线）：父段引用一个**无 path 的占位素材**，
             # 真身是同一条段 `extra_material_refs` 里的 drafts 条目（剪映的真实结构）。
             # source_timerange 从 0 起、长度 = 父段新时长：子时间线已按父段时长重映射过。
-            mat_id = p["mat_id"]
+            mat_id = p.get("mat_id")
+            if not mat_id:
+                # 走到这里说明这条复合片段被别的通道先占了 plan（例如被判成背景板切块），
+                # 结构已经丢了：如实计一次 skip，不要用无主素材写出坏段。
+                _skip_compound(seg["key"], "compound_plan_overwritten")
+                continue
             extra_refs.append(p["compound_ref"])
             src_in = 0.0
             src_dur = p["dur"]
