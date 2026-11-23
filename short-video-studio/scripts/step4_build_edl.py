@@ -37,7 +37,7 @@ from common import (
 import os
 
 from broll_semantics import describe_clip, legacy_score, relate, summarize as summarize_semantics
-from edit_grammar import check_edl, load_grammar, plan_shot_budget
+from edit_grammar import check_edl, load_grammar, plan_shot_budget, select_cuts
 from generate_code_broll import render_broll_clip_pillow, render_code_clip, resolve_style_palette
 
 PROP_SHOW_CUES = ("睇下", "看下", "看一下", "给大家看", "给你看", "看我手上", "看我手里", "效果图", "实物", "清单", "明细")
@@ -435,6 +435,28 @@ def _apply_keyframe_policy(clips: List[Dict[str, Any]], kf_per_min: float, total
     return len(chosen)
 
 
+# 能当切点用的事件类型（与旧的事件间隔循环同口径）
+_GRAMMAR_CUT_EVENT_TYPES = ("sentence_start", "pause_end", "pause_start",
+                            "keyword_accent", "stress", "bgm_section", "bgm_downbeat", "bgm_beat")
+
+
+def _event_cut_prio(ev: Dict[str, Any], prop_sent_ids: set) -> int:
+    """候选事件的优先级（越小越优先）：台词点到道具的句界最该切，气口次之，重音最后。
+
+    只在「离理想刀位同样近」时用于并列裁决，不会为了道具把节奏打乱。
+    """
+    t = str(ev.get("type") or "")
+    if t == "sentence_start" and ev.get("sentence_id") in prop_sent_ids:
+        return 0
+    if t == "sentence_start":
+        return 1
+    if t in ("pause_end", "pause_start"):
+        return 2
+    if t == "keyword_accent":
+        return 3
+    return 4
+
+
 def _prune_cut_points_to_budget(cut_points: List[Dict[str, Any]], target_shots: int,
                                shot_max_sec: float, fps: int, total_dur: float,
                                can_merge=None) -> tuple:
@@ -528,6 +550,8 @@ def run_step4(
     # 风格「剪辑刀法」真值：style 模式读 forensic/style_edit_grammar.json；dynamic 是逃生门（旧行为）
     grammar_mode = grammar if grammar in ("style", "dynamic") else "style"
     gram = load_grammar(style_id) if (style_id and grammar_mode == "style") else None
+    # 镜头预算先算出来：挑切点时要用（目标刀数 / 单镜时长带 / 快切配额 / 开场刀数）
+    shot_budget: Optional[Dict[str, Any]] = plan_shot_budget(total_dur, gram) if gram is not None else None
     grammar_notes: List[str] = []
     broll_prior_ratio = float((style_entry or {}).get("broll_overlay_ratio_target", 0.53))
     # 风格里的 B-roll 占比只是先验：实际配比按素材能力动态调整（用户明确要求，不可刻板执行模版比例）
@@ -639,44 +663,69 @@ def run_step4(
     }
     later_candidates.sort(key=lambda e: (e["frame"], 0 if (e.get("type") == "sentence_start" and e.get("sentence_id") in prop_sent_ids) else 1, prio_map.get(e["type"], 9)))
 
-    chosen_cuts: List[Dict[str, Any]] = list(first_3s_evts)
-    last_cut_sec = chosen_cuts[-1]["time_sec"] if chosen_cuts else 0.0
-    n_cand = len(later_candidates)
-    skip_until_idx = -1
-    for ci, cand in enumerate(later_candidates):
-        if ci < skip_until_idx:
-            continue
-        eff_cand = cand
-        if cand.get("type") != "sentence_start":
-            best_nxt: Optional[Dict[str, Any]] = None
-            best_idx = -1
-            for look_j in range(ci + 1, n_cand):
-                nxt = later_candidates[look_j]
-                if nxt["time_sec"] - cand["time_sec"] > 0.90:
-                    break
-                if nxt.get("type") != "sentence_start":
-                    continue
-                if nxt.get("sentence_id") in prop_sent_ids:
-                    best_nxt = nxt
-                    best_idx = look_j
-                    break
-                if best_nxt is None and (nxt["time_sec"] - last_cut_sec <= min(micro_hook_max_sec, 4.5)):
-                    best_nxt = nxt
-                    best_idx = look_j
-            if best_nxt is not None:
-                eff_cand = best_nxt
-                skip_until_idx = best_idx + 1
-
-        is_sent_start = eff_cand.get("type") == "sentence_start"
-        gap_needed = pacing["sentence_cut_gap"] if is_sent_start else max(min_shot_gap, pacing["sentence_cut_gap"])
-        if eff_cand["time_sec"] - last_cut_sec >= gap_needed:
-            prev_ev = chosen_cuts[-1] if chosen_cuts else None
-            if prev_ev and prev_ev.get("sentence_id") in prop_sent_ids and eff_cand.get("sentence_id") == prev_ev.get("sentence_id"):
+    if gram is not None and shot_budget:
+        # ── style 模式：挑切点交给 edit_grammar.select_cuts（节奏式挑法）──
+        # 目标镜头数、每镜时长带、快切配额、开场刀数全部来自该套草稿真值；这里只做两件事：
+        # 把音频事件转成候选（带 prop_show 优先级），再把挑中的事件带回原流水线。
+        cand_by_time: Dict[float, Dict[str, Any]] = {}
+        for e in events:
+            if str(e.get("type")) not in _GRAMMAR_CUT_EVENT_TYPES:
                 continue
-            chosen_cuts.append(eff_cand)
-            last_cut_sec = eff_cand["time_sec"]
+            t_c = round(float(e["time_sec"]), 3)
+            if t_c < 0.15 or t_c > total_dur - 0.20:
+                continue
+            prio = _event_cut_prio(e, prop_sent_ids)
+            prev_c = cand_by_time.get(t_c)
+            if prev_c is None or prio < int(prev_c["prio"]):
+                cand_by_time[t_c] = {"time_sec": t_c, "prio": prio, "event": e,
+                                     "sentence_id": e.get("sentence_id")}
+        plan = select_cuts(list(cand_by_time.values()), shot_budget, gram)
+        chosen_cuts = [c["candidate"]["event"] for c in plan["cuts"] if c.get("candidate")]
+        grammar_notes.extend(str(n) for n in (plan.get("notes") or []))
+        grammar_notes.append(
+            f"挑切点走风格节奏式挑法：目标 {shot_budget['target_shots']} 镜 / "
+            f"快切配额 {shot_budget['fast_quota']} / 开场 {shot_budget['opening_cuts']} 刀 / "
+            f"实际挑出 {len(chosen_cuts)} 刀"
+        )
+    else:
+        chosen_cuts: List[Dict[str, Any]] = list(first_3s_evts)
+        last_cut_sec = chosen_cuts[-1]["time_sec"] if chosen_cuts else 0.0
+        n_cand = len(later_candidates)
+        skip_until_idx = -1
+        for ci, cand in enumerate(later_candidates):
+            if ci < skip_until_idx:
+                continue
+            eff_cand = cand
+            if cand.get("type") != "sentence_start":
+                best_nxt: Optional[Dict[str, Any]] = None
+                best_idx = -1
+                for look_j in range(ci + 1, n_cand):
+                    nxt = later_candidates[look_j]
+                    if nxt["time_sec"] - cand["time_sec"] > 0.90:
+                        break
+                    if nxt.get("type") != "sentence_start":
+                        continue
+                    if nxt.get("sentence_id") in prop_sent_ids:
+                        best_nxt = nxt
+                        best_idx = look_j
+                        break
+                    if best_nxt is None and (nxt["time_sec"] - last_cut_sec <= min(micro_hook_max_sec, 4.5)):
+                        best_nxt = nxt
+                        best_idx = look_j
+                if best_nxt is not None:
+                    eff_cand = best_nxt
+                    skip_until_idx = best_idx + 1
 
-    if chosen_cuts:
+            is_sent_start = eff_cand.get("type") == "sentence_start"
+            gap_needed = pacing["sentence_cut_gap"] if is_sent_start else max(min_shot_gap, pacing["sentence_cut_gap"])
+            if eff_cand["time_sec"] - last_cut_sec >= gap_needed:
+                prev_ev = chosen_cuts[-1] if chosen_cuts else None
+                if prev_ev and prev_ev.get("sentence_id") in prop_sent_ids and eff_cand.get("sentence_id") == prev_ev.get("sentence_id"):
+                    continue
+                chosen_cuts.append(eff_cand)
+                last_cut_sec = eff_cand["time_sec"]
+
+    if chosen_cuts and gram is None:
         guarded_cuts: List[Dict[str, Any]] = []
         prev_t = 0.0
         for ev in chosen_cuts + [{"time_sec": total_dur, "frame": total_frames, "type": "_end"}]:
@@ -713,11 +762,9 @@ def run_step4(
             cut_points.append({"cut_frame": raw_frame, "raw_frame": raw_frame, "event": ev})
 
     # ── 镜头预算：刀数按风格真值的「总时长/中位镜长」收敛；素材/文案撑不到就如实封顶 ──
-    shot_budget: Optional[Dict[str, Any]] = None
     shot_budget_capped = ""
     shot_budget_note = ""
-    if gram is not None:
-        shot_budget = plan_shot_budget(total_dur, gram)
+    if gram is not None and shot_budget:
         target_shots = int(shot_budget["target_shots"] or 0)
         n_before = len(cut_points)
         if target_shots >= 1 and n_before > target_shots:
@@ -753,9 +800,11 @@ def run_step4(
             if shot_budget_note:
                 grammar_notes.append(shot_budget_note)
         if target_shots >= 2 and len(cut_points) < target_shots:
+            # 不是「素材不够」：这套真值的均镜长明显大于中位镜长（长尾镜多），
+            # 按真值节奏排出来的刀数自然比 total/中位 这个估算值少。
             shot_budget_capped = (
-                f"事件候选只够排 {len(cut_points)} 镜（风格目标 {target_shots} 镜）："
-                f"{len(events)} 个音频事件撑不到风格刀法"
+                f"按真值节奏排到 {len(cut_points)} 镜（中位数口径的估算目标是 {target_shots} 镜）："
+                f"该套均镜长大于中位镜长（长尾长镜多），刀数天然少于估算值"
             )
             grammar_notes.append("shot_budget_capped: " + shot_budget_capped)
 
@@ -776,6 +825,8 @@ def run_step4(
     # 被镜头预算合并出来的连续长镜（同源首尾相接、跨两句）：A-roll 校验要放行，
     # 否则一句连续说完的长镜会被判「跨句不安全」而降级成 B-roll，反而更偏离风格
     budget_merged_flags: List[bool] = [bool(cp.get("budget_merged")) for cp in cut_points]
+    # 跨句的连续长镜（同源首尾相接）：允许当 A-roll，但逐镜留痕，导出侧能看出这一刀盖了几句
+    multi_sentence_aroll_flags: List[bool] = [False] * len(cut_points)
     for cp in cut_points:
         ev = cp["event"]
         t_start = frames_to_sec(cp["cut_frame"], fps)
@@ -802,10 +853,19 @@ def run_step4(
                 abs(float(overlapping[k + 1].get("source_in_sec", 0.0)) - float(overlapping[k].get("source_out_sec", 0.0))) <= 0.35
                 for k in range(len(overlapping) - 1)
             )
-            if not (same_src and contiguous and (
-                    seg_idx == 0 or zero_broll_mode or budget_merged_flags[seg_idx])):
+            # 同源、首尾相接的多句段 = 演员一口气连着说的同一段素材，剪成一刀是合法的连续长镜；
+            # 真正会「口型穿帮」的是跳到另一条素材（same_src False）或中间挖掉大段（contiguous False）。
+            if not (same_src and contiguous):
                 return False
-        if t_in - float(overlapping[0]["start_sec"]) > 1.10:
+            if seg_idx != 0 and not zero_broll_mode:
+                multi_sentence_aroll_flags[seg_idx] = True
+        # A-roll 起点离句首太远会被判「切进半句嘴型」。但切口只要踩在语音事件上
+        # （句界/气口/重音都是语言的天然停顿点），从这里进 A-roll 就是正常换镜；
+        # 只有踩 BGM 拍点、与台词无关的切口才真的可能切进字中间。
+        cut_ev_type = str(cut_points[seg_idx]["event"].get("type") or "")
+        if (t_in - float(overlapping[0]["start_sec"]) > 1.10
+                and cut_ev_type not in ("pause_start", "pause_end", "sentence_start",
+                                        "keyword_accent", "stress")):
             return False
         if seg_idx < n_segs - 1:
             last_s = overlapping[-1]
@@ -997,8 +1057,11 @@ def run_step4(
                 if (idx == 1 or cut_points[idx]["raw_frame"] >= first_3s_cutoff_f or cand_f < first_3s_cutoff_f) and (next_f - cand_f >= 12):
                     cut_points[idx]["cut_frame"] = cand_f
                     j_leads[idx] = j_cut_frames
-            elif roles[idx - 1] == "a_roll" and roles[idx] != "a_roll" and ev["type"] == "sentence_start":
-                # L-cut：若前一镜为 A-roll 且本段为 B-roll，当前句或前一句尾部命中实拍特写标签时，画面提前 3 帧入镜（保持前段 >=14f 且不破句界）
+            elif (roles[idx - 1] == "a_roll" and roles[idx] != "a_roll"
+                  and ev["type"] in ("sentence_start", "pause_end", "pause_start", "keyword_accent")):
+                # L-cut：若前一镜为 A-roll 且本段为 B-roll，当前句或前一句尾部命中实拍特写标签时，
+                # 画面提前 3 帧入镜（保持前段 >=14f）。切口踩在句界/气口/重音上都成立——
+                # 只认句界会让风格节奏式挑点排出的 a→b 换镜几乎全落在气口上，L-cut 直接归零。
                 sent = find_sentence_for_time(frames_to_sec(cut_points[idx]["raw_frame"], fps), ev)
                 prev_sent = find_sentence_for_time(frames_to_sec(cut_points[idx - 1]["raw_frame"], fps), cut_points[idx - 1]["event"])
                 s_txt = f"{prev_sent.get('text', '')} {sent.get('text', '')}"
@@ -1155,7 +1218,15 @@ def run_step4(
             offset_in_sent = max(0.0, t_start - float(sent["start_sec"]))
             if sent.get("source_media") == ar["normalized_mp4"]:
                 src_in = round(float(sent.get("source_in_sec", 0.0)) + offset_in_sent, 4)
-                sent_src_end = float(sent.get("source_out_sec", ar["duration_sec"]))
+                # 跨句连续长镜：源窗口要一直开到「最后一句的 source_out」，
+                # 否则只取第一句的窗口会发生尾部冻帧（多句同源首尾相接时视频是连续表演）
+                cover_sents = [
+                    s for s in sentences
+                    if min(t_end, float(s["end_sec"])) - max(t_start, float(s["start_sec"])) > 0.04
+                    and str(s.get("source_media") or "") == str(sent.get("source_media") or "")
+                ]
+                last_cov = cover_sents[-1] if cover_sents else sent
+                sent_src_end = float(last_cov.get("source_out_sec", ar["duration_sec"]))
                 max_src_out = min(ar["duration_sec"], sent_src_end)
             else:
                 src_in = round(min(max(0.0, ar["duration_sec"] - seg_dur), float(sent.get("source_in_sec", 0.0)) + offset_in_sent), 4)
@@ -1166,7 +1237,8 @@ def run_step4(
             if ar_mp in max_out_by_mp:
                 src_in = max(src_in, max_out_by_mp[ar_mp])
             src_in = min(src_in, max(0.0, max_src_out - 0.05))
-            need_freeze = src_in + seg_dur > max_src_out + 0.01
+            # 源窗口差在 1 帧以内是时间量化误差，不是真冻帧（渲不出来的一帧不算冻）
+            need_freeze = src_in + seg_dur > max_src_out + 1.0 / max(1, fps)
             src_out = round(min(max_src_out, src_in + seg_dur), 4)
             max_out_by_mp[ar_mp] = max(float(max_out_by_mp.get(ar_mp, 0.0)), src_out)
 

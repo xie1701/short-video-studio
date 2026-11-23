@@ -167,6 +167,8 @@ def load_grammar(style_id: str, *, grammar_path: Optional[Path] = None,
             "source_n": g_shot.get("n") if g_shot.get("n") is not None else sd.get("main_track_clips"),
             "fast_ratio": fast_ratio,
             "bounds_synthetic": synthetic,
+            # 按时间顺序的原样镜长序列：剪辑节奏照它循环取，才能复现「短刀 + 长镜」的真实形态
+            "durations_chrono": list(g_shot.get("durations_chrono") or []),
         },
         "ab": {
             "b_ratio": b_ratio,
@@ -318,10 +320,28 @@ def _ab_roles(n_shots: int, b_budget: int, a_run: int, b_run: int) -> List[str]:
     return roles[:n]
 
 
+def _pick_key(goal: float):
+    """候选打分：先看离理想刀位多近（0.03s 内视为并列），并列时按 prio（越小越优先），最后按时间。
+
+    这样「台词点到道具」的句界只有在节奏上也说得过去时才会顶掉普通事件，而不是硬插一刀。
+    """
+    band = 0.03
+
+    def _key(c):
+        t = float(c.get("time_sec") or 0.0) if isinstance(c, dict) else float(c)
+        prio = int(c.get("prio", 9)) if isinstance(c, dict) else 9
+        return (round(abs(t - goal) / band), prio, t)
+
+    return _key
+
+
 def select_cuts(candidates: List[dict], budget: dict, grammar: dict) -> dict:
     """从事件候选里挑切点，让刀法靠近 budget 里的真值配额。
 
-    candidates：`[{"time_sec": 1.37, ...}, ...]`（多余的键原样忽略/透传）
+    candidates：`[{"time_sec": 1.37, "prio": 0, ...}, ...]`
+      - `prio` 越小越该优先（0=台词点到道具的句界，1=普通句界，2=气口，3=重音）；
+        只有在「离理想刀位同样近」时它才起作用（容差 0.03s/级），不会为了道具牺牲节奏。
+      - 其余键原样透传到返回的 `cuts[].candidate`，调用方可以据此取回自己的事件对象。
     约束（全部来自 budget，budget 来自真值）：
       1) 镜头数 == target_shots（候选不够则取能到的上限并记 note）
       2) 每镜时长落在 [shot_min_sec, shot_max_sec]
@@ -339,24 +359,21 @@ def select_cuts(candidates: List[dict], budget: dict, grammar: dict) -> dict:
     fast_quota = int(budget.get("fast_quota") or 0)
     open_n = int(budget.get("opening_cuts") or 0)
 
-    raw = []
+    # 时间 → 候选（同一时刻多条事件时保留 prio 更小的那条）
+    by_time: Dict[float, dict] = {}
     for c in candidates or []:
         t = c.get("time_sec") if isinstance(c, dict) else c
         try:
             t = round(float(t), 3)
         except (TypeError, ValueError):
             continue
-        if 0.15 < t < max(0.2, total - 0.20):
-            raw.append((t, c if isinstance(c, dict) else {"time_sec": t}))
-    raw.sort(key=lambda kv: kv[0])
-    # 去掉时间上重复的候选（同一事件被两条规则产出）
-    dedup, seen = [], set()
-    for t, c in raw:
-        if t in seen:
+        if not (0.15 < t < max(0.2, total - 0.20)):
             continue
-        seen.add(t)
-        dedup.append((t, c))
-    times = [t for t, _ in dedup]
+        cand = c if isinstance(c, dict) else {"time_sec": t}
+        prev = by_time.get(t)
+        if prev is None or int(cand.get("prio", 9)) < int(prev.get("prio", 9)):
+            by_time[t] = cand
+    times = sorted(by_time)
 
     # ── 1) 开场刀数：与 step4 的 pick_first_3s_events 同口径（0.50–2.90s，间隔 ≥0.55s）──
     picked: List[float] = []
@@ -395,17 +412,24 @@ def select_cuts(candidates: List[dict], budget: dict, grammar: dict) -> dict:
             if 0 < pos < target:
                 fast_positions.add(pos)
 
+    dur_chrono = [float(d) for d in (grammar.get("shot", {}).get("durations_chrono") or []) if float(d) > 0]
     for i in range(max_cuts):
         last = picked[-1] if picked else 0.0
-        # 理想镜长：先把「剩下的时长」均分给「还没排的镜头」，再按中位数兜住，
-        # 这样候选量化误差不会一路累积到片尾留一个超长收尾镜
+        # 理想镜长优先照真值的**时间顺序镜长序列**循环取（这样「短刀 + 长镜」的真实形态才复现得出来）；
+        # 再用「剩下的时长」收口，避免候选量化误差把尾巴甩成一个超长收尾镜。
         shots_left = max_cuts - i + 1
-        goal_dur = (total - last) / max(1, shots_left)
+        even = (total - last) / max(1, shots_left)
+        goal_dur = dur_chrono[i % len(dur_chrono)] if dur_chrono else even
+        # 这一刀最多能给到多少：剩下的镜头至少还得各留 shot_min
+        room_cap = (total - last) - shot_min * (shots_left - 1)
+        goal_dur = min(goal_dur, max(shot_min, room_cap))
+        # 没有真值节奏序列时，才用「快切配额均摊」补快切位；
+        # 有序列时快切比例已经写在真值形态里，再叠加会把快切压成两倍
+        if not dur_chrono and i in fast_positions and (total - last) > shot_fast_target * shots_left:
+            goal_dur = max(shot_min, min(goal_dur, shot_fast_target))
         goal_dur = max(shot_min, min(shot_max, goal_dur))
-        if i in fast_positions and (total - last) > shot_fast_target * shots_left:
-            goal_dur = max(shot_min, shot_fast_target)
         lo, hi = last + shot_min, last + shot_max
-        pool = [t for t in body if lo - 1e-6 <= t <= hi + 1e-6 and t not in picked]
+        pool = [by_time[t] for t in body if lo - 1e-6 <= t <= hi + 1e-6 and t not in picked]
         if not pool:
             notes.append(
                 f"第 {i + 1} 刀处候选断档（需要 {lo:.2f}–{hi:.2f}s 之间的事件），"
@@ -413,7 +437,7 @@ def select_cuts(candidates: List[dict], budget: dict, grammar: dict) -> dict:
             )
             break
         goal = last + goal_dur
-        picked.append(min(pool, key=lambda t: (abs(t - goal), t)))
+        picked.append(round(float(min(pool, key=_pick_key(goal)).get("time_sec")), 3))
     # 末镜超长：真值上限之外必须记一笔，不许装作没看见
     tail_start = picked[-1] if picked else 0.0
     if total - tail_start > shot_max + 1e-6:
@@ -456,7 +480,8 @@ def select_cuts(candidates: List[dict], budget: dict, grammar: dict) -> dict:
     for k, t in enumerate(picked):
         prev = picked[k - 1] if k > 0 else 0.0
         cuts.append({"time_sec": t, "ab_role": roles[k] if k < len(roles) else "a_roll",
-                     "gap_sec": round(t - prev, 3), "fast": (t - prev) < 1.0})
+                     "gap_sec": round(t - prev, 3), "fast": (t - prev) < 1.0,
+                     "candidate": by_time.get(round(t, 3))})
 
     # ── 5) 自评：挑出来的刀法自己长什么样 ──
     durations = [round(b - a, 3) for a, b in zip([0.0] + picked, picked + [total])] if picked else [round(total, 3)]

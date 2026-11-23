@@ -2,11 +2,19 @@
 """24 套风格 × 固定 fixture 的运行时一致性验收。
 
 数据层由 `dev_tools/verify_style_parity.py` 保证「库 = 源草稿」；本脚本保证
-「运行时确实照库执行」：用同一段 10 秒合成口播 + 两段合成插入画面，逐套跑
-step4（剪辑排期）/ step5（字幕）/ step6（包装音效），把产出的真实参数与库里
-的源实测值逐项比对，任何一套越界即非零退出。
+「运行时确实照库执行」：用同一段合成口播 + 合成插入画面，逐套跑 step4（剪辑排期）/
+step5（字幕）/ step6（包装音效），把产出的真实参数与库里的源实测值逐项比对，
+任何一套越界即非零退出。
 
-    /tmp/jyvenv/bin/python dev_tools/render_style_fixtures.py [--keep]
+fixture 的事件密度（2026-11-24 改）
+────────────────────────────────
+原来只有 8 句 × 3s、10 个事件，等于拿一把只有一格的尺子量 24 种不同的长度：
+任何风格最多排到 ~10 镜、开场最多 1 刀。现在按真实口播的切点来源造事件——
+**句界 + 句内停顿（pause_start/pause_end）+ 关键词重音（keyword_accent）**，
+句长在 1.2–3.5s 之间变化（固定随机种子，24 套跑的是同一份），总时长默认 72s，
+插入画面数量也随总时长走，避免 B 覆盖被素材量卡死。
+
+    python3 dev_tools/render_style_fixtures.py [--keep] [--aroll-sec 72]
 
 产物：reports/style_fixture_kpi.csv + 控制台摘要。
 """
@@ -17,6 +25,7 @@ import argparse
 import csv
 import json
 import pathlib
+import random
 import shutil
 import subprocess
 import sys
@@ -31,22 +40,34 @@ from step4_build_edl import run_step4  # noqa: E402
 from step5_subtitles import run_step5  # noqa: E402
 from step6_packaging import run_step6  # noqa: E402
 
-CSV_OUT = ROOT / "reports/style_fixture_kpi.csv"
+CSV_OUT = ROOT / "reports" / "style_fixture_kpi.csv"
 FPS = 30
-AROLL_SEC = 24.0
-BROLL_SEC = 12.0
+AROLL_SEC = 72.0          # 默认总时长（口播锁定时长）
+BROLL_SEG_SEC = 15.0      # 每段插入画面的可用净长
+FIXTURE_SEED = 20261124   # 固定种子：24 套跑同一份句子/事件
+MIN_SENT_SEC = 1.2
+MAX_SENT_SEC = 3.5
+
 BROLL_TAGS = [["工序", "实证"], ["细节", "现场"], ["原料", "顺序"], ["手作", "对照"], ["收尾", "成品"]]
 
-SENTENCES = [
-    ("s1", "这一段先讲清楚最关键的一步", ["最关键"]),
-    ("s2", "把工序拆成看得见的顺序", ["工序"]),
-    ("s3", "每一步都在画面里给到实证", ["实证"]),
-    ("s4", "先看原料进来的第一道关", ["原料"]),
-    ("s5", "再看中间这道最容易忽略的工序", ["工序"]),
-    ("s6", "细节全部留在画面上", ["细节"]),
-    ("s7", "现场的声音也一起收进来", ["现场"]),
-    ("s8", "最后落到可以马上照做的动作", ["照做"]),
+# 句子文案池（循环使用）：长度/关键词各不相同，用来造出「句内有停顿、有重音」的口播
+SENTENCE_POOL = [
+    ("这一段先讲清楚最关键的一步", ["最关键"]),
+    ("把工序拆成看得见的顺序", ["工序"]),
+    ("每一步都在画面里给到实证", ["实证"]),
+    ("先看原料进来的第一道关", ["原料"]),
+    ("再看中间这道最容易忽略的工序", ["工序"]),
+    ("细节全部留在画面上", ["细节"]),
+    ("现场的声音也一起收进来", ["现场"]),
+    ("最后落到可以马上照做的动作", ["照做"]),
+    ("这一步做完就能看出差别", ["差别"]),
+    ("手上这个动作一定要慢", ["动作"]),
+    ("顺序错了后面全白费", ["顺序"]),
+    ("先把面板擦干净再上料", ["擦干净"]),
 ]
+
+COLORS = ["navy", "teal", "olive", "maroon", "purple", "brown", "darkgreen",
+          "darkred", "steelblue", "slategray", "indigo", "darkslateblue"]
 
 
 def ffmpeg_make(ffmpeg: str, path: pathlib.Path, color: str, sec: float, audio: bool = False) -> None:
@@ -59,46 +80,134 @@ def ffmpeg_make(ffmpeg: str, path: pathlib.Path, color: str, sec: float, audio: 
     subprocess.run(cmd, check=True)
 
 
-def build_pipeline(pdir: pathlib.Path, ar: pathlib.Path, brolls: list[pathlib.Path], style_id: str) -> dict:
+def fixture_spec(total_sec: float = AROLL_SEC, seed: int = FIXTURE_SEED) -> dict:
+    """口播 fixture 的句子表 + 事件表（确定性：同 seed 同 total 必得同一份）。
+
+    事件密度对齐真实口播的切点来源：
+      - 句界 sentence_start：一句一个
+      - 句内停顿 pause_start/pause_end：每句 1–3 处，落在句内 0.6–1.8s
+      - 关键词重音 keyword_accent：每句 1 处（约 4 成句子再来一处），另有若干 stress
+    """
+    rng = random.Random(seed)
+    sentences = []
+    t = 0.0
+    idx = 1
+    while total_sec - t > MIN_SENT_SEC + 0.05:
+        dur = round(rng.uniform(MIN_SENT_SEC, MAX_SENT_SEC), 2)
+        if t + dur > total_sec - 0.4:
+            dur = round(total_sec - t, 2)
+        text, kws = SENTENCE_POOL[(idx - 1) % len(SENTENCE_POOL)]
+        s0 = round(t, 3)
+        s1 = round(t + dur, 3)
+        sentences.append({
+            "id": f"s{idx}", "text": text, "keywords": list(kws),
+            "start_sec": s0, "end_sec": s1,
+            "source_media": "__AROLL__", "source_in_sec": s0, "source_out_sec": s1,
+            "start_frame": int(round(s0 * FPS)), "end_frame": int(round(s1 * FPS)),
+            "_dur": dur,
+        })
+        t = round(t + dur, 3)
+        idx += 1
+    # 收尾：别让最后一句被丢掉，把尾巴并进最后一句
+    if total_sec - t > 0.05 and sentences:
+        last = sentences[-1]
+        last["end_sec"] = round(total_sec, 3)
+        last["source_out_sec"] = round(total_sec, 3)
+        last["end_frame"] = int(round(total_sec * FPS))
+        last["_dur"] = round(last["end_sec"] - last["start_sec"], 3)
+
+    events = []
+    ev_i = 0
+
+    def _push(kind: str, sid: str, t_sec: float) -> None:
+        nonlocal ev_i
+        t_sec = round(float(t_sec), 3)
+        events.append({"id": f"e{ev_i}", "type": kind, "sentence_id": sid,
+                       "time_sec": t_sec, "frame": int(round(t_sec * FPS))})
+        ev_i += 1
+
+    for s in sentences:
+        s0, dur = float(s["start_sec"]), float(s["_dur"])
+        _push("sentence_start", s["id"], s0)
+        # 句内停顿：1–3 处
+        n_pause = rng.randint(1, 3)
+        used = []
+        for _ in range(n_pause):
+            off = round(rng.uniform(0.6, max(0.7, min(1.8, dur - 0.35))), 2)
+            if off >= dur - 0.15:
+                continue
+            if any(abs(off - u) < 0.25 for u in used):
+                continue
+            used.append(off)
+            _push("pause_start", s["id"], s0 + off)
+            _push("pause_end", s["id"], s0 + off + 0.22)
+        # 关键词重音：句内 35%–75% 处，约 4 成句子再来一处 + 少量 stress
+        k_off = round(dur * rng.uniform(0.35, 0.75), 2)
+        _push("keyword_accent", s["id"], s0 + k_off)
+        if dur > 2.2 and rng.random() < 0.45:
+            _push("keyword_accent", s["id"], s0 + min(dur - 0.25, k_off + rng.uniform(0.5, 0.9)))
+        if rng.random() < 0.35:
+            _push("stress", s["id"], s0 + round(dur * rng.uniform(0.15, 0.9), 2))
+
+    # 同一帧上不留重复事件；按帧排序（step4 的候选选择依赖时间序）
+    events.sort(key=lambda e: (e["frame"], e["time_sec"]))
+    dedup, seen = [], set()
+    for e in events:
+        if e["frame"] in seen:
+            continue
+        seen.add(e["frame"])
+        dedup.append(e)
+    for s in sentences:
+        s.pop("_dur", None)
+    return {"total_sec": round(total_sec, 3), "sentences": sentences, "events": dedup}
+
+
+def build_media(ffmpeg: str, root: pathlib.Path, total_sec: float = AROLL_SEC) -> tuple:
+    """造一条合成口播 + 与总时长匹配的插入画面（段数随总时长走，别让 B 覆盖被素材量卡死）。"""
+    root.mkdir(parents=True, exist_ok=True)
+    ar = root / "aroll.mp4"
+    ffmpeg_make(ffmpeg, ar, "gray", total_sec, audio=True)
+    n_broll = max(5, int(round(total_sec / 6.0)))
+    brolls = []
+    for i in range(n_broll):
+        bp = root / f"broll_{i + 1}.mp4"
+        ffmpeg_make(ffmpeg, bp, COLORS[i % len(COLORS)], BROLL_SEG_SEC)
+        brolls.append(bp)
+    return ar, brolls
+
+
+def build_pipeline(pdir: pathlib.Path, ar: pathlib.Path, brolls: list[pathlib.Path], style_id: str,
+                   total_sec: float = AROLL_SEC, seed: int = FIXTURE_SEED) -> dict:
     pdir.mkdir(parents=True, exist_ok=True)
-    total = AROLL_SEC
+    spec = fixture_spec(total_sec, seed)
+    total = spec["total_sec"]
+    sentences = spec["sentences"]
+    for s in sentences:
+        s["source_media"] = str(ar)
     items = [
         {"id": "ar1", "role": "a_roll", "normalized_mp4": str(ar), "duration_sec": total,
          "video_grade": "usable", "sharpness_score": 45.0, "stability_score": 0.9},
     ]
     for i, br in enumerate(brolls):
         items.append({
-            "id": f"br{i+1}", "role": "b_roll", "normalized_mp4": str(br), "duration_sec": BROLL_SEC,
+            "id": f"br{i+1}", "role": "b_roll", "normalized_mp4": str(br), "duration_sec": BROLL_SEG_SEC,
             "video_grade": "usable", "semantic_tags": BROLL_TAGS[i % len(BROLL_TAGS)],
             "sharpness_score": 48.0, "stability_score": 0.9, "best_in_sec": 0.4,
         })
-    span = total / len(SENTENCES)
-    sentences = [
-        {"id": sid, "text": text, "keywords": kws, "start_sec": round(i * span, 3),
-         "end_sec": round((i + 1) * span, 3), "source_media": str(ar),
-         "source_in_sec": round(i * span, 3), "source_out_sec": round((i + 1) * span, 3),
-         "start_frame": int(round(i * span * FPS)), "end_frame": int(round((i + 1) * span * FPS))}
-        for i, (sid, text, kws) in enumerate(SENTENCES)
-    ]
-    events = [{"id": f"e{i}", "type": "sentence_start", "sentence_id": s["id"],
-               "time_sec": s["start_sec"], "frame": int(round(s["start_sec"] * FPS))}
-              for i, s in enumerate(sentences)]
-    events += [{"id": "k1", "type": "keyword_accent", "sentence_id": "s2", "time_sec": 2.4, "frame": 72},
-               {"id": "k2", "type": "keyword_accent", "sentence_id": "s4", "time_sec": 7.8, "frame": 234}]
-    events.sort(key=lambda e: e["frame"])
     (pdir / "01_manifest.json").write_text(json.dumps({"items": items}, ensure_ascii=False), encoding="utf-8")
     (pdir / "03_audio_events.json").write_text(json.dumps({
         "locked_duration_sec": total,
         "locked_duration_frames": int(round(total * FPS)),
         "sentences": sentences,
-        "events": events,
+        "events": spec["events"],
     }, ensure_ascii=False), encoding="utf-8")
-    return {"style_id": style_id}
+    return {"style_id": style_id, "n_sentences": len(sentences), "n_events": len(spec["events"])}
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--keep", action="store_true")
+    ap.add_argument("--aroll-sec", type=float, default=AROLL_SEC, help="口播总时长（默认 72s）")
     args = ap.parse_args()
 
     ffmpeg = shutil.which("ffmpeg")
@@ -110,21 +219,17 @@ def main() -> int:
     styles = lib["styles"]
 
     tmp = pathlib.Path(tempfile.mkdtemp(prefix="studixture_"))
-    ar = tmp / "aroll.mp4"
-    ffmpeg_make(ffmpeg, ar, "gray", AROLL_SEC, audio=True)
-    colors = ["navy", "teal", "olive", "maroon", "purple"]
-    brolls = []
-    for i, c in enumerate(colors):
-        bp = tmp / f"broll_{i+1}.mp4"
-        ffmpeg_make(ffmpeg, bp, c, BROLL_SEC)
-        brolls.append(bp)
+    ar, brolls = build_media(ffmpeg, tmp, args.aroll_sec)
+    spec = fixture_spec(args.aroll_sec)
+    print(f"fixture: {spec['total_sec']:.0f}s 口播 / {len(spec['sentences'])} 句 / "
+          f"{len(spec['events'])} 个音频事件 / {len(brolls)} 段插入画面")
 
     rows = []
     failures = []
     for st in styles:
         sid = st["style_id"]
         pdir = tmp / sid
-        build_pipeline(pdir, ar, brolls, sid)
+        build_pipeline(pdir, ar, brolls, sid, total_sec=args.aroll_sec)
         track = st.get("recommended_track") or "store"
         try:
             edl = run_step4(pdir, track=track, style_id=sid, edit_profile="documentary")
@@ -143,7 +248,7 @@ def main() -> int:
         checks.append(("转场", 0, int(edl.get("xfade_count") or 0) if "xfade_count" in edl else 0))
         # 2) 覆盖率落在动态带内（放不开的素材可越界但要记录）
         cov = float(edl.get("broll_ratio_actual") or 0) * 100
-        # 10 秒级 fixture 的镜头粒度有限，带外 3pp 以内视为粒度误差
+        # 镜头粒度有限，带外 3pp 以内视为粒度误差
         checks.append(("覆盖率带内", 1 if band[0] - 3.0 <= cov <= band[1] + 3.0 else 0, 1))
         # 3) 字幕条数 > 0 且字数上限不超源
         entries = subs.get("entries") or []

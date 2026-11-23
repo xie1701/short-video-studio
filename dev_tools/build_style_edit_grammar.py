@@ -277,7 +277,9 @@ def measure_shot_distribution(main: list) -> dict:
         "mean": round(sum(durs) / len(durs), 4),
         "fast_cuts_under_1s_ratio": round(len(fast) / len(durs), 3),
         "fast_cuts_n": len(fast),
+        # 分位是汇总，但剪辑要的是**节奏型**：按时间顺序的原样时长序列（切点排布用得上）
         "durations_sec": durs,
+        "durations_chrono": [round(seg["dur"], 3) for seg in main if seg["dur"] > 0],
     }
 
 
