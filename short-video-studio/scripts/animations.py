@@ -116,6 +116,27 @@ CTX_CALIBRATION: Dict[str, Dict[str, dict]] = {
         # -212px → 0，同时宽度 727→918）；原动画带阻尼抖动，这里只复刻主位移。
         "抖动下降": {"scale0": 0.78, "drop": 0.115, "ease": 2.4},
     },
+    # 照片图层（视频轨上的 photo 素材）单独一档。同一个「抖动下降」在照片上是「黑场淡入」，
+    # 在别的宿主上不带透明度，所以按「宿主 + 时长」再分一级（见下面的 0.40 键）。
+    "layer_photo": {
+        # style_17 7.733s 的 1.6s 照片（clip.alpha=0.5，入场「抖动下降」0.4s）：
+        # 原版是黑场里淡入（7.733s 整帧均值 0.5，我们旧实现 alpha0=1 直接全亮 → 10.4）。
+        #
+        # 反解方式（量几何/透明度，不用整帧亮度——「抖动下降」本身在改覆盖面积）：
+        #   1) 把 8.20s 稳定帧（clip.alpha=0.5 已是终态）当模板，逐帧搜 (scale, dy) 做对齐，
+        #      再用最小二乘求增益 g（= 该帧的动画透明度）。实测 g：
+        #      7.767→0.78、7.800→0.81、7.833→0.88、7.867→0.91、7.900→0.92、
+        #      7.933→0.91、7.967→0.96、8.000→0.97、8.033→0.99、8.067→0.99（8.10 起 =1.00）；
+        #      7.733 那帧整帧只有 0.5 个灰度级、照片已基本出画（底边 101px）→ g≈0。
+        #   2) 三条曲线都用 w=1-p 的幂律：scale = 1-(1-s0)·w^A、dy = -D·H·w^B、
+        #      alpha = 1-w^E。对 (s0,A,B,D,E) 做 5 维网格搜索，14 帧整帧灰度 MAE 由
+        #      旧实现 11.05 降到 2.78；最优点 s0=0.72 / A=2.4 / B=3.5 / D=0.20 / E=6.0
+        #      （s0 0.72–0.78 是一条平台，残差差 ≤0.08，取平台内最优）。
+        #   3) 尺寸与位移的指数不同（2.4 vs 3.5），所以单独给 drop_ease，不动共享的 ease。
+        # 只覆盖 0.40s：同名的其它时长档走共享标定，不受影响。
+        "抖动下降@0.40": {"scale0": 0.72, "alpha0": 0.0, "ease": 2.4,
+                          "alpha_ease": 6.0, "drop": 0.20, "drop_ease": 3.5},
+    },
     # 主轨段级动画（material_animations 挂在视频段上）。目前只做模糊族——
     # 主轨要逐帧几何得拆段重渲，模糊族可以只叠一条 gblur。
     "main": {
@@ -130,6 +151,10 @@ CTX_CALIBRATION: Dict[str, Dict[str, dict]] = {
         "横向模糊": {"flash0": 0.65, "ease": 1.0, "in_dur_scale": 1.0, "blur_x0": 0.0},
     },
 }
+
+# 宿主表的继承链：子宿主没写的键回落到父宿主（photo 图层先吃 layer 的通用标定，
+# 再用自己的「名字@时长」二级键覆盖）。
+CTX_PARENT: Dict[str, str] = {"layer_photo": "layer"}
 
 # 全库 113 套草稿里共 150 个动画名、2332 条。按行为归族比逐个硬编码可维护：
 # 同族共享一套数学，族内个别名字用 DEFAULTS 单独调幅度。
@@ -279,13 +304,27 @@ def fallback_names(specs: List[AnimSpec]) -> List[str]:
     return out
 
 
-def _cfg(name: str, ctx: str | None = None) -> dict:
+def _cfg(name: str, ctx: str | None = None, dur: float | None = None) -> dict:
+    """幅度表：DEFAULTS → FAMILY_DEFAULTS → CALIBRATION → CTX_CALIBRATION[ctx]（沿继承链）。
+
+    dur 给了就再叠一层「名字@时长」二级键——同名动画在不同时长下不是同一档
+    （「抖动下降」0.4s 是黑场淡入、其它时长不带透明度），二级键只覆盖它自己那一档。
+    """
     fam = family_of(name)
     base = dict(DEFAULTS.get(name) or DEFAULTS.get(fam) or DEFAULTS["渐显"])
     base.update(FAMILY_DEFAULTS.get(name) or {})
     base.update(CALIBRATION.get(name) or {})
     if ctx:
-        base.update((CTX_CALIBRATION.get(ctx) or {}).get(name) or {})
+        chain: List[str] = []
+        c: Optional[str] = ctx
+        while c:
+            chain.append(c)
+            c = CTX_PARENT.get(c)
+        for c in reversed(chain):
+            tbl = CTX_CALIBRATION.get(c) or {}
+            base.update(tbl.get(name) or {})
+            if dur is not None:
+                base.update(tbl.get(f"{name}@{dur:.2f}") or {})
     return base
 
 
@@ -313,13 +352,14 @@ def anim_state(specs: List[AnimSpec], t_local: float, seg_dur: float,
 
     W/H 是「位移的单位尺寸」：视频叠加层传画布宽高（卡片的滑动量是按画布反解的），
     文字层传文本包围盒宽高（剪映文字入场是相对文本框的，拿画布算会把一行字甩出屏幕）。
-    ctx 选幅度表：None = 贴纸那套标定（sticker_render 的旧行为），"layer" = 视频/文字层。
+    ctx 选幅度表：None = 贴纸那套标定（sticker_render 的旧行为），"layer" = 视频/文字层，
+    "layer_photo" = 视频轨上的照片图层（继承 "layer"，再叠它自己的「名字@时长」标定）。
     """
     st = AnimState()
     if not specs:
         return st
     for sp in specs:
-        cfg = _cfg(sp.name, ctx)
+        cfg = _cfg(sp.name, ctx, sp.duration)
         if sp.kind == "in":
             dur_i = sp.duration * float(cfg.get("in_dur_scale") or 1.0)
             t0 = (sp.start or 0.0) + float(cfg.get("in_start_shift") or 0.0)
@@ -347,6 +387,7 @@ def anim_state(specs: List[AnimSpec], t_local: float, seg_dur: float,
         # k 由原版帧逐帧反解（见 CTX_CALIBRATION 注释），linear = 1。
         # 透明度另走 alpha_ease：实测尺寸与亮度进程不是同一条曲线（缩小是尺寸线性 + 亮度 out-cubic）。
         wa = w ** float(cfg.get("alpha_ease") or 1.0)
+        w_raw = w          # 未加 ease 的剩余权重，「抖动下降」的位移另有指数（drop_ease）
         w = w ** float(cfg.get("ease") or 1.0)
         # 缩放：从 cfg.scale0 回 1.0（w=1 时是起点值）
         st.scale *= _lerp(1.0, cfg["scale0"], w)
@@ -358,9 +399,11 @@ def anim_state(specs: List[AnimSpec], t_local: float, seg_dur: float,
         fam = family_of(sp.name)
         if fam == "flipx":
             st.scale_x *= _lerp(1.0, float(cfg.get("flip0") if cfg.get("flip0") is not None else 0.0), w)
-        # 「抖动下降」：从画面上方落下（原动画的阻尼抖动只复刻主位移）
+        # 「抖动下降」：从画面上方落下（原动画的阻尼抖动只复刻主位移）。
+        # 实测放下与缩小的衰减指数不同（2.4 vs 3.5），所以位移单独用 drop_ease，缺省跟 ease。
         if fam == "drop":
-            st.dy -= H * float(cfg.get("drop") or 0.0) * w
+            wd = w_raw ** float(cfg.get("drop_ease") or cfg.get("ease") or 1.0)
+            st.dy -= H * float(cfg.get("drop") or 0.0) * wd
         # 位移：入场从反方向进来，出场往运动方向出去（都按「一整帧」算）
         if sp.name in _SLIDE or fam == "slide":
             ux, uy = _SLIDE.get(sp.name) or _grid_dir(sp.name)
@@ -486,7 +529,7 @@ def alpha_ramp(specs: List[AnimSpec], seg_dur: float, ctx: str | None = None):
     sp = specs[0]
     if family_of(sp.name) != "fade":
         return None
-    cfg = _cfg(sp.name, ctx)
+    cfg = _cfg(sp.name, ctx, sp.duration)
     if (abs(float(cfg.get("scale0") or 1.0) - 1.0) > 1e-6
             or float(cfg.get("blur0") or 0.0) > 1e-6
             or abs(float(cfg.get("alpha0") or 0.0)) > 1e-6):
@@ -564,6 +607,14 @@ def _self_test() -> None:
     # 7) 抖动下降入场：起点在画面上方且略缩小
     s = anim_state([AnimSpec("in", "抖动下降", 0.4)], 0.0, 1.0, W, H, ctx="layer")
     assert s.dy < -0.1 * H and abs(s.scale - 0.78) < 1e-6, s
+    # 7b) 照片图层 0.4s 专场标定：黑场淡入（起点 alpha=0），且不污染共享的 layer 档
+    s = anim_state([AnimSpec("in", "抖动下降", 0.4)], 0.0, 1.0, W, H, ctx="layer_photo")
+    assert s.alpha < 1e-6 and abs(s.scale - _cfg("抖动下降", "layer_photo", 0.4)["scale0"]) < 1e-6, s
+    s = anim_state([AnimSpec("in", "抖动下降", 0.4)], 0.2, 1.0, W, H, ctx="layer_photo")
+    assert 0.5 < s.alpha < 1.0, s                       # 半程已亮起来（alpha_ease=6）
+    # 7c) 时长二级键只盖 0.40s 那一档：0.5s 的同名动画仍是共享的「不淡入」
+    s = anim_state([AnimSpec("in", "抖动下降", 0.5)], 0.0, 1.0, W, H, ctx="layer_photo")
+    assert abs(s.alpha - 1.0) < 1e-6, s
     # 8) 向左滑动入场起点必须整张推出画布外（否则「叠了个寂寞」的反面：没滑）
     s = anim_state([AnimSpec("in", "向左滑动", 0.333)], 0.0, 1.0, W, H, ctx="layer")
     assert s.dx >= W * 1.1, s

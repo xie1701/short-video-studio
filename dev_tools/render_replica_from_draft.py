@@ -1372,7 +1372,10 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                     pieces.append((_ta, _tb, _ss, tx, ty))
                 report["unrealized"]["main_kf_zoom_sliced"] = report["unrealized"].get("main_kf_zoom_sliced", 0) + _n
             else:
-                # 含缩窗（scale<1）：拆成静态子段（黑底缩窗），2 帧一步，切点同样按整帧算
+                # 含缩窗（scale<1）：拆成静态子段（黑底缩窗），2 帧一步，切点同样按整帧算。
+                # 逐帧一步（1 帧/段）试过：12.5s 反而 25.6 → 29.7、全片 12.97 → 13.20——
+                # 原版这条斜坡不是从头到尾的直线，2 帧取中点恰好抵消了一部分，
+                # 细分只把「窗口比原版小时多出来的黑边」暴露得更清楚。
                 _f0 = int(round((t_start + _a0) * fps))
                 _f1 = int(round((t_start + _a1) * fps))
                 _n = max(1, int(round(max(1, _f1 - _f0) / 2)))
@@ -1660,7 +1663,10 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             # 入场/出场动画（material_animations）：纯透明度交给 ffmpeg 的 fade 链，
             # 带位移/缩放/模糊的必须 PIL 逐帧（scale 滤镜的输出尺寸不能逐帧变）。
             _specs = parse_animations(s, anim_by_id)
-            _ramp = alpha_ramp(_specs, t_dur, ctx="layer") if _specs else None
+            # 宿主：照片图层单开一档（animations.CTX_CALIBRATION["layer_photo"]），
+            # 同名动画在照片上是「黑场淡入」、在视频层上不是，不能共用一个幅度表。
+            _anim_ctx = "layer_photo" if (mat.get("type") or "") == "photo" else "layer"
+            _ramp = alpha_ramp(_specs, t_dur, ctx=_anim_ctx) if _specs else None
             if _ramp:
                 fade = (_ramp[0], max(0.05, _ramp[2]), _ramp[1])
                 if depth == 0:
@@ -1685,7 +1691,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                         _srcfps = float(fps)
                     render_animated_layer(_frames, (W, H), (lw, lh), (_cx, _cy),
                                           t_start, t_dur, fps, _specs, _amov,
-                                          src_fps=_srcfps, ctx="layer")
+                                          src_fps=_srcfps, ctx=_anim_ctx)
                 units.append((t_idx, o, {
                     "kind": "video", "seg": _amov, "matte": None, "t_start": t_start, "t_dur": t_dur,
                     "scale": 1.0, "lw": W, "lh": H, "tx": 0.0, "ty": 0.0, "alpha": alpha,
