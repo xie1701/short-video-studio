@@ -29,6 +29,19 @@
    「裁切框宽高比 == 新素材宽高比（±3%）」时搬，否则丢掉并计 `crop_uv_dropped`
    （旋转素材必丢：uv 是对未旋转宽高算的，硬搬会把 crop 弄越界直接崩渲染）。
 
+7. **时间上重叠的叠层绝不同源**（硬约束）。原版主轨是同一条真片切成多段，叠加轨再把同一
+   素材的另一个入点/抠像叠上来；换成新素材池后池子会轮转复用，一旦复用落在时间重叠的两层，
+   画面上就是「两个不同瞬间的同源画面不透明地叠着」= 肉眼可见重影（实测 3.0s 一帧里同一个
+   人出现两次）。所以叠层分配时按时间窗登记已占用的素材：冲突就换一条，换不到就**留空**
+   并计 `overlay_left_blank`，绝不拿同源素材糊过去。
+8. **`same_material_as` 是强绑定**：模版里标了它的段和主轨是同一素材的推近/缩窗重构，
+   必须跟主轨同素材、同入点（按原段偏移）——否则推近/缩窗重构图会漂。但若它既无遮罩
+   又满幅不透明，渲染出来就是同源第二份画面 → 跳过并计数（不自欺）。
+9. **人像抠像层不能当普通 B-roll 套**：原版 `matting.path` 非空的叠加层是「从素材里抠出
+   人物压在背景上」，抠像遮罩不随模版迁移。这类层要么有 alpha 才算跟随，要么跳过并计数
+   （`matting_layer_not_reconstructible`）；**绝不**给它另接一条新素材满幅盖住主轨。
+   跳过多少、为什么跳过，逐条进报告；素材池不够就报「素材不足，N 个位留空」。
+
 素材不够时按角色顺序回落（`overlay_card → b_roll → a_roll`、`a_roll → b_roll` 等），
 每次回落与复用都进报告；绝不假装「素材刚好够」。
 
@@ -40,6 +53,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -76,6 +90,15 @@ TRACK_TYPE_OF_ROLE = {
 
 def _uid() -> str:
     return str(uuid.uuid4()).upper()
+
+
+def _asset_ref(path: str) -> str:
+    """素材 → 脱敏引用（报告里只出现这个，绝不写文件路径/文件名）。"""
+    return "as" + hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:10]
+
+
+# 满幅阀值：显示面积占画布 ≥85% 且不透明，就算「满幅覆层」——它盖住下层，同源就是重影。
+FULL_FRAME_COVER = 0.85
 
 
 # 字体回落候选：模版不带商用字体文件（版权也不允许带），本机按名字也找不到时才回到系统字体。
@@ -459,12 +482,28 @@ class _Pool:
                                "cursor": 0.0, "uses": 0})
         self.rot = 0
 
-    def fill(self, want: float, min_take: float = 0.2) -> Optional[dict]:
-        """取一段：返回 {path, src_in, take, reused, wrapped}；池空返回 None。"""
+    def fill(self, want: float, min_take: float = 0.2,
+             avoid: Optional[set] = None) -> Optional[dict]:
+        """取一段：返回 {path, src_in, take, reused, wrapped}；池空返回 None。
+
+        `avoid` 是**硬约束**：这些素材文件不许再取（用于「时间上重叠的叠层绝不同源」）。
+        整池都在 avoid 里就返回 None——宁可让该段留空并计数，也不拿同源素材叠出重影。
+        """
         if not self.items:
             return None
-        item = self.items[self.rot % len(self.items)]
-        self.rot += 1
+        n = len(self.items)
+        item = None
+        skipped_conflict = 0
+        for step in range(n):
+            cand = self.items[(self.rot + step) % n]
+            if avoid and cand["path"] in avoid:
+                skipped_conflict += 1
+                continue
+            item = cand
+            self.rot = (self.rot + step + 1) % n
+            break
+        if item is None:
+            return None
         avail = item["dur"] - item["cursor"]
         wrapped = False
         if avail < min(want, min_take):
@@ -478,6 +517,7 @@ class _Pool:
         item["uses"] += 1
         return {"path": item["path"], "src_in": src_in, "take": take,
                 "reused": reused, "wrapped": wrapped,
+                "conflict_skipped": skipped_conflict,
                 "w": item["w"], "h": item["h"],
                 "rotation": int(item.get("rotation") or 0)}
 
@@ -848,6 +888,15 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
     rep.setdefault("anim_clamped", 0)
     rep.setdefault("texts_truncated", 0)
     rep.setdefault("text_reused", 0)
+    # 叠层同源硬约束的账目（见「2b. 视频叠层」）：
+    #   overlay_left_blank  因换不到「与重叠层不同源」的素材而留空的段数（含抠像层）
+    #   ghost_rejected      因「再叠就会同源重影」而拒接的视频段数（overlay_left_blank 的子集）
+    #   asset_reuse_by_slot 逐段：分到哪条素材（脱敏 ref）+ 角色 + 入点，不含路径
+    rep.setdefault("overlay_left_blank", 0)
+    rep.setdefault("overlay_left_blank_detail", [])
+    rep.setdefault("ghost_rejected", 0)
+    rep.setdefault("asset_reuse_by_slot", [])
+    rep.setdefault("overlap_conflicts_avoided", 0)
     out_p = Path(out_draft_path)
     draft_dir = out_p.parent if out_p.suffix.lower() == ".json" else out_p
     draft_dir.mkdir(parents=True, exist_ok=True)
@@ -903,11 +952,11 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
     for role in ROLE_FALLBACK:
         pools.setdefault(role, _Pool(role, [], rep))
 
-    def take_for(role: str, want: float) -> Optional[dict]:
+    def take_for(role: str, want: float, avoid: Optional[set] = None) -> Optional[dict]:
         for cand_role in ROLE_FALLBACK.get(role, (role,)):
             pool = pools.get(cand_role)
             if pool and pool.items:
-                fill = pool.fill(want)
+                fill = pool.fill(want, avoid=avoid)
                 if fill is None:
                     continue
                 fill["used_role"] = cand_role
@@ -963,12 +1012,165 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
         plan[seg["key"]] = {"kind": seg.get("kind"), "role": role, "start": cursor,
                             "dur": new_dur, "src_in": fill["src_in"],
                             "asset": fill, "reused_asset": fill["reused"],
-                            "old_start": s0, "old_dur": want}
+                            "old_start": s0, "old_dur": want,
+                            "track_index": seg["track_index"]}
         cursor += new_dur
     if not new_b:
         raise RuntimeError("驱动轨一段素材都没填上（assets['a_roll'] 为空或全不可读）")
     new_total = cursor
     map_start, scale_at = _anchor_map_builder(old_b, new_b, new_total)
+
+    # ---- 2b. 视频叠层：硬约束「时间上重叠的两层绝不同源」 ----
+    #
+    # 为什么要有这一遍：原版主轨是**同一条真片**切成 13 段，叠加轨再把同一条素材的
+    # 另一个入点/抠像叠上来（推近、人像抠像压背景）。换成新素材池后，池子会轮转复用：
+    # 一旦复用发生在时间上重叠的两层，画面上就是「两个不同瞬间的同源画面不透明地
+    # 叠在一起」——实测 3.0s 一帧里同一个人出现两次、头顶错位。
+    #
+    # 处理顺序（按优先级，与模版提取端的同一套语义对齐）：
+    #   ① 原版是**人像抠像层**（matting.path 非空）→ 必须有 alpha 才能成立，而抠像遮罩
+    #      不随模版迁移。给它另接一条新素材满幅盖住主轨 = 把内容盖掉，所以只能跳过并计
+    #      overlay_left_blank（不假装做了抠像，也不拿新素材糊上去）。
+    #   ② `same_material_as` 是**强绑定**：它和主轨是同一素材的推近/缩窗重构，必须跟主轨
+    #      同素材、同入点（相对段偏移），不另接 B-roll。但若它既无遮罩、又满幅不透明，
+    #      渲染出来就是同源第二份画面（重影）→ 跳过并计数。小窗/有遮罩（有 alpha）才保留。
+    #   ③ 普通 B-roll / 叠加卡片：按时间窗登记已占用的素材，冲突就换一条；换不到留空。
+    placed_windows: List[dict] = []  # {start, dur, path, key}
+
+    def _overlaps(a0: float, a1: float, b0: float, b1: float, tol: float = 0.02) -> bool:
+        return min(a1, b1) - max(a0, b0) > tol
+
+    def _placed(start: float, dur: float, path: str, key: str) -> None:
+        placed_windows.append({"start": start, "dur": dur, "path": path, "key": key})
+
+    def _taken_near(start: float, dur: float) -> set:
+        """这些素材已经被**时间上重叠**的图层占着，不许再分给新层。"""
+        return {w["path"] for w in placed_windows
+                if _overlaps(start, start + dur, w["start"], w["start"] + w["dur"])}
+
+    def _blank_overlay(seg: dict, reason: str, start: float, dur: float,
+                       *, ghost: bool, **extra: Any) -> None:
+        rep["overlay_left_blank"] += 1
+        if ghost:
+            rep["ghost_rejected"] += 1
+        row = {"why": reason, "key": seg["key"], "track_index": seg["track_index"],
+               "role": seg.get("role"), "start": round(start, 3), "duration": round(dur, 3)}
+        row.update({k: v for k, v in extra.items() if v is not None})
+        rep["overlay_left_blank_detail"].append(row)
+
+    for key, p in plan.items():
+        if p.get("asset") and p.get("kind") in ("video", "photo"):
+            _placed(p["start"], p["dur"], p["asset"]["path"], key)
+
+    overlay_infos: List[dict] = []
+    for seg in segments:
+        if seg["track_index"] == driver_idx or seg.get("kind") not in ("video", "photo"):
+            continue
+        old_start = float(seg.get("start_sec") or 0.0)
+        old_dur = float(seg.get("duration_sec") or 0.0)
+        new_start = map_start(old_start)
+        new_dur = max(0.05, old_dur * scale_at(old_start))
+        if new_start + new_dur > new_total + 1e-4:
+            new_dur = max(0.05, new_total - new_start)
+        geom = seg.get("geometry") or {}
+        cover = float(geom.get("cover_ratio") or 0.0)
+        clip_alpha = geom.get("alpha")
+        opaque = clip_alpha is None or float(clip_alpha) >= 0.99
+        role = seg.get("asset_role") or seg.get("role") or "b_roll"
+        linked_key = seg.get("same_material_as")
+        linked = plan.get(linked_key) if linked_key else None
+        is_cutout = bool((seg.get("matting") or {}).get("person_cutout"))
+        overlay_infos.append({"seg": seg, "start": new_start, "dur": new_dur,
+                              "cover": cover, "opaque": opaque, "role": role,
+                              "linked": linked, "is_cutout": is_cutout})
+
+    # 先处理“必须跟随主轨”的和“必须跳过”的（它们不参与抢素材），再按时间窗分配 B-roll。
+    skipped_cutouts: List[dict] = []  # 被跳过的人像抠像层（{start, dur, track_index}）
+    for info in sorted(overlay_infos, key=lambda i: (i["start"], i["seg"]["track_index"])):
+        seg = info["seg"]
+        new_start, new_dur = info["start"], info["dur"]
+        old_start = float(seg.get("start_sec") or 0.0)
+        old_dur = float(seg.get("duration_sec") or 0.0)
+        linked = info["linked"]
+        has_mask = bool(seg.get("mask"))
+        if info["is_cutout"]:
+            _blank_overlay(seg, "matting_layer_not_reconstructible", new_start, new_dur,
+                           ghost=True, linked_to=seg.get("same_material_as"),
+                           cover_ratio=round(info["cover"], 3))
+            skipped_cutouts.append({"start": new_start, "dur": new_dur,
+                                    "track_index": seg["track_index"]})
+            continue
+        if linked and linked.get("asset"):
+            if not has_mask and info["opaque"] and info["cover"] >= FULL_FRAME_COVER:
+                _blank_overlay(seg, "same_source_fullframe_duplicate", new_start, new_dur,
+                               ghost=True, linked_to=seg.get("same_material_as"),
+                               cover_ratio=round(info["cover"], 3))
+                continue
+            la = linked["asset"]
+            offset = old_start - float(linked.get("old_start") or 0.0)
+            src_in = min(max(0.0, float(linked["src_in"]) + offset), max(0.0, la["take"] - 0.05))
+            new_dur = min(new_dur, max(0.05, la["take"] - src_in))
+            fill = {"path": la["path"], "src_in": src_in, "take": new_dur, "w": la["w"],
+                    "h": la["h"], "reused": True, "wrapped": False,
+                    "used_role": la.get("used_role")}
+            rep["content_linked"] = rep.get("content_linked", 0) + 1
+            plan[seg["key"]] = {"kind": seg["kind"], "role": info["role"], "start": new_start,
+                                "dur": new_dur, "src_in": src_in, "asset": fill,
+                                "reused_asset": True, "old_start": old_start,
+                                "old_dur": old_dur, "track_index": seg["track_index"],
+                                "same_material_as": seg.get("same_material_as")}
+            _placed(new_start, new_dur, fill["path"], seg["key"])
+    # 再分配普通叠层：**不许**拿与重叠层相同的素材
+    def _backdrop_of_skipped_cutout(info: dict) -> bool:
+        """这层是“被跳过的人像抠像层”的**背景板**吗（有它无它都只能看到背景，看不到人）。
+
+        原版三明治：主轨（底下）→ 背景视频（中）→ 人像抠像层（顶）。抠像层重建不了已跳过，
+        若还把不透明背景板留在原位，它就变成一块盖在主轨上、没人的空镜——比下面的人出不来
+        更糟。所以：不透明 + 时间窗大半被“更高轨上的已跳过抠像层”盖住 → 一并跳过并单独计
+        `orphaned_backdrop_of_skipped_cutout`（与“重影拒接”分开记账，不混在一起）。
+        """
+        if not info["opaque"] or not skipped_cutouts:
+            return False
+        a0, a1 = info["start"], info["start"] + info["dur"]
+        hidden = 0.0
+        for c in skipped_cutouts:
+            if int(c["track_index"] or 0) <= int(info["seg"]["track_index"] or 0):
+                continue  # 只看“更高轨”上的抠像层（数组序即 z 序）
+            hidden += max(0.0, min(a1, c["start"] + c["dur"]) - max(a0, c["start"]))
+        return hidden >= 0.5 * max(1e-6, a1 - a0)
+
+    for info in sorted(overlay_infos, key=lambda i: (i["start"], i["seg"]["track_index"])):
+        seg = info["seg"]
+        if seg["key"] in plan or info["is_cutout"]:
+            continue
+        new_start, new_dur = info["start"], info["dur"]
+        old_start = float(seg.get("start_sec") or 0.0)
+        old_dur = float(seg.get("duration_sec") or 0.0)
+        role = info["role"]
+        if _backdrop_of_skipped_cutout(info):
+            _blank_overlay(seg, "orphaned_backdrop_of_skipped_cutout", new_start, new_dur,
+                           ghost=False, cover_ratio=round(info["cover"], 3))
+            continue
+        avoid = _taken_near(new_start, new_dur)
+        fill = take_for(role if role in ROLE_FALLBACK else "b_roll", new_dur, avoid=avoid)
+        if fill is None:
+            _blank_overlay(seg, "asset_pool_exhausted_avoid_same_source", new_start, new_dur,
+                           ghost=True, cover_ratio=round(info["cover"], 3),
+                           blocked_assets=len(avoid))
+            continue
+        if fill.get("conflict_skipped"):
+            rep["overlap_conflicts_avoided"] += 1
+        new_dur = min(new_dur, fill["take"])
+        if new_start + new_dur > new_total + 1e-4:
+            new_dur = max(0.05, new_total - new_start)
+            rep["seg_clipped"] = rep.get("seg_clipped", 0) + 1
+        plan[seg["key"]] = {"kind": seg["kind"], "role": role, "start": new_start,
+                            "dur": new_dur, "src_in": fill.get("src_in", 0.0),
+                            "asset": fill, "reused_asset": bool(fill.get("reused")),
+                            "old_start": old_start, "old_dur": old_dur,
+                            "track_index": seg["track_index"],
+                            "conflict_skipped": int(fill.get("conflict_skipped") or 0)}
+        _placed(new_start, new_dur, fill["path"], seg["key"])
 
     # ---- 2. 其余轨：锚点映射 + 段内比例 ----
     skipped_text_no_slot = 0
@@ -985,6 +1187,10 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
         if kind == "compound":
             # 复合片段（内嵌子时间线）模版只标不复刻：不假装换一块素材就能顶它
             rep["skipped"]["compound_unrealized"] = rep["skipped"].get("compound_unrealized", 0) + 1
+            continue
+        if kind in ("video", "photo"):
+            # 视频/静图叠层已在「2b. 视频叠层」里统一分配（含同源硬约束与跳过记账）：
+            # 这里绝不能再分一次素材——二次分配会把刚跳过的抠像层又接上新素材。
             continue
         linked_key = seg.get("same_material_as")
         linked = plan.get(linked_key) if linked_key else None
@@ -1338,6 +1544,91 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
     (draft_dir / "draft_meta_info.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    # ---- 视频叠层对账：最终草稿里时间重叠的每一对，素材是否同源 ----
+    # 模版原版就允许「同一素材推近/缩窗」这种叠层（same_material_as），所以这里不要求
+    # 同源对数 = 0，而是要求「同源对」全部是**模版明说的重构**（有小窗/遮罩 = 有 alpha），
+    # 或者数量为 0。叠层同源的自然结果另行在报告里逐对罗列。
+    vid_items = [(k, p) for k, p in plan.items()
+                 if p.get("kind") in ("video", "photo") and p.get("asset")]
+    vid_items.sort(key=lambda kv: (kv[1]["start"], kv[1].get("track_index") or 0))
+    overlap_pairs: List[dict] = []
+    for i in range(len(vid_items)):
+        ka, pa = vid_items[i]
+        for j in range(i + 1, len(vid_items)):
+            kb, pb = vid_items[j]
+            a0, a1 = pa["start"], pa["start"] + pa["dur"]
+            b0, b1 = pb["start"], pb["start"] + pb["dur"]
+            ov = min(a1, b1) - max(a0, b0)
+            if ov <= 0.02:
+                continue
+            overlap_pairs.append({
+                "a": ka, "b": kb,
+                "a_track": pa.get("track_index"), "b_track": pb.get("track_index"),
+                "overlap_start": round(max(a0, b0), 3),
+                "overlap_end": round(min(a1, b1), 3),
+                "overlap_mid": round((max(a0, b0) + min(a1, b1)) / 2.0, 3),
+                "overlap_sec": round(ov, 3),
+                "same_asset": pa["asset"]["path"] == pb["asset"]["path"],
+                "designed_same_source": bool(pa.get("same_material_as") == kb
+                                             or pb.get("same_material_as") == ka),
+            })
+    rep["video_overlap_pairs"] = overlap_pairs
+    rep["video_overlap_same_asset"] = sum(1 for p in overlap_pairs if p["same_asset"])
+
+    # ---- 模版层逐对记账：模版里每一对时间重叠的视频段，在新片里到底怎么了 ----
+    # 为什么还要这一份：最终草稿里可能一对都不剩（叠层全被拒接），那时只看「最终重叠对」
+    # 会变成 0 对，读报告的人无法知道「每一对到底去哪了」。这里按**模版结构**逐对列，
+    # 给出映射到新时间轴后的区间、处置与原因。
+    blank_by_key = {row["key"]: row["why"] for row in rep["overlay_left_blank_detail"]}
+    tpl_vid: List[dict] = []
+    for seg in segments:
+        if seg.get("kind") not in ("video", "photo"):
+            continue
+        o0 = float(seg.get("start_sec") or 0.0)
+        od = float(seg.get("duration_sec") or 0.0)
+        p = plan.get(seg["key"])
+        n0 = p["start"] if p else map_start(o0)
+        nd = p["dur"] if p else max(0.05, od * scale_at(o0))
+        tpl_vid.append({"key": seg["key"], "track": seg["track_index"],
+                        "start": n0, "dur": nd, "planned": bool(p),
+                        "asset_ref": _asset_ref(p["asset"]["path"]) if p and p.get("asset") else None})
+    resolved: List[dict] = []
+    for i in range(len(tpl_vid)):
+        a = tpl_vid[i]
+        for j in range(i + 1, len(tpl_vid)):
+            b = tpl_vid[j]
+            ov = min(a["start"] + a["dur"], b["start"] + b["dur"]) - max(a["start"], b["start"])
+            if ov <= 0.02:
+                continue
+            skipped = [x["key"] for x in (a, b) if not x["planned"]]
+            if skipped:
+                res = "skipped:" + (blank_by_key.get(skipped[0]) or "unknown")
+                if len(skipped) == 2 and blank_by_key.get(skipped[0]) != blank_by_key.get(skipped[1]):
+                    res = "skipped:" + "+".join(blank_by_key.get(k) or "unknown" for k in skipped)
+            elif a["asset_ref"] == b["asset_ref"]:
+                res = "kept_same_source"
+            else:
+                res = "kept_distinct_assets"
+            resolved.append({"a": a["key"], "b": b["key"],
+                             "a_track": a["track"], "b_track": b["track"],
+                             "overlap_start": round(max(a["start"], b["start"]), 3),
+                             "overlap_end": round(min(a["start"] + a["dur"], b["start"] + b["dur"]), 3),
+                             "overlap_mid": round((max(a["start"], b["start"])
+                                                  + min(a["start"] + a["dur"], b["start"] + b["dur"])) / 2.0, 3),
+                             "resolution": res,
+                             "a_asset_ref": a["asset_ref"], "b_asset_ref": b["asset_ref"]})
+    rep["overlay_pairs_resolved"] = resolved
+    rep["asset_reuse_by_slot"] = [
+        {"key": k, "track_index": p.get("track_index"), "role": p.get("role"),
+         "start": round(p["start"], 3), "duration": round(p["dur"], 3),
+         "src_in": round(float(p.get("src_in") or 0.0), 3),
+         "asset_ref": _asset_ref(p["asset"]["path"]),
+         "used_role": p["asset"].get("used_role"),
+         "reused": bool(p.get("reused_asset")),
+         "conflict_skipped": int(p.get("conflict_skipped") or 0),
+         "linked_to": p.get("same_material_as")}
+        for k, p in vid_items]
+
     # ---- 4. 报告 ----
     by_role: Dict[str, int] = {}
     for tr in tracks:
@@ -1359,6 +1650,15 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
         "texts_truncated": rep.get("texts_truncated", 0),
         "crop_uv_dropped": rep.get("crop_uv_dropped", 0),
         "crop_uv_dropped_detail": rep.get("crop_uv_dropped_detail", []),
+        "overlay_left_blank": rep.get("overlay_left_blank", 0),
+        "overlay_left_blank_detail": rep.get("overlay_left_blank_detail", []),
+        "ghost_rejected": rep.get("ghost_rejected", 0),
+        "overlap_conflicts_avoided": rep.get("overlap_conflicts_avoided", 0),
+        "asset_reuse_by_slot": rep.get("asset_reuse_by_slot", []),
+        "video_overlap_pairs": rep.get("video_overlap_pairs", []),
+        "video_overlap_same_asset": rep.get("video_overlap_same_asset", 0),
+        "overlay_pairs_resolved": rep.get("overlay_pairs_resolved", []),
+        "content_linked": rep.get("content_linked", 0),
         "text_layout": text_layout_report,
         "font_resolved": font_resolved,
         "font_fallback_slots": font_fallback_slots,
@@ -1390,7 +1690,9 @@ def main() -> int:
                                               "segments_by_role", "asset_reused", "asset_wrapped",
                                               "slot_shrunk", "anim_clamped", "skipped",
                                               "texts_truncated", "font_resolved",
-                                              "font_fallback_slots")},
+                                              "font_fallback_slots", "overlay_left_blank",
+                                              "ghost_rejected", "overlap_conflicts_avoided",
+                                              "video_overlap_same_asset")},
                      ensure_ascii=False, indent=2))
     print(f"[apply-template] -> {out}")
     return 0

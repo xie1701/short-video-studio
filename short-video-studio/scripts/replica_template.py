@@ -564,9 +564,27 @@ def extract_template(draft_path: Path | str, *, require_plaintext: bool = True) 
                     "adjust_params": fx.get("adjust_params") or [],
                 })
 
+            # 人像抠像层：素材的 `matting.path` 非空 = 原版真抠了像（快速画笔/自定义抠像），
+            # 这类叠加层是「同一条素材切出人物压在背景上」，不是另一段内容。模版必须标出来——
+            # 套用端若把它当普通 B-roll 另接一条新素材满幅盖上去，就会把主轨画面盖成重影。
+            # 只记结构（是不是抠像层 / 有没有描边），不记 matting 路径与 custom id（那既是
+            # 本机死路径也是隐私）。
+            matting = None
+            mt = mat.get("matting") or {}
+            if mt.get("path"):
+                strokes = mt.get("strokes") or []
+                matting = {
+                    "person_cutout": True,
+                    "stroke": bool(mt.get("enable_matting_stroke")),
+                    "stroke_name": (strokes[0].get("resource_name") if strokes else None),
+                    "quick_brush": bool(mt.get("has_use_quick_brush")),
+                }
+
             seg_reasons: List[str] = []
             if kind == "compound":
                 seg_reasons.append("compound_clip_not_extracted")
+            if matting:
+                seg_reasons.append("person_matting_layer_not_reconstructible")
             if mask:
                 seg_reasons.append("mask_params_unvalidated_on_new_assets")
             if effects:
@@ -651,6 +669,7 @@ def extract_template(draft_path: Path | str, *, require_plaintext: bool = True) 
                 "keyframes": keyframes,
                 "animations": animations,
                 "mask": mask,
+                "matting": matting,
                 "effects": effects,
                 "text_slot": text_slot_idx,
                 "same_material_as": None,
@@ -711,8 +730,11 @@ def extract_template(draft_path: Path | str, *, require_plaintext: bool = True) 
             s["same_material_as"] = best["key"]
             n_linked += 1
     if n_linked:
-        notes.append(f"{n_linked} 段叠加层与主轨用的是同一个素材文件（原版为推近/缩窗重构图），"
+        notes.append(f"{n_linked} 段叠加层与主轨用的是同一个素材文件（原版为推近/缩窗/人像抠像），"
                      f"模版记 same_material_as；套用时跟随主轨同一素材与入点，不另接 B-roll")
+        notes.append(f"其中 {sum(1 for s in segments_out if s.get('matting') and s.get('same_material_as'))} "
+                     f"段是人像抠像层：抠像遮罩不可迁移，套用端跳过并计入 overlay_left_blank"
+                     f"（不给它另开新素材满幅覆盖）")
 
     # ---- 素材角色表（推断不出的一律 unknown，逐条记原因，不瞎猜） ----
     for mid, mat in mat_idx.items():
@@ -747,6 +769,12 @@ def extract_template(draft_path: Path | str, *, require_plaintext: bool = True) 
     if n_compound:
         review.append({"scope": "compound_clip", "count": n_compound,
                        "reason": "复合片段内容内嵌子时间线，模版只标记不复刻（套用时该段跳过并计数）"})
+    n_matte = sum(1 for s in segments_out if s.get("matting"))
+    if n_matte:
+        review.append({"scope": "person_matting", "count": n_matte,
+                       "reason": "人像抠像层（matting.path 非空）与素材绑定：抠像遮罩无法随模版迁移。"
+                                 "套用时该层要么跟随主轨同素材同入点（有 alpha 才成立），要么跳过并计 "
+                                 "overlay_left_blank——绝不许另接一条新素材满幅盖住主轨"})
     n_mask = sum(1 for s in segments_out if s.get("mask"))
     if n_mask:
         review.append({"scope": "mask", "count": n_mask,

@@ -128,6 +128,38 @@ def _ref(name: str) -> str:
     return "d" + hashlib.sha256(name.encode("utf-8")).hexdigest()[:7]
 
 
+def template_need(tpl: dict) -> dict:
+    """模版 → 素材池至少要凑多少条**互不相同**的视频素材。
+
+    为什么不能只按「段数」算：主轨的 13 段是**顺序播放**的，同一条素材可以在不同时间复用；
+    真正卡住的是「同一瞬间上下叠着几层」——那些层必须各自用不同素材，否则就是同源重影。
+    所以需求 = 全片「同时可见的视频层数」峰值。多留 2 条余量，轮转时才不必原路复用。
+    """
+    segs = [s for s in tpl.get("segments") or [] if s.get("kind") in ("video", "photo")]
+    events: List[tuple] = []
+    for s in segs:
+        a = float(s.get("start_sec") or 0.0)
+        b = a + float(s.get("duration_sec") or 0.0)
+        # 半开区间：紧接的两段（上一段在 t 结束、下一段在 t 开始）不算同时存在，
+        # 否则每次切点都会被多算一层（实测得到 5 层，实际叠层最多只有 3 层）。
+        events.append((a + 1e-6, 1))
+        events.append((b - 1e-6, -1))
+    events.sort()
+    cur = peak = 0
+    for _t, d in events:
+        cur += d
+        peak = max(peak, cur)
+    driver_idx = next((t["index"] for t in tpl.get("tracks") or [] if t.get("is_driver")), None)
+    return {
+        "video_slots": len(segs),
+        "driver_segments": sum(1 for s in segs if s.get("track_index") == driver_idx),
+        "max_concurrent_video_layers": peak,
+        "distinct_assets_needed": max(2, peak),
+        "a_roll_want": max(2, peak) + 2,
+        "b_roll_want": max(2, peak) + 2,
+    }
+
+
 def mine(style_id: str, *, want_a: int, want_b: int, want_sfx: int,
          min_mb: float, max_candidates: int) -> tuple:
     """→ (assets{role:[path]}, pool{reach 素材清单（脱敏）}, notes[])"""
@@ -271,11 +303,32 @@ def main() -> int:
     ap.add_argument("--want-sfx", type=int, default=4)
     ap.add_argument("--min-mb", type=float, default=8.0)
     ap.add_argument("--max-candidates", type=int, default=30)
+    ap.add_argument("--template", default=None,
+                    help="模版 JSON：按其「同时叠层数」自动定池子大小（不给就用 want-* 默认值）")
     args = ap.parse_args()
 
-    assets, pool, notes = mine(args.style_id, want_a=args.want_aroll, want_b=args.want_broll,
-                               want_sfx=args.want_sfx, min_mb=args.min_mb,
-                               max_candidates=args.max_candidates)
+    need = None
+    want_a, want_b = args.want_aroll, args.want_broll
+    if args.template:
+        need = template_need(json.loads(Path(args.template).read_text(encoding="utf-8")))
+        want_a = max(want_a, int(need["a_roll_want"]))
+        want_b = max(want_b, int(need["b_roll_want"]))
+
+    assets, pool, notes = mine(args.style_id, want_a=want_a, want_b=want_b, want_sfx=args.want_sfx,
+                               min_mb=args.min_mb, max_candidates=args.max_candidates)
+    if need:
+        short_a = max(0, int(need["distinct_assets_needed"]) - len(assets["a_roll"]))
+        short_b = max(0, int(need["distinct_assets_needed"]) - len(assets["b_roll"]))
+        pool["need"] = {**need, "want_a": want_a, "want_b": want_b,
+                       "got_a": len(assets["a_roll"]), "got_b": len(assets["b_roll"]),
+                       "shortfall": {"a_roll": short_a, "b_roll": short_b}}
+        notes.append(f"模版同时叠层峰值 {need['max_concurrent_video_layers']} 层 → 至少要 "
+                     f"{need['distinct_assets_needed']} 条不同素材；实采 a_roll {len(assets['a_roll'])} 条 / "
+                     f"b_roll {len(assets['b_roll'])} 条")
+        if short_a or short_b:
+            notes.append(f"素材不足：还差 a_roll {short_a} 条 / b_roll {short_b} 条，"
+                         f"套用时会按硬约束留空并在 overlay_left_blank 里逐条记")
+            print(f"[mine] 素材不足，{max(short_a, short_b)} 个位可能留空")
     if args.assets:
         Path(args.assets).parent.mkdir(parents=True, exist_ok=True)
         Path(args.assets).write_text(json.dumps(assets, ensure_ascii=False, indent=2), encoding="utf-8")

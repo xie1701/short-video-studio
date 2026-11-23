@@ -11,8 +11,11 @@
   4. `apply_replica_template.apply_template()` 套模版 → 新草稿 JSON（可编辑原生草稿），
      同时给出字体解析表 / 文字容量换行截断表；
   5. 用 `dev_tools/render_replica_from_draft.py` 的 `render_timeline()`（**只读调用，不改**）渲成 mp4；
-  6. 抽关键帧（人脸/字幕/缩窗/大字位）+ 逐帧人脸检测 + 推近裁切的人脸审计；
-  7. 报告落 `report.json`（含素材池脱敏清单、字体逐位表、文字容量表、人脸检测结果）。
+  6. 抽关键帧（人脸/字幕/缩窗/大字位/原重影发生的 3.0s）+ 逐帧人脸检测 + 推近裁切的人脸审计；
+  7. **逐对验重影**：另渲一版「只渲主轨」对照，对每一对时间重叠的 video 段取重叠中点帧
+     逐像素比差（同源 + 满幅不透明 + 差异可见 → FAIL），并对被拒接的叠层点位做「与主轨一致」
+     点检（证明是那层没上，不是调低了透明度）；
+  8. 报告落 `report.json`（含素材池脱敏清单、字体逐位表、文字容量表、人脸检测、叠层同源对账）。
 
 用法：
     python3 dev_tools/verify_replica_template.py --style-id style_21 \
@@ -233,7 +236,34 @@ def pick_frame_times(draft: dict, template: dict, want: int = 10) -> List[dict]:
             break
         _add(item)
     picked.sort(key=lambda c: c["t"])
+    picked = _ensure_time(picked, T_GHOST_PROBE, "叠层验收帧", want=max(1, want))
+    picked.sort(key=lambda c: c["t"])
     return picked[:want]
+
+
+# 原重影就出现在 3.0s（主轨 × 抠像叠层同源满幅），这一帧必须进 `frames/`，
+# 否则「修好了没」只能靠数字说话，人眼没有可核对的证据。
+T_GHOST_PROBE = 3.0
+
+
+def _ensure_time(picked: List[dict], t: float, label: str, want: int) -> List[dict]:
+    """保证 `frames/` 里有 t 附近的一帧：没有就顶掉优先级最低的那一帧。"""
+    if any(abs(p["t"] - t) <= 0.35 for p in picked):
+        return picked
+    order = ["主轨", "贴纸", "字幕", "推近", "大字位", "大字位隐", "缩窗"]
+
+    def _rank(item: dict) -> int:
+        try:
+            return order.index(item.get("cat"))
+        except ValueError:
+            return len(order)
+
+    out = list(picked)
+    if len(out) >= want:
+        out.sort(key=_rank)
+        out = out[1:]
+    out.append({"t": round(t, 3), "cat": "叠层", "label": f"{label} {t:.1f}s"})
+    return out
 
 
 def extract_frames(mp4: Path, times: List[dict], out_dir: Path) -> List[dict]:
@@ -390,6 +420,255 @@ def face_framing_audit(draft: dict, draft_dir: Path, canvas_w: int, canvas_h: in
     }
 
 
+def _grab_frame(mp4: Path, t: float, out_jpg: Path) -> Optional[Path]:
+    """按时间抽一帧（`-ss` 放在 -i 之后 = 解码后定位，两版对比必须落在同一帧）。"""
+    out_jpg.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        _run(["ffmpeg", "-y", "-v", "error", "-i", str(mp4), "-ss", f"{max(0.0, t):.4f}",
+              "-frames:v", "1", "-q:v", "2", str(out_jpg)])
+    except Exception:
+        return None
+    return out_jpg if out_jpg.is_file() else None
+
+
+def _frame_delta(a: Optional[Path], b: Optional[Path]) -> Optional[dict]:
+    """两帧的差异：返回 {mae, p99, changed_frac}（归一化到 0~1）；读不到图返回 None。"""
+    if not a or not b or not a.is_file() or not b.is_file():
+        return None
+    try:
+        import numpy as np
+        from PIL import Image
+        with Image.open(a) as ia, Image.open(b) as ib:
+            if ia.size != ib.size:
+                ib = ib.resize(ia.size)
+            xa = np.asarray(ia.convert("RGB"), dtype=np.float32) / 255.0
+            xb = np.asarray(ib.convert("RGB"), dtype=np.float32) / 255.0
+    except Exception:
+        return None
+    d = np.abs(xa - xb).mean(axis=2)
+    return {"mae": round(float(d.mean()), 4),
+            "p99": round(float(np.quantile(d, 0.99)), 4),
+            "changed_frac": round(float((d > 0.08).mean()), 4)}
+
+
+def _faces_in(paths: List[Path]) -> Dict[str, int]:
+    """逐图人脸数（Apple Vision）：用来量「同一张脸是不是出现了两次」。"""
+    if not paths:
+        return {}
+    try:
+        from vision_inspector import inspect_images
+        res = inspect_images(list(paths)) or {}
+    except Exception:
+        return {}
+    out: Dict[str, int] = {}
+    for p in paths:
+        obj = res.get(str(p)) or {}
+        out[str(p)] = len(obj.get("faces") or [])
+    return out
+
+
+def _main_track_of(draft: dict) -> Optional[dict]:
+    best = None
+    for tr in draft.get("tracks") or []:
+        if tr.get("type") != "video" or int(tr.get("flag") or 0) == 2:
+            continue
+        cover = sum(int((s.get("target_timerange") or {}).get("duration") or 0)
+                    for s in tr.get("segments") or [])
+        if best is None or cover > best[0]:
+            best = (cover, tr)
+    return best[1] if best else None
+
+
+def video_overlap_pairs(draft: dict, draft_dir: Path, canvas_w: int = 1080,
+                        canvas_h: int = 1920) -> List[dict]:
+    """草稿里**时间上重叠**的每一对视频段（跨轨也算），带素材指纹与是否同源。
+
+    「同一素材」按**草稿里引用的实际文件**判（不是按文件名/声称的宽高）。
+    图层满幅与不透明用渲染器同一条几何算式算（contain → ×scale），不另猜一套。
+    """
+    mats = {m["id"]: m for m in (draft.get("materials") or {}).get("videos") or []}
+    try:
+        import importlib
+        R = importlib.import_module("render_replica_from_draft")
+    except Exception:
+        R = None
+    items: List[dict] = []
+    for ti, tr in enumerate(draft.get("tracks") or []):
+        if tr.get("type") != "video":
+            continue
+        for si, s in enumerate(tr.get("segments") or []):
+            mat = mats.get(s.get("material_id")) or {}
+            src = _draft_media_path(mat, draft_dir)
+            tgt = s.get("target_timerange") or {}
+            t0 = float(tgt.get("start") or 0) / 1e6
+            dur = float(tgt.get("duration") or 0) / 1e6
+            clip = s.get("clip") or {}
+            sc = float((clip.get("scale") or {}).get("x") or 1.0)
+            alpha = float(clip.get("alpha") if clip.get("alpha") is not None else 1.0)
+            cover = None
+            if R is not None and src is not None:
+                try:
+                    geom = R.layer_geometry(mat, str(src), canvas_w, canvas_h, sc)
+                    cover = (geom["lw"] * geom["lh"]) / float(canvas_w * canvas_h)
+                except Exception:
+                    cover = None
+            items.append({"track": ti, "idx": si, "seg_id": s.get("id"), "src": str(src) if src else None,
+                          "start": t0, "dur": dur, "alpha": alpha, "scale": sc, "cover": cover})
+    pairs: List[dict] = []
+    for i in range(len(items)):
+        a = items[i]
+        for j in range(i + 1, len(items)):
+            b = items[j]
+            a1, b1 = a["start"] + a["dur"], b["start"] + b["dur"]
+            ov = min(a1, b1) - max(a["start"], b["start"])
+            if ov <= 0.02:
+                continue
+            top = a if (a["track"] > b["track"]) else b  # 数组序即 z 序
+            pairs.append({
+                "a": f"t{a['track']}:{a['idx']}", "b": f"t{b['track']}:{b['idx']}",
+                "overlap_start": round(max(a["start"], b["start"]), 3),
+                "overlap_end": round(min(a1, b1), 3),
+                "overlap_mid": round((max(a["start"], b["start"]) + min(a1, b1)) / 2.0, 3),
+                "overlap_sec": round(ov, 3),
+                "same_source": bool(a["src"] and a["src"] == b["src"]),
+                "top_alpha": round(top["alpha"], 3),
+                "top_cover": (round(top["cover"], 3) if top["cover"] is not None else None),
+            })
+    return pairs
+
+
+def render_main_only(draft: dict, draft_dir: Path, work: Path, fps: int, style_id: str) -> Optional[Path]:
+    """「只渲主轨」对照版：把非主轨视频段的段全摘掉，其余轨（文字/贴纸/音频）原样保留。
+
+    为什么这么做：要回答的是「这一帧里是不是多叠了一层同源画面」。对照版只少叠层，
+    文字/贴纸/音频都在两份里一模一样，它们的差在对比里自然抵消。
+    """
+    import copy
+    main_tr = _main_track_of(draft)
+    if main_tr is None:
+        return None
+    sub = copy.deepcopy(draft)
+    keep = None
+    for tr in sub.get("tracks") or []:
+        if tr.get("type") == "video" and int(tr.get("flag") or 0) != 2:
+            keep = tr
+            break
+    if keep is None:
+        return None
+    for tr in sub.get("tracks") or []:
+        if tr.get("type") == "video" and tr is not keep:
+            tr["segments"] = []
+    import importlib
+    R = importlib.import_module("render_replica_from_draft")
+    rr = {"style_id": style_id, "draft": "main_only", "main_segments": 0, "overlay_segments": 0,
+          "matte_done": 0, "matte_failed": 0, "text_segments": 0, "sticker_segments": 0,
+          "masked_main_segments": 0, "masked_overlay_segments": 0, "compounds_rendered": [],
+          "unrealized": {}, "notes": []}
+    try:
+        return Path(R.render_timeline(sub, draft_dir, style_id + "_mainonly", work / "main_only",
+                                      fps, False, rr, depth=0))
+    except Exception:
+        return None
+
+
+def check_overlay_ghosting(draft: dict, draft_dir: Path, full_mp4: Path, main_mp4: Optional[Path],
+                           frames_dir: Path, *, rejected: Optional[List[dict]] = None,
+                           spot_times: Optional[List[float]] = None, tol: float = 0.02) -> dict:
+    """逐对验重影（可重复检查）：对**每一对时间重叠的 video 段**取重叠中点那一帧，
+    与「只渲主轨」版本逐像素比。
+
+    判 FAIL 的条件是：① 两层是**同一个素材文件**（同源）；② 与「只渲主轨」对照版的差异
+    **可见**（mae > tol 或 99 分位差 > 0.35——只看平均差会被大面积同色背景稀释，
+    取「或」是因为只在局部叠一块（小窗/竖条）平均差很小、但那块地方人眼一眼就看得见）。
+    为什么不再加「满幅」条件：同源两层只要画面不一样，就说明同一段片子被以**另一种取景**
+    又画了一遍（实测 3.0s 主轨 cover 裁切× 叠层 contain 只占 46% 画面，依旧是人眼一眼
+    就看出的重影），满幅与否不能当免死金牌；它只作为元数据记录。
+    另附人脸证据：若整帧人脸数 > 对照版且 ≥2，就是「同一张脸出现两次」的硬证。
+
+    还会对**被拒接的叠层**（apply 报告的 overlay_left_blank_detail）做点检：这些时间点上
+    成片应与「只渲主轨」**几乎相同**（mae ≈ 0）——不是重影消失，而是那一层根本没上。
+    """
+    pairs = video_overlap_pairs(draft, draft_dir,
+                                int((draft.get("canvas_config") or {}).get("width") or 1080),
+                                int((draft.get("canvas_config") or {}).get("height") or 1920))
+    # 对比帧单独落 frames/ghost/：frames/ 顶层只留那几张人眼要看的关键帧，不混取证帧
+    frames_dir = Path(frames_dir) / "ghost"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    for stale in frames_dir.glob("*.jpg"):
+        try:
+            stale.unlink()
+        except OSError:
+            pass
+    rows: List[dict] = []
+    if main_mp4 is None:
+        return {"ok": False, "reason": "main_only_render_failed", "pairs_checked": 0, "detail": []}
+    for k, p in enumerate(pairs):
+        t = float(p["overlap_mid"])
+        fa = _grab_frame(full_mp4, t, frames_dir / f"pair{k:02d}_full_{t:.2f}s.jpg")
+        fb = _grab_frame(main_mp4, t, frames_dir / f"pair{k:02d}_main_{t:.2f}s.jpg")
+        delta = _frame_delta(fa, fb)
+        faces = _faces_in([x for x in (fa, fb) if x])
+        n_full = faces.get(str(fa), 0) if fa else 0
+        n_main = faces.get(str(fb), 0) if fb else 0
+        top_opaque_full = (p["top_alpha"] >= 0.99
+                           and (p["top_cover"] is None or p["top_cover"] >= 0.85))
+        visible = bool(delta and (delta["mae"] > tol or delta["p99"] > 0.35))
+        if p["same_source"] and visible:
+            verdict = "FAIL"
+            why = "同一素材的两层以不同取景叠在一起（同源第二份画面 = 重影）"
+        elif p["same_source"]:
+            verdict = "PASS"
+            why = "同源但对照版看不出差异（像素级重复 / 带 alpha，无可见重影）"
+        else:
+            verdict = "PASS"
+            why = "不同素材的正常叠层（原版构图）"
+        rows.append({**p, "frames": [x.name for x in (fa, fb) if x], "delta": delta,
+                     "faces_full": n_full, "faces_main_only": n_main,
+                     "same_face_twice": bool(n_full >= 2 and n_full > n_main),
+                     "top_opaque_fullframe": top_opaque_full,
+                     "verdict": verdict, "why": why})
+
+    # 被拒接的叠层：点检「成片 == 只渲主轨」，证明那一层真的没上、不是调低了透明度
+    spots: List[dict] = []
+    if main_mp4 is not None:
+        times: List[float] = []
+        for row in (rejected or []):
+            t0 = float(row.get("start") or 0.0)
+            dur = float(row.get("duration") or 0.0)
+            if dur > 0.06:
+                times.append(t0 + dur / 2.0)
+        times.extend(float(x) for x in (spot_times or []))
+        seen: List[float] = []
+        for t in sorted(times):
+            if not (0.0 <= t):
+                continue
+            if any(abs(t - s) < 0.45 for s in seen):
+                continue
+            seen.append(t)
+        for k, t in enumerate(seen):
+            fa = _grab_frame(full_mp4, t, frames_dir / f"spot{k:02d}_full_{t:.2f}s.jpg")
+            fb = _grab_frame(main_mp4, t, frames_dir / f"spot{k:02d}_main_{t:.2f}s.jpg")
+            delta = _frame_delta(fa, fb)
+            spots.append({"t": round(t, 3),
+                          "delta_vs_main_only": delta,
+                          "same_as_main_only": bool(delta and delta["mae"] <= tol),
+                          "frames": [x.name for x in (fa, fb) if x]})
+
+    fails = [r for r in rows if r["verdict"] == "FAIL"]
+    return {
+        "ok": True,
+        "tolerance_mae": tol,
+        "pairs_checked": len(rows),
+        "ghost_rejected": len(fails),
+        "pairs_same_source": sum(1 for r in rows if r["same_source"]),
+        "same_face_twice": sum(1 for r in rows if r["same_face_twice"]),
+        "detail": rows,
+        "rejected_layer_spots": spots,
+        "frames_dir": str(frames_dir),
+        "spots_all_match_main_only": all(s["same_as_main_only"] for s in spots) if spots else None,
+    }
+
+
 def _font_table(template: dict, apply_rep: dict) -> List[dict]:
     resolved = apply_rep.get("font_resolved") or {}
     fallback = {f["slot"] for f in (apply_rep.get("font_fallback_slots") or [])}
@@ -500,6 +779,13 @@ def main() -> int:
         "texts_truncated": apply_rep.get("texts_truncated"),
         "text_reused": apply_rep.get("text_reused"),
         "seg_clipped": apply_rep.get("seg_clipped", 0),
+        "overlay_left_blank": apply_rep.get("overlay_left_blank", 0),
+        "overlay_left_blank_detail": apply_rep.get("overlay_left_blank_detail") or [],
+        "ghost_rejected": apply_rep.get("ghost_rejected", 0),
+        "overlap_conflicts_avoided": apply_rep.get("overlap_conflicts_avoided", 0),
+        "asset_reuse_by_slot": apply_rep.get("asset_reuse_by_slot") or [],
+        "video_overlap_pairs": apply_rep.get("video_overlap_pairs") or [],
+        "video_overlap_same_asset": apply_rep.get("video_overlap_same_asset", 0),
         "crop_uv_dropped": apply_rep.get("crop_uv_dropped", 0),
         "crop_uv_dropped_detail": apply_rep.get("crop_uv_dropped_detail") or [],
         "skipped": apply_rep.get("skipped"),
@@ -514,6 +800,14 @@ def main() -> int:
         "fallback_font": apply_rep.get("font_fallback"),
     }
     report["steps"]["text_layout"] = apply_rep.get("text_layout") or []
+    # 模版里每一对时间重叠的视频段 → 新片里的处置（逐对列，不靠汇总数字猜）
+    report["steps"]["overlay_pairs"] = {
+        "template_pairs": apply_rep.get("overlay_pairs_resolved") or [],
+        "template_pairs_same_source_kept": sum(1 for r in (apply_rep.get("overlay_pairs_resolved") or [])
+                                               if r["resolution"] == "kept_same_source"),
+        "final_overlap_pairs": apply_rep.get("video_overlap_pairs") or [],
+        "final_same_source_pairs": apply_rep.get("video_overlap_same_asset", 0),
+    }
     # 两个水印大字位：material.global_alpha=0 但段上有 KFTypeGlobalAlpha 曲线（0.70→0），
     # 原版是「亮 0.7 再飞出」而不是不显示——不写清楚容易被误解成「多画了两行字」
     report["notes"] = [
@@ -574,9 +868,29 @@ def main() -> int:
         report["steps"]["face_framing"] = face_framing_audit(
             draft, Path(draft_json).parent, int(canvas.get("width") or 1080),
             int(canvas.get("height") or 1920))
+
+        # ---- 5b. 逐对验重影（真跑：多渲一版「只渲主轨」，再逐对抽帧比差）----
+        t0 = time.time()
+        try:
+            fps_i = int(round(float(tpl.get("fps") or 30)))
+            main_only = render_main_only(draft, Path(draft_json).parent, out / "render",
+                                         fps_i, args.style_id + "_mainonly")
+            ghost = check_overlay_ghosting(
+                draft, Path(draft_json).parent, final_mp4, main_only, frames_dir,
+                rejected=(apply_rep.get("overlay_left_blank_detail") or []),
+                spot_times=[3.0] + [float(r["overlap_mid"]) for r in
+                                    (apply_rep.get("overlay_pairs_resolved") or [])])
+            ghost["main_only_mp4"] = _rel(main_only) if main_only else None
+            ghost["elapsed_sec"] = round(time.time() - t0, 1)
+        except Exception as exc:
+            ghost = {"ok": False, "error": f"{type(exc).__name__}: {exc}",
+                     "elapsed_sec": round(time.time() - t0, 1)}
+        report["steps"]["ghost_check"] = ghost
     else:
+        ghost = {"ok": False, "reason": "no_render"}
         report["steps"]["frames"] = {"skipped": True}
         report["steps"]["face_framing"] = {"skipped": True}
+        report["steps"]["ghost_check"] = {"skipped": True}
 
     # ---- 6. 结论 ----
     ff = report["steps"].get("face_framing") or {}
@@ -586,6 +900,16 @@ def main() -> int:
         "render_ok": bool(render_rep.get("ok")) if not args.no_render else None,
         "asset_reused": apply_rep.get("asset_reused"),
         "content_linked": apply_rep.get("content_linked", 0),
+        "overlay_pairs_checked": (report["steps"].get("ghost_check") or {}).get("pairs_checked"),
+        "ghost_rejected": (report["steps"].get("ghost_check") or {}).get("ghost_rejected"),
+        "overlay_left_blank": apply_rep.get("overlay_left_blank", 0),
+        "asset_reuse_by_slot": apply_rep.get("asset_reuse_by_slot") or [],
+        "assets_distinct_in_use": len({r["asset_ref"] for r in (apply_rep.get("asset_reuse_by_slot") or [])}),
+        "overlap_conflicts_avoided": apply_rep.get("overlap_conflicts_avoided", 0),
+        "template_overlap_pairs": len(apply_rep.get("overlay_pairs_resolved") or []),
+        "template_pairs_same_source_kept": sum(
+            1 for r in (apply_rep.get("overlay_pairs_resolved") or [])
+            if r["resolution"] == "kept_same_source"),
         "unknown_assets": tpl["counts"].get("unknown", 0),
         "fonts_resolved": {k: v.get("via") for k, v in (apply_rep.get("font_resolved") or {}).items()},
         "font_fallback_slots": [f["slot"] for f in (apply_rep.get("font_fallback_slots") or [])],
@@ -623,7 +947,27 @@ def main() -> int:
         print(f"[verify] 关键帧 {fr['count']} 张 · 检出人脸 {fr['face_check']['frames_with_face']} 张")
     if ff.get("summary"):
         print(f"[verify] 推近/缩窗人脸审计: {ff['summary']}")
-    return 0 if (report["verdict"]["draft_ok"] and report["verdict"]["render_ok"] is not False) else 1
+    gc = report["steps"].get("ghost_check") or {}
+    if gc.get("ok"):
+        print(f"[verify] 叠层重影: 重叠段对 {gc['pairs_checked']} · 判 FAIL {gc['ghost_rejected']} · "
+              f"同源对 {gc['pairs_same_source']} · 同一张脸两次 {gc['same_face_twice']}")
+        for row in gc.get("detail") or []:
+            d = row.get("delta") or {}
+            print(f"[verify]   {row['a']} × {row['b']} @{row['overlap_mid']}s "
+                  f"同源={row['same_source']} 满幅不透明={row['top_opaque_fullframe']} "
+                  f"MAE={d.get('mae')} p99={d.get('p99')} 人脸 {row['faces_full']}/{row['faces_main_only']} "
+                  f"-> {row['verdict']}")
+        spots = gc.get("rejected_layer_spots") or []
+        if spots:
+            worst = max((s.get("delta_vs_main_only") or {}).get("mae", 0.0) for s in spots)
+            print(f"[verify] 被拒叠层点检 {len(spots)} 处：与只渲主轨最大差 {worst} "
+                  f"（全部一致={gc.get('spots_all_match_main_only')}）")
+    elif gc:
+        print(f"[verify] 叠层重影检查未完成: {gc.get('reason') or gc.get('error') or 'skipped'}")
+    print(f"[verify] 叠层留空 {report['verdict']['overlay_left_blank']} 段（原因见 report.json "
+          f"overlay_left_blank_detail）")
+    return 0 if (report["verdict"]["draft_ok"] and report["verdict"]["render_ok"] is not False
+                 and not (gc.get("ok") and gc.get("ghost_rejected")) ) else 1
 
 
 def _seg_roles(segments: List[dict]) -> Dict[str, int]:
