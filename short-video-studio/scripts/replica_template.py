@@ -13,7 +13,8 @@
                                            geometry{scale,transform,crop,size_ratio,cover_ratio} /
                                            keyframes（**段内相对比例时间**）/ animations（名字+时长+段内比例）/
                                            mask / effects / text_slot
-    text_slots[]                           文字位：字号/颜色/描边/阴影/底框 + 容量上限 + 最大行数
+    text_slots[]                           文字位：字号/颜色/描边/阴影/底框 + **字体身份**（名字/扩展名/
+                                           文件名指纹，不含路径）+ **按版式算出的容量**（每行字数×可容行数）
     asset_roles{素材 id -> 角色}            a_roll / b_roll / overlay_card / sticker / photo /
                                            font / bgm / sfx / unknown
     counts{}                               unknown 计数与逐条原因（不瞎猜）
@@ -44,6 +45,17 @@ DECRYPTED_ROOT = ROOT / "forensic" / "decrypted"
 LIBRARY_PATH = ROOT / "short-video-studio" / "assets" / "style_spectrum" / "style_spectrum_library.json"
 
 ROLES = ("a_roll", "b_roll", "overlay_card", "sticker", "photo", "font", "bgm", "sfx", "unknown")
+
+# ---- 文字容量：与渲染器同一套字号换算 ----
+# 渲染器 render_text_png() 的口径是 font_px = font_size(草稿单位) × 画布宽/172.8。
+# 172.8 是实测常数（style_21 字幕字号 192 单位在 1080 宽画布上实测墨迹宽 517px vs 468px，
+# 两个方向都差 10.5%，与 192/172.8=1.111 严丝合缝）。容量必须按这条换算推，
+# 不能按源文案长度推。
+PX_PER_UNIT = 172.8
+DEFAULT_LINE_MAX_WIDTH = 0.82  # 草稿 material.line_max_width 缺省（套用端写回时也是这个值）
+MIN_TEXT_LINES = 2             # 字幕位至少允许 2 行：源草稿的 1 行 ≠ 版式只容得下 1 行
+MAX_TEXT_LINES = 3             # 上限 3 行：再多就把竖屏画面吃掉
+FONT_EXTS = (".ttf", ".otf", ".ttc")
 
 
 # ---------------------------------------------------------------- 小工具
@@ -193,6 +205,98 @@ def text_style_of(mat: dict) -> dict:
         "global_alpha": _clip_float(mat.get("global_alpha")),
         "line_spacing": _clip_float(mat.get("line_spacing")) or 0.0,
         "alignment": mat.get("alignment"),
+        # 行盒可用宽度（占画布宽比例）：草稿里通常缺省，缺省即渲染器/套用端的 0.82。
+        # 容量与换行都要它，跟着样式一起搬，别让套用端再猜一次。
+        "line_max_width": _clip_float(mat.get("line_max_width")),
+    }
+
+
+def font_ref_of(mat: dict) -> Optional[dict]:
+    """文字素材 → 字体身份（**只留名字/扩展名/文件名指纹，绝不留路径**）。
+
+    原来什么：`text_style_of()` 只搬字号/颜色/描边，字体一律丢掉，`review_reasons` 写死
+    `font_not_portable`。结果套用端 24 个文字位全落一种系统黑体（Hiragino Sans GB），
+    跟原版的俊雅体/思源粗宋完全不是一个观感——而这两个字体本机其实都有。
+
+    改成什么：从 `content.styles[*].font.path` 取 **basename**。识别字幕的真值在这里；
+    材质级 `mat.font_name` 是 null，`mat.fonts[].path` 是另一个用户目录的副本。
+
+    为什么只留名字：模版要跨机器/跨平台复用，「Windows 用户目录 + AppData + 应用缓存」这类
+    路径既是隐私又是死路径；字体**文件名**（如 `造字工房俊雅体.ttf`）才是可移植的身份，
+    套用时按名字在本机就近解析（见 apply_replica_template.resolve_template_font）。
+
+    返回 {name, ext, sha12, styles_with_font, distinct}；草稿真没写字体则返回 None。
+    sha12 是「名字+扩展名」的短指纹，用来跨机器比对是不是同一个字体，不含任何目录信息。
+    """
+    raw = mat.get("content")
+    content: Dict[str, Any] = {}
+    if isinstance(raw, str) and raw.lstrip().startswith("{"):
+        try:
+            content = json.loads(raw)
+        except Exception:
+            content = {}
+
+    def _split(path: str) -> Optional[tuple]:
+        base = str(path or "").strip().replace("\\", "/").rsplit("/", 1)[-1]
+        if not base:
+            return None
+        stem, _, ext = base.rpartition(".")
+        if not stem or ("." + ext.casefold()) not in FONT_EXTS:
+            return (base, "")
+        return (stem, "." + ext.casefold())
+
+    names: List[tuple] = []
+    for st in content.get("styles") or []:
+        got = _split(str((st.get("font") or {}).get("path") or ""))
+        if got:
+            names.append(got)
+    if not names:
+        # 兜底：材质级 fonts[] 里也有同一个文件（路径不同，文件名相同）
+        for f in mat.get("fonts") or []:
+            got = _split(str((f or {}).get("path") or ""))
+            if got:
+                names.append(got)
+                break
+    if not names:
+        return None
+    name, ext = names[0]
+    fingerprint = hashlib.sha256((name + ext).casefold().encode("utf-8")).hexdigest()[:12]
+    return {"name": name, "ext": ext, "sha12": fingerprint,
+            "styles_with_font": len(names), "distinct": len({n for n, _ in names})}
+
+
+def text_layout_capacity(style: dict, canvas_w: float, src_lines: int = 1) -> dict:
+    """文字位容量：**由版式算**，不再拿源文案长度当上限。
+
+    原来什么：`char_cap = max(2, len(源文案))`、`max_lines = 源文案行数`（这 24 位全是 1 行），
+    新文案只要比源文案长一个字就被截成「…」，上一轮 19/24 位被截。这是把「源文案碰巧多长」
+    当成了「版式能放多少」，两件事根本不是一回事。
+
+    改成什么：
+        可用宽度 = line_max_width × 画布宽
+        单字宽   ≈ font_size_units × 画布宽 / 172.8
+        每行字数 = floor(可用宽度 / 单字宽)
+        可容行数 = 字幕位 2~3 行（源只有 1 行是「源文案只有 1 行」，不是版式放不下 2 行）
+        容量     = 每行字数 × 可容行数
+
+    为什么这样算：渲染器就是按 fontSize×画布宽/172.8 出字的，容量越过这条换算就会
+    「写得下但渲染溢出」。每行只放得下 1 个字的大字位（78 号），容量天然是 2——那是
+    **设计容量**（原版放的就是单个大字），不是 bug。
+    """
+    font_units = float(style.get("font_size_units") or 0.0)
+    lmw = _clip_float(style.get("line_max_width"))
+    line_max_width = lmw if (lmw and 0.0 < lmw <= 1.0) else DEFAULT_LINE_MAX_WIDTH
+    usable = line_max_width * float(canvas_w)
+    char_px = font_units * float(canvas_w) / PX_PER_UNIT if font_units > 0 else 0.0
+    per_line = max(1, int(usable // char_px)) if char_px > 0 else 12
+    lines = min(MAX_TEXT_LINES, max(MIN_TEXT_LINES, int(src_lines or 1)))
+    return {
+        "capacity_per_line": per_line,
+        "capacity_lines": lines,
+        "capacity": per_line * lines,
+        "line_max_width": round(line_max_width, 4),
+        "char_px": round(char_px, 1),
+        "basis": "layout",
     }
 
 
@@ -494,20 +598,33 @@ def extract_template(draft_path: Path | str, *, require_plaintext: bool = True) 
                         src_text = ""
                 elif isinstance(raw_c, str):
                     src_text = raw_c
-                char_cap = max(2, len(src_text.strip())) if src_text.strip() else 4
+                src_lines = int(src_text.count("\n") + 1) if src_text else 1
+                cap = text_layout_capacity(style, canvas_w, src_lines=src_lines)
+                font = font_ref_of(mat)
                 text_slot_idx = len(text_slots)
                 text_slots.append({
                     "slot": text_slot_idx,
                     "track_index": t_i,
                     "segment_slot": s_i,
-                    "char_cap": int(char_cap),
+                    "char_cap": int(cap["capacity"]),
+                    "char_cap_basis": cap["basis"],
+                    "capacity_per_line": int(cap["capacity_per_line"]),
+                    "capacity_lines": int(cap["capacity_lines"]),
+                    "char_px_estimate": cap["char_px"],
+                    # 源文案长度只作参考，不再是容量上限（上一轮就是把它当上限才截了 19 位）
                     "char_cap_source": int(len(src_text.strip())),
-                    "max_lines": int(src_text.count("\n") + 1) if src_text else 1,
+                    "max_lines": int(cap["capacity_lines"]),
+                    # 原版大字位写死了字框宽（≈703px）：只作说明，容量仍按行宽算
+                    "design_fixed_width_px": _clip_float(mat.get("fixed_width")),
+                    # 每行只放得下 1 个字的大字位：容量 2 是**设计值**，不是容量算错的 bug
+                    "design_capacity_note": ("per_line=1（大字位，原版就只放单个大字）；容量 2 = 设计值"
+                                             if cap["capacity_per_line"] <= 1 else None),
                     "align": style["alignment"],
                     "line_spacing": style["line_spacing"],
+                    "font": font,
                     "style": style,
                     "requires_review": True,
-                    "review_reasons": ["font_not_portable"],
+                    "review_reasons": (["font_file_not_bundled"] if font else ["font_unknown"]),
                 })
 
             seg_key = f"seg:{t_i}:{s_i}"
@@ -622,7 +739,9 @@ def extract_template(draft_path: Path | str, *, require_plaintext: bool = True) 
 
     if text_slots:
         review.append({"scope": "text_font", "count": len(text_slots),
-                       "reason": "字体是商用字体，模版不带字体文件；套用时回落系统字体（字号/颜色/描边/底框保留）"})
+                       "reason": "字体文件不随模版走（版权 + 隐私门禁）：模版只记字体名/扩展名/文件名指纹，"
+                                 "套用时按名字在本机就近解析（风格资产 → 系统字体 → 剪映缓存），"
+                                 "真解析不到才回落系统字体，并逐位写进报告的 font_fallback_slots"})
         notes.append("文字的 alignment 字段在源草稿里缺省（None），按默认居中对齐处理")
     n_compound = sum(1 for s in segments_out if s["kind"] == "compound")
     if n_compound:

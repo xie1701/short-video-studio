@@ -3466,8 +3466,18 @@ class ReplicaTemplateTests(unittest.TestCase):
         # 单段铺满全片 → BGM（音效轨是「很多短段」，不该靠轨覆盖时长判断）
         self.assertEqual(tpl["asset_roles"]["AUD1"], "bgm")
         self.assertEqual(tpl["counts"]["unknown"], 0)
-        # 文字位：容量上限来自源文案长度
-        self.assertEqual(tpl["text_slots"][0]["char_cap"], 5)
+        # 文字位容量：由**版式**算（可用宽 ÷ 单字宽 × 可容行数），不再等于源文案长度。
+        # 合成草稿字号 32 单位 → 单字宽 32×1080/172.8=200px，可用宽 0.82×1080=885.6
+        # → 每行 4 字；字幕位至少 2 行 → 容量 8（源文案长度 5 只作为参考值记下来）
+        slot0 = tpl["text_slots"][0]
+        self.assertEqual(slot0["char_cap_basis"], "layout")
+        self.assertEqual(slot0["capacity_per_line"], 4)
+        self.assertEqual(slot0["capacity_lines"], 2)
+        self.assertEqual(slot0["char_cap"], 4 * 2)
+        self.assertEqual(slot0["char_cap_source"], 5)
+        # 合成草稿的文字素材没写字体路径 → 字体身份记 None（不能凭空猜一个字体名）
+        self.assertIsNone(slot0["font"])
+        self.assertEqual(slot0["review_reasons"], ["font_unknown"])
         self.assertEqual(tpl["text_slots"][0]["style"]["font_size_units"], 32.0)
 
     def test_unreferenced_material_is_unknown_not_guessed(self):

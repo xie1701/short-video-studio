@@ -18,22 +18,32 @@
    驱动段的局部伸缩比缩放（叠加视频再被素材剩余时长钳一次）。
 3. 关键帧 / 出场动画的时间 = 段内比例 × 新段时长；动画超出段长就钳到段长并记
    `anim_clamped`（不静默丢动画，也不让它溢出到下一段）。
-4. 文字按文字位顺序填，超过 `char_cap` 截断并记 `texts_truncated`；文字位数少于段数时
-   循环复用并记 `text_reused`。
+4. 文字先换行、超限才截断：容量是**版式算出来的**（模版 text_slots[].char_cap =
+   每行字数 × 可容行数），按可用宽度断行（中文按字、西文按词），行数超上限才截并计 `texts_truncated`；
+   每个文字位的 capacity/new_text_len/lines_used/truncated 明细进报告 `text_layout`。
+5. **字体按名字就近解析**：模版只带字体名（`text_slots[].font.name`），套用时按
+   ① 风格字体资产 → ② 系统字体目录 → ③ 剪映缓存字体目录 逐级找本机文件，
+   真找不到才回落系统字体；结果进 `font_resolved` / `font_fallback_slots`。
+
+6. 素材声明宽高取**显示尺寸**（旋转元数据已换过来）；模版带过来的 uv 裁切只在
+   「裁切框宽高比 == 新素材宽高比（±3%）」时搬，否则丢掉并计 `crop_uv_dropped`
+   （旋转素材必丢：uv 是对未旋转宽高算的，硬搬会把 crop 弄越界直接崩渲染）。
 
 素材不够时按角色顺序回落（`overlay_card → b_roll → a_roll`、`a_roll → b_roll` 等），
 每次回落与复用都进报告；绝不假装「素材刚好够」。
 
 用法：
     python3 scripts/apply_replica_template.py --template tpl.json \
-        --assets assets.json --texts texts.json --out /tmp/new_draft
+        --assets assets.json --texts texts.json --out /tmp/new_draft --style-id style_21
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -68,7 +78,7 @@ def _uid() -> str:
     return str(uuid.uuid4()).upper()
 
 
-# 字体回落候选：模版不带商用字体（版权也不允许带），套用时只能回落到系统字体。
+# 字体回落候选：模版不带商用字体文件（版权也不允许带），本机按名字也找不到时才回到系统字体。
 # 不回落的话 PIL 会退到 10px 位图字体，字号样式全白写，字会小到看不清。
 # 这些是**系统字体目录**，不含任何用户目录/应用私有目录；Windows/Linux 也列了常见路径。
 FONT_CANDIDATES = (
@@ -83,7 +93,10 @@ FONT_CANDIDATES = (
 
 
 def resolve_font_path() -> Optional[str]:
-    """系统 CJK 字体：环境变量 SVS_REPLICA_FONT 优先，否则按固定候选表探活。"""
+    """系统 CJK 字体：环境变量 SVS_REPLICA_FONT 优先，否则按固定候选表探活。
+
+    只在「模版字体名在本机怎么都找不到」时用——这是 last resort，不是默认路径。
+    """
     env = os.environ.get("SVS_REPLICA_FONT")
     if env and Path(env).is_file():
         return env
@@ -91,6 +104,276 @@ def resolve_font_path() -> Optional[str]:
         if Path(cand).is_file():
             return cand
     return None
+
+
+# ---------------------------------------------------------------- 字体按名字解析
+#
+# 原来什么：模版不带字体文件 → 24 个文字位全落一种系统黑体（Hiragino Sans GB）。观感与
+#   原版的俊雅体/思源粗宋完全对不上，而这两个字体本机其实都存（剪映缓存 + ~/Library/Fonts）。
+# “不可移植”这个结论是错的：**字体名可以提，文件可以按名在本机就近解析**。
+#
+# 改成什么：模版只记字体名/扩展名（`text_slots[].font`），套用时按名字逐级找：
+#   ① 风格字体资产 assets/style_spectrum/fonts[/<style_id>]（common.find_source_font）
+#   ② 系统字体目录（common._font_search_dirs，mac/Windows/Linux 均覆盖）
+#   ③ 剪映缓存字体目录（effect/<id>/<hash>/<字体文件>；根由 _discover_root('cache') 发现）
+#   ④ 都没有才回落（resolve_font_path）并在报告里逐位写 fallback。
+# 全程只按**文件名**模糊匹配，不写死路径与应用名，Windows/Linux 的缓存布局不同也能跑。
+
+FONT_EXTS = (".ttf", ".otf", ".ttc")
+_RESOLVED_FONTS: Dict[Tuple[str, str], Optional[dict]] = {}
+_DIR_INDEX_CACHE: Dict[str, Dict[str, str]] = {}
+
+
+def _norm_font_name(name: Any) -> str:
+    """字体名归一化：去空格/下划线/连字符/括号并转小写，用来做模糊比对。"""
+    return re.sub(r"[\s_\-()（）\[\]]+", "", str(name or "")).casefold()
+
+
+def _index_fonts_in(dirs: List[Path], *, recursive_one: bool = True) -> Dict[str, str]:
+    """目录列表 → {归一化文件名: 绝对路径}（同名先到先得，扫描根不递归太深）。"""
+    idx: Dict[str, str] = {}
+    for d in dirs:
+        try:
+            if not Path(d).is_dir():
+                continue
+        except OSError:
+            continue
+        patterns = ("*", "*/*") if recursive_one else ("*",)
+        for pat in patterns:
+            try:
+                cands = sorted(Path(d).glob(pat))
+            except OSError:
+                continue
+            for p in cands:
+                try:
+                    if not p.is_file() or p.suffix.casefold() not in FONT_EXTS:
+                        continue
+                except OSError:
+                    continue
+                idx.setdefault(_norm_font_name(p.stem), str(p))
+    return idx
+
+
+def _style_font_dirs(style_id: Optional[str]) -> List[Path]:
+    try:
+        from common import style_font_dirs  # 与渲染器同一条资产口径
+        return list(style_font_dirs(style_id))
+    except Exception:
+        return []
+
+
+def _system_font_dirs() -> List[Path]:
+    try:
+        from common import _font_search_dirs
+        return list(_font_search_dirs())
+    except Exception:
+        return []
+
+
+def _cache_font_index() -> Dict[str, str]:
+    """剪映缓存字体索引：effect/<id>/<hash>/<字体文件>。
+
+    根目录不写死：走渲染器那条就绪的 `_discover_root("cache")`（环境变量 JY_CACHE_ROOT 优先，
+    否则在 ~/Movies 下按结构自动发现）——只读复用，不重复实现一份发现逻辑。
+    """
+    key = "cache:effect"
+    if key in _DIR_INDEX_CACHE:
+        return _DIR_INDEX_CACHE[key]
+    idx: Dict[str, str] = {}
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "dev_tools"))
+        from replica_template import _replica_module
+        root = Path(_replica_module()._discover_root("cache"))
+    except Exception:
+        root = None
+    if root is not None:
+        for eff_root in (root / "effect", root / "artistEffect"):
+            try:
+                if not eff_root.is_dir():
+                    continue
+                cands = sorted(eff_root.glob("*/*/*"))
+            except OSError:
+                continue
+            for p in cands:
+                try:
+                    if not p.is_file() or p.suffix.casefold() not in FONT_EXTS:
+                        continue
+                except OSError:
+                    continue
+                idx.setdefault(_norm_font_name(p.stem), str(p))
+    _DIR_INDEX_CACHE[key] = idx
+    return idx
+
+
+def _fuzzy_lookup(idx: Dict[str, str], name: str) -> Optional[str]:
+    """精确优先，其次子串模糊（字体名常带字重/厂商前后缀）。"""
+    n = _norm_font_name(name)
+    if not n:
+        return None
+    if n in idx:
+        return idx[n]
+    best = None
+    for key_, path in idx.items():
+        if not key_:
+            continue
+        if n in key_ or (len(key_) >= 4 and key_ in n):
+            # 取匹配长度最长的那个，避开「朝代体」误配到「雅体」这类短名泛滥
+            if best is None or len(key_) > len(best[0]):
+                best = (key_, path)
+    return best[1] if best else None
+
+
+def _via_of(path: str) -> str:
+    """来源标签：落在随仓 assets 里算 assets，其余算 system。"""
+    try:
+        from common import ASSETS_DIR
+        if Path(path).resolve().is_relative_to(Path(ASSETS_DIR).resolve()):
+            return "assets"
+    except Exception:
+        pass
+    return "system"
+
+
+def resolve_template_font(name: str, style_id: Optional[str] = None) -> Optional[dict]:
+    """模版字体名 → 本机字体文件。返回 {name, path, via}；真找不到返回 None。
+
+    via: assets（随仓风格字体）/ system（系统字体目录）/ cache（剪辑软件缓存字体）。
+    结果带进程内缓存（同一字体名不会反复扫目录）。
+    """
+    norm = _norm_font_name(name)
+    if not norm:
+        return None
+    ck = (str(style_id or ""), norm)
+    if ck in _RESOLVED_FONTS:
+        return _RESOLVED_FONTS[ck]
+    found: Optional[dict] = None
+    # ① 风格字体资产（assets/style_spectrum/fonts[/<style_id>]）
+    try:
+        from common import find_source_font
+        p = find_source_font(name, style_id)
+        if p:
+            found = {"name": str(name), "path": str(p), "via": "assets"}
+    except Exception:
+        pass
+    # ② 系统字体目录（common._font_search_dirs 的第一项是随仓的 assets/fonts，
+    #    落在那儿的一律记成 assets，不把「自带资产」混算成「系统字体」）
+    if found is None:
+        p = _fuzzy_lookup(_index_fonts_in(_system_font_dirs()), name)
+        if p:
+            found = {"name": str(name), "path": p, "via": _via_of(p)}
+    # ③ 剪映缓存字体目录
+    if found is None:
+        p = _fuzzy_lookup(_cache_font_index(), name)
+        if p:
+            found = {"name": str(name), "path": p, "via": "cache"}
+    _RESOLVED_FONTS[ck] = found
+    return found
+
+
+# ---------------------------------------------------------------- 文字换行 / 容量
+
+def _is_wide(ch: str) -> bool:
+    """中文/全角标点算 1 个字宽，西文/数字算半个（按 0.5 字宽累加）。"""
+    return ord(ch) >= 0x2E80
+
+
+def _tokens(line: str) -> List[Tuple[str, bool]]:
+    """断行单元：中文按字切，西文按词切（`performance` 不能被拆成两半）。
+
+    返回 [(token, 前有没有空白)]——西文词之间要保留一个空格，否则拼回去就是
+    `performancemarketing` 这种断词。
+    """
+    out: List[Tuple[str, bool]] = []
+    buf = ""
+    gap = False
+    for ch in line:
+        if ch.isspace():
+            if buf:
+                out.append((buf, gap))
+                buf, gap = "", True
+            else:
+                gap = True
+        elif _is_wide(ch):
+            if buf:
+                out.append((buf, gap))
+                buf = ""
+                gap = True
+            out.append((ch, gap))
+            gap = False
+        else:
+            buf += ch
+    if buf:
+        out.append((buf, gap))
+    if out:
+        out[0] = (out[0][0], False)  # 行首不挂空格
+    return out
+
+
+def _tok_w(tok: str) -> float:
+    if not tok:
+        return 0.0
+    return 1.0 if _is_wide(tok[0]) else max(0.5, 0.5 * len(tok))
+
+
+def _line_w(line: str) -> float:
+    """一行占几个字宽：西文词间的空格也算半个字。"""
+    total = 0.0
+    for i, (tok, gap) in enumerate(_tokens(line)):
+        if i and gap and not _is_wide(tok[0]):
+            total += 0.5
+        total += _tok_w(tok)
+    return total
+
+
+def layout_text(text: str, per_line: int, max_lines: int) -> dict:
+    """先把文案按可用宽度**换行**，行数超上限才**截断**（并打上省略号）。
+
+    原来什么：直接 `txt.split("\n")[:max_lines]` 再拼回单行、按字数硬截 → 新文案略长就整句后面
+    被砍成「…」，读者看到的是一句读不通的半句话。
+
+    改成什么：按版式容量逐行填充；能装下就一行不少，装不下才截末行加「…」。
+    返回 {text, lines, lines_used, truncated, new_text_len, per_line, max_lines}。
+    """
+    per_line = max(1, int(per_line or 1))
+    max_lines = max(1, int(max_lines or 1))
+    raw = str(text or "")
+    wrapped: List[str] = []
+    for hard_line in raw.split("\n"):
+        hard_line = hard_line.strip()
+        if not hard_line:
+            continue
+        cur, cur_w = "", 0.0
+        for i, (tok, gap) in enumerate(_tokens(hard_line)):
+            sep = 0.5 if (cur and gap and not _is_wide(tok[0])) else 0.0
+            w = _tok_w(tok) + sep
+            if cur and cur_w + w > per_line + 1e-9:
+                wrapped.append(cur)
+                cur, cur_w = tok, _tok_w(tok)
+            else:
+                cur += (" " if sep else "") + tok
+                cur_w += w
+        if cur:
+            wrapped.append(cur)
+    truncated = len(wrapped) > max_lines
+    if truncated:
+        wrapped = wrapped[:max_lines]
+        last = wrapped[-1] if wrapped else ""
+        if per_line >= 2:
+            # 末行留一个省略号的位置；单字宽的大字位（每行只放得下 1 个字）放不下“…”
+            while last and _line_w(last) + 1.0 > per_line + 1e-9:
+                last = last[:-1]
+            wrapped[-1] = (last or "") + "…"
+        else:
+            wrapped[-1] = last
+    return {
+        "text": "\n".join(wrapped),
+        "lines": wrapped,
+        "lines_used": len(wrapped),
+        "truncated": truncated,
+        "new_text_len": len(raw.replace("\n", "").strip()),
+        "per_line": per_line,
+        "max_lines": max_lines,
+    }
 
 
 def _us(sec: float) -> int:
@@ -107,17 +390,39 @@ def _rgb01(rgb: List[int] | Tuple[int, ...]) -> List[float]:
 
 
 def probe_media(path: Path) -> dict:
-    """素材探针：时长 + 像素尺寸（失败给保守默认值，并在报告里留痕）。"""
-    info = {"duration": 0.0, "width": 0, "height": 0}
+    """素材探针：时长 + 像素尺寸（失败给保守默认值，并在报告里留痕）。
+
+    宽高取**显示尺寸**：手机横拍存成 1920x1080 + rotation=-90 的文件，ffmpeg 解码时
+    会自动转成 1080x1920，而 ffprobe 不转。不跟 rotation 换过来的话，草稿里声明的
+    宽高与解码帧不一致，uv 裁切会越界（crop=1920:966 在 1080 宽的帧上直接报错）。
+    """
+    info = {"duration": 0.0, "width": 0, "height": 0, "rotation": 0}
     try:
         proc = subprocess.run(
             ["ffprobe", "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=width,height:format=duration", "-of", "json", str(path)],
+             "-show_entries",
+             "stream=width,height:stream_side_data=rotation:stream_tags=rotate:format=duration",
+             "-of", "json", str(path)],
             capture_output=True, text=True, timeout=60)
         data = json.loads(proc.stdout or "{}")
         st = (data.get("streams") or [{}])[0]
-        info["width"] = int(st.get("width") or 0)
-        info["height"] = int(st.get("height") or 0)
+        w = int(st.get("width") or 0)
+        h = int(st.get("height") or 0)
+        rot = 0
+        for sd in st.get("side_data_list") or []:
+            if sd.get("rotation") not in (None, ""):
+                try:
+                    rot = int(round(float(sd["rotation"])))
+                except (TypeError, ValueError):
+                    rot = 0
+        if not rot:
+            try:
+                rot = int(round(float((st.get("tags") or {}).get("rotate") or 0)))
+            except (TypeError, ValueError):
+                rot = 0
+        if abs(rot) % 180 == 90:
+            w, h = h, w
+        info["width"], info["height"], info["rotation"] = w, h, rot
         info["duration"] = float((data.get("format") or {}).get("duration") or 0.0)
     except Exception:
         pass
@@ -149,7 +454,9 @@ class _Pool:
                 report.setdefault("unprobeable_assets", []).append(Path(p).name)
                 continue
             self.items.append({"path": str(Path(p)), "dur": info["duration"],
-                               "w": info["width"], "h": info["height"], "cursor": 0.0, "uses": 0})
+                               "w": info["width"], "h": info["height"],
+                               "rotation": int(info.get("rotation") or 0),
+                               "cursor": 0.0, "uses": 0})
         self.rot = 0
 
     def fill(self, want: float, min_take: float = 0.2) -> Optional[dict]:
@@ -171,7 +478,8 @@ class _Pool:
         item["uses"] += 1
         return {"path": item["path"], "src_in": src_in, "take": take,
                 "reused": reused, "wrapped": wrapped,
-                "w": item["w"], "h": item["h"]}
+                "w": item["w"], "h": item["h"],
+                "rotation": int(item.get("rotation") or 0)}
 
 
 def _anchor_map_builder(old_b: List[Tuple[float, float]], new_b: List[Tuple[float, float]], new_total: float):
@@ -203,9 +511,15 @@ def _anchor_map_builder(old_b: List[Tuple[float, float]], new_b: List[Tuple[floa
 
 
 def _text_style_material(text: str, style: dict, font_path: Optional[str] = None) -> dict:
-    """按模版文字样式造一条**真文字**素材（字号/颜色/描边/阴影/底框），文案是新的。"""
+    """按模版文字样式造一条**真文字**素材（字号/颜色/描边/阴影/底框），文案是新的。
+
+    `font_path` 是套用端按**字体名**在本机解析出的实际文件（见 resolve_template_font）；
+    解析不到才给 None（此时字体名留空，渲染端会退到系统字体并留痕）。
+    """
     size = float(style.get("font_size_units") or 15.0)
     color = style.get("color") or [255, 255, 255]
+    lmw = style.get("line_max_width")
+    line_max_width = float(lmw) if (lmw and 0.0 < float(lmw) <= 1.0) else 0.82
     st0: Dict[str, Any] = {
         "fill": {"content": {"solid": {"color": _rgb01(color)}}},
         "font": {"path": font_path or "", "id": ""},
@@ -272,7 +586,7 @@ def _text_style_material(text: str, style: dict, font_path: Optional[str] = None
         "layer_weight": 1,
         "letter_spacing": 0.0,
         "line_feed": 1,
-        "line_max_width": 0.82,
+        "line_max_width": line_max_width,
         "line_spacing": float(style.get("line_spacing") or 0.0),
         "lyrics_template": {"path": "", "resource_id": ""},
         "name": "",
@@ -374,6 +688,56 @@ def _speed_material() -> dict:
     return {"curve_speed": None, "id": _uid(), "mode": 0, "speed": 1.0, "type": "speed"}
 
 
+# uv 裁切能不能掁过来：只看「裁切框宽高比」与「新素材宽高比」是否一致（±3%）
+CROP_ASPECT_TOLERANCE = 0.0296  # ln(1.03)
+
+
+def usable_crop(seg: dict, fill: dict, canvas_w: float, canvas_h: float,
+                rep: Optional[dict] = None) -> Optional[dict]:
+    """模版带过来的 uv 裁切（源素材的预裁框）能不能直接套到新素材上。
+
+    原来什么：无脑把 `geometry.crop`（归一化 uv）写进新素材的 material.crop。
+    问题：uv 是对**源素材那块画面的宽高比**成立的。新素材换成 16:9 横拍后，同一组 uv
+    会裁出完全不同的取景；素材带旋转元数据（1920x1080 + rotation=-90）时更糟——
+    渲染器按 ffprobe 的未旋转宽高算 crop，实际解码帧是 1080x1920，
+    `crop=1920:966` 在 1080 宽的帧上直接报 Invalid size，整条渲染挂掉。
+
+    改成什么：先用模版的 `geometry.size_ratio` 反推出原裁切框的宽高比
+        （size_ratio 是 contain 后的显示比例，cb_aspect = sr_w*W /(sr_h*H)），
+    与新素材宽高比比对，偏差在 3% 以内才搬；否则丢掉裁切并计数（crop_uv_dropped），
+    让图层按整幅 contain —— 宁可少裁一刀，也不能裁错地方或把渲染弄崩。
+    带 90/270 旋转的素材一律不搬 uv 裁切（渲染器那条裁切算式不看旋转）。
+    """
+    geom = seg.get("geometry") or {}
+    crop = geom.get("crop")
+    if not crop:
+        return None
+    w, h = float(fill.get("w") or 0), float(fill.get("h") or 0)
+    rotated = abs(int(fill.get("rotation") or 0)) % 180 == 90
+    sr = geom.get("size_ratio")
+    want = None
+    if sr and len(sr) == 2 and float(sr[1] or 0) > 0:
+        want = (float(sr[0]) * canvas_w) / max(1e-6, float(sr[1]) * canvas_h)
+    if not rotated and want and w > 0 and h > 0:
+        got = w / max(1e-6, h)
+        if abs(math.log(max(1e-6, got) / max(1e-6, want))) <= CROP_ASPECT_TOLERANCE:
+            return crop
+        reason = "aspect_mismatch"
+    elif rotated:
+        reason = "rotation_metadata"
+    else:
+        # 判不了（模版没记 size_ratio 或素材尺寸缺失）→ 照搬，模版已标 crop_uv_inherited_from_source_material
+        return crop
+    if rep is not None:
+        rep["crop_uv_dropped"] = rep.get("crop_uv_dropped", 0) + 1
+        rep.setdefault("crop_uv_dropped_detail", []).append({
+            "key": seg.get("key"), "reason": reason,
+            "template_crop_box_aspect": round(want, 3) if want else None,
+            "asset_aspect": round(w / max(1e-6, h), 3),
+        })
+    return None
+
+
 def _anim_holder(animations: List[dict], seg_dur: float, report: dict) -> Tuple[dict, List[dict]]:
     """段内比例动画 → material_animations 素材（时长/起点按新段长还原，溢出钳住）。"""
     items = []
@@ -472,7 +836,8 @@ def _segment(*, mat_id: str, tl_start: float, dur: float, src_in: float, src_dur
 
 
 def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any],
-                   out_draft_path: Path | str, report: Optional[dict] = None) -> Path:
+                   out_draft_path: Path | str, report: Optional[dict] = None,
+                   *, style_id: Optional[str] = None) -> Path:
     """模版 + 新素材 + 新文案 → 原生草稿 `draft_content.json`（返回该文件路径）。"""
     rep: dict = report if report is not None else {}
     for key in ("skipped", "asset_fallback", "notes"):
@@ -483,7 +848,6 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
     rep.setdefault("anim_clamped", 0)
     rep.setdefault("texts_truncated", 0)
     rep.setdefault("text_reused", 0)
-
     out_p = Path(out_draft_path)
     draft_dir = out_p.parent if out_p.suffix.lower() == ".json" else out_p
     draft_dir.mkdir(parents=True, exist_ok=True)
@@ -496,15 +860,35 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
     fps = float(template.get("fps") or 30.0)
     total_old = float(template.get("duration_sec") or 0.0)
     root_uuid = _uid()
-    # 模版不含字体文件（商用字体不能随模版走）：回落系统 CJK 字体，字号/样式照旧
-    font_path = resolve_font_path()
-    rep["font_fallback"] = Path(font_path).name if font_path else None
-    if not font_path and template.get("text_slots"):
+    # 模版不带字体文件（商用字体不能随模版走）：先按**字体名**在本机就近解析，
+    # 真的一个都找不到才回落系统 CJK 字体（字号/样式照旧）。
+    fallback_font = resolve_font_path()
+    rep["font_fallback"] = Path(fallback_font).name if fallback_font else None
+    if not fallback_font and template.get("text_slots"):
         rep["notes"].append("找不到系统 CJK 字体：文字会回落成位图字体，字号将不生效")
 
     segments: List[dict] = template.get("segments") or []
     tracks: List[dict] = template.get("tracks") or []
     text_slots: List[dict] = template.get("text_slots") or []
+
+    # ---- 字体：模版字体名 → 本机文件（逐位解析，逐位记账）----
+    slot_font: Dict[int, Optional[str]] = {}
+    font_resolved: Dict[str, dict] = {}
+    font_fallback_slots: List[dict] = []
+    for si, slot in enumerate(text_slots):
+        fname = str(((slot.get("font") or {}).get("name")) or "").strip()
+        hit = resolve_template_font(fname, style_id) if fname else None
+        if hit:
+            slot_font[si] = hit["path"]
+            entry = font_resolved.setdefault(fname, {"path": hit["path"], "via": hit["via"],
+                                                      "slots": []})
+            entry["slots"].append(si)
+        else:
+            slot_font[si] = fallback_font
+            font_fallback_slots.append({"slot": si, "template_font": fname or None,
+                                        "fallback": Path(fallback_font).name if fallback_font else None})
+    rep["font_resolved"] = font_resolved
+    rep["font_fallback_slots"] = font_fallback_slots
     driver_idx = next((t["index"] for t in tracks if t.get("is_driver")), None)
     if driver_idx is None:
         cand = [t for t in tracks if t.get("role") == "a_roll"]
@@ -666,30 +1050,60 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
     out_tracks: List[dict] = []
     texts_used = 0
 
-    # 文字位 → 新文案（按文字位顺序，不够就循环复用并计数）
+    # 文字位 → 新文案
+    #   ① 显式对位优先：文案项写成 {"slot": 4, "text": "..."} 就精确落到第 4 个文字位
+    #      （24 个文字位跨 4 条文字轨、时间上交错，纯靠顺序铺很容易把大字贴到字幕位上）
+    #   ② 其余按文字位顺序铺，不够就循环复用并计 text_reused（与旧行为一致）
+    #   ③ 每一位都过 layout_text()：先按版式容量换行，行数超上限才截断
     slot_text: Dict[int, str] = {}
+    text_layout_report: List[dict] = []
+    explicit: Dict[int, Any] = {}
+    loose: List[Any] = []
+    for item in texts or []:
+        if isinstance(item, dict) and isinstance(item.get("slot"), int):
+            explicit[int(item["slot"])] = item
+        else:
+            loose.append(item)
     for si in range(len(text_slots)):
-        raw = None
-        if texts:
-            if si < len(texts):
-                raw = texts[si]
+        slot = text_slots[si]
+        raw = explicit.get(si)
+        if raw is None and loose:
+            if si < len(loose):
+                raw = loose[si]
             else:
-                raw = texts[si % len(texts)]
+                raw = loose[si % len(loose)]
                 rep["text_reused"] += 1
         if isinstance(raw, dict):
             raw = raw.get("text")
         txt = str(raw or "").strip()
         if not txt:
             continue
-        cap = int(text_slots[si].get("char_cap") or 0)
-        max_lines = int(text_slots[si].get("max_lines") or 1)
-        lines = txt.split("\n")[:max_lines]
-        txt = "\n".join(lines)
-        if cap > 0 and len(txt.replace("\n", "")) > cap:
-            flat = txt.replace("\n", "")
-            txt = flat[: max(1, cap - 1)] + "…"
+        per_line = int(slot.get("capacity_per_line") or 0)
+        max_lines = int(slot.get("max_lines") or slot.get("capacity_lines") or 1)
+        capacity = int(slot.get("char_cap") or 0)
+        if per_line <= 0:
+            # 旧模版（没有 capacity_per_line）：按总容量除行数反推，不直接当单行限制
+            per_line = max(1, capacity // max(1, max_lines)) if capacity else 12
+        laid = layout_text(txt, per_line, max_lines)
+        if laid["truncated"]:
             rep["texts_truncated"] += 1
-        slot_text[si] = txt
+        slot_text[si] = laid["text"]
+        text_layout_report.append({
+            "slot": si,
+            "track_index": slot.get("track_index"),
+            "font": (slot.get("font") or {}).get("name"),
+            "font_path_source": (next((v.get("via") for v in font_resolved.values()
+                                       if si in (v.get("slots") or [])), None) or "fallback"),
+            "capacity": capacity,
+            "per_line": per_line,
+            "max_lines": max_lines,
+            "capacity_basis": slot.get("char_cap_basis") or "legacy",
+            "new_text_len": laid["new_text_len"],
+            "lines_used": laid["lines_used"],
+            "truncated": bool(laid["truncated"]),
+            "text": laid["text"],
+        })
+    rep["text_layout"] = text_layout_report
 
     track_segs: Dict[int, List[dict]] = {t["index"]: [] for t in tracks}
     for seg in sorted(segments, key=lambda s: (s["track_index"], s.get("start_sec") or 0.0)):
@@ -712,11 +1126,12 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
             key = fill["path"]
             sub = "video"
             name = stage(key, sub)
-            mk = f"{key}|{json.dumps(geometry.get('crop') or {})}"
+            crop_use = usable_crop(seg, fill, canvas_w, canvas_h, rep)
+            mk = f"{key}|{json.dumps(crop_use or {})}"
             if mk not in video_mats:
                 video_mats[mk] = _video_material(
                     name, root_uuid, f"materials/{sub}", fill["w"], fill["h"],
-                    float(max(fill["take"], 0.1)), geometry.get("crop"),
+                    float(max(fill["take"], 0.1)), crop_use,
                     is_photo=(p["kind"] == "photo"))
                 video_mats[mk]["_path"] = key
             mat_id = video_mats[mk]["id"]
@@ -748,7 +1163,7 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
             plan_txt = slot_text[si]
             style = (text_slots[si].get("style") or {})
             if si not in text_mats:
-                text_mats[si] = _text_style_material(plan_txt, style, font_path)
+                text_mats[si] = _text_style_material(plan_txt, style, slot_font.get(si))
             mat_id = text_mats[si]["id"]
             texts_used += 1
             src_dur = 0.0
@@ -941,6 +1356,12 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
                                     None), "segments": len(s)} for idx, s in
                        ((tr["index"], track_segs[tr["index"]]) for tr in tracks if track_segs.get(tr["index"]))],
         "texts_used": texts_used,
+        "texts_truncated": rep.get("texts_truncated", 0),
+        "crop_uv_dropped": rep.get("crop_uv_dropped", 0),
+        "crop_uv_dropped_detail": rep.get("crop_uv_dropped_detail", []),
+        "text_layout": text_layout_report,
+        "font_resolved": font_resolved,
+        "font_fallback_slots": font_fallback_slots,
         "anchors": [{"old_start": round(o0, 4), "old_end": round(o1, 4),
                      "new_start": round(n0, 4), "new_end": round(n1, 4)}
                     for (o0, o1), (n0, n1) in zip(old_b, new_b)],
@@ -952,8 +1373,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="把复刻模版套到新素材/新文案上，产出原生草稿")
     ap.add_argument("--template", required=True, help="模版 JSON")
     ap.add_argument("--assets", help="素材 JSON：{角色: [路径...]}")
-    ap.add_argument("--texts", help="文案 JSON（字符串数组）或 UTF-8 文本（每行一条）")
+    ap.add_argument("--texts", help="文案 JSON（字符串数组 / {\"slot\":i,\"text\":\"...\"} 对象数组）或 UTF-8 文本（每行一条）")
     ap.add_argument("--out", required=True, help="输出草稿目录（或 draft_content.json 路径）")
+    ap.add_argument("--style-id", default=None, help="风格 id（字体优先在该风格的字体资产里找）")
     args = ap.parse_args()
 
     tpl = json.loads(Path(args.template).read_text(encoding="utf-8"))
@@ -963,10 +1385,12 @@ def main() -> int:
         raw = Path(args.texts).read_text(encoding="utf-8")
         texts = json.loads(raw) if raw.lstrip().startswith("[") else [x for x in raw.splitlines() if x.strip()]
     rep: dict = {}
-    out = apply_template(tpl, assets, texts, Path(args.out), rep)
+    out = apply_template(tpl, assets, texts, Path(args.out), rep, style_id=args.style_id)
     print(json.dumps({k: rep.get(k) for k in ("out_draft", "duration_sec", "segments_total",
                                               "segments_by_role", "asset_reused", "asset_wrapped",
-                                              "slot_shrunk", "anim_clamped", "skipped")},
+                                              "slot_shrunk", "anim_clamped", "skipped",
+                                              "texts_truncated", "font_resolved",
+                                              "font_fallback_slots")},
                      ensure_ascii=False, indent=2))
     print(f"[apply-template] -> {out}")
     return 0
