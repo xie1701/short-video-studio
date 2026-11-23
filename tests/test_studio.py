@@ -3365,5 +3365,240 @@ class OverlayFrameRenderTests(unittest.TestCase):
             self.assertFalse((Path(td) / "f00002.png").exists())
 
 
+class ReplicaTemplateTests(unittest.TestCase):
+    """复刻模版：提取（与素材无关）→ 套用（时间轴锚点重映射）→ 可编辑原生草稿。
+
+    这里只用**合成草稿**做断言，不依赖 forensic 快照；真实草稿那一条链路走
+    `dev_tools/verify_replica_template.py`（按风格哈希自动找草稿，代码里不留草稿名）。
+    """
+
+    @staticmethod
+    def _mk_draft() -> dict:
+        """最小但结构完整的草稿：主轨 2 段（一段带缩放关键帧）+ 叠加 1 段 + 文字 2 条 + 音频 1 条。"""
+        US = 1_000_000
+
+        def tr(start, dur):
+            return {"start": start, "duration": dur}
+
+        vid = lambda mid, name, w=1080, h=1920: {  # noqa: E731
+            "id": mid, "material_name": name, "path": f"##_draftpath_placeholder_ABCD_##/{name}",
+            "type": "video", "width": w, "height": h, "crop": {}, "duration": 10 * US,
+            "matting": {"path": ""},
+        }
+        anim = {"id": "ANIM1", "type": "sticker_animation", "animations": [
+            {"type": "in", "name": "缩小", "duration": 400000, "id": "a"}]}
+        text_mat = {
+            "id": "TXT1", "type": "subtitle", "font_size": 32.0, "has_shadow": True,
+            "shadow_point": {"x": 0.6, "y": -0.6}, "shadow_distance": 5.0,
+            "shadow_smoothing": 0.3, "shadow_alpha": 0.6, "shadow_color": "#000000",
+            "line_spacing": 0.02, "border_width": 0.08,
+            "content": json.dumps({"text": "粉丝认可度", "styles": [
+                {"fill": {"content": {"solid": {"color": [1.0, 0.96, 0.54]}}},
+                 "size": 32, "range": [0, 5]}]}, ensure_ascii=False),
+        }
+        audio = {"id": "AUD1", "type": "sound", "path": "##_draftpath_placeholder_ABCD_##/a.mp3",
+                 "duration": 800000, "name": "ding"}
+        seg = lambda mid, start, dur, **kw: {  # noqa: E731
+            "id": f"SEG_{mid}_{start}", "material_id": mid,
+            "target_timerange": tr(start, dur), "source_timerange": tr(0, dur),
+            "clip": kw.pop("clip", {"alpha": 1.0, "scale": {"x": 1.0, "y": 1.0},
+                                    "transform": {"x": 0.0, "y": 0.0}, "flip": {}}),
+            "speed": 1.0, "extra_material_refs": kw.pop("refs", []),
+            "common_keyframes": kw.pop("kfs", []),
+        }
+        kf = {"property_type": "KFTypeScaleX", "keyframe_list": [
+            {"time_offset": 500000, "values": [1.4]},
+            {"time_offset": 1500000, "values": [1.0]}]}
+        return {
+            "duration": 4 * US, "fps": 30.0,
+            "canvas_config": {"width": 1080, "height": 1920},
+            "materials": {
+                "videos": [vid("V1", "main.mp4"), vid("V2", "card.mp4", 720, 1280)],
+                "audios": [audio], "texts": [text_mat], "stickers": [], "common_mask": [],
+                "material_animations": [anim], "video_effects": [], "drafts": [],
+            },
+            "tracks": [
+                {"type": "video", "flag": 0, "segments": [
+                    seg("V1", 0, 2000000, kfs=[kf]), seg("V1", 2000000, 2000000)]},
+                {"type": "video", "flag": 2, "segments": [
+                    seg("V2", 500000, 1000000, refs=["ANIM1"],
+                        clip={"alpha": 1.0, "scale": {"x": 0.5, "y": 0.5},
+                              "transform": {"x": 0.2, "y": -0.1}, "flip": {}})]},
+                {"type": "text", "flag": 0, "segments": [
+                    seg("TXT1", 0, 1500000,
+                        clip={"alpha": 1.0, "scale": {"x": 1.0, "y": 1.0},
+                              "transform": {"x": 0.0, "y": -0.4}, "flip": {}}),
+                    seg("TXT1", 2000000, 2000000,
+                        clip={"alpha": 1.0, "scale": {"x": 1.0, "y": 1.0},
+                              "transform": {"x": 0.0, "y": 0.5}, "flip": {}})]},
+                {"type": "audio", "flag": 0, "segments": [seg("AUD1", 0, 4000000)]},
+            ],
+        }
+
+    def test_extract_is_material_free_and_counts_unknown(self):
+        from replica_template import extract_template
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "draft_content.json"
+            p.write_text(json.dumps(self._mk_draft(), ensure_ascii=False), encoding="utf-8")
+            tpl = extract_template(p)
+        blob = json.dumps(tpl, ensure_ascii=False)
+        # 素材无关：不留路径、不留草稿名、不留用户目录
+        for bad in ("draftpath_placeholder", "main.mp4", "card.mp4", "/Users/", "\\Users"):
+            self.assertNotIn(bad, blob)
+        self.assertTrue(tpl["source_ref"].startswith("sha256:"))
+        self.assertEqual(tpl["duration_sec"], 4.0)
+        # 主轨/叠加/文字/音频的角色
+        roles = {t["index"]: t["role"] for t in tpl["tracks"]}
+        self.assertEqual(roles[0], "a_roll")
+        self.assertEqual(roles[1], "b_roll")
+        self.assertEqual(roles[2], "text")
+        self.assertEqual(roles[3], "audio")
+        self.assertTrue(tpl["tracks"][0]["is_driver"])
+        # 关键帧转成段内相对比例（源时间是绝对量，提取端必须归一）
+        kfs = tpl["segments"][0]["keyframes"]
+        self.assertEqual(kfs[0]["property"], "KFTypeScaleX")
+        self.assertAlmostEqual(kfs[0]["points"][0]["t"], 0.25, places=3)
+        self.assertAlmostEqual(kfs[0]["points"][1]["t"], 0.75, places=3)
+        # 叠加卡片显示面积小于画布一半 → overlay_card；主轨视频 → a_roll
+        self.assertEqual(tpl["asset_roles"]["V1"], "a_roll")
+        self.assertIn(tpl["asset_roles"]["V2"], ("overlay_card", "b_roll"))
+        self.assertEqual(tpl["asset_roles"]["TXT1"], "font")
+        # 单段铺满全片 → BGM（音效轨是「很多短段」，不该靠轨覆盖时长判断）
+        self.assertEqual(tpl["asset_roles"]["AUD1"], "bgm")
+        self.assertEqual(tpl["counts"]["unknown"], 0)
+        # 文字位：容量上限来自源文案长度
+        self.assertEqual(tpl["text_slots"][0]["char_cap"], 5)
+        self.assertEqual(tpl["text_slots"][0]["style"]["font_size_units"], 32.0)
+
+    def test_unreferenced_material_is_unknown_not_guessed(self):
+        from replica_template import extract_template
+        d = self._mk_draft()
+        d["materials"]["videos"].append({"id": "V9", "material_name": "orphan.mp4",
+                                          "path": "##_draftpath_placeholder_ABCD_##/orphan.mp4",
+                                          "type": "video", "width": 1080, "height": 1920})
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "draft_content.json"
+            p.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+            tpl = extract_template(p)
+        self.assertEqual(tpl["asset_roles"]["V9"], "unknown")
+        self.assertEqual(tpl["counts"]["unknown"], 1)
+        self.assertEqual(tpl["unknown_items"][0]["material_id"], "V9")
+        self.assertEqual(tpl["unknown_items"][0]["reason"], "not_referenced_by_any_segment")
+
+    def test_apply_remaps_anchors_and_scales_keyframes(self):
+        from replica_template import extract_template
+        from apply_replica_template import apply_template
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            # 新素材：主轨只有一段 1.2s（模版主轨 2×2s）→ 第一段缩到 1.2s，边界必须整体前移
+            assets_dir = td / "media"
+            assets_dir.mkdir()
+            for name in ("x1.mp4", "x2.mp4"):
+                (assets_dir / name).write_bytes(b"not a real video")
+            p = td / "draft_content.json"
+            p.write_text(json.dumps(self._mk_draft(), ensure_ascii=False), encoding="utf-8")
+            tpl = extract_template(p)
+            # 直接给模板池喂「时长已知」的假素材：用 mock 掉探针，避免依赖真视频
+            from apply_replica_template import _Pool
+            with unittest.mock.patch.object(_Pool, "__init__", lambda self, role, paths, rep: (
+                    setattr(self, "role", role),
+                    setattr(self, "rot", 0),
+                    setattr(self, "items", [{"path": s, "dur": 1.2, "w": 1080, "h": 1920,
+                                              "cursor": 0.0, "uses": 0} for s in paths]))[-1]), \
+                 unittest.mock.patch("apply_replica_template.probe_media",
+                                     lambda path: {"duration": 1.2, "width": 1080, "height": 1920}), \
+                 unittest.mock.patch("apply_replica_template.shutil.copy2", lambda a, b: None):
+                rep = {}
+                out = apply_template(tpl, {"a_roll": [str(assets_dir / "x1.mp4")],
+                                           "b_roll": [str(assets_dir / "x2.mp4")],
+                                           "sfx": [str(assets_dir / "x1.mp4")]},
+                                     ["新文案一", "新文案二"], td / "out_draft", rep)
+            draft = json.loads(Path(out).read_text(encoding="utf-8"))
+            main = next(t for t in draft["tracks"] if t["type"] == "video" and not t["flag"])
+            durs = [s["target_timerange"]["duration"] / 1e6 for s in main["segments"]]
+            # 锚点重排：素材只剩 1.2s → 第一段 1.2s，第二段回卷再来 1.2s；不是把 2s 等比缩成 1.2s 外的比例
+            self.assertAlmostEqual(durs[0], 1.2, places=3)
+            self.assertAlmostEqual(sum(durs), 2.4, places=3)
+            self.assertAlmostEqual(rep["duration_sec"], 2.4, places=3)
+            self.assertGreaterEqual(rep["slot_shrunk"], 2)
+            self.assertGreaterEqual(rep["asset_reused"], 1)
+            # 段内比例：关键帧仍在段内的 0.25 / 0.75 处
+            kf = main["segments"][0]["common_keyframes"][0]["keyframe_list"]
+            span = durs[0]
+            self.assertAlmostEqual(kf[0]["time_offset"] / 1e6 / span, 0.25, places=2)
+            self.assertAlmostEqual(kf[1]["time_offset"] / 1e6 / span, 0.75, places=2)
+            # 文字轨：起点跟着驱动轨边界走（第二段文字原在 2.0s 边界 → 新片 1.2s 边界）
+            txt = next(t for t in draft["tracks"] if t["type"] == "text")
+            starts = [s["target_timerange"]["start"] / 1e6 for s in txt["segments"]]
+            self.assertAlmostEqual(starts[0], 0.0, places=2)
+            self.assertAlmostEqual(starts[1], 1.2, places=2)
+            # 文字是真文字素材（可编辑），不是烘的 PNG
+            # 两条文字位各一条真文字素材（可编辑），不是烘的 PNG
+            self.assertEqual(len(draft["materials"]["texts"]), 2)
+            self.assertTrue(any("新文案" in m["content"] for m in draft["materials"]["texts"]))
+
+    def test_overlay_on_same_source_follows_main_track(self):
+        """叠加层用主轨同一素材（原版是推近/缩窗重构图）：模版记 same_material_as，
+        套用时跟随主轨同一素材与入点，而不是另接一段 B-roll。"""
+        from replica_template import extract_template
+        from apply_replica_template import apply_template, _Pool
+        d = self._mk_draft()
+        # 把叠加轨改成用主轨同一个素材文件（时间上盖住主轨第 2 段）
+        d["tracks"][1]["segments"][0]["material_id"] = "V1"
+        with tempfile.TemporaryDirectory() as td:
+            td = Path(td)
+            p = td / "draft_content.json"
+            p.write_text(json.dumps(d, ensure_ascii=False), encoding="utf-8")
+            tpl = extract_template(p)
+            ov = [s for s in tpl["segments"] if s["track_index"] == 1][0]
+            # 叠加段 0.5~1.5s 与主轨第 0 段（0~2.0s）重叠最多
+            self.assertEqual(ov["same_material_as"], "seg:0:0")
+            with unittest.mock.patch.object(_Pool, "__init__", lambda self, role, paths, rep: (
+                    setattr(self, "role", role), setattr(self, "rot", 0),
+                    setattr(self, "items", [{"path": s, "dur": 8.0, "w": 1080, "h": 1920,
+                                             "cursor": 0.0, "uses": 0} for s in paths]))[-1]), \
+                 unittest.mock.patch("apply_replica_template.probe_media",
+                                     lambda path: {"duration": 8.0, "width": 1080, "height": 1920}), \
+                 unittest.mock.patch("apply_replica_template.shutil.copy2", lambda a, b: None):
+                rep = {}
+                out = apply_template(tpl, {"a_roll": ["/tmp/one.mp4"]}, ["甲", "乙"], td / "od", rep)
+            draft = json.loads(Path(out).read_text(encoding="utf-8"))
+            main = next(t for t in draft["tracks"] if t["type"] == "video" and not t["flag"])
+            overlay = next(t for t in draft["tracks"] if t["type"] == "video" and t["flag"] == 2)
+            m, o = main["segments"][0], overlay["segments"][0]
+            self.assertEqual(rep["content_linked"], 1)
+            # 同一素材、入点 = 主轨入点 + 段内偏移（+0.5s）
+            self.assertEqual(o["material_id"], m["material_id"])
+            self.assertAlmostEqual(o["source_timerange"]["start"] / 1e6,
+                                   (m["source_timerange"]["start"] + 500000) / 1e6, places=3)
+
+    def test_apply_requires_aroll_assets(self):
+        from replica_template import extract_template
+        from apply_replica_template import apply_template
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "draft_content.json"
+            p.write_text(json.dumps(self._mk_draft(), ensure_ascii=False), encoding="utf-8")
+            tpl = extract_template(p)
+            with self.assertRaises(RuntimeError):
+                apply_template(tpl, {}, [], Path(td) / "out")
+
+    def test_text_style_roundtrip(self):
+        """模版里的文字样式写回草稿后，渲染器读到的字号/颜色/阴影必须还是同一套。"""
+        from replica_template import extract_template, text_style_of
+        from apply_replica_template import _text_style_material
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "draft_content.json"
+            p.write_text(json.dumps(self._mk_draft(), ensure_ascii=False), encoding="utf-8")
+            tpl = extract_template(p)
+        style = tpl["text_slots"][0]["style"]
+        mat = _text_style_material("新的一行字", style)
+        back = text_style_of(mat)
+        self.assertAlmostEqual(back["font_size_units"], style["font_size_units"], places=3)
+        self.assertEqual(back["color"], style["color"])
+        self.assertEqual(bool(back["shadow"]), bool(style["shadow"]))
+        self.assertAlmostEqual(back["shadow"]["alpha"], style["shadow"]["alpha"], places=3)
+        self.assertAlmostEqual(back["line_spacing"], style["line_spacing"], places=4)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,976 @@
+#!/usr/bin/env python3
+"""复刻模版套用器：把「与素材无关的结构模版」套到**新素材 + 新文案**上，产出原生草稿。
+
+产出的是**可编辑的原生草稿 JSON**（真文字素材、真视频素材、真音频素材，分轨独立），
+不是烘好的 mp4；用剪辑软件打开就能改字/改时长/换素材。
+
+时间轴重映射（核心，别改坏）
+---------------------------
+模版里每段带 `start_ratio` / `duration_ratio`（占总时长比例）与 `slot`（第几段），
+关键帧/动画带的是**段内相对比例**。新素材总时长与模版不同时：
+
+1. **驱动轨**（`is_driver` 的主轨）按「段边界锚点」重排：逐段取
+   `新段时长 = min(模版段时长, 该素材剩余可用时长)`，从 0 顺次铺开。
+   这**不是**把每段等比缩放——等比会让静止段变长、动段变短，节奏就散了。
+   素材放完就回到素材头（记 `asset_wrapped`），不肯把一段冻成定格画面。
+2. 其余轨（叠加/文字/贴纸/音频）的起点按驱动轨的**边界锚点**做分段线性映射：
+   `t' = map(t)`，即「模版第 k 个切点 → 新片第 k 个切点」。时长按该锚点所在
+   驱动段的局部伸缩比缩放（叠加视频再被素材剩余时长钳一次）。
+3. 关键帧 / 出场动画的时间 = 段内比例 × 新段时长；动画超出段长就钳到段长并记
+   `anim_clamped`（不静默丢动画，也不让它溢出到下一段）。
+4. 文字按文字位顺序填，超过 `char_cap` 截断并记 `texts_truncated`；文字位数少于段数时
+   循环复用并记 `text_reused`。
+
+素材不够时按角色顺序回落（`overlay_card → b_roll → a_roll`、`a_roll → b_roll` 等），
+每次回落与复用都进报告；绝不假装「素材刚好够」。
+
+用法：
+    python3 scripts/apply_replica_template.py --template tpl.json \
+        --assets assets.json --texts texts.json --out /tmp/new_draft
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import time
+import uuid
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+US = 1_000_000
+CANVAS_W, CANVAS_H = 1080, 1920
+
+# 角色回落链：写出来的素材角色 → 可以顶替的角色（按顺序）
+# 音频刻意不互通：音乐床（bgm）与音效（sfx）不是同一种东西 —— 把 15s 音乐床
+# 切成十来个音效槽会把声音弄成断续噪声，比「没声音效」更不诚实，所以 sfx 缺素材
+# 一律跳过并计数（报告里看得到），只有 bgm 缺素材时才允许拿 sfx 顶主床。
+ROLE_FALLBACK = {
+    "a_roll": ("a_roll", "b_roll", "photo"),
+    "b_roll": ("b_roll", "a_roll", "photo"),
+    "overlay_card": ("overlay_card", "b_roll", "a_roll", "photo"),
+    "photo": ("photo", "a_roll"),
+    "sticker": ("sticker",),
+    "bgm": ("bgm", "sfx"),
+    "sfx": ("sfx",),
+}
+TRACK_TYPE_OF_ROLE = {
+    "a_roll": "video", "b_roll": "video", "overlay_card": "video", "photo": "video",
+    "text": "text", "sticker": "sticker", "effect": "effect", "audio": "audio",
+}
+
+
+def _uid() -> str:
+    return str(uuid.uuid4()).upper()
+
+
+# 字体回落候选：模版不带商用字体（版权也不允许带），套用时只能回落到系统字体。
+# 不回落的话 PIL 会退到 10px 位图字体，字号样式全白写，字会小到看不清。
+# 这些是**系统字体目录**，不含任何用户目录/应用私有目录；Windows/Linux 也列了常见路径。
+FONT_CANDIDATES = (
+    "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/Songti.ttc",
+    "C:/Windows/Fonts/msyh.ttc",
+    "C:/Windows/Fonts/simhei.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+)
+
+
+def resolve_font_path() -> Optional[str]:
+    """系统 CJK 字体：环境变量 SVS_REPLICA_FONT 优先，否则按固定候选表探活。"""
+    env = os.environ.get("SVS_REPLICA_FONT")
+    if env and Path(env).is_file():
+        return env
+    for cand in FONT_CANDIDATES:
+        if Path(cand).is_file():
+            return cand
+    return None
+
+
+def _us(sec: float) -> int:
+    return int(round(float(sec) * US))
+
+
+def _hex(rgb: List[int] | Tuple[int, ...]) -> str:
+    r, g, b = (max(0, min(255, int(round(v)))) for v in tuple(rgb)[:3])
+    return f"#{r:02X}{g:02X}{b:02X}"
+
+
+def _rgb01(rgb: List[int] | Tuple[int, ...]) -> List[float]:
+    return [round(max(0, min(255, float(v))) / 255.0, 6) for v in tuple(rgb)[:3]]
+
+
+def probe_media(path: Path) -> dict:
+    """素材探针：时长 + 像素尺寸（失败给保守默认值，并在报告里留痕）。"""
+    info = {"duration": 0.0, "width": 0, "height": 0}
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height:format=duration", "-of", "json", str(path)],
+            capture_output=True, text=True, timeout=60)
+        data = json.loads(proc.stdout or "{}")
+        st = (data.get("streams") or [{}])[0]
+        info["width"] = int(st.get("width") or 0)
+        info["height"] = int(st.get("height") or 0)
+        info["duration"] = float((data.get("format") or {}).get("duration") or 0.0)
+    except Exception:
+        pass
+    if info["duration"] <= 0:
+        try:
+            proc = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                                   "-of", "csv=p=0", str(path)], capture_output=True, text=True, timeout=60)
+            info["duration"] = max(0.0, float((proc.stdout or "").strip() or 0.0))
+        except Exception:
+            info["duration"] = 0.0
+    return info
+
+
+# ---------------------------------------------------------------- 时间轴规划
+
+
+class _Pool:
+    """一个角色的素材池：轮转取用 + 每条素材自己的读头（cursor）。"""
+
+    def __init__(self, role: str, paths: List[Path], report: dict):
+        self.role = role
+        self.items: List[dict] = []
+        for p in paths:
+            if not Path(p).is_file():
+                report.setdefault("missing_assets", []).append(Path(p).name)
+                continue
+            info = probe_media(Path(p))
+            if info["duration"] <= 0.05:
+                report.setdefault("unprobeable_assets", []).append(Path(p).name)
+                continue
+            self.items.append({"path": str(Path(p)), "dur": info["duration"],
+                               "w": info["width"], "h": info["height"], "cursor": 0.0, "uses": 0})
+        self.rot = 0
+
+    def fill(self, want: float, min_take: float = 0.2) -> Optional[dict]:
+        """取一段：返回 {path, src_in, take, reused, wrapped}；池空返回 None。"""
+        if not self.items:
+            return None
+        item = self.items[self.rot % len(self.items)]
+        self.rot += 1
+        avail = item["dur"] - item["cursor"]
+        wrapped = False
+        if avail < min(want, min_take):
+            item["cursor"] = 0.0
+            avail = item["dur"]
+            wrapped = True
+        take = max(0.05, min(want, avail))
+        src_in = item["cursor"]
+        item["cursor"] = min(item["dur"], src_in + take)
+        reused = item["uses"] > 0
+        item["uses"] += 1
+        return {"path": item["path"], "src_in": src_in, "take": take,
+                "reused": reused, "wrapped": wrapped,
+                "w": item["w"], "h": item["h"]}
+
+
+def _anchor_map_builder(old_b: List[Tuple[float, float]], new_b: List[Tuple[float, float]], new_total: float):
+    def map_start(t: float) -> float:
+        for (o0, o1), (n0, n1) in zip(old_b, new_b):
+            if t < o1 - 1e-6:
+                if o1 - o0 <= 1e-6:
+                    return n0
+                frac = max(0.0, (t - o0) / (o1 - o0))
+                return n0 + frac * (n1 - n0)
+        if not old_b:
+            return t
+        o0, o1 = old_b[-1]
+        n0, n1 = new_b[-1]
+        rate = (n1 - n0) / max(1e-6, o1 - o0)
+        return min(new_total, n1 + (t - o1) * rate)
+
+    def scale_at(t: float) -> float:
+        for (o0, o1), (n0, n1) in zip(old_b, new_b):
+            if t < o1 - 1e-6:
+                return (n1 - n0) / max(1e-6, o1 - o0)
+        if not old_b:
+            return 1.0
+        o0, o1 = old_b[-1]
+        n0, n1 = new_b[-1]
+        return (n1 - n0) / max(1e-6, o1 - o0)
+
+    return map_start, scale_at
+
+
+def _text_style_material(text: str, style: dict, font_path: Optional[str] = None) -> dict:
+    """按模版文字样式造一条**真文字**素材（字号/颜色/描边/阴影/底框），文案是新的。"""
+    size = float(style.get("font_size_units") or 15.0)
+    color = style.get("color") or [255, 255, 255]
+    st0: Dict[str, Any] = {
+        "fill": {"content": {"solid": {"color": _rgb01(color)}}},
+        "font": {"path": font_path or "", "id": ""},
+        "size": size,
+        "useLetterColor": True,
+        "range": [0, len(text)],
+    }
+    stroke = style.get("stroke")
+    if stroke and float(stroke.get("width_units") or 0) > 0:
+        st0["strokes"] = [{
+            "width": float(stroke["width_units"]),
+            "content": {"solid": {"color": _rgb01(stroke.get("color") or [0, 0, 0])}},
+        }]
+    content = json.dumps({"text": text, "styles": [st0]}, ensure_ascii=False)
+    shadow = style.get("shadow")
+    bg = style.get("background")
+    mat: Dict[str, Any] = {
+        "add_type": 0,
+        "alignment": style.get("alignment"),
+        "background_alpha": float(bg["alpha"]) if bg else 0.0,
+        "background_color": (_hex(bg.get("rgb") or [0, 0, 0]) if bg else ""),
+        "background_height": 0.0,
+        "background_horizontal_offset": 0.0,
+        "background_round_radius": 0.0,
+        "background_style": int(bg["style"]) if bg else 0,
+        "background_vertical_offset": 0.0,
+        "background_width": 0.0,
+        "base_content": "",
+        "beats": [],
+        "bold": bool(style.get("bold")),
+        "border_alpha": 1.0 if stroke else 0.0,
+        "border_color": _hex((stroke or {}).get("color") or [0, 0, 0]),
+        "border_width": float((stroke or {}).get("width_units") or 0.0),
+        "caption_template_info": {"path": "", "resource_id": ""},
+        "check_flag": 39,
+        "combo_info": {},
+        "content": content,
+        "current_words": {},
+        "fixed_height": -1,
+        "fixed_width": -1,
+        "font_category_id": "",
+        "font_category_name": "",
+        "font_id": "",
+        "font_name": Path(font_path).stem if font_path else "",
+        "font_path": font_path or "",
+        "font_resource_id": "",
+        "font_size": size,
+        "font_source_platform": "",
+        "font_team_id": "",
+        "font_title": "",
+        "font_url": "",
+        "fonts": ([{"category_id": "system", "category_name": "系统字体", "effect_id": "",
+                    "id": _uid(), "path": font_path, "resource_id": "", "title": Path(font_path).stem}]
+                  if font_path else []),
+        "force_apply_line_max_width": False,
+        "group_id": "",
+        "has_shadow": bool(shadow),
+        "id": _uid(),
+        "initial_scale": 1.0,
+        "inner_padding": -1.0,
+        "is_rich_text": True,
+        "italic_degree": 0,
+        "language": "zh",
+        "layer_weight": 1,
+        "letter_spacing": 0.0,
+        "line_feed": 1,
+        "line_max_width": 0.82,
+        "line_spacing": float(style.get("line_spacing") or 0.0),
+        "lyrics_template": {"path": "", "resource_id": ""},
+        "name": "",
+        "original_size": [],
+        "preset_category": "",
+        "preset_category_id": "",
+        "preset_has_set_alignment": False,
+        "preset_id": "",
+        "preset_index": 0,
+        "preset_name": "",
+        "recognize_type": 0,
+        "relevance_segment": [],
+        "shadow_alpha": float(shadow["alpha"]) if shadow else 0.0,
+        "shadow_angle": -45,
+        "shadow_color": _hex((shadow or {}).get("color") or [0, 0, 0]),
+        "shadow_distance": float((shadow or {}).get("distance") or 0.0),
+        "shadow_point": {"x": float((shadow or {}).get("point", [0.0, 0.0])[0]),
+                         "y": float((shadow or {}).get("point", [0.0, 0.0])[1])},
+        "shadow_smoothing": float((shadow or {}).get("smoothing") or 0.0),
+        "shape_clip_x": False,
+        "shape_clip_y": False,
+        "style_name": "",
+        "sub_type": 0,
+        "text_alpha": 1.0,
+        "text_color": _hex(color),
+        "text_effect_style": "",
+        "text_effect_strength": 0.5,
+        "text_size": size,
+        "text_to_audio_ids": [],
+        "typesetting": 0,
+        "underline": False,
+        "underline_offset": 0.22,
+        "underline_width": 0.05,
+        "type": "subtitle",
+        "use_effect_default_color": True,
+        "words": {},
+    }
+    ga = style.get("global_alpha")
+    if ga is not None:
+        mat["global_alpha"] = float(ga)
+    return mat
+
+
+def _video_material(path_name: str, root_uuid: str, rel_dir: str, w: int, h: int, dur: float,
+                    crop: Optional[dict] = None, *, is_photo: bool = False) -> dict:
+    crop_dict = {}
+    if crop:
+        crop_dict = {
+            "lower_left_x": crop["x0"], "lower_left_y": crop["y1"],
+            "lower_right_x": crop["x1"], "lower_right_y": crop["y1"],
+            "upper_left_x": crop["x0"], "upper_left_y": crop["y0"],
+            "upper_right_x": crop["x1"], "upper_right_y": crop["y0"],
+        }
+    return {
+        "beauty_face_auto_preset": {},
+        "category_name": "local",
+        "check_flag": 62978047,
+        "crop": crop_dict,
+        "crop_ratio": "free",
+        "crop_scale": 1.0,
+        "duration": _us(dur),
+        "height": int(h or CANVAS_H),
+        "id": _uid(),
+        "local_material_id": _uid(),
+        "material_id": "",
+        "material_name": path_name,
+        "matting": {"path": ""},
+        "path": f"##_draftpath_placeholder_{root_uuid}_##/{rel_dir}/{path_name}",
+        "stable": {"time_range": {}},
+        "type": "photo" if is_photo else "video",
+        "video_algorithm": {"path": "", "story_video_modify_video_config": {}},
+        "width": int(w or CANVAS_W),
+    }
+
+
+def _audio_material(path_name: str, root_uuid: str, rel_dir: str, dur: float, category: str) -> dict:
+    return {
+        "app_id": 0,
+        "category_id": category,
+        "category_name": category,
+        "check_flag": 1,
+        "duration": _us(dur),
+        "effect_id": "",
+        "id": _uid(),
+        "intensifies_path": "",
+        "local_material_id": _uid(),
+        "music_id": _uid(),
+        "name": Path(path_name).stem,
+        "path": f"##_draftpath_placeholder_{root_uuid}_##/{rel_dir}/{path_name}",
+        "request_id": "",
+        "resource_id": "",
+        "source_platform": 0,
+        "team_id": "",
+        "type": "extract_music" if category == "music" else "sound",
+    }
+
+
+def _speed_material() -> dict:
+    return {"curve_speed": None, "id": _uid(), "mode": 0, "speed": 1.0, "type": "speed"}
+
+
+def _anim_holder(animations: List[dict], seg_dur: float, report: dict) -> Tuple[dict, List[dict]]:
+    """段内比例动画 → material_animations 素材（时长/起点按新段长还原，溢出钳住）。"""
+    items = []
+    for an in animations:
+        start = float(an.get("start_ratio") or 0.0) * seg_dur
+        dur = float(an.get("duration_ratio") or 0.0) * seg_dur
+        if dur <= 1e-3:
+            continue
+        if start + dur > seg_dur + 1e-4:
+            new_dur = max(0.05, seg_dur - start)
+            if new_dur < dur - 1e-3:
+                report["anim_clamped"] = report.get("anim_clamped", 0) + 1
+            dur = new_dur
+            if start >= seg_dur - 1e-3:
+                start = max(0.0, seg_dur - dur)
+        item = {"category_id": "", "category_name": "", "duration": _us(dur), "id": _uid(),
+                "material_type": "video", "name": an.get("name"), "panel": "video",
+                "path": "", "resource_id": "", "third_resource_id": "0", "type": an.get("kind")}
+        if start > 1e-4 and an.get("kind") == "out":
+            item["start"] = _us(start)
+        items.append(item)
+    if not items:
+        return {}, []
+    return {"animations": items, "id": _uid(), "type": "sticker_animation"}, items
+
+
+def _keyframes_of(seg: dict, seg_dur: float, src_in: float) -> List[dict]:
+    """段内比例关键帧 → 草稿口径（time_offset 是源时间/容器 PTS 绝对值）。"""
+    out = []
+    for kf in seg.get("keyframes") or []:
+        pts = []
+        for p in kf.get("points") or []:
+            t = float(p.get("t") or 0.0) * seg_dur
+            pts.append({
+                "id": _uid(),
+                "left_control": {"x": 0.0, "y": 0.0},
+                "right_control": {"x": 0.0, "y": 0.0},
+                "time_offset": _us(max(0.0, src_in + t)),
+                "values": [float(p.get("v"))],
+            })
+        if pts:
+            out.append({"id": _uid(), "keyframe_list": pts, "material_id": "",
+                        "property_type": kf.get("property")})
+    return out
+
+
+def _segment(*, mat_id: str, tl_start: float, dur: float, src_in: float, src_dur: float,
+             geometry: dict, keyframes: List[dict], extra_refs: List[str],
+             track_index: int, visible: bool = True, volume: float = 1.0) -> dict:
+    scale = geometry.get("scale") or [1.0, 1.0]
+    transform = geometry.get("transform") or [0.0, 0.0]
+    return {
+        "cartoon": False,
+        "clip": {
+            "alpha": float(geometry["alpha"]) if geometry.get("alpha") is not None else 1.0,
+            "flip": geometry.get("flip") or {},
+            "rotation": float(geometry.get("rotation") or 0.0),
+            "scale": {"x": float(scale[0]), "y": float(scale[1])},
+            "transform": {"x": float(transform[0]), "y": float(transform[1])},
+        },
+        "common_keyframes": keyframes,
+        "enable_adjust": False,
+        "enable_adjust_mask": False,
+        "enable_color_adjust": False,
+        "enable_hsl": False,
+        "extra_material_refs": list(extra_refs),
+        "group_id": "",
+        "hdr_settings": {"intensity": 1.0, "mode": 1, "nits": 1000},
+        "id": _uid(),
+        "intensifies_audio": False,
+        "is_placeholder": False,
+        "is_tone_modify": False,
+        "keyframe_refs": [],
+        "last_nonzero_volume": float(volume),
+        "material_id": mat_id,
+        "render_index": int(track_index),
+        "render_timerange": {},
+        "responsive_layout": {"enable": False, "horizontal_pos_layout": 0,
+                              "target_follow": False, "vertical_pos_layout": 0},
+        "reverse": False,
+        "source": "segmentsourcenormal",
+        "source_timerange": {"duration": _us(src_dur), "start": _us(src_in)},
+        "speed": 1.0,
+        "target_timerange": {"duration": _us(dur), "start": _us(tl_start)},
+        "template_id": "",
+        "template_scene": "default",
+        "track_attribute": 0,
+        "track_render_index": int(track_index),
+        "uniform_scale": {"on": True, "value": 1.0},
+        "visible": bool(visible),
+        "volume": float(volume),
+    }
+
+
+# ---------------------------------------------------------------- 主入口
+
+
+def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any],
+                   out_draft_path: Path | str, report: Optional[dict] = None) -> Path:
+    """模版 + 新素材 + 新文案 → 原生草稿 `draft_content.json`（返回该文件路径）。"""
+    rep: dict = report if report is not None else {}
+    for key in ("skipped", "asset_fallback", "notes"):
+        rep.setdefault(key, {} if key != "notes" else [])
+    rep.setdefault("asset_reused", 0)
+    rep.setdefault("asset_wrapped", 0)
+    rep.setdefault("slot_shrunk", 0)
+    rep.setdefault("anim_clamped", 0)
+    rep.setdefault("texts_truncated", 0)
+    rep.setdefault("text_reused", 0)
+
+    out_p = Path(out_draft_path)
+    draft_dir = out_p.parent if out_p.suffix.lower() == ".json" else out_p
+    draft_dir.mkdir(parents=True, exist_ok=True)
+    for sub in ("materials/video", "materials/audio", "materials/sticker"):
+        (draft_dir / sub).mkdir(parents=True, exist_ok=True)
+
+    canvas = template.get("canvas") or {}
+    canvas_w = int(canvas.get("width") or CANVAS_W)
+    canvas_h = int(canvas.get("height") or CANVAS_H)
+    fps = float(template.get("fps") or 30.0)
+    total_old = float(template.get("duration_sec") or 0.0)
+    root_uuid = _uid()
+    # 模版不含字体文件（商用字体不能随模版走）：回落系统 CJK 字体，字号/样式照旧
+    font_path = resolve_font_path()
+    rep["font_fallback"] = Path(font_path).name if font_path else None
+    if not font_path and template.get("text_slots"):
+        rep["notes"].append("找不到系统 CJK 字体：文字会回落成位图字体，字号将不生效")
+
+    segments: List[dict] = template.get("segments") or []
+    tracks: List[dict] = template.get("tracks") or []
+    text_slots: List[dict] = template.get("text_slots") or []
+    driver_idx = next((t["index"] for t in tracks if t.get("is_driver")), None)
+    if driver_idx is None:
+        cand = [t for t in tracks if t.get("role") == "a_roll"]
+        driver_idx = max(cand, key=lambda t: t.get("total_sec") or 0)["index"] if cand else None
+    driver_segs = sorted((s for s in segments if s["track_index"] == driver_idx),
+                         key=lambda s: s.get("start_sec") or 0.0)
+    if not driver_segs:
+        raise RuntimeError("模版没有驱动轨（a_roll）段，无法建立时间轴")
+
+    # ---- 素材池 ----
+    pools = {role: _Pool(role, [str(p) for p in paths], rep) for role, paths in (assets or {}).items()}
+    for role in ROLE_FALLBACK:
+        pools.setdefault(role, _Pool(role, [], rep))
+
+    def take_for(role: str, want: float) -> Optional[dict]:
+        for cand_role in ROLE_FALLBACK.get(role, (role,)):
+            pool = pools.get(cand_role)
+            if pool and pool.items:
+                fill = pool.fill(want)
+                if fill is None:
+                    continue
+                fill["used_role"] = cand_role
+                if cand_role != role:
+                    key = f"{role}->{cand_role}"
+                    rep["asset_fallback"][key] = rep["asset_fallback"].get(key, 0) + 1
+                if fill["reused"]:
+                    rep["asset_reused"] += 1
+                if fill["wrapped"]:
+                    rep["asset_wrapped"] += 1
+                return fill
+        return None
+
+    # 媒体落盘：同源文件只拷一次
+    copied: Dict[str, tuple] = {}  # 源绝对路径 -> (文件名, 子目录)
+
+    def stage(path: str, sub: str) -> str:
+        src = Path(path)
+        if path not in copied:
+            name = src.name
+            dst = draft_dir / "materials" / sub / name
+            n = 1
+            while dst.exists() and dst.stat().st_size != src.stat().st_size:
+                name = f"{src.stem}_{n}{src.suffix}"
+                dst = draft_dir / "materials" / sub / name
+                n += 1
+            if not dst.exists():
+                shutil.copy2(src, dst)
+            copied[path] = (name, f"materials/{sub}")
+        return copied[path][0]
+
+    # ---- 1. 驱动轨：段边界锚点重排 ----
+    plan: Dict[str, dict] = {}
+    old_b: List[Tuple[float, float]] = []
+    new_b: List[Tuple[float, float]] = []
+    cursor = 0.0
+    for seg in driver_segs:
+        want = float(seg.get("duration_sec") or 0.0)
+        role = seg.get("role") or "a_roll"
+        asset_role = seg.get("asset_role") or role
+        if asset_role not in ("a_roll", "b_roll", "photo"):
+            asset_role = "a_roll"
+        fill = take_for(asset_role, want)
+        if fill is None:
+            rep["skipped"]["a_roll_no_asset"] = rep["skipped"].get("a_roll_no_asset", 0) + 1
+            continue
+        new_dur = min(want, fill["take"])
+        if new_dur < want - 1e-3:
+            rep["slot_shrunk"] += 1
+        s0 = float(seg.get("start_sec") or 0.0)
+        old_b.append((s0, s0 + want))
+        new_b.append((cursor, cursor + new_dur))
+        plan[seg["key"]] = {"kind": seg.get("kind"), "role": role, "start": cursor,
+                            "dur": new_dur, "src_in": fill["src_in"],
+                            "asset": fill, "reused_asset": fill["reused"],
+                            "old_start": s0, "old_dur": want}
+        cursor += new_dur
+    if not new_b:
+        raise RuntimeError("驱动轨一段素材都没填上（assets['a_roll'] 为空或全不可读）")
+    new_total = cursor
+    map_start, scale_at = _anchor_map_builder(old_b, new_b, new_total)
+
+    # ---- 2. 其余轨：锚点映射 + 段内比例 ----
+    skipped_text_no_slot = 0
+    for seg in segments:
+        if seg["track_index"] == driver_idx or seg["key"] in plan:
+            continue
+        role = seg.get("asset_role") or seg.get("role") or ""
+        kind = seg.get("kind")
+        old_start = float(seg.get("start_sec") or 0.0)
+        old_dur = float(seg.get("duration_sec") or 0.0)
+        new_start = map_start(old_start)
+        new_dur = max(0.05, old_dur * scale_at(old_start))
+        fill = None
+        if kind == "compound":
+            # 复合片段（内嵌子时间线）模版只标不复刻：不假装换一块素材就能顶它
+            rep["skipped"]["compound_unrealized"] = rep["skipped"].get("compound_unrealized", 0) + 1
+            continue
+        linked_key = seg.get("same_material_as")
+        linked = plan.get(linked_key) if linked_key else None
+        if linked and linked.get("asset") and kind in ("video", "photo"):
+            # 原版这里是「同一素材推近/缩窗」：跟主轨同一素材、同一入点（+段内偏移），不另接 B-roll
+            la = linked["asset"]
+            offset = old_start - float(linked.get("old_start") or 0.0)
+            src_in = min(max(0.0, float(linked["src_in"]) + offset), max(0.0, la["take"] - 0.05))
+            new_dur = min(new_dur, max(0.05, la["take"] - src_in))
+            fill = {"path": la["path"], "src_in": src_in, "take": new_dur, "w": la["w"],
+                    "h": la["h"], "reused": True, "wrapped": False, "used_role": la.get("used_role")}
+            rep["content_linked"] = rep.get("content_linked", 0) + 1
+            if new_start + new_dur > new_total + 1e-4:
+                new_dur = max(0.05, new_total - new_start)
+                rep["seg_clipped"] = rep.get("seg_clipped", 0) + 1
+            plan[seg["key"]] = {"kind": kind, "role": role, "start": new_start, "dur": new_dur,
+                                "src_in": src_in, "asset": fill, "reused_asset": True,
+                                "old_start": old_start, "old_dur": old_dur}
+            continue
+        if kind in ("video", "photo") or role in ("b_roll", "overlay_card", "photo"):
+            fill = take_for(role if role in ROLE_FALLBACK else "b_roll", new_dur)
+            if fill is None:
+                rep["skipped"]["b_roll_no_asset"] = rep["skipped"].get("b_roll_no_asset", 0) + 1
+                continue
+            new_dur = min(new_dur, fill["take"])
+        elif kind == "sticker":
+            fill = take_for("sticker", new_dur)
+            if fill is None:
+                rep["skipped"]["sticker_no_asset"] = rep["skipped"].get("sticker_no_asset", 0) + 1
+                continue
+        elif kind == "audio":
+            fill = take_for(role, new_dur)
+            if fill is None:
+                rep["skipped"]["audio_no_asset"] = rep["skipped"].get("audio_no_asset", 0) + 1
+                continue
+            new_dur = min(new_dur, fill["take"])
+        elif kind == "text":
+            if seg.get("text_slot") is None or seg["text_slot"] >= len(text_slots):
+                skipped_text_no_slot += 1
+                continue
+        elif kind == "effect":
+            rep["skipped"]["effect_track_not_rendered"] = rep["skipped"].get("effect_track_not_rendered", 0) + 1
+            continue
+        if new_start + new_dur > new_total + 1e-4:
+            new_dur = max(0.05, new_total - new_start)
+            rep.setdefault("seg_clipped", 0)
+            rep["seg_clipped"] += 1
+        plan[seg["key"]] = {"kind": kind, "role": role, "start": new_start, "dur": new_dur,
+                            "src_in": (fill or {}).get("src_in", 0.0), "asset": fill,
+                            "reused_asset": bool((fill or {}).get("reused")),
+                            "old_start": old_start, "old_dur": old_dur}
+    if skipped_text_no_slot:
+        rep["skipped"]["text_without_slot"] = skipped_text_no_slot
+
+    # ---- 3. 组装草稿 ----
+    video_mats: Dict[str, dict] = {}
+    audio_mats: Dict[str, dict] = {}
+    text_mats: Dict[str, dict] = {}
+    speeds: List[dict] = []
+    anim_mats: List[dict] = []
+    mask_mats: List[dict] = []
+    vfx_mats: List[dict] = []
+    out_tracks: List[dict] = []
+    texts_used = 0
+
+    # 文字位 → 新文案（按文字位顺序，不够就循环复用并计数）
+    slot_text: Dict[int, str] = {}
+    for si in range(len(text_slots)):
+        raw = None
+        if texts:
+            if si < len(texts):
+                raw = texts[si]
+            else:
+                raw = texts[si % len(texts)]
+                rep["text_reused"] += 1
+        if isinstance(raw, dict):
+            raw = raw.get("text")
+        txt = str(raw or "").strip()
+        if not txt:
+            continue
+        cap = int(text_slots[si].get("char_cap") or 0)
+        max_lines = int(text_slots[si].get("max_lines") or 1)
+        lines = txt.split("\n")[:max_lines]
+        txt = "\n".join(lines)
+        if cap > 0 and len(txt.replace("\n", "")) > cap:
+            flat = txt.replace("\n", "")
+            txt = flat[: max(1, cap - 1)] + "…"
+            rep["texts_truncated"] += 1
+        slot_text[si] = txt
+
+    track_segs: Dict[int, List[dict]] = {t["index"]: [] for t in tracks}
+    for seg in sorted(segments, key=lambda s: (s["track_index"], s.get("start_sec") or 0.0)):
+        p = plan.get(seg["key"])
+        if not p:
+            continue
+        t_i = seg["track_index"]
+        t_role = next((t.get("role") for t in tracks if t["index"] == t_i), None)
+        if t_role == "effect":
+            continue
+        geometry = dict(seg.get("geometry") or {})
+        extra_refs: List[str] = []
+        src_in = float(p.get("src_in") or 0.0)
+        src_dur = p["dur"]
+        mat_id = None
+        is_audio = False
+
+        if p["kind"] in ("video", "photo") and p["asset"]:
+            fill = p["asset"]
+            key = fill["path"]
+            sub = "video"
+            name = stage(key, sub)
+            mk = f"{key}|{json.dumps(geometry.get('crop') or {})}"
+            if mk not in video_mats:
+                video_mats[mk] = _video_material(
+                    name, root_uuid, f"materials/{sub}", fill["w"], fill["h"],
+                    float(max(fill["take"], 0.1)), geometry.get("crop"),
+                    is_photo=(p["kind"] == "photo"))
+                video_mats[mk]["_path"] = key
+            mat_id = video_mats[mk]["id"]
+        elif p["kind"] == "sticker" and p["asset"]:
+            fill = p["asset"]
+            name = stage(fill["path"], "sticker")
+            key = fill["path"]
+            if key not in video_mats:
+                video_mats[key] = {
+                    "id": _uid(), "path": f"##_draftpath_placeholder_{root_uuid}_##/materials/sticker/{name}",
+                    "type": "sticker", "material_name": name, "_path": key,
+                }
+            mat_id = video_mats[key]["id"]
+        elif p["kind"] == "audio" and p["asset"]:
+            fill = p["asset"]
+            name = stage(fill["path"], "audio")
+            key = fill["path"]
+            if key not in audio_mats:
+                audio_mats[key] = _audio_material(
+                    name, root_uuid, "materials/audio", float(fill["take"]),
+                    "music" if p["role"] == "bgm" else "sound")
+                audio_mats[key]["_path"] = key
+            mat_id = audio_mats[key]["id"]
+            is_audio = True
+        elif p["kind"] == "text":
+            si = seg["text_slot"]
+            if si not in slot_text:
+                continue
+            plan_txt = slot_text[si]
+            style = (text_slots[si].get("style") or {})
+            if si not in text_mats:
+                text_mats[si] = _text_style_material(plan_txt, style, font_path)
+            mat_id = text_mats[si]["id"]
+            texts_used += 1
+            src_dur = 0.0
+            src_in = 0.0
+        else:
+            continue
+
+        holder, _items = _anim_holder(seg.get("animations") or [], p["dur"], rep)
+        if holder:
+            anim_mats.append(holder)
+            extra_refs.append(holder["id"])
+        if not is_audio:
+            spd = _speed_material()
+            speeds.append(spd)
+            extra_refs.append(spd["id"])
+        if seg.get("mask"):
+            mcfg = dict(seg["mask"].get("config") or {})
+            mcfg["resource_type"] = str(seg["mask"].get("resource_type") or "")
+            mask_mat = {"category": "video", "config": seg["mask"].get("config") or {},
+                        "id": _uid(), "name": seg["mask"].get("name"),
+                        "path": "", "resource_type": mcfg["resource_type"],
+                        "text_config": {"align_type": 15}, "type": "mask"}
+            mask_mats.append(mask_mat)
+            extra_refs.append(mask_mat["id"])
+        if seg.get("effects"):
+            for fx in seg["effects"]:
+                fx_mat = {"adjust_params": fx.get("adjust_params") or [],
+                          "category_id": "100000", "category_name": "画面特效",
+                          "effect_id": fx.get("effect_id"), "id": _uid(),
+                          "name": fx.get("name"), "path": "",
+                          "render_index": fx.get("render_index") or 11000,
+                          "resource_id": "", "type": "video_effect", "value": 1.0}
+                vfx_mats.append(fx_mat)
+                extra_refs.append(fx_mat["id"])
+
+        kfs = _keyframes_of(seg, p["dur"], src_in)
+        track_segs[t_i].append(_segment(
+            mat_id=mat_id, tl_start=p["start"], dur=p["dur"], src_in=src_in,
+            src_dur=src_dur if p["kind"] not in ("text",) else 0.0,
+            geometry=geometry, keyframes=kfs, extra_refs=extra_refs,
+            track_index=t_i, volume=1.0))
+
+    for tr in tracks:
+        segs = track_segs.get(tr["index"]) or []
+        if not segs or tr.get("role") == "effect":
+            continue
+        out_tracks.append({
+            "attribute": 0,
+            "flag": int(tr.get("flag") or 0),
+            "id": _uid(),
+            "is_default_name": True,
+            "name": "",
+            "segments": segs,
+            "type": TRACK_TYPE_OF_ROLE.get(tr.get("role"), tr.get("track_type") or "video"),
+        })
+
+    videos = [v for v in video_mats.values() if v.get("type") != "sticker"]
+    stickers = [{"category_id": "", "category_name": "", "id": v["id"], "material_name": v["material_name"],
+                 "path": v["path"], "resource_id": "", "type": "sticker", "source_platform": 0,
+                 "preview_cover": "", "extra_info": ""}
+                for v in video_mats.values() if v.get("type") == "sticker"]
+
+    now_us = int(time.time() * US)
+    draft_id = _uid()
+    content = {
+        "canvas_config": {"height": canvas_h, "ratio": "original", "width": canvas_w},
+        "color_space": 0,
+        "config": {
+            "adjust_max_index": 1,
+            "attachment_info": [],
+            "combination_max_index": 1,
+            "export_range": None,
+            "extract_audio_last_index": len(audio_mats),
+            "lyrics_recognition_id": "",
+            "lyrics_sync": True,
+            "lyrics_taskinfo": [],
+            "maintrack_adsorb": True,
+            "material_save_mode": 0,
+            "multi_language_current": "none",
+            "multi_language_list": [],
+            "multi_language_main": "none",
+            "multi_language_mode": "none",
+            "original_sound_last_index": 1,
+            "record_audio_last_index": 1,
+            "sticker_max_index": max(1, len(stickers)),
+            "subtitle_keywords_config": None,
+            "subtitle_recognition_id": "",
+            "subtitle_sync": True,
+            "subtitle_taskinfo": [],
+            "system_font_list": [],
+            "video_mute": False,
+            "zoom_info_params": None,
+        },
+        "duration": _us(new_total),
+        "extra_info": None,
+        "fps": fps,
+        "function_assistant_info": {"fps": {}},
+        "free_render_index_mode_on": False,
+        "group_container": None,
+        "id": draft_id,
+        "is_minimal_draft": True,
+        "keyframe_graph_list": [],
+        "keyframes": {"adjusts": [], "audios": [], "effects": [], "filters": [], "handwrites": [],
+                      "stickers": [], "texts": [], "videos": []},
+        "last_modified_platform": {"app_id": 3704, "app_source": "lv", "app_version": "11.8.0",
+                                   "os": "mac"},
+        "materials": {
+            "audios": list(audio_mats.values()),
+            "beats": [],
+            "canvases": [],
+            "common_mask": mask_mats,
+            "drafts": [],
+            "material_animations": anim_mats,
+            "material_colors": [],
+            "placeholder_infos": [],
+            "sound_channel_mappings": [],
+            "speeds": speeds,
+            "stickers": stickers,
+            "texts": list(text_mats.values()),
+            "transitions": [],
+            "video_effects": vfx_mats,
+            "videos": videos,
+            "vocal_separations": [],
+        },
+        "mutable_config": None,
+        "name": "replica_from_template",
+        "new_version": "125.0.0",
+        "path": "",
+        "platform": {"app_id": 3704, "app_source": "lv", "app_version": "11.8.0", "os": "mac"},
+        "relationships": [],
+        "render_index_track_mode_on": True,
+        "retouch_cover": None,
+        "smart_ads_info": {},
+        "source": "default",
+        "static_cover_image_path": "",
+        "time_marks": None,
+        "tracks": out_tracks,
+        "uneven_animation_template_info": {"composition": "none", "content": "",
+                                          "order": "none", "sub_template_id": ""},
+        "update_time": now_us,
+        "version": 360000,
+    }
+
+    draft_json = draft_dir / "draft_content.json"
+    draft_json.write_text(json.dumps(content, ensure_ascii=False, indent=2), encoding="utf-8")
+    meta = {
+        "cloud_draft_cover": False,
+        "cloud_draft_sync": False,
+        "draft_cover": "draft_cover.jpg",
+        "draft_deeplink_url": "",
+        "draft_fold_path": str(draft_dir).replace("\\", "/"),
+        "draft_id": draft_id,
+        "draft_is_ae_produce": False,
+        "draft_is_invisible": False,
+        "draft_materials": [{"type": 0, "value": [
+            {"duration": m["duration"], "extra_info": m.get("material_name"),
+             "file_Path": "./" + str(m.get("path", "")).split("_##/")[-1],
+             "height": m.get("height", canvas_h), "id": m.get("local_material_id"), "metetype": "video",
+             "roughcut_time_range": {"duration": -1, "start": -1},
+             "sub_time_range": {"duration": -1, "start": -1}, "type": 0,
+             "width": m.get("width", canvas_w)}
+            for m in videos]}],
+        "draft_name": "replica_from_template",
+        "draft_removable_storage_device": "",
+        "draft_root_path": str(draft_dir.parent).replace("\\", "/"),
+        "draft_timeline_materials_size_": 0,
+        "draft_type": "",
+        "tm_draft_create": now_us,
+        "tm_draft_modified": now_us,
+        "tm_duration": int(content["duration"]),
+    }
+    (draft_dir / "draft_meta_info.json").write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # ---- 4. 报告 ----
+    by_role: Dict[str, int] = {}
+    for tr in tracks:
+        segs = track_segs.get(tr["index"]) or []
+        if not segs:
+            continue
+        by_role[tr.get("role")] = by_role.get(tr.get("role"), 0) + len(segs)
+    rep.update({
+        "out_draft": str(draft_json),
+        "duration_sec": round(new_total, 4),
+        "template_duration_sec": round(total_old, 4),
+        "duration_delta_sec": round(new_total - total_old, 4),
+        "segments_total": sum(len(t["segments"]) for t in out_tracks),
+        "segments_by_role": by_role,
+        "tracks_out": [{"role": next((t.get("role") for t in tracks if t["index"] == idx),
+                                    None), "segments": len(s)} for idx, s in
+                       ((tr["index"], track_segs[tr["index"]]) for tr in tracks if track_segs.get(tr["index"]))],
+        "texts_used": texts_used,
+        "anchors": [{"old_start": round(o0, 4), "old_end": round(o1, 4),
+                     "new_start": round(n0, 4), "new_end": round(n1, 4)}
+                    for (o0, o1), (n0, n1) in zip(old_b, new_b)],
+    })
+    return draft_json
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="把复刻模版套到新素材/新文案上，产出原生草稿")
+    ap.add_argument("--template", required=True, help="模版 JSON")
+    ap.add_argument("--assets", help="素材 JSON：{角色: [路径...]}")
+    ap.add_argument("--texts", help="文案 JSON（字符串数组）或 UTF-8 文本（每行一条）")
+    ap.add_argument("--out", required=True, help="输出草稿目录（或 draft_content.json 路径）")
+    args = ap.parse_args()
+
+    tpl = json.loads(Path(args.template).read_text(encoding="utf-8"))
+    assets = json.loads(Path(args.assets).read_text(encoding="utf-8")) if args.assets else {}
+    texts: List[Any] = []
+    if args.texts:
+        raw = Path(args.texts).read_text(encoding="utf-8")
+        texts = json.loads(raw) if raw.lstrip().startswith("[") else [x for x in raw.splitlines() if x.strip()]
+    rep: dict = {}
+    out = apply_template(tpl, assets, texts, Path(args.out), rep)
+    print(json.dumps({k: rep.get(k) for k in ("out_draft", "duration_sec", "segments_total",
+                                              "segments_by_role", "asset_reused", "asset_wrapped",
+                                              "slot_shrunk", "anim_clamped", "skipped")},
+                     ensure_ascii=False, indent=2))
+    print(f"[apply-template] -> {out}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
