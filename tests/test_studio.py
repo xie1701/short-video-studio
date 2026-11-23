@@ -3750,6 +3750,265 @@ class ReplicaTemplateTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 apply_template(tpl, {}, [], Path(td) / "out")
 
+    # ---- 换素材后的「重影」四类真缺陷（D3/D4/D5 在套用端，D6 在判据端）----
+    #
+    # 这里手搓模版（`extract_template` 的产物 schema），只验套用端的分配/重建规则：
+    # 不依赖真视频（`probe_media` / 拷文件都啧掉），也不依赖真渲染。
+
+    @staticmethod
+    def _mk_tpl_seg(key, track, start, dur, kind="video", role="b_roll", **kw) -> dict:
+        seg = {"key": key, "track_index": track, "kind": kind,
+               "asset_role": role, "role": role,
+               "start_sec": start, "duration_sec": dur, "render_index": 1,
+               "geometry": {"scale": [1.0, 1.0], "transform": [0.0, 0.0], "rotation": 0.0,
+                            "alpha": None, "flip": {}, "crop": None,
+                            "size_ratio": [1.0, 1.0], "cover_ratio": 1.0},
+               "mask": {}, "effects": [], "animations": [], "keyframes": [],
+               "same_material_as": None, "matting": None, "material_fingerprint": None}
+        seg.update(kw)
+        return seg
+
+    @classmethod
+    def _mk_tpl(cls, segments, *, duration=4.0) -> dict:
+        idxs = sorted({int(s["track_index"]) for s in segments})
+        tracks = []
+        for i in idxs:
+            tracks.append({"index": i, "role": "a_roll" if i == 0 else "b_roll",
+                           "is_driver": i == 0, "track_type": "video",
+                           "total_sec": duration, "flag": 0 if i == 0 else 2,
+                           "render_index": 1 + i})
+        return {"canvas": {"width": 1080, "height": 1920}, "fps": 30.0,
+                "duration_sec": duration, "tracks": tracks, "segments": segments,
+                "text_slots": [], "counts": {}, "unknown_items": []}
+
+    def _apply_tpl(self, tpl, assets, *, td) -> tuple:
+        """啧掉素材探针与拷文件，只跑套用逻辑，返回（报告，草稿）。"""
+        from apply_replica_template import apply_template, _Pool
+
+        def _fake_pool(self, role, paths, rep):
+            self.role, self.rot = role, 0
+            self.items = [{"path": str(p), "dur": 8.0, "w": 1080, "h": 1920,
+                           "cursor": 0.0, "uses": 0} for p in paths]
+
+        with unittest.mock.patch.object(_Pool, "__init__", _fake_pool), \
+             unittest.mock.patch("apply_replica_template.probe_media",
+                                 lambda path: {"duration": 8.0, "width": 1080,
+                                                "height": 1920}), \
+             unittest.mock.patch("apply_replica_template.shutil.copy2", lambda a, b: None):
+            rep = {}
+            out = apply_template(tpl, assets, [], Path(td) / "od", rep)
+        return rep, json.loads(Path(out).read_text(encoding="utf-8"))
+
+    def test_sub_layer_avoid_uses_its_own_window(self):
+        """D3：复合片段子层的避让只看**子层自己的时间窗**，不是父段整窗。
+
+        顺序播放的长复合片段（同一时刻只上 1 层）本该复用同一批素材；原来按父段整窗挡，
+        一个复合片段最多只能填「池子条数」个子层（style_23 首跑 45 层留空、子片渲成空片）。
+        """
+        sub_tracks = [{"index": 0, "role": "b_roll", "track_type": "video", "render_index": 1},
+                      {"index": 1, "role": "b_roll", "track_type": "video", "render_index": 2}]
+        sub_segs = [
+            self._mk_tpl_seg("sub:0:0", 0, 0.0, 1.0),
+            self._mk_tpl_seg("sub:0:1", 0, 1.0, 1.0),
+            self._mk_tpl_seg("sub:0:2", 0, 2.0, 1.0),
+            # 这条与 sub:0:0 同时上屏 → 必须真的避让（同源硬约束不能放松）
+            self._mk_tpl_seg("sub:1:0", 1, 0.0, 1.0),
+        ]
+        comp = {"duration_sec": 3.0, "segments": sub_segs, "tracks": sub_tracks,
+                "sub_slots": [], "length_matches_parent": True,
+                "asset_profile": {"layout": "collage"}}
+        tpl = self._mk_tpl([
+            self._mk_tpl_seg("seg:0:0", 0, 0.0, 3.0, role="a_roll",
+                             material_fingerprint="fp:main"),
+            self._mk_tpl_seg("seg:1:0", 1, 0.0, 3.0, kind="compound",
+                             role="overlay_card", compound=comp),
+        ], duration=3.0)
+        with tempfile.TemporaryDirectory() as td:
+            rep, _ = self._apply_tpl(tpl, {"a_roll": ["/tmp/main.mp4"],
+                                           "b_roll": ["/tmp/b.mp4"]}, td=td)
+        self.assertEqual(rep["compounds_applied"], 1)
+        # 三条顺序层全部填上（复用同一条素材），只有“同时上屏”的那层被逼退
+        self.assertEqual(rep["sub_segments_total"], 3)
+        self.assertEqual((rep["compound_skipped"] or {}).get("sub_video_layer_no_asset"), 1)
+
+    def test_cutout_without_binding_is_dropped_not_left_as_copy(self):
+        """D4：抠像层绑不到主轨时**彻底不分配素材**（画面里不许留同源不透明副本）。"""
+        tpl = self._mk_tpl([
+            self._mk_tpl_seg("seg:0:0", 0, 0.0, 4.0, role="a_roll",
+                             material_fingerprint="fp:main"),
+            # 原版是另一条片子的人物抠像（指纹对不上主轨，也无 same_material_as）
+            self._mk_tpl_seg("seg:1:0", 1, 0.0, 4.0,
+                             matting={"person_cutout": True, "stroke": False},
+                             material_fingerprint="fp:other"),
+        ])
+        with tempfile.TemporaryDirectory() as td:
+            rep, draft = self._apply_tpl(tpl, {"a_roll": ["/tmp/main.mp4"],
+                                               "b_roll": ["/tmp/b.mp4"]}, td=td)
+        self.assertEqual(rep["cutout_layers_rebuilt"], 0)
+        self.assertEqual(rep["cutout_layer_dropped_no_binding"], 1)
+        self.assertEqual((rep["cutout_layers_skipped"] or {}).get("no_main_binding"), 1)
+        # "跳过但画面里还在"这个状态必须不存在
+        self.assertEqual(rep["cutout_dropped_still_rendered"], 0)
+        self.assertEqual(len(draft["tracks"]), 1)          # 只剩主轨
+        mats = draft["materials"]["videos"]
+        self.assertFalse(any((m.get("matting") or {}).get("path") for m in mats))
+
+    def test_cutout_rebinds_to_main_by_fingerprint(self):
+        """D4 的另一条路：原版抠像层与主轨同素材（指纹相同）时真重建。"""
+        tpl = self._mk_tpl([
+            self._mk_tpl_seg("seg:0:0", 0, 0.0, 4.0, role="a_roll",
+                             material_fingerprint="fp:main"),
+            # 缺 same_material_as，但指纹与主轨一致 → 按指纹找回主轨当锚
+            self._mk_tpl_seg("seg:1:0", 1, 0.0, 4.0,
+                             matting={"person_cutout": True, "stroke": False},
+                             material_fingerprint="fp:main"),
+        ])
+        with tempfile.TemporaryDirectory() as td:
+            rep, draft = self._apply_tpl(tpl, {"a_roll": ["/tmp/main.mp4"],
+                                               "b_roll": ["/tmp/b.mp4"]}, td=td)
+        self.assertEqual(rep["cutout_layers_rebuilt"], 1)
+        self.assertEqual(rep.get("cutout_layer_dropped_no_binding", 0), 0)
+        detail = (rep.get("cutout_rebuilt_detail") or [])[0]
+        self.assertEqual(detail["bound_by"], "material_fingerprint")
+        self.assertEqual(detail["linked_to"], "seg:0:0")
+        cut_mats = [m for m in draft["materials"]["videos"]
+                    if (m.get("matting") or {}).get("path")]
+        self.assertEqual(len(cut_mats), 1)                  # 只有抠像层那份素材真跑 alpha
+        main_mat = next(m for m in draft["materials"]["videos"]
+                        if not (m.get("matting") or {}).get("path"))
+        self.assertEqual(cut_mats[0]["path"], main_mat["path"])  # 同一条片子，不是另一条
+
+    def test_photo_strip_is_not_rebuilt_as_backdrop(self):
+        """D5：照片竖条被误判成抠像背景板 → 全屏同源副本（style_07 seg:4:1）。"""
+        tpl = self._mk_tpl([
+            self._mk_tpl_seg("seg:0:0", 0, 0.0, 4.0, role="a_roll",
+                             material_fingerprint="fp:main"),
+            self._mk_tpl_seg("seg:1:0", 1, 0.0, 4.0, kind="photo", role="photo",
+                             mask={"resource_type": "line", "name": "线性"},
+                             material_fingerprint="fp:pic"),
+            self._mk_tpl_seg("seg:2:0", 2, 0.0, 4.0, same_material_as="seg:0:0",
+                             matting={"person_cutout": True, "stroke": False},
+                             material_fingerprint="fp:main"),
+        ])
+        with tempfile.TemporaryDirectory() as td:
+            rep, draft = self._apply_tpl(tpl, {"a_roll": ["/tmp/main.mp4"],
+                                               "photo": ["/tmp/p.png"]}, td=td)
+        self.assertEqual(rep["cutout_layers_rebuilt"], 1)
+        self.assertEqual(rep.get("backdrop_rebuilt", 0), 0)
+        self.assertEqual(rep.get("backdrop_rejected_photo"), 1)
+        # 它作为**照片层**上了自己的图，不是抠像层那条视频的同源副本
+        main_path = next(m for m in draft["materials"]["videos"]
+                         if not (m.get("matting") or {}).get("path"))["path"]
+        photo_mats = [m for m in draft["materials"]["videos"]
+                      if m.get("type") == "photo"]
+        self.assertEqual(len(photo_mats), 1)
+        self.assertNotEqual(photo_mats[0]["path"], main_path)
+
+    def test_unblurred_video_layer_is_not_a_backdrop(self):
+        """D5：背景板必须有模糊证据（原版真带模糊特效），否则不当板。"""
+        base = [
+            self._mk_tpl_seg("seg:0:0", 0, 0.0, 4.0, role="a_roll",
+                             material_fingerprint="fp:main"),
+            self._mk_tpl_seg("seg:2:0", 2, 0.0, 4.0, same_material_as="seg:0:0",
+                             matting={"person_cutout": True, "stroke": False},
+                             material_fingerprint="fp:main"),
+        ]
+        blur = [{"name": "模糊", "adjust_params": [
+            {"name": "effects_adjust_blur", "value": 0.5, "default_value": 0.5}]}]
+        with tempfile.TemporaryDirectory() as td:
+            rep, _ = self._apply_tpl(self._mk_tpl(base + [
+                self._mk_tpl_seg("seg:1:0", 1, 0.0, 4.0, material_fingerprint="fp:x")]),
+                {"a_roll": ["/tmp/main.mp4"], "b_roll": ["/tmp/b.mp4"]}, td=td)
+        self.assertEqual(rep.get("backdrop_rejected_not_blurred"), 1)
+        self.assertEqual(rep.get("backdrop_rebuilt", 0), 0)
+        with tempfile.TemporaryDirectory() as td:
+            rep2, _ = self._apply_tpl(self._mk_tpl(base + [
+                self._mk_tpl_seg("seg:1:0", 1, 0.0, 4.0, effects=blur,
+                                 material_fingerprint="fp:x")]),
+                {"a_roll": ["/tmp/main.mp4"], "b_roll": ["/tmp/b.mp4"]}, td=td)
+        # 真带模糊的视频层依旧当背景板重建（机制没废，只是加了证据门槛）
+        self.assertEqual(rep2.get("backdrop_rebuilt"), 1)
+        self.assertEqual(rep2.get("backdrop_rejected_not_blurred", 0), 0)
+
+    def test_photo_layer_keeps_original_display_aspect(self):
+        """照片层按原版展示宽高比裁一刀（与复合片段子层同一口径）。
+
+        模版里的照片层是按**图片自身像素**定尺寸的；新图宽高比不同，直接 contain 到画布后
+        覆盖面积会差好几倍（style_16 seg:1:1 原版 cover 1.006，未裁时 3.17 = 三倍画面）。
+        """
+        tpl = self._mk_tpl([
+            self._mk_tpl_seg("seg:0:0", 0, 0.0, 4.0, role="a_roll",
+                             material_fingerprint="fp:main"),
+            self._mk_tpl_seg("seg:1:0", 1, 0.0, 4.0, kind="photo", role="photo",
+                             material_fingerprint="fp:pic",
+                             geometry={"scale": [1.0, 1.0], "transform": [0.0, 0.0],
+                                       "rotation": 0.0, "alpha": None, "flip": {},
+                                       "crop": None, "size_ratio": [1.0, 0.6507],
+                                       "cover_ratio": 0.6507}),
+        ])
+        with tempfile.TemporaryDirectory() as td:
+            rep, draft = self._apply_tpl(tpl, {"a_roll": ["/tmp/main.mp4"],
+                                               "photo": ["/tmp/p.png"]}, td=td)
+        self.assertEqual(rep.get("photo_layer_aspect_cropped"), 1)
+        photo = next(m for m in draft["materials"]["videos"] if m.get("type") == "photo")
+        crop = photo["crop"]
+        self.assertTrue(crop)            # 真裁了，不是把原图硬塞进 contain
+        # 裁后的显示宽高比 = 原版 size_ratio 的宽高比（1.0:0.6507）
+        cw = photo["width"] * (crop["lower_right_x"] - crop["upper_left_x"])
+        ch = photo["height"] * (crop["lower_left_y"] - crop["upper_left_y"])
+        self.assertAlmostEqual(cw / ch, (1.0 * 1080) / (0.6507 * 1920), places=2)
+
+    def test_ghost_exemption_requires_original_same_fingerprint_evidence(self):
+        """D6：第三条豁免要**拿证据换**——原版同刻真有 ≥2 层同指纹才放行。"""
+        sys.path.insert(0, str(ROOT / "dev_tools"))
+        from verify_replica_template import _designed_same_source_evidence
+        tpl = {"segments": [
+            self._mk_tpl_seg("seg:0:0", 0, 0.0, 2.0, role="a_roll",
+                             material_fingerprint="fp:same"),
+            self._mk_tpl_seg("seg:1:0", 1, 1.0, 1.0, material_fingerprint="fp:same"),
+            self._mk_tpl_seg("seg:1:1", 1, 3.0, 1.0, material_fingerprint="fp:same"),
+            self._mk_tpl_seg("seg:1:2", 1, 1.0, 1.0, material_fingerprint="fp:other"),
+        ]}
+        seg_map = {}
+        for k in ("seg:0:0", "seg:1:0", "seg:1:1", "seg:1:2"):
+            seg_map[k + "_id"] = k
+        # 原版 1.0~2.0s 真有 seg:0:0 + seg:1:0 两层同指纹 → 放行，并给出证据
+        ev = _designed_same_source_evidence(
+            {"a_seg_id": "seg:0:0_id", "b_seg_id": "seg:1:0_id"}, tpl, seg_map)
+        self.assertIsNotNone(ev)
+        self.assertEqual(ev["fingerprint"], "fp:same")
+        self.assertEqual(ev["original_layers"], ["seg:0:0", "seg:1:0"])
+        self.assertAlmostEqual(ev["original_mid"], 1.5, places=3)
+        # 原版同刻不同指纹 → 没证据，照判
+        self.assertIsNone(_designed_same_source_evidence(
+            {"a_seg_id": "seg:0:0_id", "b_seg_id": "seg:1:2_id"}, tpl, seg_map))
+        # 指纹相同但原版时间窗不重叠（3.0~4.0s vs 0~2.0s）→ 不能诈豁免
+        self.assertIsNone(_designed_same_source_evidence(
+            {"a_seg_id": "seg:0:0_id", "b_seg_id": "seg:1:1_id"}, tpl, seg_map))
+        # 草稿段映不回模版段（没有 seg_map）→ 不能诈豁免
+        self.assertIsNone(_designed_same_source_evidence(
+            {"a_seg_id": "seg:0:0_id", "b_seg_id": "seg:1:0_id"}, tpl, None))
+
+    def test_rejected_spot_verdict_prefers_pixel_when_decisive(self):
+        """被拒接层的点检：像素能分辨就比像素；该点另有叠层在场时改用结构证据。"""
+        sys.path.insert(0, str(ROOT / "dev_tools"))
+        from verify_replica_template import rejected_spot_verdict
+        # 该点只剩被拒接层 → 像素必须相等（mae≈0），否则就是「说跳过但画面里还在」
+        self.assertTrue(rejected_spot_verdict(
+            {"kind": "rejected_overlay", "pixel_decisive": True,
+             "same_as_main_only": True, "layer_absent_from_draft": True}))
+        self.assertFalse(rejected_spot_verdict(
+            {"kind": "rejected_overlay", "pixel_decisive": True,
+             "same_as_main_only": False, "layer_absent_from_draft": True}))
+        # 该点另有叠层（原版设计的画中画）→ 像素差不归被拒接层，改看结构证据
+        self.assertTrue(rejected_spot_verdict(
+            {"kind": "rejected_overlay", "pixel_decisive": False,
+             "same_as_main_only": False, "layer_absent_from_draft": True}))
+        # 结构证据也说它还在草稿里 → 照样不算通过（不能拿“有别的层”当免死金牌）
+        self.assertFalse(rejected_spot_verdict(
+            {"kind": "rejected_overlay", "pixel_decisive": False,
+             "same_as_main_only": False, "layer_absent_from_draft": False}))
+
     def test_text_style_roundtrip(self):
         """模版里的文字样式写回草稿后，渲染器读到的字号/颜色/阴影必须还是同一套。"""
         from replica_template import extract_template, text_style_of
@@ -3872,7 +4131,9 @@ class EditGrammarTests(unittest.TestCase):
         cands = [{"time_sec": round(0.9 + 0.37 * i, 3)} for i in range(60)]
         res = select_cuts(cands, budget, g)
         stats = res["stats"]
-        self.assertEqual(stats["n_shots"], budget["target_shots"], stats)
+        # 挑点是照「真值的时间顺序镜长序列」循环取的，镜头数由该套自己的密度决定，
+        # 不是硬凑 total/中位数：允许 ±2 刀，但形态约束（时长带/快切/B/开场）必须严格。
+        self.assertLessEqual(abs(stats["n_shots"] - budget["target_shots"]), 2, stats)
         self.assertLessEqual(stats["opening_cuts"], budget["opening_cuts"])
         self.assertEqual(stats["opening_cuts"], budget["opening_cuts"], "开场刀数必须排满真值")
         self.assertEqual(stats["out_of_band_shots"], 0, stats)

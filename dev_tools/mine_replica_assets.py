@@ -23,6 +23,14 @@
 用法：
     python3 dev_tools/mine_replica_assets.py --style-id style_21 \
         --assets /tmp/assets.json --pool /tmp/asset_pool.json
+
+24 套批量跑的时候还有第二种用法（推荐）：先把整个草稿库探一遍存成**共用的素材目录**，
+之后每套风格只是从目录里挑子集——人脸检测（每条素材 Apple Vision 抽 3 帧）是这个工具里
+唯一的重活，24 套各挖一遍等于把同一批检测重复做 24 次。
+
+    python3 dev_tools/mine_replica_assets.py --build-catalog /tmp/pool_catalog.json
+    python3 dev_tools/mine_replica_assets.py --catalog /tmp/pool_catalog.json \
+        --style-id style_03 --assets /tmp/assets_03.json --pool /tmp/pool_03.json
 """
 
 from __future__ import annotations
@@ -32,8 +40,10 @@ import hashlib
 import json
 import subprocess
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "short-video-studio" / "scripts"
@@ -195,16 +205,88 @@ def template_need(tpl: dict) -> dict:
     # 而不是「同一时刻最多几层」。原来按同时层数算（峰值 7 → 要 9 张），实采 14 张仍然不够
     # 16 个照片层，最后两层只能留空（photo_layer_no_image），拼贴就少了带子。
     photo_distinct = len(photo_fps) if photo_fps else photo_peak
+
+    # ---- 复合片段的子层也要算进「同一瞬间叠几层」----
+    # 只看顶层会把 style_23 这类算成「只要 4 条素材」：它有 12 个复合片段，每个子时间线 25 段，
+    # 子层按「父段时长/子时间线时长」压进父段窗口后大量重叠，实测 45 个子层拿不到素材，
+    # 子时间线渲成空片（concat 没有流）→ 整片渲染失败。
+    def _expand(child_segs: List[dict], base: float, k: float, depth: int = 0) -> List[tuple]:
+        out: List[tuple] = []
+        for s in child_segs:
+            st = base + float(s.get("start_sec") or 0.0) * k
+            du = float(s.get("duration_sec") or 0.0) * k
+            kind = s.get("kind") or ""
+            if kind != "compound":  # 复合片段父段只是容器（像素在子层里）
+                out.append((st, du, kind, s.get("asset_role") or s.get("role") or ""))
+            comp = s.get("compound")
+            if comp and depth < 3:
+                sub_total = float(comp.get("duration_sec") or 0.0)
+                kk = (float(s.get("duration_sec") or 0.0) / sub_total) if sub_total > 1e-6 else 1.0
+                out.extend(_expand(comp.get("segments") or [], st, k * kk, depth + 1))
+        return out
+
+    layers = _expand(tpl.get("segments") or [], 0.0, 1.0)
+
+    def _peak_of_items(items: List[tuple]) -> int:
+        ev: List[tuple] = []
+        for a, du, _k, _r in items:
+            ev.append((a + 1e-6, 1))
+            ev.append((a + du - 1e-6, -1))
+        ev.sort()
+        c = p = 0
+        for _t, d in ev:
+            c += d
+            p = max(p, c)
+        return p
+
+    video_layers = [x for x in layers if x[2] == "video"]
+    photo_layers_all = [x for x in layers if x[2] == "photo"]
+    peak_video = max(peak, _peak_of_items(video_layers))
+    peak_photo_all = max(photo_peak, _peak_of_items(photo_layers_all))
+    need_assets = max(2, peak_video)
+
+    # 单个复合片段里最多有几层视频子层。套用端给子层用的 avoid 是「父段整个时间窗内已用的素材」，
+    # 所以一个复合片段最多只能填满「池子条数」那么多子层；池子小了就会出现
+    # `compound_skipped: sub_video_layer_no_asset` —— 子片拼不成片，整部片渲染失败
+    # （实测 style_23：12 个复合片段 × 25 个子层，池子 4 条 → 45 层拿不到素材）。
+    def _sub_layers_of(comp: dict, depth: int = 0) -> int:
+        n = 0
+        for s in comp.get("segments") or []:
+            if (s.get("kind") or "") in ("video", "photo"):
+                n += 1
+            sub = s.get("compound")
+            if sub and depth < 3:
+                n += _sub_layers_of(sub, depth + 1)
+        return n
+
+    max_sub = 0
+    for s in tpl.get("segments") or []:
+        comp = s.get("compound")
+        if comp:
+            max_sub = max(max_sub, _sub_layers_of(comp))
+
     return {
         "video_slots": len(segs),
         "driver_segments": sum(1 for s in segs if s.get("track_index") == driver_idx),
         "max_concurrent_video_layers": peak,
-        "distinct_assets_needed": max(2, peak),
-        "a_roll_want": max(2, peak) + 2,
-        "b_roll_want": max(2, peak) + 2,
-        "max_concurrent_photo_layers": photo_peak,
+        "max_concurrent_video_layers_with_compounds": peak_video,
+        "compound_sub_video_layers": len(video_layers) - len(segs),
+        "compound_sub_photo_layers": len(photo_layers_all),
+        "max_sub_video_layers_per_compound": max_sub,
+        "distinct_assets_needed": need_assets,
+        "a_roll_want": max(need_assets + 2, max_sub + 2),
+        "b_roll_want": max(need_assets + 2, max_sub + 2),
+        "max_concurrent_photo_layers": peak_photo_all,
         "photo_distinct_needed": photo_distinct,
-        "photo_want": max(photo_distinct, max(0, photo_peak) + 2) if photo_peak else 0,
+        "photo_want": max(photo_distinct, peak_photo_all + 2) if peak_photo_all else 0,
+        # 配音效/配乐池子用：短片一个音效反复响无所谓，57 个音效位的长片拿 4 条音效凑会很假。
+        # 同时给模板时长：BGM 池要能盖住最长那条片（126.9s），否则一段一条地回卷。
+        "template_duration_sec": float(tpl.get("duration_sec") or 0.0),
+        # 音效/配乐位按**段**数：音频段的 role 统一是 audio，真角色在 asset_role（bgm/sfx）
+        "sfx_segments": sum(1 for s in tpl.get("segments") or [] if s.get("asset_role") == "sfx"),
+        "bgm_segments": sum(1 for s in tpl.get("segments") or [] if s.get("asset_role") == "bgm"),
+        "a_roll_segments": sum(1 for s in tpl.get("segments") or [] if s.get("role") == "a_roll"),
+        "b_roll_segments": sum(1 for s in tpl.get("segments") or [] if s.get("role") == "b_roll"),
     }
 
 
@@ -367,6 +449,350 @@ def mine(style_id: str, *, want_a: int, want_b: int, want_sfx: int,
     return assets, pool, notes
 
 
+# ------------------------------------------------------------ 共用素材目录（24 套共用一份）
+#
+# 为什么要有目录：24 套逐套挖素材时，同一批候选会被重复探 24 遍，而人脸检测（每条素材
+# Apple Vision 抽 3 帧）是这里最贵的一步。把「草稿库有哪些素材、各是什么货」探一次存成目录，
+# 之后每套风格只是从目录里挑子集（纯计算，毫秒级）。
+
+CATALOG_VERSION = 1
+PHOTO_MIN_BYTES = 300_000     # 小图多是图标/装饰角标，不是「照片」
+PHOTO_MIN_SHORT = 480         # 短边过小：拿去做拼贴底板会糊成一块
+
+
+def _sig(row: dict) -> str:
+    """同源指纹：同一段源文件常被复制进多套草稿（字节数 + 时长 + 分辨率都一样）。
+
+    素材池要求「互不同源」，所以同一段源在不同草稿里的拷贝只能留一条。
+    """
+    return f"{int(row.get('bytes') or 0)}|{round(float(row.get('dur') or 0.0), 2)}|{row.get('w')}x{row.get('h')}"
+
+
+def build_catalog(*, min_video_bytes: int = 1_000_000, min_video_dur: float = 1.0,
+                  log=None) -> dict:
+    """把草稿库整扫一遍：每条视频/音频/静图探时长、分辨率、音轨、人脸，存成目录。
+
+    不排除任何草稿（排除的是「模版源草稿」，那是**逐套**的事，在挑素材时按 draft_ref 过滤）。
+    """
+    from replica_template import _replica_module
+    root = Path(_replica_module()._discover_root("drafts"))
+    if not root.is_dir():
+        raise SystemExit(f"找不到草稿库根目录（{root.name}），用 JY_DRAFT_ROOT 指定")
+    dirs = _draft_dirs(root, exclude="\x00")  # 不排除任何一套
+    say = log or (lambda msg: print(f"[mine] {msg}"))
+    say(f"草稿库 {len(dirs)} 套 → 开始探素材")
+
+    videos: List[dict] = []
+    t0 = time.time()
+    n_v = 0
+    for d in dirs:
+        for p in _media_in(d, "video", VIDEO_EXTS):
+            try:
+                size = p.stat().st_size
+            except OSError:
+                continue
+            if size < min_video_bytes:
+                continue
+            info = _probe(p)
+            if info["duration"] < min_video_dur or info["width"] <= 0:
+                continue
+            anchor = _face_anchor(p, info["duration"])
+            row = {
+                "path": str(p), "draft_ref": _ref(d.name),
+                "dur": round(info["duration"], 2), "w": int(info["width"]),
+                "h": int(info["height"]), "fps": info["fps"],
+                "rotation": int(info.get("rotation") or 0),
+                "audio": bool(info["audio"]), "bytes": size,
+                "size_mb": round(size / 1e6, 1),
+                "face": bool(anchor),
+                "face_area": round(float(anchor["w"]) * float(anchor["h"]), 4) if anchor else 0.0,
+                "face_frames": int(anchor.get("faces") or 0) if anchor else 0,
+                "face_cx": anchor.get("cx") if anchor else None,
+                "face_cy": anchor.get("cy") if anchor else None,
+            }
+            if anchor and info["audio"]:
+                row["audio_db"] = _mean_volume_db(p)
+            videos.append(row)
+            n_v += 1
+            if n_v % 20 == 0:
+                say(f"  视频 {n_v} 条…（{time.time() - t0:.0f}s）")
+    videos.sort(key=lambda r: -r["dur"])
+    say(f"视频 {len(videos)} 条（{time.time() - t0:.0f}s）")
+
+    audios: List[dict] = []
+    for d in dirs:
+        for p in _media_in(d, "audio", AUDIO_EXTS):
+            info = _probe(p)
+            # 只要两种：20s 以上的音乐床、3s 以内的短音效；中间那种（口播原声）不进池
+            if info["duration"] >= 20.0:
+                kind = "music"
+            elif 0.15 <= info["duration"] <= 3.0:
+                kind = "sfx"
+            else:
+                continue
+            try:
+                size = p.stat().st_size
+            except OSError:
+                size = 0
+            audios.append({"path": str(p), "draft_ref": _ref(d.name),
+                           "name_ref": _ref(p.name), "dur": round(info["duration"], 2),
+                           "kind": kind, "channels": None, "bytes": size})
+    audios.sort(key=lambda r: -r["dur"])
+    say(f"音频 {len(audios)} 条（music {sum(1 for r in audios if r['kind'] == 'music')} / "
+        f"sfx {sum(1 for r in audios if r['kind'] == 'sfx')}）")
+
+    images: List[dict] = []
+    for d in dirs:
+        for p in _media_in(d, "video", IMAGE_EXTS):
+            try:
+                size = p.stat().st_size
+            except OSError:
+                continue
+            if size < PHOTO_MIN_BYTES:
+                continue
+            info = _probe(p)
+            w, h = int(info.get("width") or 0), int(info.get("height") or 0)
+            if w < PHOTO_MIN_SHORT or h < PHOTO_MIN_SHORT:
+                continue
+            images.append({"path": str(p), "draft_ref": _ref(d.name), "w": w, "h": h,
+                           "bytes": size, "size_mb": round(size / 1e6, 1)})
+    images.sort(key=lambda r: -r["bytes"])
+    say(f"静图 {len(images)} 张（≥{PHOTO_MIN_BYTES // 1000}KB 且短边≥{PHOTO_MIN_SHORT}）")
+
+    return {
+        "version": CATALOG_VERSION,
+        "built_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "drafts_scanned": len(dirs),
+        "videos": videos, "audios": audios, "images": images,
+        "dedup": _catalog_dedup_stats(videos),
+    }
+
+
+def _catalog_dedup_stats(videos: List[dict]) -> dict:
+    """目录里「同源拷贝」有多少（同一段源被多套草稿各存一份）。"""
+    sigs: Dict[str, int] = {}
+    for r in videos:
+        sigs[_sig(r)] = sigs.get(_sig(r), 0) + 1
+    dup = sum(n - 1 for n in sigs.values() if n > 1)
+    return {"videos_distinct_signature": len(sigs), "videos_copies_of_same_source": dup}
+
+
+# ------------------------------------------------------------ 从目录里挑一套风格的素材
+
+def _dedupe_same_source(rows: List[dict]) -> Tuple[List[dict], int]:
+    """同源拷贝只留一条（留字节数最大的那份，质量最可靠）。返回 (去重后, 丢掉几条)。"""
+    best: Dict[str, dict] = {}
+    for r in rows:
+        s = _sig(r)
+        cur = best.get(s)
+        if cur is None or int(r.get("bytes") or 0) > int(cur.get("bytes") or 0):
+            best[s] = r
+    out = list(best.values())
+    return out, len(rows) - len(out)
+
+
+def _pick_diverse(pool: List[dict], want_n: int, *, min_total_sec: float = 0.0,
+                  max_n: int = 40) -> List[dict]:
+    """先一条草稿一条素材（互补背景），条数与总时长都够了就停；不够再放开同草稿。"""
+    picked: List[dict] = []
+    used_paths: set = set()
+    seen_drafts: set = set()
+    total = 0.0
+
+    def _done() -> bool:
+        return len(picked) >= want_n and total >= min_total_sec
+
+    for r in pool:
+        if len(picked) >= max_n or _done():
+            break
+        if r["draft_ref"] in seen_drafts or r["path"] in used_paths:
+            continue
+        picked.append(r)
+        used_paths.add(r["path"])
+        seen_drafts.add(r["draft_ref"])
+        total += float(r.get("dur") or 0.0)
+    for r in pool:
+        if len(picked) >= max_n or _done():
+            break
+        if r["path"] in used_paths:
+            continue
+        picked.append(r)
+        used_paths.add(r["path"])
+        total += float(r.get("dur") or 0.0)
+    return picked
+
+
+def _role_totals(rows: List[dict]) -> dict:
+    durs = [float(r.get("dur") or 0.0) for r in rows]
+    return {
+        "count": len(rows),
+        "total_sec": round(sum(durs), 2),
+        "min_dur": round(min(durs), 2) if durs else 0.0,
+        "max_dur": round(max(durs), 2) if durs else 0.0,
+        "distinct_drafts": len({r.get("draft_ref") for r in rows}),
+        "distinct_sources": len({_sig(r) for r in rows}),
+    }
+
+
+def select_from_catalog(catalog: dict, style_id: str, need: Optional[dict], *,
+                        src_draft_ref: Optional[str] = None,
+                        want_a: int = 0, want_b: int = 0, want_photo: int = 0,
+                        want_sfx: int = 4, min_a_sec: float = 200.0, min_b_sec: float = 200.0,
+                        min_bgm_sec: float = 300.0, min_photo: int = 20,
+                        max_a: int = 48, max_b: int = 48, max_photo: int = 30,
+                        max_bgm: int = 4) -> Tuple[dict, dict, List[str]]:
+    """目录 → 一套风格的 {角色: [路径]} + 脱敏素材清单。
+
+    池子大小不是拍脑袋：`need`（template_need）算了「同一瞬间最多几层叠在一起」「照片全片
+    要用几张不同图」，池子至少要那么多**互不同源**的素材，否则套用时就得留空或同源重影。
+    另外按「总时长」兜一层：A-roll 池 < 200s 时，长片（style_03 是 126.9s）里同一段素材会被
+    反复回卷（asset_wrapped），所以要求池子总时长也够。
+    """
+    notes: List[str] = []
+    need = need or {}
+    videos = [r for r in catalog.get("videos") or [] if r.get("draft_ref") != src_draft_ref]
+    videos, dropped = _dedupe_same_source(videos)
+    notes.append(f"候选视频 {len(videos)} 条互不同源（另有 {dropped} 条是同源拷贝，已去重）")
+
+    aroll = [r for r in videos if r.get("face") and int(r.get("face_frames") or 0) >= 2
+             and r.get("audio")
+             and (r.get("audio_db") is None or float(r.get("audio_db")) > -32.0)
+             and float(r.get("dur") or 0) >= 1.5]
+    # 排序：脸够大又不过大 → 时长长 → 优先能撑长片的
+    aroll.sort(key=lambda r: (-(0.01 <= float(r.get("face_area") or 0) <= 0.20),
+                              -float(r.get("face_area") or 0), -float(r.get("dur") or 0)))
+    broll = [r for r in videos if not r.get("face") and float(r.get("dur") or 0) >= 4.0]
+    broll.sort(key=lambda r: -float(r.get("dur") or 0))
+
+    tgt_a = max(want_a, int(need.get("a_roll_want") or 0), 2)
+    tgt_b = max(want_b, int(need.get("b_roll_want") or 0), 2)
+    a_pick = _pick_diverse(aroll, tgt_a, min_total_sec=min_a_sec, max_n=max_a)
+    b_pick = _pick_diverse(broll, tgt_b, min_total_sec=min_b_sec, max_n=max_b)
+
+    photos_all = [r for r in catalog.get("images") or [] if r.get("draft_ref") != src_draft_ref]
+    tgt_photo = max(want_photo, int(need.get("photo_want") or 0), 0)
+    if tgt_photo:
+        tgt_photo = max(tgt_photo, min_photo)
+    # 照片层的要求是「全片唯一」：池子里有几张，就有几层能落地，所以按需要张数取，别多取
+    p_pick = _pick_diverse(photos_all, tgt_photo, min_total_sec=0.0, max_n=min(max_photo, max(tgt_photo, min_photo)))
+
+    audios = [r for r in catalog.get("audios") or [] if r.get("draft_ref") != src_draft_ref]
+    music = [r for r in audios if r.get("kind") == "music"]
+    music.sort(key=lambda r: -float(r.get("dur") or 0))
+    # BGM 池：先按「一条草稿一首、时长长的先上」凑到 min_bgm_sec；凑不够再放开同草稿。
+    # （模版里 bgm 段通常只有 1~3 段，池子里多备几首不会让它中途换歌：一段一次 fill。）
+    bgm_pick: List[dict] = []
+    bgm_total = 0.0
+    seen_md: set = set()
+    for r in music:
+        if len(bgm_pick) >= max_bgm or bgm_total >= min_bgm_sec:
+            break
+        if r["draft_ref"] in seen_md:
+            continue
+        bgm_pick.append(r)
+        seen_md.add(r["draft_ref"])
+        bgm_total += float(r.get("dur") or 0)
+    if bgm_total < min_bgm_sec:
+        for r in music:
+            if len(bgm_pick) >= max_bgm or bgm_total >= min_bgm_sec:
+                break
+            if any(p["path"] == r["path"] for p in bgm_pick):
+                continue
+            bgm_pick.append(r)
+            bgm_total += float(r.get("dur") or 0)
+    sfx_all = [r for r in audios if r.get("kind") == "sfx"]
+    sfx_all.sort(key=lambda r: -float(r.get("dur") or 0))
+    # 音效条数跟「模板里有多少个音效位」走（57 个音效位拿 4 条会一直重复同一个“叮”）
+    sfx_need = max(want_sfx, 4)
+    if need.get("sfx_segments"):
+        sfx_need = max(sfx_need, min(12, int(need["sfx_segments"]) // 3))
+    sfx_pick: List[dict] = []
+    seen_sfx: set = set()
+    for r in sfx_all:
+        if len(sfx_pick) >= sfx_need:
+            break
+        if r["name_ref"] in seen_sfx:
+            continue
+        seen_sfx.add(r["name_ref"])
+        sfx_pick.append(r)
+
+    assets = {
+        "a_roll": [r["path"] for r in a_pick],
+        "b_roll": [r["path"] for r in b_pick],
+        "photo": [r["path"] for r in p_pick],
+        "bgm": [r["path"] for r in bgm_pick],
+        "sfx": [r["path"] for r in sfx_pick],
+    }
+
+    totals = {"a_roll": _role_totals(a_pick), "b_roll": _role_totals(b_pick),
+              "photo": _role_totals(p_pick), "bgm": _role_totals(bgm_pick),
+              "sfx": _role_totals(sfx_pick)}
+    shortfall = {
+        "a_roll": max(0, int(need.get("distinct_assets_needed") or 0) - len(a_pick)),
+        "b_roll": max(0, int(need.get("distinct_assets_needed") or 0) - len(b_pick)),
+        "a_roll_sec": round(max(0.0, min_a_sec - totals["a_roll"]["total_sec"]), 1),
+        "b_roll_sec": round(max(0.0, min_b_sec - totals["b_roll"]["total_sec"]), 1),
+        "photo": max(0, tgt_photo - len(p_pick)),
+        "bgm_sec": round(max(0.0, min_bgm_sec - totals["bgm"]["total_sec"]), 1),
+    }
+    if shortfall["a_roll"]:
+        notes.append(f"A-roll 池只有 {len(a_pick)} 条，比叠层峰值要求少 {shortfall['a_roll']} 条")
+    if shortfall["a_roll_sec"]:
+        notes.append(f"A-roll 池总时长 {totals['a_roll']['total_sec']}s，没到 {min_a_sec}s（长片会回卷）")
+    if shortfall["photo"]:
+        notes.append(f"照片池 {len(p_pick)} 张，比需要少 {shortfall['photo']} 张（照片层会留空）")
+    notes.append(f"池子：A {len(a_pick)} 条/{totals['a_roll']['total_sec']}s · "
+                 f"B {len(b_pick)} 条/{totals['b_roll']['total_sec']}s · 照片 {len(p_pick)} 张 · "
+                 f"BGM {len(bgm_pick)} 首/{totals['bgm']['total_sec']}s · 音效 {len(sfx_pick)} 条")
+
+    pool = {
+        "style_id": style_id,
+        "catalog_built_at": catalog.get("built_at"),
+        "catalog_version": catalog.get("version"),
+        "candidates_considered": len(videos),
+        "candidates_dropped_same_source": dropped,
+        "need": need,
+        "totals": totals,
+        "shortfall": shortfall,
+        "limits": {"min_a_sec": min_a_sec, "min_b_sec": min_b_sec,
+                   "min_bgm_sec": min_bgm_sec, "min_photo": min_photo},
+        "a_roll": [{"id": f"ar-{i + 1:02d}", **{k: r.get(k) for k in
+                     ("draft_ref", "dur", "w", "h", "fps", "rotation", "audio", "face",
+                      "face_area", "face_frames", "face_cx", "face_cy", "size_mb", "audio_db")}}
+                   for i, r in enumerate(a_pick)],
+        "b_roll": [{"id": f"br-{i + 1:02d}", **{k: r.get(k) for k in
+                     ("draft_ref", "dur", "w", "h", "fps", "rotation", "audio", "face",
+                      "face_area", "size_mb")}}
+                   for i, r in enumerate(b_pick)],
+        "photo": [{"id": f"ph-{i + 1:02d}", **{k: r.get(k) for k in
+                    ("draft_ref", "w", "h", "size_mb")}} for i, r in enumerate(p_pick)],
+        "bgm": [{"id": f"bgm-{i + 1:02d}", **{k: r.get(k) for k in ("draft_ref", "dur")}}
+                for i, r in enumerate(bgm_pick)],
+        "sfx": [{"id": f"sfx-{i + 1:02d}", **{k: r.get(k) for k in ("draft_ref", "dur")}}
+                for i, r in enumerate(sfx_pick)],
+        "rejected": {"aroll_candidates": len(aroll), "broll_candidates": len(broll),
+                     "photo_candidates": len(photos_all), "music_candidates": len(music),
+                     "sfx_candidates": len(sfx_all)},
+        "notes": notes,
+    }
+    return assets, pool, notes
+
+
+def _need_of_style(style_id: str) -> Tuple[Optional[dict], Optional[str]]:
+    """按风格 id 现提一份模版算需求（模板源草稿名 → 哈希 ref，用来排除自家素材）。
+
+    提不出来不抛（那条错误该由下游 verify 报），退成「不给需求、不排除草稿」。
+    """
+    from replica_template import resolve_draft_by_style, extract_template
+    try:
+        draft = resolve_draft_by_style(style_id)
+        tpl = extract_template(draft)
+        return template_need(tpl), _ref(draft.parent.name)
+    except BaseException as exc:
+        print(f"[mine] {style_id} 提模版失败，素材池按默认需求挑：{type(exc).__name__}: {exc}")
+        return None, None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="从本机草稿库挑真实实拍素材（脱敏清单 + 套用素材表）")
     ap.add_argument("--style-id", default="style_21")
@@ -381,7 +807,28 @@ def main() -> int:
     ap.add_argument("--max-candidates", type=int, default=30)
     ap.add_argument("--template", default=None,
                     help="模版 JSON：按其「同时叠层数」自动定池子大小（不给就用 want-* 默认值）")
+    # ---- 共用素材目录（24 套共用一份，见文件头第二种用法）----
+    ap.add_argument("--catalog", default=None, help="已有的共用素材目录 JSON（给了就走目录挑素材）")
+    ap.add_argument("--build-catalog", default=None, metavar="OUT",
+                    help="把草稿库整扫一遍写成目录 JSON（只建目录，不挑素材）")
+    ap.add_argument("--min-aroll-sec", type=float, default=200.0,
+                    help="A-roll 池总时长下限（秒）：短片够了，长片才会大量回卷）")
+    ap.add_argument("--min-broll-sec", type=float, default=200.0)
+    ap.add_argument("--min-bgm-sec", type=float, default=300.0, help="BGM 池总时长下限（秒）")
+    ap.add_argument("--min-photo", type=int, default=20, help="照片池张数下限")
+    ap.add_argument("--max-pool", type=int, default=48,
+                    help="A/B-roll 池条数上限（复合片段子层多时要调大：套用端对子层的 avoid 是父段整个窗口）")
     args = ap.parse_args()
+
+    if args.build_catalog:
+        catalog = build_catalog()
+        out_p = Path(args.build_catalog)
+        out_p.parent.mkdir(parents=True, exist_ok=True)
+        out_p.write_text(json.dumps(catalog, ensure_ascii=False), encoding="utf-8")
+        print(f"[mine] 素材目录 -> {out_p.name} · 视频 {len(catalog['videos'])} / "
+              f"音频 {len(catalog['audios'])} / 静图 {len(catalog['images'])} · "
+              f"同源拷贝去重 {catalog['dedup']['videos_copies_of_same_source']} 条")
+        return 0
 
     need = None
     want_a, want_b = args.want_aroll, args.want_broll
@@ -392,9 +839,30 @@ def main() -> int:
         want_b = max(want_b, int(need["b_roll_want"]))
         want_photo = max(want_photo, int(need.get("photo_want") or 0))
 
-    assets, pool, notes = mine(args.style_id, want_a=want_a, want_b=want_b, want_sfx=args.want_sfx,
-                               min_mb=args.min_mb, max_candidates=args.max_candidates,
-                               want_photo=want_photo)
+    if args.catalog:
+        # 目录模式：需求从风格自己的模版现算（不依赖外面先跑一步提模版），源草稿按哈希排除
+        catalog = json.loads(Path(args.catalog).read_text(encoding="utf-8"))
+        if catalog.get("version") != CATALOG_VERSION:
+            print(f"[mine] 警告：目录版本 {catalog.get('version')} != {CATALOG_VERSION}，建议 --build-catalog 重建")
+        src_ref = None
+        if not args.template:
+            need, src_ref = _need_of_style(args.style_id)
+        else:
+            try:
+                from replica_template import resolve_draft_by_style
+                src_ref = _ref(resolve_draft_by_style(args.style_id).parent.name)
+            except SystemExit:
+                src_ref = None
+        assets, pool, notes = select_from_catalog(
+            catalog, args.style_id, need, src_draft_ref=src_ref,
+            want_a=args.want_aroll, want_b=args.want_broll, want_photo=args.want_photo,
+            want_sfx=args.want_sfx, min_a_sec=args.min_aroll_sec, min_b_sec=args.min_broll_sec,
+            min_bgm_sec=args.min_bgm_sec, min_photo=args.min_photo,
+            max_a=args.max_pool, max_b=args.max_pool)
+    else:
+        assets, pool, notes = mine(args.style_id, want_a=want_a, want_b=want_b,
+                                   want_sfx=args.want_sfx, min_mb=args.min_mb,
+                                   max_candidates=args.max_candidates, want_photo=want_photo)
     if need:
         short_a = max(0, int(need["distinct_assets_needed"]) - len(assets["a_roll"]))
         short_b = max(0, int(need["distinct_assets_needed"]) - len(assets["b_roll"]))
@@ -435,6 +903,11 @@ def main() -> int:
                       f"{row.get('w')}x{row.get('h')} {row.get('size_mb')}MB")
             else:
                 print(f"[mine] {role:7s} {row['id']} {row.get('draft_ref')} {row.get('dur')}s")
+    if args.catalog:
+        t = pool.get("totals") or {}
+        print(f"[mine] 池子总计: A {(t.get('a_roll') or {}).get('total_sec')}s / "
+              f"B {(t.get('b_roll') or {}).get('total_sec')}s / 照片 {(t.get('photo') or {}).get('count')} 张 / "
+              f"BGM {(t.get('bgm') or {}).get('total_sec')}s · 差量 {pool.get('shortfall')}")
     return 0 if (assets.get("a_roll") and assets.get("b_roll")) else 1
 
 

@@ -758,6 +758,29 @@ def _text_style_material(text: str, style: dict, font_path: Optional[str] = None
     return mat
 
 
+def _segment_has_blur(seg: dict) -> bool:
+    """模版这一层原版是否**真带模糊**（`模糊` 特效里有 `effects_adjust_blur` 且值 > 0）。
+
+    D5 的判定依据：verify 给背景板的豁免是「同源 + 同入点 + 实测 sigma≥8」，所以套用端
+    只该把**真有模糊特效**的视频层当「模糊背景板」重建；没模糊证据的层（尤其是照片竖条）
+    当普通层走自己的素材池——否则丢蒙版 + 不加模糊 = 一张全屏同源副本。
+    """
+    for fx in seg.get("effects") or []:
+        if "模糊" not in str(fx.get("name") or ""):
+            continue
+        for p in fx.get("adjust_params") or []:
+            if str(p.get("name")) != "effects_adjust_blur":
+                continue
+            try:
+                val = float(p.get("value") if p.get("value") is not None
+                            else (p.get("default_value") or 0.0))
+            except (TypeError, ValueError):
+                val = 0.0
+            if val > 0:
+                return True
+    return False
+
+
 def _matting_block(meta: Optional[dict], root_uuid: str) -> dict:
     """模版里的「人像抠像 + 撕纸描边」结构 → 新草稿素材的 `matting` 字段。
 
@@ -1483,6 +1506,36 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
     #   ③ 几何按原版（contain + clip.scale）叠回去。
     # 只有“绑不到主轨素材”的抠像层才继续跳过并计 `cutout_layers_skipped`，不假装重建成功。
     rebuilt_cutouts: List[dict] = []   # 已重建的抠像层（供背景板判定）
+    dropped_cutout_keys: List[str] = []  # 彻底丢弃（不分配素材）的抠像层，供写段后对账
+
+    def _bind_cutout_to_main(seg: dict, start: float, dur: float) -> Optional[dict]:
+        """抠像层没有 `same_material_as`（或锚段在新片里没上）时，按**原版素材指纹**重绑。
+
+        原版抠像层就是「主轨那条片子的另一条重构」，`matting` 只是从它身上抠人像。
+        只要模版主轨有一段与它 `material_fingerprint` 相同、且在新时间轴上真的与它
+        同时出现在画面上（窗口有交集），那段就能当锚——不必留空，也不必另接 B-roll。
+        找不到就返回 None：调用方按「彻底不分配素材」处理（绝不留同源不透明副本）。
+        """
+        fp = seg.get("material_fingerprint")
+        if not fp:
+            return None
+        best: Optional[tuple] = None
+        for cand in driver_segs:
+            if cand.get("kind") in ("compound", "photo"):
+                continue
+            if cand.get("material_fingerprint") != fp:
+                continue
+            p = plan.get(cand["key"])
+            if not p or not p.get("asset"):
+                continue
+            ov = min(start + dur, p["start"] + p["dur"]) - max(start, p["start"])
+            if best is None or ov > best[0]:
+                best = (ov, cand["key"], p)
+        if best is None or best[0] <= 0.02:
+            return None
+        return {"asset": best[2]["asset"], "src_in": best[2].get("src_in"),
+                "old_start": best[2].get("old_start"), "key": best[1]}
+
     for info in sorted(overlay_infos, key=lambda i: (i["start"], i["seg"]["track_index"])):
         seg = info["seg"]
         new_start, new_dur = info["start"], info["dur"]
@@ -1491,21 +1544,40 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
         linked = info["linked"]
         has_mask = bool(seg.get("mask"))
         if info["is_cutout"]:
-            if not (linked and linked.get("asset")):
-                # 模版标的锚段在新片里没上（主轨那段没素材）→ 拿不到“同一条片子”可抠，只能留空
-                _blank_overlay(seg, "matting_layer_no_main_binding", new_start, new_dur,
+            binding = linked if (linked and linked.get("asset")) else _bind_cutout_to_main(
+                seg, new_start, new_dur)
+            if binding is None:
+                # 两条路二选一，选「彻底不分配素材」：这一层当缺失，成片不写它。
+                # 为什么不选「留空但画面里还在」：原版那层是「主轨同一条片子抠出来压在背景上」，
+                # 少了抠像、只剩同源不透明副本，就是同一张脸被画两遍（重影）。
+                # 所以先把它从 plan 里摘掉（防御：任何早先分配都作废），再如实计
+                # `cutout_layer_dropped_no_binding`；写段循环只写 plan，它不可能上屏。
+                plan.pop(seg["key"], None)
+                _blank_overlay(seg, "cutout_layer_dropped_no_binding", new_start, new_dur,
                                ghost=False, linked_to=seg.get("same_material_as"),
                                cover_ratio=round(info["cover"], 3))
                 rep.setdefault("cutout_layers_skipped", {})
                 rep["cutout_layers_skipped"]["no_main_binding"] = \
                     rep["cutout_layers_skipped"].get("no_main_binding", 0) + 1
+                rep["cutout_layer_dropped_no_binding"] = \
+                    rep.get("cutout_layer_dropped_no_binding", 0) + 1
+                rep.setdefault("cutout_dropped_detail", []).append({
+                    "key": seg["key"], "track_index": seg["track_index"],
+                    "start": round(new_start, 3), "duration": round(new_dur, 3),
+                    "cover_ratio": round(info["cover"], 3),
+                    "material_fingerprint": seg.get("material_fingerprint"),
+                    "linked_to": seg.get("same_material_as"),
+                })
+                dropped_cutout_keys.append(seg["key"])
                 continue
-            la = linked["asset"]
-            offset = old_start - float(linked.get("old_start") or 0.0)
+            la = binding["asset"]
+            binding_key = seg.get("same_material_as") or binding.get("key")
+            offset = old_start - float(binding.get("old_start") or 0.0)
             # 可抠的余量按**整条素材**算（不是按锚段 take）：原版抠像层常比它锚定的主轨段长
             # （seg:6:0 盖 0–1.667s，锚段 0:1 只有 0.45–1.667s）。按锚段 take 钳会把人物层截短。
             asset_room = float(la.get("asset_dur") or la["take"])
-            src_in = min(max(0.0, float(linked["src_in"]) + offset), max(0.0, asset_room - 0.05))
+            src_in = min(max(0.0, float(binding.get("src_in") or 0.0) + offset),
+                         max(0.0, asset_room - 0.05))
             new_dur = min(new_dur, max(0.05, asset_room - src_in))
             fill = {"path": la["path"], "src_in": src_in, "take": new_dur, "w": la["w"],
                     "h": la["h"], "reused": True, "wrapped": False,
@@ -1514,7 +1586,7 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
                                 "dur": new_dur, "src_in": src_in, "asset": fill,
                                 "reused_asset": True, "old_start": old_start,
                                 "old_dur": old_dur, "track_index": seg["track_index"],
-                                "same_material_as": seg.get("same_material_as"),
+                                "same_material_as": binding_key,
                                 "cutout": True,
                                 "matting": seg.get("matting") or {"person_cutout": True}}
             rep["cutout_layers_rebuilt"] = rep.get("cutout_layers_rebuilt", 0) + 1
@@ -1524,7 +1596,10 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
             rep.setdefault("cutout_rebuilt_detail", []).append({
                 "key": seg["key"], "track_index": seg["track_index"],
                 "start": round(new_start, 3), "duration": round(new_dur, 3),
-                "src_in": round(src_in, 3), "linked_to": seg.get("same_material_as"),
+                "src_in": round(src_in, 3),
+                "linked_to": binding_key,
+                "bound_by": ("same_material_as" if (linked and linked.get("asset"))
+                             else "material_fingerprint"),
                 "asset_ref": _asset_ref(fill["path"]),
                 "stroke": bool((seg.get("matting") or {}).get("stroke")),
                 "backdrop_asset_ref": None,
@@ -1562,7 +1637,13 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
         所以一并跳过并计 `orphaned_backdrop_of_skipped_cutout`。
         现在：抠像层已经重建，背景板就不再是孤儿——它是「人物压在这层模糊板上」这幅构图的底板，
         必须一起重建（否则人物悬在另一个背景上，设计还是丢了）。
-        判定口径不变：不透明 + 时间窗大半被更高轨上的抠像层盖住。
+
+        **三条前置条件（缺一不可）**：① 不透明；② 时间窗大半被更高轨上的抠像层盖住；
+        ③ **原版这层真带模糊**且是视频——原来只凭①②就把「kind=photo + 线性蒙版 + 无模糊」
+        的照片竖条当背景板：重建时换素材、丢蒙版、不加模糊，结果是一张全屏同源副本，
+        把主轨那张脸盖掉（style_07 seg:4:1，3.5s 判 2 对 FAIL）。
+        verify 的「模糊背景板」豁免口径是「同源 + 同入点 + 实测 sigma≥8」，两边必须一致：
+        没模糊证据就不当板，照片一律不当板。
 
         用哪条素材见下面重建分支：跟着**每层抠像人像自己的素材/入点**切块，不再另接 B-roll。
         （原版背景板 seg:1:0 的 file_slot=1、与主轨 file_slot=0 不是同一个文件；但新素材池里
@@ -1576,7 +1657,27 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
             if int(c["track_index"] or 0) <= int(info["seg"]["track_index"] or 0):
                 continue  # 只看“更高轨”上的抠像层（数组序即 z 序）
             hidden += max(0.0, min(a1, c["start"] + c["dur"]) - max(a0, c["start"]))
-        return hidden >= 0.5 * max(1e-6, a1 - a0)
+        if hidden < 0.5 * max(1e-6, a1 - a0):
+            return False
+        # 到这里才是「本来会被当成背景板」的候选层；下面两条门槛不许它当板（D5）。
+        if info["seg"].get("kind") != "video":
+            rep["backdrop_rejected_photo"] = rep.get("backdrop_rejected_photo", 0) + 1
+            rep.setdefault("backdrop_rejected_detail", []).append({
+                "key": info["seg"]["key"], "why": "not_a_video_layer",
+                "kind": info["seg"].get("kind"),
+                "has_mask": bool(info["seg"].get("mask")),
+                "cover_ratio": round(info["cover"], 3)})
+            return False
+        if not _segment_has_blur(info["seg"]):
+            rep["backdrop_rejected_not_blurred"] = \
+                rep.get("backdrop_rejected_not_blurred", 0) + 1
+            rep.setdefault("backdrop_rejected_detail", []).append({
+                "key": info["seg"]["key"], "why": "no_blur_effect",
+                "kind": info["seg"].get("kind"),
+                "has_mask": bool(info["seg"].get("mask")),
+                "cover_ratio": round(info["cover"], 3)})
+            return False
+        return True
 
     for info in sorted(overlay_infos, key=lambda i: (i["start"], i["seg"]["track_index"])):
         seg = info["seg"]
@@ -1755,6 +1856,18 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
         def _skip(why: str) -> None:
             stats["skipped"][why] = stats["skipped"].get(why, 0) + 1
 
+        def _sub_taken(t0: float, dur: float) -> set:
+            """子层避让只看**这一层自己的时间窗**（子时间轴内），不是父段整窗。
+
+            原来什么：`_taken_near(parent_start, parent_dur)` —— 父段窗口里用过的素材对
+            同父段的**所有**子层都禁用，于是一个复合片段最多只能填满「池子条数」个子层。
+            原版长复合片段常常是**顺序播放**（同一时刻只上 1 层，style_23 的 25 段一拍一层），
+            本该复用同一批素材；按父段整窗挡会把 45 层留空、子时间线拼成空片。
+            改成什么：子层自己的 `[t0, t0+dur)` 与已放子层窗口求交集，时间上不重叠的放行复用。
+            """
+            return {x["path"] for x in local_taken
+                    if _overlaps(t0, t0 + dur, x["start"], x["start"] + x["dur"])}
+
         for s in sorted(sub_segs, key=lambda x: (int(x.get("track_index") or 0),
                                                     float(x.get("start_sec") or 0.0))):
             kind = s.get("kind")
@@ -1779,7 +1892,7 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
                 # 照片层：只取图片（角色规则见上面注释）+ **全片唯一**（见 take_unique_photo）：
                 # 原来只避开「时间窗重叠」的层，于是两个不同复合片段会拿到同一张图；
                 # 现在全片一本账，同一张图只能用一次（原版同比图例外）。
-                avoid = _taken_near(parent_start, parent_dur) | {x["path"] for x in local_taken}
+                avoid = _taken_near(parent_start + t0, dur) | _sub_taken(t0, dur)
                 fill = take_unique_photo(dur, avoid,
                                          fingerprint=s.get("material_fingerprint"),
                                          key=f"{seg['key']}#sub{t_i}")
@@ -1811,7 +1924,7 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
                 # 它们的照片层不许同源叠两居——靠 _placed/_taken_near 这同一本账。
                 _placed(parent_start + t0, dur, fill["path"], f"{seg['key']}#sub{int(s.get('track_index') or 0)}")
             elif kind in ("video",) or role in ("a_roll", "b_roll", "overlay_card"):
-                avoid = _taken_near(parent_start, parent_dur) | {x["path"] for x in local_taken}
+                avoid = _taken_near(parent_start + t0, dur) | _sub_taken(t0, dur)
                 fill = take_for(role if role in ROLE_FALLBACK else "b_roll", dur, avoid=avoid)
                 if fill is None:
                     _skip("video_layer_no_asset")
@@ -2223,6 +2336,9 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
     rep["text_layout"] = text_layout_report
 
     track_segs: Dict[int, List[dict]] = {t["index"]: [] for t in tracks}
+    # 草稿段 id → 模版段 key：verify 端要拿它回到 `template.json` 里核「原版同刻是否本来就有
+    # 同指纹的两层」（第三条例外必须拿证据换，不能凭“看起来同源”放行）。
+    segment_map: List[dict] = []
 
     # 背景板按抠像层切块：一个模版段 → 多个草稿段（与抠像人像/主轨同素材同入点，只差“模糊”）。
     # 写段循环仍按“一模版段一段”组织，所以这里先把带 `pieces` 的段展开成“克隆段”，
@@ -2263,6 +2379,19 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
             sub = "video"
             name = stage(key, sub)
             crop_use = usable_crop(seg, fill, canvas_w, canvas_h, rep)
+            if not crop_use and p["kind"] == "photo":
+                # 模版没带 crop：照片原版是按**图片自身像素**定尺寸的，新图的宽高比不一样，
+                # 换成画布 contain 后覆盖面积会差好几倍（style_16 seg:1:1 原版 cover 1.006，
+                # 新图未裁 3.17 = 三倍画面；那张「照片竖条」于是变成盖满全屏的图）。
+                # 按原版图层的展示宽高比居中裁一刀（与复合片段子层的同一口径）。
+                sr = (geometry or {}).get("size_ratio")
+                want = None
+                if sr and len(sr) == 2 and float(sr[1] or 0) > 0:
+                    want = (float(sr[0]) * canvas_w) / max(1e-6, float(sr[1]) * canvas_h)
+                crop_use = _aspect_crop(fill, want)
+                if crop_use:
+                    rep["photo_layer_aspect_cropped"] = \
+                        rep.get("photo_layer_aspect_cropped", 0) + 1
             # 抠像层要一份**自己的**素材条目（带 matting 结构）：和主轨用同一个文件，但素材
             # 的 matting 是逐素材的，共用一份会把主轨也变成抠像层。
             mat_block = _matting_block(p.get("matting"), root_uuid) if p.get("cutout") else None
@@ -2358,11 +2487,20 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
                 extra_refs.append(fx_mat["id"])
 
         kfs = _keyframes_of(seg, p["dur"], src_in)
-        track_segs[t_i].append(_segment(
+        new_seg = _segment(
             mat_id=mat_id, tl_start=p["start"], dur=p["dur"], src_in=src_in,
             src_dur=src_dur if p["kind"] not in ("text",) else 0.0,
             geometry=geometry, keyframes=kfs, extra_refs=extra_refs,
-            track_index=t_i, volume=1.0, render_index=seg.get("render_index")))
+            track_index=t_i, volume=1.0, render_index=seg.get("render_index"))
+        track_segs[t_i].append(new_seg)
+        segment_map.append({"seg_id": new_seg["id"], "key": seg["key"],
+                            "track_index": t_i, "start": round(p["start"], 3),
+                            "dur": round(p["dur"], 3)})
+
+    rep["segment_map"] = segment_map
+    # 彻底丢弃的抠像层必须真的不在成片上：写段循环只写 plan，这里如实对账（应为 0）。
+    written_keys = {row["key"] for row in segment_map}
+    rep["cutout_dropped_still_rendered"] = sum(1 for k in dropped_cutout_keys if k in written_keys)
 
     # ---- 写 tracks：**按原版 render_index 升序**（不是模版数组序）----
     # 原来什么：`for tr in tracks:` —— 照模版数组序写，于是拼贴（数组第 2 条）写在缩图层（数组第 6 条）

@@ -652,6 +652,7 @@ def video_overlap_pairs(draft: dict, draft_dir: Path, canvas_w: int = 1080,
             bot_ip = float(bot["src_in"]) + (mid - float(bot["start"]))
             pairs.append({
                 "a": f"t{a['track']}:{a['idx']}", "b": f"t{b['track']}:{b['idx']}",
+                "a_seg_id": a["seg_id"], "b_seg_id": b["seg_id"],
                 "overlap_start": round(max(a["start"], b["start"]), 3),
                 "overlap_end": round(min(a1, b1), 3),
                 "overlap_mid": round((max(a["start"], b["start"]) + min(a1, b1)) / 2.0, 3),
@@ -660,6 +661,7 @@ def video_overlap_pairs(draft: dict, draft_dir: Path, canvas_w: int = 1080,
                 "top_alpha": round(top["alpha"], 3),
                 "top_cover": (round(top["cover"], 3) if top["cover"] is not None else None),
                 "top_seg_id": top["seg_id"],
+                "bottom_seg_id": bot["seg_id"],
                 "top_is_cutout": bool(top["cutout"]),
                 "bottom_is_cutout": bool(bot["cutout"]),
                 # 背景板证据：真带模糊特效 + 与下层同入点 + 同取景 → “同一条片子的模糊底”
@@ -1939,10 +1941,78 @@ def strip_visibility(final_mp4: Path, main_only: Optional[Path], draft: dict,
     return res
 
 
+def _designed_same_source_evidence(pair: dict, template: Optional[dict],
+                                   seg_map: Optional[dict]) -> Optional[dict]:
+    """第三条例外（D6）的**证据**：原版同一时刻本来就有 ≥2 层同指纹视频层。
+
+    为什么需要：模版原版很多设计本身就是「同一段片子再画一遍」——分屏/画中画、同一张照片错开
+    叠两层。套用端按 `content_linked` / `duplicate_photo_allowed` 正确跟随同素材，却因为与
+    「只渲主轨」差异可见而被当成重影（style_09/11/16/19 的同源叠层全是这类）。
+
+    但这条不能变成橡皮章，所以逐对回 `template.json` 核：
+      ① 两侧草稿段要能映回各自的模版段（`seg_map`：草稿段 id → 模版段 key；
+         `#piece{i}` 切片归到原段）；
+      ② 两侧模版段的 `material_fingerprint` **相同且非空**；
+      ③ 两侧在原版时间轴上**真的同时上屏**（窗口交集 > 0.02s）；
+      ④ 再数一遍原版该时刻同指纹的视频/照片层，必须 ≥2 层。
+    全部满足才返回证据（哪两层、指纹、原版时刻与窗口）。返回 None 就继续按 FAIL 处理。
+    """
+    if not template or not seg_map:
+        return None
+    by_key = {s.get("key"): s for s in (template.get("segments") or [])}
+
+    def _orig(seg_id: Optional[str]) -> Optional[dict]:
+        key = str((seg_map or {}).get(str(seg_id or "")) or "").split("#")[0]
+        seg = by_key.get(key)
+        if not seg or seg.get("kind") not in ("video", "photo"):
+            return None
+        return seg
+
+    va = _orig(pair.get("a_seg_id"))
+    vb = _orig(pair.get("b_seg_id"))
+    if not va or not vb or va is vb:
+        return None
+    fp = va.get("material_fingerprint")
+    if not fp or fp != vb.get("material_fingerprint"):
+        return None
+    a0 = float(va.get("start_sec") or 0.0)
+    ad = float(va.get("duration_sec") or 0.0)
+    b0 = float(vb.get("start_sec") or 0.0)
+    bd = float(vb.get("duration_sec") or 0.0)
+    ov = min(a0 + ad, b0 + bd) - max(a0, b0)
+    if ov <= 0.02:
+        return None
+    mid = (max(a0, b0) + min(a0 + ad, b0 + bd)) / 2.0
+    layers = [s["key"] for s in (template.get("segments") or [])
+              if s.get("kind") in ("video", "photo")
+              and s.get("material_fingerprint") == fp
+              and float(s.get("start_sec") or 0.0) <= mid
+              < float(s.get("start_sec") or 0.0) + float(s.get("duration_sec") or 0.0)]
+    if len(layers) < 2:
+        return None
+    return {"fingerprint": fp, "fingerprint_prefix": fp[:12],
+            "original_mid": round(mid, 3), "original_overlap_sec": round(ov, 3),
+            "original_layers": layers, "a_key": va["key"], "b_key": vb["key"]}
+
+
+def rejected_spot_verdict(spot: dict) -> bool:
+    """被拒接叠层的点检结论（单点）。
+
+    像素可分辨（该点没有别的叠层在场）→ 必须 `same_as_main_only`（成片 == 只渲主轨）；
+    不可分辨（另有叠层覆盖该点）→ 看**结构证据** `layer_absent_from_draft`（那段真没落进草稿）。
+    两边都不能证明时一律不算通过。
+    """
+    if spot.get("pixel_decisive") is False:
+        return bool(spot.get("layer_absent_from_draft"))
+    return bool(spot.get("same_as_main_only"))
+
+
 def check_overlay_ghosting(draft: dict, draft_dir: Path, full_mp4: Path, main_mp4: Optional[Path],
                            frames_dir: Path, *, rejected: Optional[List[dict]] = None,
                            spot_times: Optional[List[float]] = None, tol: float = 0.02,
-                           cutout_evidence: Optional[dict] = None) -> dict:
+                           cutout_evidence: Optional[dict] = None,
+                           template: Optional[dict] = None,
+                           seg_map: Optional[dict] = None) -> dict:
     """逐对验重影（可重复检查）：对**每一对时间重叠的 video 段**取重叠中点那一帧，
     与「只渲主轨」版本逐像素比。
 
@@ -1954,7 +2024,7 @@ def check_overlay_ghosting(draft: dict, draft_dir: Path, full_mp4: Path, main_mp
     就看出的重影），满幅与否不能当免死金牌；它只作为元数据记录。
     另附人脸证据：若整帧人脸数 > 对照版且 ≥2，就是「同一张脸出现两次」的硬证。
 
-    **两条同源例外，都必须拿证据换**：
+    **三条同源例外，都必须拿证据换**：
     ① 抠像三明治：同源对里若顶层是抠像层（素材带 `matting` → 渲染时走 Vision alpha +
        alphamerge），它就不是「不透明同源第二份画面」，而是原版设计（主轨那条片子的抠像人像
        压在背景上）。但不能光看草稿标记就放行——必须 `cutout_evidence` 里**这一层**实测到
@@ -1964,9 +2034,18 @@ def check_overlay_ghosting(draft: dict, draft_dir: Path, full_mp4: Path, main_mp
        又画一遍”。模糊底与主轨的**取景可以不同**（原版底板是个 0.89 幅宽的带，主轨是 1.2 倍谁近），
        但那只是“同一帧被虚化+裁切”，不是第二个帧；真正防重影的钥在“同入点 + 真模糊”：
        没有这两条的普通同源叠层依然判 FAIL。
+    ③ 原版设计就是同源：逐对回 `template.json` 核过「原版同一时刻本来就有 ≥2 层同指纹
+       视频/照片层」（时间窗 + `material_fingerprint`）。分屏/画中画、同一张照片错开叠两层
+       都是这种设计；套用端按 `content_linked` / `duplicate_photo_allowed` 跟随同素材是**对**的。
+       证据（哪两层、指纹、原版时刻）写在 detail 的 `designed_same_source` 里；
+       核不上的同源叠层仍判 FAIL（不能拿它当橡皮章）。
 
     还会对**被拒接的叠层**（apply 报告的 overlay_left_blank_detail）做点检：这些时间点上
     成片应与「只渲主轨」**几乎相同**（mae ≈ 0）——不是重影消失，而是那一层根本没上。
+
+    第三条例外（D6）「原版同刻本来就有 ≥2 层同指纹视频层」见
+    `_designed_same_source_evidence`：必须逐对回 `template.json` 核指纹 + 原版时间窗，
+    证据写进 detail 的 `original_same_fingerprint`；拿不出证据的同源叠层仍然判 FAIL。
     """
     pairs_all = video_overlap_pairs(draft, draft_dir,
                                    int((draft.get("canvas_config") or {}).get("width") or 1080),
@@ -2005,6 +2084,8 @@ def check_overlay_ghosting(draft: dict, draft_dir: Path, full_mp4: Path, main_mp
         cutout_ok = bool(p.get("top_is_cutout") and cov is not None and 0.0 < float(cov) < 0.98)
         blur_sigma = float(p.get("top_blur_sigma") or 0.0)
         blur_board_ok = bool(p["same_source"] and blur_sigma >= 8.0 and p.get("same_in_point"))
+        designed = (_designed_same_source_evidence(p, template, seg_map)
+                    if p["same_source"] and visible else None)
         if p["same_source"] and visible and cutout_ok:
             verdict = "PASS"
             why = (f"同源但顶层是抠像层：实测 alpha 覆盖率 {float(cov):.2%}（有透明区）= 原版设计"
@@ -2013,6 +2094,12 @@ def check_overlay_ghosting(draft: dict, draft_dir: Path, full_mp4: Path, main_mp
             verdict = "PASS"
             why = (f"同源但顶层是模糊背景板：与下层同入点、且真带模糊（sigma={blur_sigma:.1f}px）"
                    f"= 同一条片子的虚化底，不是另一种取景的第二份画面")
+        elif p["same_source"] and visible and designed:
+            verdict = "PASS"
+            why = (f"原版设计就是同源叠层：原版 {designed['original_mid']:.3f}s 本来就有 "
+                   f"{len(designed['original_layers'])} 层同指纹视频/照片层"
+                   f"（{'/'.join(designed['original_layers'])}，指纹 {designed['fingerprint_prefix']}，"
+                   f"窗口 {designed['original_overlap_sec']:.2f}s 重叠）= 忠于原版，不是换素材引起的重影")
         elif p["same_source"] and visible:
             verdict = "FAIL"
             why = ("同一素材的两层以不同取景叠在一起（同源第二份画面 = 重影）"
@@ -2029,6 +2116,7 @@ def check_overlay_ghosting(draft: dict, draft_dir: Path, full_mp4: Path, main_mp
                      "same_face_twice": bool(n_full >= 2 and n_full > n_main),
                      "top_opaque_fullframe": top_opaque_full,
                      "top_alpha_coverage": (round(float(cov), 4) if cov is not None else None),
+                     "designed_same_source": designed,
                      "why": (why + "；同一帧测到两张脸是设计使然（抠像人像层 + 底下同一条主轨），不是重影"
                              if (cutout_ok and n_full >= 2 and n_full > n_main) else why),
                      "verdict": verdict})
@@ -2036,34 +2124,75 @@ def check_overlay_ghosting(draft: dict, draft_dir: Path, full_mp4: Path, main_mp
     # 被拒接的叠层：点检「成片 == 只渲主轨」，证明那一层真的没上、不是调低了透明度。
     # `spot_times`（3.0s / 模版重叠中点）是**通用**点检：重建后这些点位本来就有画面差，
     # 所以只有 rejected（in原报告里被留空的层）的点位要求「与只渲主轨几乎相同」。
+    #
+    # 但这条像素比对只有在**该点除了被拒接那层以外没别的叠层**时才有分辨力：原版设计本身
+    # 就可能在同一时刻铺着另一层（分屏/画中画），那时成片与「只渲主轨」必然不同，差的是
+    # **别层**的像素，不是被拒接层的（style_11 4.79s：被拒接的照片抠像层 + 原版设计的
+    # 圆形画中画同时在场，mae 0.23 与重影无关）。所以逐点分两种证据，都不是放阈：
+    #   ① 可分辨（无别层覆盖）→ 照旧比像素（mae≈0）；
+    #   ② 不可分辨（有别层覆盖）→ 改用**结构证据**：被拒接那一段的模版 key 在草稿里
+    #      没有落段（segment_map 里查不到），并记下覆盖它的那几个 key。
+    # 结构证据对两种情况都做——「说跳过但画面里还在」正是它要拦的。
     spots: List[dict] = []
+    main_tr = _main_track_of(draft)
+    other_windows: List[tuple] = []
+    for tr in draft.get("tracks") or []:
+        if tr.get("type") != "video" or tr is main_tr:
+            continue
+        for s in tr.get("segments") or []:
+            tgt = s.get("target_timerange") or {}
+            w0 = float(tgt.get("start") or 0) / 1e6
+            wd = float(tgt.get("duration") or 0) / 1e6
+            if wd > 0.01:
+                other_windows.append((w0, w0 + wd, s.get("id")))
+    draft_keys = {str(v).split("#")[0] for v in (seg_map or {}).values()}
+
+    def _covering(t: float) -> List[str]:
+        return [str((seg_map or {}).get(sid) or sid)
+                for (w0, w1, sid) in other_windows if w0 <= t < w1]
+
     if main_mp4 is not None:
         timed: List[tuple] = []
         for row in (rejected or []):
             t0 = float(row.get("start") or 0.0)
             dur = float(row.get("duration") or 0.0)
             if dur > 0.06:
-                timed.append((t0 + dur / 2.0, "rejected_overlay"))
-        timed.extend((float(x), "spot_time") for x in (spot_times or []))
+                timed.append((t0 + dur / 2.0, "rejected_overlay", row.get("key")))
+        timed.extend((float(x), "spot_time", None) for x in (spot_times or []))
         seen: List[tuple] = []
-        for t, kind in sorted(timed):
+        for t, kind, key in sorted(timed, key=lambda x: (x[0], x[1])):
             if not (0.0 <= t):
                 continue
-            if any(abs(t - s) < 0.45 for s, _ in seen):
+            if any(abs(t - s) < 0.45 for s, _, _ in seen):
                 continue
-            seen.append((t, kind))
-        for k, (t, kind) in enumerate(seen):
+            seen.append((t, kind, key))
+        for k, (t, kind, key) in enumerate(seen):
             fa = _grab_frame(full_mp4, t, frames_dir / f"spot{k:02d}_full_{t:.2f}s.jpg")
             fb = _grab_frame(main_mp4, t, frames_dir / f"spot{k:02d}_main_{t:.2f}s.jpg")
             delta = _frame_delta(fa, fb)
-            spots.append({"t": round(t, 3), "kind": kind,
-                          "delta_vs_main_only": delta,
-                          "same_as_main_only": bool(delta and delta["mae"] <= tol),
-                          "frames": [x.name for x in (fa, fb) if x]})
+            row_out = {"t": round(t, 3), "kind": kind,
+                       "delta_vs_main_only": delta,
+                       "same_as_main_only": bool(delta and delta["mae"] <= tol),
+                       "frames": [x.name for x in (fa, fb) if x]}
+            if kind == "rejected_overlay":
+                base = str(key or "").split("#")[0]
+                covering = _covering(t) if seg_map else []
+                # 没 seg_map（旧产物）时结构证据拿不到，退回纯像素口径
+                row_out["key"] = key
+                row_out["layer_absent_from_draft"] = (bool(base) and bool(seg_map)
+                                                       and base not in draft_keys)
+                row_out["covered_by"] = covering
+                row_out["pixel_decisive"] = not covering
+                row_out["why"] = (
+                    "该点没有别的叠层：成片应与只渲主轨几乎相同（像素级验证）"
+                    if not covering else
+                    f"该点另有叠层在场（{', '.join(covering)}）：像素差不归被拒接层，"
+                    f"改用结构证据（{key} 在草稿里无落段）")
+            spots.append(row_out)
 
     fails = [r for r in rows if r["verdict"] == "FAIL"]
     rej_spots = [s for s in spots if s.get("kind") == "rejected_overlay"]
-    rej_ok = all(s["same_as_main_only"] for s in rej_spots) if rej_spots else True
+    rej_ok = all(rejected_spot_verdict(s) for s in rej_spots) if rej_spots else True
     return {
         "ok": bool(not fails and rej_ok),
         "tolerance_mae": tol,
@@ -2074,14 +2203,18 @@ def check_overlay_ghosting(draft: dict, draft_dir: Path, full_mp4: Path, main_mp
             1 for r in rows if r["same_source"] and (r.get("a_in_compound") or r.get("b_in_compound"))),
         "ghost_rejected": len(fails),
         "pairs_same_source": sum(1 for r in rows if r["same_source"]),
+        "pairs_designed_same_source": sum(1 for r in rows if r.get("designed_same_source")),
         "pairs_same_source_cutout": sum(1 for r in rows if r["same_source"] and r.get("top_is_cutout")),
         "pairs_same_source_blur_board": sum(1 for r in rows if r["same_source"] and r.get("top_blur_sigma")),
         "same_face_twice": sum(1 for r in rows if r["same_face_twice"]),
         "detail": rows,
         "rejected_layer_spots": rej_spots,
         "spot_checks": len(spots),
+        "spot_checks_pixel_decisive": sum(1 for s in rej_spots if s.get("pixel_decisive")),
         "frames_dir": str(frames_dir),
-        "spots_all_match_main_only": (all(s["same_as_main_only"] for s in rej_spots) if rej_spots else None),
+        "spots_all_match_main_only": (
+            all(s["same_as_main_only"] for s in rej_spots if s.get("pixel_decisive") is not False)
+            if any(s.get("pixel_decisive") is not False for s in rej_spots) else None),
     }
 
 
@@ -2212,9 +2345,17 @@ def main() -> int:
         "cutout_layers_rebuilt": apply_rep.get("cutout_layers_rebuilt", 0),
         "cutout_rebuilt_detail": apply_rep.get("cutout_rebuilt_detail") or [],
         "cutout_layers_skipped": apply_rep.get("cutout_layers_skipped") or {},
+        # D4 口径：绑不到主轨的抠像层**彻底不分配素材**（不留同源不透明副本），逐层记账
+        "cutout_layer_dropped_no_binding": apply_rep.get("cutout_layer_dropped_no_binding", 0),
+        "cutout_dropped_detail": apply_rep.get("cutout_dropped_detail") or [],
+        "cutout_dropped_still_rendered": apply_rep.get("cutout_dropped_still_rendered", 0),
         "backdrop_rebuilt": apply_rep.get("backdrop_rebuilt", 0),
         "backdrop_rebuilt_detail": apply_rep.get("backdrop_rebuilt_detail") or [],
         "backdrop_skipped": apply_rep.get("backdrop_skipped") or {},
+        # D5 口径：背景板必须有模糊证据且是视频；照片/无模糊的层不让它当板
+        "backdrop_rejected_photo": apply_rep.get("backdrop_rejected_photo", 0),
+        "backdrop_rejected_not_blurred": apply_rep.get("backdrop_rejected_not_blurred", 0),
+        "backdrop_rejected_detail": apply_rep.get("backdrop_rejected_detail") or [],
         "stroke_applied": apply_rep.get("stroke_applied", 0),
         "ghost_rejected": apply_rep.get("ghost_rejected", 0),
         "overlap_conflicts_avoided": apply_rep.get("overlap_conflicts_avoided", 0),
@@ -2393,7 +2534,10 @@ def main() -> int:
                 rejected=(apply_rep.get("overlay_left_blank_detail") or []),
                 spot_times=[3.0] + [float(r["overlap_mid"]) for r in
                                     (apply_rep.get("overlay_pairs_resolved") or [])],
-                cutout_evidence=cutout_probe)
+                cutout_evidence=cutout_probe,
+                template=tpl,
+                seg_map={r["seg_id"]: r["key"] for r in (apply_rep.get("segment_map") or [])
+                         if r.get("seg_id")})
             ghost["main_only_mp4"] = _rel(main_only) if main_only else None
             ghost["elapsed_sec"] = round(time.time() - t0, 1)
         except Exception as exc:
