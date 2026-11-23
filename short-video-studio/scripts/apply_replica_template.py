@@ -37,10 +37,14 @@
 8. **`same_material_as` 是强绑定**：模版里标了它的段和主轨是同一素材的推近/缩窗重构，
    必须跟主轨同素材、同入点（按原段偏移）——否则推近/缩窗重构图会漂。但若它既无遮罩
    又满幅不透明，渲染出来就是同源第二份画面 → 跳过并计数（不自欺）。
-9. **人像抠像层不能当普通 B-roll 套**：原版 `matting.path` 非空的叠加层是「从素材里抠出
-   人物压在背景上」，抠像遮罩不随模版迁移。这类层要么有 alpha 才算跟随，要么跳过并计数
-   （`matting_layer_not_reconstructible`）；**绝不**给它另接一条新素材满幅盖住主轨。
-   跳过多少、为什么跳过，逐条进报告；素材池不够就报「素材不足，N 个位留空」。
+9. **人像抠像层按原结构重建，不再跳过**：原版 `matting.path` 非空的叠加层是「从主轨同一条素材里
+   抠出人物压在背景上」。抠像遮罩本身不随模版迁移，但**结构**迁移得了：模版记
+   `same_material_as`（同素材同入点）+ 描边颜色/强度，套用时把抠像结构写进新草稿的素材
+   `matting`，渲染时在新素材上真跑 Vision 抠像 + 撕纸描边（alpha 合成）。只有绑不到主轨素材
+   的抠像层才跳过并计 `cutout_layers_skipped`；渲染时抠像失败（新素材里没人）也不下假前景，
+   渲染器会计 `overlay_matte_failed`。**绝不**给它另接一条新素材满幅盖住主轨。
+   背景板（原版三明治的中层、不透明且时间窗被抠像层盖住）跟着一起重建（`backdrop_rebuilt`）。
+   跳过多少、为什么跳过、重建了几层，逐条进报告；素材池不够就报「素材不足，N 个位留空」。
 
 素材不够时按角色顺序回落（`overlay_card → b_roll → a_roll`、`a_roll → b_roll` 等），
 每次回落与复用都进报告；绝不假装「素材刚好够」。
@@ -519,6 +523,7 @@ class _Pool:
                 "reused": reused, "wrapped": wrapped,
                 "conflict_skipped": skipped_conflict,
                 "w": item["w"], "h": item["h"],
+                "asset_dur": float(item["dur"]),
                 "rotation": int(item.get("rotation") or 0)}
 
 
@@ -670,8 +675,53 @@ def _text_style_material(text: str, style: dict, font_path: Optional[str] = None
     return mat
 
 
+def _matting_block(meta: Optional[dict], root_uuid: str) -> dict:
+    """模版里的「人像抠像 + 撕纸描边」结构 → 新草稿素材的 `matting` 字段。
+
+    原来（重建前）：套用端把 `matting.path` 非空的叠加层一律跳过（`matting_layer_not_reconstructible`），
+    成片只剩主轨 + 文字，原版的撕纸抠像边与人像压背景全丢。
+    改成：把抠像层按 `same_material_as` 强绑回主轨同素材同入点，并把抠像结构写进新草稿的素材，
+    由渲染器（`render_replica_from_draft`，只读调用）在新素材上真跑 Vision 抠像 + 撕纸描边，
+    再用 alphamerge 合成。
+
+    **为何选「草稿标 meta、渲染时执行」而不是套用阶段烘 RGBA 层**：
+      ① 描边像素换算常数（`STROKE_SIZE_GAIN`/`STROKE_FEATHER_SRC`/`STROKE_TEX_*`/`STROKE_MATTE_DILATE`）
+         只在渲染器里，且是逐帧从原版反解出来的；套用端复制一份必然漂成第二个真值源。
+      ② 烘好的 RGBA 层若当普通素材引用，渲染器抽段走 h264（`.mp4`）会丢 alpha——alpha 只从
+         `matting`/遮罩派生，等于白烘（要另改渲染器才能接）。
+      ③ matte 必须与成片用**同一份抽段文件、同一 fps**生成，否则逐帧错位、人物边缘鬼影。
+    `matting.path` 写成草稿内相对占位（与原版草稿同一形状）：本复刻链路由渲染器在渲染时生成
+    matte；编辑器打开时按需重算抠像。
+    """
+    meta = meta or {}
+    mt: Dict[str, Any] = {
+        "custom_matting_id": _uid(),
+        "path": f"##_draftpath_placeholder_{root_uuid}_##/matting/person_cutout",
+        "flag": 3,
+        "has_use_quick_brush": bool(meta.get("quick_brush")),
+    }
+    if meta.get("stroke"):
+        params = dict(meta.get("stroke_params") or {})
+        if not params:
+            # 模版是旧格式（只有 stroke=True，没记强度参数）：按原版反解值补，并如实留痕
+            params = {"effects_adjust_size": 0.35, "effects_adjust_distance": 0.25,
+                      "effects_adjust_texture": 0.6}
+        col = meta.get("stroke_color") or [1.0, 1.0, 1.0, 1.0]
+        mt["enable_matting_stroke"] = True
+        mt["strokes"] = [{
+            "resource_name": meta.get("stroke_name") or "",
+            "color": list(col),
+            "adjust_params": [{"name": k, "value": float(v), "default_value": float(v)}
+                              for k, v in params.items()],
+            "path": "",
+            "resource_id": "",
+        }]
+    return mt
+
+
 def _video_material(path_name: str, root_uuid: str, rel_dir: str, w: int, h: int, dur: float,
-                    crop: Optional[dict] = None, *, is_photo: bool = False) -> dict:
+                    crop: Optional[dict] = None, *, is_photo: bool = False,
+                    matting: Optional[dict] = None) -> dict:
     crop_dict = {}
     if crop:
         crop_dict = {
@@ -693,7 +743,7 @@ def _video_material(path_name: str, root_uuid: str, rel_dir: str, w: int, h: int
         "local_material_id": _uid(),
         "material_id": "",
         "material_name": path_name,
-        "matting": {"path": ""},
+        "matting": matting or {"path": ""},
         "path": f"##_draftpath_placeholder_{root_uuid}_##/{rel_dir}/{path_name}",
         "stable": {"time_range": {}},
         "type": "photo" if is_photo else "video",
@@ -1085,7 +1135,15 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
                               "linked": linked, "is_cutout": is_cutout})
 
     # 先处理“必须跟随主轨”的和“必须跳过”的（它们不参与抢素材），再按时间窗分配 B-roll。
-    skipped_cutouts: List[dict] = []  # 被跳过的人像抠像层（{start, dur, track_index}）
+    #
+    # 人像抠像层（原版 `matting.path` 非空）：**原来一律跳过**（`matting_layer_not_reconstructible`），
+    # 结果成片只剩主轨 + 文字，原版三格拼贴/撕纸抠像边的设计全丢。现在改成**重建**：
+    #   ① 仍按 `same_material_as` 强绑主轨同素材同入点（原版就是主轨那条片子的抠像版，不是另一段内容）；
+    #   ② 把模版里的抠像结构（描边颜色/强度）写进新草稿素材的 `matting`，渲染时真跑 Vision 抠像
+    #      + `bake_stroke_layer` 撕纸描边，alpha 由 alphamerge 合成（见 `_matting_block`）；
+    #   ③ 几何按原版（contain + clip.scale）叠回去。
+    # 只有“绑不到主轨素材”的抠像层才继续跳过并计 `cutout_layers_skipped`，不假装重建成功。
+    rebuilt_cutouts: List[dict] = []   # 已重建的抠像层（供背景板判定）
     for info in sorted(overlay_infos, key=lambda i: (i["start"], i["seg"]["track_index"])):
         seg = info["seg"]
         new_start, new_dur = info["start"], info["dur"]
@@ -1094,11 +1152,48 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
         linked = info["linked"]
         has_mask = bool(seg.get("mask"))
         if info["is_cutout"]:
-            _blank_overlay(seg, "matting_layer_not_reconstructible", new_start, new_dur,
-                           ghost=True, linked_to=seg.get("same_material_as"),
-                           cover_ratio=round(info["cover"], 3))
-            skipped_cutouts.append({"start": new_start, "dur": new_dur,
-                                    "track_index": seg["track_index"]})
+            if not (linked and linked.get("asset")):
+                # 模版标的锚段在新片里没上（主轨那段没素材）→ 拿不到“同一条片子”可抠，只能留空
+                _blank_overlay(seg, "matting_layer_no_main_binding", new_start, new_dur,
+                               ghost=False, linked_to=seg.get("same_material_as"),
+                               cover_ratio=round(info["cover"], 3))
+                rep.setdefault("cutout_layers_skipped", {})
+                rep["cutout_layers_skipped"]["no_main_binding"] = \
+                    rep["cutout_layers_skipped"].get("no_main_binding", 0) + 1
+                continue
+            la = linked["asset"]
+            offset = old_start - float(linked.get("old_start") or 0.0)
+            # 可抠的余量按**整条素材**算（不是按锚段 take）：原版抠像层常比它锚定的主轨段长
+            # （seg:6:0 盖 0–1.667s，锚段 0:1 只有 0.45–1.667s）。按锚段 take 钳会把人物层截短。
+            asset_room = float(la.get("asset_dur") or la["take"])
+            src_in = min(max(0.0, float(linked["src_in"]) + offset), max(0.0, asset_room - 0.05))
+            new_dur = min(new_dur, max(0.05, asset_room - src_in))
+            fill = {"path": la["path"], "src_in": src_in, "take": new_dur, "w": la["w"],
+                    "h": la["h"], "reused": True, "wrapped": False,
+                    "asset_dur": asset_room, "used_role": la.get("used_role")}
+            plan[seg["key"]] = {"kind": seg["kind"], "role": info["role"], "start": new_start,
+                                "dur": new_dur, "src_in": src_in, "asset": fill,
+                                "reused_asset": True, "old_start": old_start,
+                                "old_dur": old_dur, "track_index": seg["track_index"],
+                                "same_material_as": seg.get("same_material_as"),
+                                "cutout": True,
+                                "matting": seg.get("matting") or {"person_cutout": True}}
+            rep["cutout_layers_rebuilt"] = rep.get("cutout_layers_rebuilt", 0) + 1
+            rep["content_linked"] = rep.get("content_linked", 0) + 1
+            if (seg.get("matting") or {}).get("stroke"):
+                rep["stroke_applied"] = rep.get("stroke_applied", 0) + 1
+            rep.setdefault("cutout_rebuilt_detail", []).append({
+                "key": seg["key"], "track_index": seg["track_index"],
+                "start": round(new_start, 3), "duration": round(new_dur, 3),
+                "src_in": round(src_in, 3), "linked_to": seg.get("same_material_as"),
+                "asset_ref": _asset_ref(fill["path"]),
+                "stroke": bool((seg.get("matting") or {}).get("stroke")),
+                "backdrop_asset_ref": None,
+            })
+            rebuilt_cutouts.append({"start": new_start, "dur": new_dur,
+                                    "track_index": seg["track_index"],
+                                    "key": seg["key"]})
+            _placed(new_start, new_dur, fill["path"], seg["key"])
             continue
         if linked and linked.get("asset"):
             if not has_mask and info["opaque"] and info["cover"] >= FULL_FRAME_COVER:
@@ -1121,19 +1216,24 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
                                 "same_material_as": seg.get("same_material_as")}
             _placed(new_start, new_dur, fill["path"], seg["key"])
     # 再分配普通叠层：**不许**拿与重叠层相同的素材
-    def _backdrop_of_skipped_cutout(info: dict) -> bool:
-        """这层是“被跳过的人像抠像层”的**背景板**吗（有它无它都只能看到背景，看不到人）。
+    def _backdrop_of_cutout(info: dict) -> bool:
+        """这层是「人像抠像层的背景板」吗（原版三明治：主轨 → 模糊背景板 → 人像抠像层）。
 
-        原版三明治：主轨（底下）→ 背景视频（中）→ 人像抠像层（顶）。抠像层重建不了已跳过，
-        若还把不透明背景板留在原位，它就变成一块盖在主轨上、没人的空镜——比下面的人出不来
-        更糟。所以：不透明 + 时间窗大半被“更高轨上的已跳过抠像层”盖住 → 一并跳过并单独计
-        `orphaned_backdrop_of_skipped_cutout`（与“重影拒接”分开记账，不混在一起）。
+        回去（重建前）：抠像层被跳过后，不透明背景板留在原位就是一块盖在主轨上、没人的空镜，
+        所以一并跳过并计 `orphaned_backdrop_of_skipped_cutout`。
+        现在：抠像层已经重建，背景板就不再是孤儿——它是「人物压在这层模糊板上」这幅构图的底板，
+        必须一起重建（否则人物悬在另一个背景上，设计还是丢了）。
+        判定口径不变：不透明 + 时间窗大半被更高轨上的抠像层盖住。
+
+        用哪条素材见下面重建分支：跟着**每层抠像人像自己的素材/入点**切块，不再另接 B-roll。
+        （原版背景板 seg:1:0 的 file_slot=1、与主轨 file_slot=0 不是同一个文件；但新素材池里
+        每一条片子都有人，照抄“另一条独立素材”会得到「清晰的人 + 背后模糊的另一个人」。）
         """
-        if not info["opaque"] or not skipped_cutouts:
+        if not info["opaque"] or not rebuilt_cutouts:
             return False
         a0, a1 = info["start"], info["start"] + info["dur"]
         hidden = 0.0
-        for c in skipped_cutouts:
+        for c in rebuilt_cutouts:
             if int(c["track_index"] or 0) <= int(info["seg"]["track_index"] or 0):
                 continue  # 只看“更高轨”上的抠像层（数组序即 z 序）
             hidden += max(0.0, min(a1, c["start"] + c["dur"]) - max(a0, c["start"]))
@@ -1147,9 +1247,76 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
         old_start = float(seg.get("start_sec") or 0.0)
         old_dur = float(seg.get("duration_sec") or 0.0)
         role = info["role"]
-        if _backdrop_of_skipped_cutout(info):
-            _blank_overlay(seg, "orphaned_backdrop_of_skipped_cutout", new_start, new_dur,
-                           ghost=False, cover_ratio=round(info["cover"], 3))
+        if _backdrop_of_cutout(info):
+            # 背景板重建。原版是一层「模糊背景视频」横跨数个抠像层，人物压在这层模糊板上。
+            #
+            # 原来：抠像层被跳过时，这块板也跟着跳过（orphaned_backdrop_of_skipped_cutout）。
+            # 现在：抠像层回来了，板必须回来，否则人物悬在别的东西上，设计还是丢。
+            #
+            # 用哪条素材：**跟它上面每层抠像人像同素材同入点**，并**按那段抠像层切成几块**。
+            # 为什么不照原版留一块连续长板、也不另接一条 B-roll：
+            #   · 另接一条 B-roll：新素材池里每一条片子都有人（A-roll 有人脸；实测 B-roll 候选
+            #     里也有出镜人物），成片就是「清晰的人 + 背后一个模糊的另一个人」——5.9s 帧
+            #     Vision 直接认出两个人，比原版「同一人被虚化在自己身后」更假。
+            #   · 一块连续长板固定在起始那段素材上：新素材池把相邻的主轨段分给了不同片子
+            #     （原版是一条连续拍摄），长板播到后面就变成「同一个文件里另一个时刻的画面
+            #     当别人的背景」，还是跨素材/跨时刻的错误匹配。
+            #   · 切成与抠像层对齐的几块：每块的素材/入点都与它上面的抠像人像、下面的主轨
+            #     完全同帧，只是模糊——原版设计（人像抠像 + 模糊底）一比一保留。
+            # 重影检查端因此给这类层一条**带证据的**例外：同源 + 同入点（≤0.06s）+ 真带模糊
+            # 特效（sigma≥8），见 verify 的 check_overlay_ghosting。
+            cuts_above = [c for c in rebuilt_cutouts
+                          if int(c["track_index"] or 0) > int(seg["track_index"] or 0)
+                          and min(new_start + new_dur, c["start"] + c["dur"])
+                          - max(new_start, c["start"]) > 0.02]
+            pieces: List[dict] = []
+            for c in sorted(cuts_above, key=lambda x: x["start"]):
+                cp = plan.get(c["key"]) or {}
+                ca = cp.get("asset")
+                if not ca:
+                    continue
+                s0 = max(new_start, c["start"])
+                s1 = min(new_start + new_dur, c["start"] + c["dur"])
+                if s1 - s0 <= 0.05:
+                    continue
+                p_in = float(cp.get("src_in") or 0.0) + (s0 - c["start"])
+                p_room = float(ca.get("asset_dur") or ca["take"]) - p_in
+                p_dur = min(s1 - s0, max(0.05, p_room))
+                if s1 - s0 - p_dur > 0.05:
+                    rep["backdrop_clipped"] = rep.get("backdrop_clipped", 0) + 1
+                pieces.append({"start": s0, "dur": p_dur, "src_in": max(0.0, p_in),
+                               "asset": ca, "above": c["key"]})
+            if not pieces:
+                _blank_overlay(seg, "backdrop_no_main_footage", new_start, new_dur,
+                               ghost=False, cover_ratio=round(info["cover"], 3))
+                rep.setdefault("backdrop_skipped", {})
+                rep["backdrop_skipped"]["no_aligned_footage"] = \
+                    rep["backdrop_skipped"].get("no_aligned_footage", 0) + 1
+                continue
+            plan[seg["key"]] = {"kind": seg["kind"], "role": info["role"],
+                                "start": pieces[0]["start"],
+                                "dur": sum(pc["dur"] for pc in pieces),
+                                "src_in": pieces[0]["src_in"],
+                                "asset": pieces[0]["asset"], "reused_asset": True,
+                                "old_start": old_start, "old_dur": old_dur,
+                                "track_index": seg["track_index"], "backdrop": True,
+                                "pieces": pieces,
+                                "backdrop_of": [pc["above"] for pc in pieces]}
+            rep["backdrop_rebuilt"] = rep.get("backdrop_rebuilt", 0) + 1
+            rep.setdefault("backdrop_rebuilt_detail", []).append({
+                "key": seg["key"], "track_index": seg["track_index"],
+                "start": round(pieces[0]["start"], 3),
+                "duration": round(sum(pc["dur"] for pc in pieces), 3),
+                "pieces": [{"start": round(pc["start"], 3), "duration": round(pc["dur"], 3),
+                            "src_in": round(pc["src_in"], 3), "above": pc["above"],
+                            "asset_ref": _asset_ref(pc["asset"]["path"])} for pc in pieces],
+                "same_material_as_cutout": True, "same_in_point_as_cutout": True,
+                "effects": [e.get("name") for e in (seg.get("effects") or [])],
+                "cover_ratio": round(info["cover"], 3),
+            })
+            for row in rep.get("cutout_rebuilt_detail") or []:
+                if row.get("key") in (plan[seg["key"]]["backdrop_of"] or []):
+                    row["backdrop_asset_ref"] = row.get("asset_ref")
             continue
         avoid = _taken_near(new_start, new_dur)
         fill = take_for(role if role in ROLE_FALLBACK else "b_roll", new_dur, avoid=avoid)
@@ -1312,7 +1479,26 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
     rep["text_layout"] = text_layout_report
 
     track_segs: Dict[int, List[dict]] = {t["index"]: [] for t in tracks}
-    for seg in sorted(segments, key=lambda s: (s["track_index"], s.get("start_sec") or 0.0)):
+
+    # 背景板按抠像层切块：一个模版段 → 多个草稿段（与抠像人像/主轨同素材同入点，只差“模糊”）。
+    # 写段循环仍按“一模版段一段”组织，所以这里先把带 `pieces` 的段展开成“克隆段”，
+    # 每个克隆段在 plan 里有自己的 start/dur/src_in/asset；几何/特效/关键帧沿用原段。
+    segments_for_write: List[dict] = []
+    for seg in segments:
+        p0 = plan.get(seg["key"])
+        pieces = (p0 or {}).get("pieces")
+        if not pieces:
+            segments_for_write.append(seg)
+            continue
+        for i, pc in enumerate(pieces):
+            key_i = seg["key"] if i == 0 else f"{seg['key']}#piece{i}"
+            clone = dict(seg)
+            clone["key"] = key_i
+            plan[key_i] = {**p0, "start": pc["start"], "dur": pc["dur"],
+                           "src_in": pc["src_in"], "asset": pc["asset"], "pieces": None}
+            segments_for_write.append(clone)
+
+    for seg in sorted(segments_for_write, key=lambda s: (s["track_index"], s.get("start_sec") or 0.0)):
         p = plan.get(seg["key"])
         if not p:
             continue
@@ -1333,12 +1519,17 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
             sub = "video"
             name = stage(key, sub)
             crop_use = usable_crop(seg, fill, canvas_w, canvas_h, rep)
-            mk = f"{key}|{json.dumps(crop_use or {})}"
+            # 抠像层要一份**自己的**素材条目（带 matting 结构）：和主轨用同一个文件，但素材
+            # 的 matting 是逐素材的，共用一份会把主轨也变成抠像层。
+            mat_block = _matting_block(p.get("matting"), root_uuid) if p.get("cutout") else None
+            mk = f"{key}|{json.dumps(crop_use or {}, sort_keys=True)}"
+            if mat_block:
+                mk += "|cutout:" + json.dumps(mat_block, sort_keys=True)
             if mk not in video_mats:
                 video_mats[mk] = _video_material(
                     name, root_uuid, f"materials/{sub}", fill["w"], fill["h"],
                     float(max(fill["take"], 0.1)), crop_use,
-                    is_photo=(p["kind"] == "photo"))
+                    is_photo=(p["kind"] == "photo"), matting=mat_block)
                 video_mats[mk]["_path"] = key
             mat_id = video_mats[mk]["id"]
         elif p["kind"] == "sticker" and p["asset"]:
@@ -1652,6 +1843,14 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
         "crop_uv_dropped_detail": rep.get("crop_uv_dropped_detail", []),
         "overlay_left_blank": rep.get("overlay_left_blank", 0),
         "overlay_left_blank_detail": rep.get("overlay_left_blank_detail", []),
+        # 抠像三明治重建台账（这一轮的核心）：重建了几层 / 跳过了几层（分原因）/ 背景板 / 描边
+        "cutout_layers_rebuilt": rep.get("cutout_layers_rebuilt", 0),
+        "cutout_rebuilt_detail": rep.get("cutout_rebuilt_detail", []),
+        "cutout_layers_skipped": rep.get("cutout_layers_skipped", {}),
+        "backdrop_rebuilt": rep.get("backdrop_rebuilt", 0),
+        "backdrop_rebuilt_detail": rep.get("backdrop_rebuilt_detail", []),
+        "backdrop_skipped": rep.get("backdrop_skipped", {}),
+        "stroke_applied": rep.get("stroke_applied", 0),
         "ghost_rejected": rep.get("ghost_rejected", 0),
         "overlap_conflicts_avoided": rep.get("overlap_conflicts_avoided", 0),
         "asset_reuse_by_slot": rep.get("asset_reuse_by_slot", []),

@@ -211,11 +211,27 @@ def pick_frame_times(draft: dict, template: dict, want: int = 10) -> List[dict]:
             t0 = float((s.get("target_timerange") or {}).get("start") or 0) / 1e6
             dur = float((s.get("target_timerange") or {}).get("duration") or 0) / 1e6
             cand.append({"t": t0 + dur * 0.5, "cat": "贴纸", "label": "贴纸/叠加"})
+    # 人像抠像层（重建的撕纸抠像三明治）：按层中点取帧。
+    # 上一轮这些层全被跳过，关键帧里根本没人像层可看；不给它一类取样，
+    # “重建了没、描边在不在”在 frames/ 里就没有证据。
+    vid_by_id = {m["id"]: m for m in (mats.get("videos") or [])}
+    for tr, s in _segments_of(draft):
+        if tr.get("type") != "video":
+            continue
+        mat = vid_by_id.get(s.get("material_id")) or {}
+        if not (mat.get("matting") or {}).get("path"):
+            continue
+        t0 = float((s.get("target_timerange") or {}).get("start") or 0) / 1e6
+        dur = float((s.get("target_timerange") or {}).get("duration") or 0) / 1e6
+        cand.append({"t": t0 + dur * 0.5, "cat": "抠像",
+                     "label": "抠像层" + ("+撕纸描边" if (mat.get("matting") or {})
+                                           .get("enable_matting_stroke") else "")})
 
     total = float(template.get("duration_sec") or 0.0)
     cand = [c for c in cand if 0.0 <= c["t"] < max(0.1, total - 0.05)]
     cand.sort(key=lambda c: c["t"])
-    caps = {"缩窗": 2, "大字位隐": 1, "大字位": 2, "推近": 3, "字幕": 3, "贴纸": 1, "主轨": 1}
+    caps = {"抠像": 2, "缩窗": 2, "大字位隐": 1, "大字位": 1, "推近": 2, "字幕": 2,
+            "贴纸": 1, "主轨": 1}
     picked: List[dict] = []
 
     def _add(item: dict, gap: float = 0.22) -> bool:
@@ -250,7 +266,7 @@ def _ensure_time(picked: List[dict], t: float, label: str, want: int) -> List[di
     """保证 `frames/` 里有 t 附近的一帧：没有就顶掉优先级最低的那一帧。"""
     if any(abs(p["t"] - t) <= 0.35 for p in picked):
         return picked
-    order = ["主轨", "贴纸", "字幕", "推近", "大字位", "大字位隐", "缩窗"]
+    order = ["主轨", "贴纸", "字幕", "推近", "大字位", "大字位隐", "缩窗", "抠像"]
 
     def _rank(item: dict) -> int:
         try:
@@ -487,6 +503,7 @@ def video_overlap_pairs(draft: dict, draft_dir: Path, canvas_w: int = 1080,
     图层满幅与不透明用渲染器同一条几何算式算（contain → ×scale），不另猜一套。
     """
     mats = {m["id"]: m for m in (draft.get("materials") or {}).get("videos") or []}
+    vfx_by_id = {e.get("id"): e for e in (draft.get("materials") or {}).get("video_effects") or []}
     try:
         import importlib
         R = importlib.import_module("render_replica_from_draft")
@@ -502,18 +519,40 @@ def video_overlap_pairs(draft: dict, draft_dir: Path, canvas_w: int = 1080,
             tgt = s.get("target_timerange") or {}
             t0 = float(tgt.get("start") or 0) / 1e6
             dur = float(tgt.get("duration") or 0) / 1e6
+            src_in = float((s.get("source_timerange") or {}).get("start") or 0) / 1e6
             clip = s.get("clip") or {}
             sc = float((clip.get("scale") or {}).get("x") or 1.0)
             alpha = float(clip.get("alpha") if clip.get("alpha") is not None else 1.0)
             cover = None
+            blur = None
             if R is not None and src is not None:
                 try:
                     geom = R.layer_geometry(mat, str(src), canvas_w, canvas_h, sc)
                     cover = (geom["lw"] * geom["lh"]) / float(canvas_w * canvas_h)
                 except Exception:
-                    cover = None
+                    geom, cover = None, None
+                # 段级「模糊」特效真值（背景板靠它才是模糊底，而不是第二份取景）
+                for ref in s.get("extra_material_refs") or []:
+                    fx = vfx_by_id.get(ref) or {}
+                    if "模糊" not in str(fx.get("name") or ""):
+                        continue
+                    val = 0.0
+                    for p_ in fx.get("adjust_params") or []:
+                        if str(p_.get("name")) == "effects_adjust_blur":
+                            v_ = p_.get("value")
+                            val = float(v_ if v_ is not None else (p_.get("default_value") or 0.0))
+                    if val > 0:
+                        try:
+                            blur = (R.yes_blur_sigma(val, geom["lw"], geom["lh"])
+                                    if geom else R.yes_blur_sigma(val, canvas_w, canvas_h))
+                        except Exception:
+                            blur = None
             items.append({"track": ti, "idx": si, "seg_id": s.get("id"), "src": str(src) if src else None,
-                          "start": t0, "dur": dur, "alpha": alpha, "scale": sc, "cover": cover})
+                          "start": t0, "dur": dur, "alpha": alpha, "scale": sc, "cover": cover,
+                          "src_in": round(src_in, 4), "blur_sigma": (round(blur, 2) if blur else None),
+                          # 抠像层：素材带 matting 结构 → 渲染器走「Vision 抠像 + alphamerge」合成，
+                          # 这一层的像素是**带 alpha 的**，不是同源第二份满幅画面。
+                          "cutout": bool((mat.get("matting") or {}).get("path"))})
     pairs: List[dict] = []
     for i in range(len(items)):
         a = items[i]
@@ -524,6 +563,12 @@ def video_overlap_pairs(draft: dict, draft_dir: Path, canvas_w: int = 1080,
             if ov <= 0.02:
                 continue
             top = a if (a["track"] > b["track"]) else b  # 数组序即 z 序
+            bot = b if top is a else a
+            mid = (max(a["start"], b["start"]) + min(a1, b1)) / 2.0
+            # 同入点按**重叠中点时刻**比（不是段头）：背景板是一条长段连续播，主轨是切段；
+            # 同一帧上两者各自播到哪个源时刻，才是“是不是同一个画面”的真口径
+            top_ip = float(top["src_in"]) + (mid - float(top["start"]))
+            bot_ip = float(bot["src_in"]) + (mid - float(bot["start"]))
             pairs.append({
                 "a": f"t{a['track']}:{a['idx']}", "b": f"t{b['track']}:{b['idx']}",
                 "overlap_start": round(max(a["start"], b["start"]), 3),
@@ -533,8 +578,155 @@ def video_overlap_pairs(draft: dict, draft_dir: Path, canvas_w: int = 1080,
                 "same_source": bool(a["src"] and a["src"] == b["src"]),
                 "top_alpha": round(top["alpha"], 3),
                 "top_cover": (round(top["cover"], 3) if top["cover"] is not None else None),
+                "top_seg_id": top["seg_id"],
+                "top_is_cutout": bool(top["cutout"]),
+                "bottom_is_cutout": bool(bot["cutout"]),
+                # 背景板证据：真带模糊特效 + 与下层同入点 + 同取景 → “同一条片子的模糊底”
+                "top_blur_sigma": top["blur_sigma"],
+                "same_in_point": bool(abs(top_ip - bot_ip) <= 0.06),
+                "in_point_delta": round(abs(top_ip - bot_ip), 3),
+                "same_scale": bool(abs(float(top["scale"]) - float(bot["scale"])) <= 0.06),
             })
     return pairs
+
+
+def cutout_alpha_probe(draft: dict, draft_dir: Path, final_mp4: Optional[Path], frames_dir: Path,
+                       fps: int = 30, max_zooms: int = 3) -> dict:
+    """逐层实测抠像层的 alpha（不是只看草稿里的标记就说「重建了」）。
+
+    做法：对草稿里每一条带 `matting` 的叠加段，按它的真实入点抽一段 0.2s，重跑一遍
+    `person_matting`（与渲染器同一个 Vision 引擎），量 alpha 覆盖率 + 存帧；
+    前 `max_zooms` 层再从成片里按人脸/头顶位置裁一块 2× 放大图落 `frames/`——
+    “撕纸白边在不在、头发有没有被啃掉”必须能用人眼看，不靠数字。
+
+    覆盖率是区分「抠像」与「同源满幅重影」的硬证据：满幅不透明层的覆盖率≈1.0，
+    真正的人像抠像层远小于 1（背景是透明的）。
+    """
+    import numpy as np
+
+    work = Path(frames_dir) / "cutout_probe"
+    work.mkdir(parents=True, exist_ok=True)
+    canvas_w = int((draft.get("canvas_config") or {}).get("width") or 1080)
+    canvas_h = int((draft.get("canvas_config") or {}).get("height") or 1920)
+    mats = {m["id"]: m for m in (draft.get("materials") or {}).get("videos") or []}
+    layers: List[dict] = []
+    zooms: List[dict] = []
+    try:
+        sys.path.insert(0, str(SCRIPTS))
+        from person_matting import generate_person_matte_video  # noqa: E402
+    except Exception as exc:
+        return {"ok": False, "reason": f"{type(exc).__name__}: {exc}", "layers": [], "edge_zooms": []}
+
+    for ti, tr in enumerate(draft.get("tracks") or []):
+        if tr.get("type") != "video":
+            continue
+        for s in tr.get("segments") or []:
+            mat = mats.get(s.get("material_id")) or {}
+            if not (mat.get("matting") or {}).get("path"):
+                continue
+            src = _draft_media_path(mat, draft_dir)
+            tgt = s.get("target_timerange") or {}
+            srcr = s.get("source_timerange") or {}
+            t0 = float(tgt.get("start") or 0) / 1e6
+            dur = float(tgt.get("duration") or 0) / 1e6
+            src_in = float(srcr.get("start") or 0) / 1e6
+            sc = float(((s.get("clip") or {}).get("scale") or {}).get("x") or 1.0)
+            row = {"track": ti, "seg_id": s.get("id"), "t_start": round(t0, 3), "dur": round(dur, 3),
+                   "src_in": round(src_in, 3), "scale": round(sc, 3),
+                   "stroke": bool((mat.get("matting") or {}).get("enable_matting_stroke"))}
+            if not src or dur <= 0.05:
+                row["ok"] = False
+                row["reason"] = "missing_source"
+                layers.append(row)
+                continue
+            # 取段中点附近 0.2s：避开首帧（黑帧/空 alpha）与切点
+            t_mid = t0 + max(0.05, min(dur - 0.05, dur * 0.5))
+            sseek = max(0.0, src_in + (t_mid - t0) - 0.1)
+            tag = f"t{ti:02d}_{len(layers):02d}"
+            seg_p = work / f"{tag}_seg.mp4"
+            matte_p = work / f"{tag}_matte.mp4"
+            try:
+                _run(["ffmpeg", "-y", "-v", "error", "-ss", f"{sseek:.4f}", "-t", "0.2",
+                      "-i", str(src), "-vf", f"fps={fps},setpts=PTS-STARTPTS", "-an",
+                      "-c:v", "libx264", "-preset", "veryfast", "-crf", "16",
+                      "-pix_fmt", "yuv420p", str(seg_p)])
+                meta = generate_person_matte_video(seg_p, matte_p, quality="balanced", fps=fps)
+            except Exception as exc:
+                row["ok"] = False
+                row["reason"] = f"{type(exc).__name__}: {exc}"
+                layers.append(row)
+                continue
+            if not matte_p.is_file():
+                row["ok"] = False
+                row["reason"] = "matte_not_generated"
+                layers.append(row)
+                continue
+            # 读 matte 末帧（gray）：覆盖率 = alpha>128 的像素占比
+            try:
+                raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(matte_p),
+                                      "-vf", "select='eq(n,0)'", "-vframes", "1",
+                                      "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+                                     capture_output=True).stdout
+                mw = int((meta or {}).get("width") or canvas_w)
+                mh = int((meta or {}).get("height") or canvas_h)
+                if len(raw) < mw * mh:
+                    raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(matte_p),
+                                          "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+                                         capture_output=True).stdout
+                    raw = raw[-mw * mh:] if len(raw) >= mw * mh else b""
+                if raw and len(raw) >= mw * mh:
+                    a = np.frombuffer(raw[-mw * mh:], np.uint8).reshape(mh, mw)
+                    cover = float((a > 128).mean())
+                    row["alpha_coverage"] = round(cover, 4)
+                    row["has_transparent_area"] = bool(cover < 0.98)
+                    # 头顶位置：第一排 alpha 足够多的像素（用来定位放大裁切框）
+                    rows_dense = np.where((a > 110).sum(axis=1) > max(8, mw // 40))[0]
+                    if rows_dense.size:
+                        y_head = int(rows_dense[0])
+                        band = a[y_head:y_head + max(4, mh // 25)] > 110
+                        cols = np.where(band.any(axis=0))[0]
+                        cx = int(cols.mean()) if cols.size else mw // 2
+                        row["head"] = {"cx_frac": round(cx / mw, 4),
+                                       "y_frac": round(y_head / mh, 4)}
+                row["ok"] = True
+            except Exception as exc:
+                row["ok"] = False
+                row["reason"] = f"{type(exc).__name__}: {exc}"
+            layers.append(row)
+
+            # 边缘放大图：从成片同一时刻裁一块，2× 放大；裁切框跟着头顶走
+            if final_mp4 and final_mp4.is_file() and len(zooms) < max_zooms:
+                head = row.get("head") or {}
+                cx = int(round(float(head.get("cx_frac") or 0.5) * canvas_w))
+                cy = int(round(float(head.get("y_frac") or 0.18) * canvas_h))
+                cw, ch = 400, 700
+                x0 = max(0, min(canvas_w - cw, cx - cw // 2))
+                y0 = max(0, min(canvas_h - ch, cy - int(ch * 0.35)))
+                out_jpg = Path(frames_dir) / f"cutout_edge_{len(zooms) + 1:02d}_{t_mid:.2f}s_zoom2x.jpg"
+                try:
+                    _run(["ffmpeg", "-y", "-v", "error", "-i", str(final_mp4),
+                          "-ss", f"{t_mid:.4f}", "-frames:v", "1",
+                          "-vf", f"crop={cw}:{ch}:{x0}:{y0},scale={cw * 2}:{ch * 2}:flags=lanczos",
+                          "-q:v", "2", str(out_jpg)])
+                    zooms.append({"frame": out_jpg.name, "t": round(t_mid, 3),
+                                  "crop": [x0, y0, cw, ch], "zoom": 2.0,
+                                  "uses_segment": f"t{ti}", "stroke": row["stroke"],
+                                  "alpha_coverage": row.get("alpha_coverage")})
+                except Exception as exc:
+                    zooms.append({"t": round(t_mid, 3), "error": f"{type(exc).__name__}: {exc}"})
+
+    ok_layers = [r for r in layers if r.get("ok") and r.get("alpha_coverage") is not None]
+    cutout_like = [r for r in ok_layers if r.get("has_transparent_area")]
+    return {
+        "ok": bool(ok_layers),
+        "layers_probed": len(layers),
+        "layers_with_person_matte": len(ok_layers),
+        "layers_with_transparent_alpha": len(cutout_like),
+        "coverage_by_seg": {r["seg_id"]: r.get("alpha_coverage") for r in ok_layers if r.get("seg_id")},
+        "layers": layers,
+        "edge_zooms": zooms,
+        "note": "覆盖率 = Alpha>128 像素占比；满幅不透明层 ≈1.0，真抠像层远小于 1",
+    }
 
 
 def render_main_only(draft: dict, draft_dir: Path, work: Path, fps: int, style_id: str) -> Optional[Path]:
@@ -573,7 +765,8 @@ def render_main_only(draft: dict, draft_dir: Path, work: Path, fps: int, style_i
 
 def check_overlay_ghosting(draft: dict, draft_dir: Path, full_mp4: Path, main_mp4: Optional[Path],
                            frames_dir: Path, *, rejected: Optional[List[dict]] = None,
-                           spot_times: Optional[List[float]] = None, tol: float = 0.02) -> dict:
+                           spot_times: Optional[List[float]] = None, tol: float = 0.02,
+                           cutout_evidence: Optional[dict] = None) -> dict:
     """逐对验重影（可重复检查）：对**每一对时间重叠的 video 段**取重叠中点那一帧，
     与「只渲主轨」版本逐像素比。
 
@@ -584,6 +777,17 @@ def check_overlay_ghosting(draft: dict, draft_dir: Path, full_mp4: Path, main_mp
     又画了一遍（实测 3.0s 主轨 cover 裁切× 叠层 contain 只占 46% 画面，依旧是人眼一眼
     就看出的重影），满幅与否不能当免死金牌；它只作为元数据记录。
     另附人脸证据：若整帧人脸数 > 对照版且 ≥2，就是「同一张脸出现两次」的硬证。
+
+    **两条同源例外，都必须拿证据换**：
+    ① 抠像三明治：同源对里若顶层是抠像层（素材带 `matting` → 渲染时走 Vision alpha +
+       alphamerge），它就不是「不透明同源第二份画面」，而是原版设计（主轨那条片子的抠像人像
+       压在背景上）。但不能光看草稿标记就放行——必须 `cutout_evidence` 里**这一层**实测到
+       0 < alpha 覆盖率 < 0.98（真有透明区），否则仍判 FAIL。
+    ② 模糊背景板：顶层是同一素材、**同一入点（≤0.06s）**、而且真带「模糊」特效
+       （sigma≥8px）——那是原版三明治的模糊底（同一条片子的虚化版），不是“以另一种取景
+       又画一遍”。模糊底与主轨的**取景可以不同**（原版底板是个 0.89 幅宽的带，主轨是 1.2 倍谁近），
+       但那只是“同一帧被虚化+裁切”，不是第二个帧；真正防重影的钥在“同入点 + 真模糊”：
+       没有这两条的普通同源叠层依然判 FAIL。
 
     还会对**被拒接的叠层**（apply 报告的 overlay_left_blank_detail）做点检：这些时间点上
     成片应与「只渲主轨」**几乎相同**（mae ≈ 0）——不是重影消失，而是那一层根本没上。
@@ -613,9 +817,25 @@ def check_overlay_ghosting(draft: dict, draft_dir: Path, full_mp4: Path, main_mp
         top_opaque_full = (p["top_alpha"] >= 0.99
                            and (p["top_cover"] is None or p["top_cover"] >= 0.85))
         visible = bool(delta and (delta["mae"] > tol or delta["p99"] > 0.35))
-        if p["same_source"] and visible:
+        cov = None
+        if p.get("top_is_cutout") and cutout_evidence:
+            cov = (cutout_evidence.get("coverage_by_seg") or {}).get(p.get("top_seg_id"))
+        cutout_ok = bool(p.get("top_is_cutout") and cov is not None and 0.0 < float(cov) < 0.98)
+        blur_sigma = float(p.get("top_blur_sigma") or 0.0)
+        blur_board_ok = bool(p["same_source"] and blur_sigma >= 8.0 and p.get("same_in_point"))
+        if p["same_source"] and visible and cutout_ok:
+            verdict = "PASS"
+            why = (f"同源但顶层是抠像层：实测 alpha 覆盖率 {float(cov):.2%}（有透明区）= 原版设计"
+                   f"（主轨那条片子的抠像人像压在背景上），不是不透明同源第二份画面")
+        elif p["same_source"] and visible and blur_board_ok:
+            verdict = "PASS"
+            why = (f"同源但顶层是模糊背景板：与下层同入点、且真带模糊（sigma={blur_sigma:.1f}px）"
+                   f"= 同一条片子的虚化底，不是另一种取景的第二份画面")
+        elif p["same_source"] and visible:
             verdict = "FAIL"
-            why = "同一素材的两层以不同取景叠在一起（同源第二份画面 = 重影）"
+            why = ("同一素材的两层以不同取景叠在一起（同源第二份画面 = 重影）"
+                   if not p.get("top_is_cutout") else
+                   "顶层自称抠像层，但没实测到透明区（抠像没真跑 / 整层不透明）= 重影风险")
         elif p["same_source"]:
             verdict = "PASS"
             why = "同源但对照版看不出差异（像素级重复 / 带 alpha，无可见重影）"
@@ -626,46 +846,56 @@ def check_overlay_ghosting(draft: dict, draft_dir: Path, full_mp4: Path, main_mp
                      "faces_full": n_full, "faces_main_only": n_main,
                      "same_face_twice": bool(n_full >= 2 and n_full > n_main),
                      "top_opaque_fullframe": top_opaque_full,
-                     "verdict": verdict, "why": why})
+                     "top_alpha_coverage": (round(float(cov), 4) if cov is not None else None),
+                     "why": (why + "；同一帧测到两张脸是设计使然（抠像人像层 + 底下同一条主轨），不是重影"
+                             if (cutout_ok and n_full >= 2 and n_full > n_main) else why),
+                     "verdict": verdict})
 
-    # 被拒接的叠层：点检「成片 == 只渲主轨」，证明那一层真的没上、不是调低了透明度
+    # 被拒接的叠层：点检「成片 == 只渲主轨」，证明那一层真的没上、不是调低了透明度。
+    # `spot_times`（3.0s / 模版重叠中点）是**通用**点检：重建后这些点位本来就有画面差，
+    # 所以只有 rejected（in原报告里被留空的层）的点位要求「与只渲主轨几乎相同」。
     spots: List[dict] = []
     if main_mp4 is not None:
-        times: List[float] = []
+        timed: List[tuple] = []
         for row in (rejected or []):
             t0 = float(row.get("start") or 0.0)
             dur = float(row.get("duration") or 0.0)
             if dur > 0.06:
-                times.append(t0 + dur / 2.0)
-        times.extend(float(x) for x in (spot_times or []))
-        seen: List[float] = []
-        for t in sorted(times):
+                timed.append((t0 + dur / 2.0, "rejected_overlay"))
+        timed.extend((float(x), "spot_time") for x in (spot_times or []))
+        seen: List[tuple] = []
+        for t, kind in sorted(timed):
             if not (0.0 <= t):
                 continue
-            if any(abs(t - s) < 0.45 for s in seen):
+            if any(abs(t - s) < 0.45 for s, _ in seen):
                 continue
-            seen.append(t)
-        for k, t in enumerate(seen):
+            seen.append((t, kind))
+        for k, (t, kind) in enumerate(seen):
             fa = _grab_frame(full_mp4, t, frames_dir / f"spot{k:02d}_full_{t:.2f}s.jpg")
             fb = _grab_frame(main_mp4, t, frames_dir / f"spot{k:02d}_main_{t:.2f}s.jpg")
             delta = _frame_delta(fa, fb)
-            spots.append({"t": round(t, 3),
+            spots.append({"t": round(t, 3), "kind": kind,
                           "delta_vs_main_only": delta,
                           "same_as_main_only": bool(delta and delta["mae"] <= tol),
                           "frames": [x.name for x in (fa, fb) if x]})
 
     fails = [r for r in rows if r["verdict"] == "FAIL"]
+    rej_spots = [s for s in spots if s.get("kind") == "rejected_overlay"]
+    rej_ok = all(s["same_as_main_only"] for s in rej_spots) if rej_spots else True
     return {
-        "ok": True,
+        "ok": bool(not fails and rej_ok),
         "tolerance_mae": tol,
         "pairs_checked": len(rows),
         "ghost_rejected": len(fails),
         "pairs_same_source": sum(1 for r in rows if r["same_source"]),
+        "pairs_same_source_cutout": sum(1 for r in rows if r["same_source"] and r.get("top_is_cutout")),
+        "pairs_same_source_blur_board": sum(1 for r in rows if r["same_source"] and r.get("top_blur_sigma")),
         "same_face_twice": sum(1 for r in rows if r["same_face_twice"]),
         "detail": rows,
-        "rejected_layer_spots": spots,
+        "rejected_layer_spots": rej_spots,
+        "spot_checks": len(spots),
         "frames_dir": str(frames_dir),
-        "spots_all_match_main_only": all(s["same_as_main_only"] for s in spots) if spots else None,
+        "spots_all_match_main_only": (all(s["same_as_main_only"] for s in rej_spots) if rej_spots else None),
     }
 
 
@@ -781,6 +1011,14 @@ def main() -> int:
         "seg_clipped": apply_rep.get("seg_clipped", 0),
         "overlay_left_blank": apply_rep.get("overlay_left_blank", 0),
         "overlay_left_blank_detail": apply_rep.get("overlay_left_blank_detail") or [],
+        # 抠像三明治重建台账：重建了几层 / 跳采几层（分原因）/ 背景板 / 描边
+        "cutout_layers_rebuilt": apply_rep.get("cutout_layers_rebuilt", 0),
+        "cutout_rebuilt_detail": apply_rep.get("cutout_rebuilt_detail") or [],
+        "cutout_layers_skipped": apply_rep.get("cutout_layers_skipped") or {},
+        "backdrop_rebuilt": apply_rep.get("backdrop_rebuilt", 0),
+        "backdrop_rebuilt_detail": apply_rep.get("backdrop_rebuilt_detail") or [],
+        "backdrop_skipped": apply_rep.get("backdrop_skipped") or {},
+        "stroke_applied": apply_rep.get("stroke_applied", 0),
         "ghost_rejected": apply_rep.get("ghost_rejected", 0),
         "overlap_conflicts_avoided": apply_rep.get("overlap_conflicts_avoided", 0),
         "asset_reuse_by_slot": apply_rep.get("asset_reuse_by_slot") or [],
@@ -813,6 +1051,15 @@ def main() -> int:
     report["notes"] = [
         "文字位的 material.global_alpha=0 不总等于「不显示」：段上带 KFTypeGlobalAlpha 关键帧时"
         "0 只是静态终态，真值是曲线（本模版两个水印大字位 = 0.70→0 + 缩到 0.01 飞走）",
+        # 抠像三明治重建的两个口径决定（写下来，免得上游以为可以随便改）
+        "抠像层重建走「草稿标 meta、渲染时执行」：套用端只把 matting 结构（同素材同入点 + 描边"
+        "颜色/强度）写进新草稿素材，Vision 抠像 + 撕纸描边由渲染器在渲染时做。理由是描边像素"
+        "换算常数只在渲染器里且逐帧反解；且脚本里烘好的 RGBA 层一旦当普通素材引用，抽段走 h264 会丢 alpha。",
+        "背景板按「主轨同素材同入点 + 模糊」重建（按抠像层切块对齐），不另接 B-roll：参考片"
+        "原帧里模糊底仍能看到人形轮廓（同一人的虚化版），另接一条 B-roll 会出现「清晰的人 +"
+        "背后模糊的另一个人」（实测 Vision 逐帧数出两个人）。",
+        "复合片段（三格拼贴/画面拼贴，含 0–1.7s 那块底板）仍按 compound_unrealized 跳过："
+        "内容在内嵌子时间线里，模版不携带，不猜、不凑。",
     ]
 
     # ---- 4. 渲出片（只读调用复刻渲染器） ----
@@ -843,6 +1090,11 @@ def main() -> int:
                 "sticker_segments": rr.get("sticker_segments"),
                 "masked_segments": (rr.get("masked_main_segments") or 0) + (rr.get("masked_overlay_segments") or 0),
                 "animated_overlays": rr.get("animated_overlays"),
+                # 渲染器自己的抠像台账（不是套用端“我以为写了就成”）：真跑了几个 matte、
+                # 失败几个、烘了几层撕纸描边。抠像失败时渲染器会不下假前景（overlay_matte_failed）。
+                "matte_done": rr.get("matte_done"),
+                "matte_failed": rr.get("matte_failed"),
+                "matte_stroke_segments": rr.get("matte_stroke_segments"),
                 "unrealized": rr.get("unrealized"),
                 "notes": rr.get("notes"),
                 "elapsed_sec": round(time.time() - t0, 1),
@@ -869,6 +1121,19 @@ def main() -> int:
             draft, Path(draft_json).parent, int(canvas.get("width") or 1080),
             int(canvas.get("height") or 1920))
 
+        # ---- 5a. 抠像层实测：每层重跑 Vision 抠像量 alpha 覆盖率 + 3 张 2× 边缘放大图 ----
+        # 不只信 apply 的“已重建”台账：这里拿 alpha 覆盖率和人眼可看的放大图当证据。
+        t0 = time.time()
+        try:
+            fps_i = int(round(float(tpl.get("fps") or 30)))
+            cutout_probe = cutout_alpha_probe(draft, Path(draft_json).parent, final_mp4,
+                                              frames_dir, fps=fps_i, max_zooms=3)
+            cutout_probe["elapsed_sec"] = round(time.time() - t0, 1)
+        except Exception as exc:
+            cutout_probe = {"ok": False, "error": f"{type(exc).__name__}: {exc}",
+                            "layers": [], "edge_zooms": [], "coverage_by_seg": {}}
+        report["steps"]["cutout_alpha"] = cutout_probe
+
         # ---- 5b. 逐对验重影（真跑：多渲一版「只渲主轨」，再逐对抽帧比差）----
         t0 = time.time()
         try:
@@ -879,7 +1144,8 @@ def main() -> int:
                 draft, Path(draft_json).parent, final_mp4, main_only, frames_dir,
                 rejected=(apply_rep.get("overlay_left_blank_detail") or []),
                 spot_times=[3.0] + [float(r["overlap_mid"]) for r in
-                                    (apply_rep.get("overlay_pairs_resolved") or [])])
+                                    (apply_rep.get("overlay_pairs_resolved") or [])],
+                cutout_evidence=cutout_probe)
             ghost["main_only_mp4"] = _rel(main_only) if main_only else None
             ghost["elapsed_sec"] = round(time.time() - t0, 1)
         except Exception as exc:
@@ -890,6 +1156,7 @@ def main() -> int:
         ghost = {"ok": False, "reason": "no_render"}
         report["steps"]["frames"] = {"skipped": True}
         report["steps"]["face_framing"] = {"skipped": True}
+        report["steps"]["cutout_alpha"] = {"skipped": True}
         report["steps"]["ghost_check"] = {"skipped": True}
 
     # ---- 6. 结论 ----
@@ -916,6 +1183,18 @@ def main() -> int:
         "texts_truncated": apply_rep.get("texts_truncated"),
         "texts_used": apply_rep.get("texts_used"),
         "face_framing": (ff or {}).get("summary"),
+        # 抠像三明治重建（这一轮的核心验收）
+        "cutout_layers_rebuilt": apply_rep.get("cutout_layers_rebuilt", 0),
+        "cutout_layers_skipped": apply_rep.get("cutout_layers_skipped") or {},
+        "backdrop_rebuilt": apply_rep.get("backdrop_rebuilt", 0),
+        "stroke_applied": apply_rep.get("stroke_applied", 0),
+        "cutout_matte_done_render": (render_rep or {}).get("matte_done"),
+        "cutout_matte_failed_render": (render_rep or {}).get("matte_failed"),
+        "cutout_stroke_layers_render": (render_rep or {}).get("matte_stroke_segments"),
+        "cutout_alpha_probed": (report["steps"].get("cutout_alpha") or {}).get("layers_with_person_matte"),
+        "cutout_alpha_transparent": (report["steps"].get("cutout_alpha") or {}).get("layers_with_transparent_alpha"),
+        "cutout_edge_zooms": [z.get("frame") for z in ((report["steps"].get("cutout_alpha") or {}).get("edge_zooms") or [])],
+        "ghost_ok": (report["steps"].get("ghost_check") or {}).get("ok"),
     }
     (out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2),
                                      encoding="utf-8")
@@ -947,6 +1226,15 @@ def main() -> int:
         print(f"[verify] 关键帧 {fr['count']} 张 · 检出人脸 {fr['face_check']['frames_with_face']} 张")
     if ff.get("summary"):
         print(f"[verify] 推近/缩窗人脸审计: {ff['summary']}")
+    ca = report["steps"].get("cutout_alpha") or {}
+    if ca.get("layers_probed"):
+        covs = [r.get("alpha_coverage") for r in (ca.get("layers") or []) if r.get("alpha_coverage") is not None]
+        print(f"[verify] 抠像层实测: 探 {ca['layers_probed']} 层 · 有 matte {ca.get('layers_with_person_matte')} · "
+              f"有透明区 {ca.get('layers_with_transparent_alpha')} · alpha 覆盖率 "
+              f"{['%.2f' % c for c in covs]}")
+        for z in (ca.get("edge_zooms") or []):
+            print(f"[verify]   边缘放大图 {z.get('frame')} @{z.get('t')}s stroke={z.get('stroke')} "
+                  f"alpha={z.get('alpha_coverage')}")
     gc = report["steps"].get("ghost_check") or {}
     if gc.get("ok"):
         print(f"[verify] 叠层重影: 重叠段对 {gc['pairs_checked']} · 判 FAIL {gc['ghost_rejected']} · "
@@ -966,6 +1254,10 @@ def main() -> int:
         print(f"[verify] 叠层重影检查未完成: {gc.get('reason') or gc.get('error') or 'skipped'}")
     print(f"[verify] 叠层留空 {report['verdict']['overlay_left_blank']} 段（原因见 report.json "
           f"overlay_left_blank_detail）")
+    print(f"[verify] 抠像三明治: 重建 {report['verdict']['cutout_layers_rebuilt']} 层 · "
+          f"跳过 {report['verdict']['cutout_layers_skipped']} · "
+          f"背景板重建 {report['verdict']['backdrop_rebuilt']} · 描边 {report['verdict']['stroke_applied']} 层 · "
+          f"渲染 matte {report['verdict']['cutout_matte_done_render']} / 失败 {report['verdict']['cutout_matte_failed_render']}")
     return 0 if (report["verdict"]["draft_ok"] and report["verdict"]["render_ok"] is not False
                  and not (gc.get("ok") and gc.get("ghost_rejected")) ) else 1
 

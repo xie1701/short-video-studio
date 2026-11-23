@@ -567,16 +567,41 @@ def extract_template(draft_path: Path | str, *, require_plaintext: bool = True) 
             # 人像抠像层：素材的 `matting.path` 非空 = 原版真抠了像（快速画笔/自定义抠像），
             # 这类叠加层是「同一条素材切出人物压在背景上」，不是另一段内容。模版必须标出来——
             # 套用端若把它当普通 B-roll 另接一条新素材满幅盖上去，就会把主轨画面盖成重影。
-            # 只记结构（是不是抠像层 / 有没有描边），不记 matting 路径与 custom id（那既是
-            # 本机死路径也是隐私）。
+            # 只记结构（是不是抠像层 / 有没有描边 / 描边颜色与强度参数），不记 matting 路径与
+            # custom id（那既是本机死路径也是隐私）。
+            # 描边参数为什么要进模版：套用端要把「抠像 + 撕纸描边」在新素材上原样重建，
+            # 而描边的环宽/颗粒/颜色是**设计值**（不是像素路径）；丢了它就只能用默认值瞎猜。
             matting = None
             mt = mat.get("matting") or {}
             if mt.get("path"):
                 strokes = mt.get("strokes") or []
+                st = strokes[0] if strokes else {}
+                st_params = {}
+                for _p in st.get("adjust_params") or []:
+                    _nm = _p.get("name")
+                    if not _nm:
+                        continue
+                    _v = _p.get("value")
+                    if _v is None:
+                        _v = _p.get("default_value")
+                    try:
+                        st_params[str(_nm)] = round(float(_v), 6)
+                    except (TypeError, ValueError):
+                        continue
+                st_color = st.get("color")
+                if isinstance(st_color, (list, tuple)) and len(st_color) >= 3:
+                    try:
+                        st_color = [round(float(c), 6) for c in st_color[:4]]
+                    except (TypeError, ValueError):
+                        st_color = None
+                else:
+                    st_color = None
                 matting = {
                     "person_cutout": True,
                     "stroke": bool(mt.get("enable_matting_stroke")),
-                    "stroke_name": (strokes[0].get("resource_name") if strokes else None),
+                    "stroke_name": (st.get("resource_name") if strokes else None),
+                    "stroke_color": st_color,
+                    "stroke_params": st_params or None,
                     "quick_brush": bool(mt.get("has_use_quick_brush")),
                 }
 
@@ -584,7 +609,10 @@ def extract_template(draft_path: Path | str, *, require_plaintext: bool = True) 
             if kind == "compound":
                 seg_reasons.append("compound_clip_not_extracted")
             if matting:
-                seg_reasons.append("person_matting_layer_not_reconstructible")
+                # 原来这里写的是 `person_matting_layer_not_reconstructible`（模版自称抠像层重建不了）。
+                # 改成：模版带全重建所需的**结构真值**（同素材绑定 + 描边参数），套用端在
+                # 新素材上真跑抠像重建；只剩「描边参数是按原版反解的近似值」这一点要人复核。
+                seg_reasons.append("person_matting_layer_rebuilt_from_source")
             if mask:
                 seg_reasons.append("mask_params_unvalidated_on_new_assets")
             if effects:
@@ -733,8 +761,8 @@ def extract_template(draft_path: Path | str, *, require_plaintext: bool = True) 
         notes.append(f"{n_linked} 段叠加层与主轨用的是同一个素材文件（原版为推近/缩窗/人像抠像），"
                      f"模版记 same_material_as；套用时跟随主轨同一素材与入点，不另接 B-roll")
         notes.append(f"其中 {sum(1 for s in segments_out if s.get('matting') and s.get('same_material_as'))} "
-                     f"段是人像抠像层：抠像遮罩不可迁移，套用端跳过并计入 overlay_left_blank"
-                     f"（不给它另开新素材满幅覆盖）")
+                     f"段是人像抠像层：套用端跟主轨同素材同入点重跑抠像 + 撕纸描边（alpha 合成），"
+                     f"抠像失败或新素材无人时才跳过并计入 overlay_left_blank（不给它另开新素材满幅覆盖）")
 
     # ---- 素材角色表（推断不出的一律 unknown，逐条记原因，不瞎猜） ----
     for mid, mat in mat_idx.items():
@@ -772,9 +800,10 @@ def extract_template(draft_path: Path | str, *, require_plaintext: bool = True) 
     n_matte = sum(1 for s in segments_out if s.get("matting"))
     if n_matte:
         review.append({"scope": "person_matting", "count": n_matte,
-                       "reason": "人像抠像层（matting.path 非空）与素材绑定：抠像遮罩无法随模版迁移。"
-                                 "套用时该层要么跟随主轨同素材同入点（有 alpha 才成立），要么跳过并计 "
-                                 "overlay_left_blank——绝不许另接一条新素材满幅盖住主轨"})
+                       "reason": "人像抠像层（matting.path 非空）与素材绑定：模版带的是结构真值"
+                                 "（same_material_as 同素材同入点 + 描边颜色/强度参数），不含原版抠像遮罩。"
+                                 "套用端在新素材上按这层结构重跑抠像（Vision alpha）+ 撕纸描边；"
+                                 "新素材里没有人/抠像失败时该层跳过并计 overlay_left_blank，绝不另接新素材满幅盖主轨"})
     n_mask = sum(1 for s in segments_out if s.get("mask"))
     if n_mask:
         review.append({"scope": "mask", "count": n_mask,
