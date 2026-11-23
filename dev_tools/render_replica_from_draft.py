@@ -215,6 +215,14 @@ def split_pieces_by_mask(pieces: list, sched: list, t_start: float) -> list:
             out.append((a, b, sc, tx, ty, cfg))
     return out
 PX_PER_UNIT = 4.0  # 兜底值；实际按画布推导 canvas_w/192（实测 1080 宽草稿 = 5.625，与标题/字幕墨高吻合）
+# 阴影位移的参考宽：剪映阴影 distance 走的是 **720 口径**，不是字号单位。
+# 反解办法（style_21 三帧静态字幕 5.1/9.72/12.90s：把「近白的墨迹 alpha」和「变暗的阴影 alpha」
+# 分开量，阴影 50% 边界相对墨迹 50% 边界就是位移）：实测每轴 +4~+6px；
+# 按 0.6364×distance(5.0)×(1080/720=1.5) = 4.8px 落在实测中位，按旧的 5.625（字号单位）
+# 算出来 17.9px、按更早的 PX_PER_UNIT=4.0 算 12.7px —— 都比实测大一倍以上（旧渲染里阴影糊出墨迹 1.5~2 倍远，
+# 白字旁边多一圈灰，正是字幕带常态差的来源）。同一 720 参考宽在本仓库已由贴纸几何实证。
+SHADOW_REF_WIDTH = 720.0
+SHADOW_BLUR_EM = 0.13  # 阴影模糊：σ = smoothing × font_px × 0.13（由两档字号实测反解，见 parse_text_material）
 # 字幕底框内边距（单位：em，即 font_px 的倍数）。剪映草稿里不带这个值，只能从原版成片反解：
 # style_17 13.0/13.4s「如果你不清楚」底框 336×84、字迹墨框 295×44；15.5s「我帮你推荐一下」底框 386×84
 # （383=336+50，即每字 50px 字距）→ 四边内边距都是 20.5px，而该处 font_px ≈ 50 → 0.41em。
@@ -483,8 +491,11 @@ def _font_candidates(mat: dict) -> list:
     return out
 
 
-def parse_text_material(mat: dict) -> dict:
-    """草稿文本素材 → {text, color, font_path, font_size, shadow, stroke, line_spacing}。"""
+def parse_text_material(mat: dict, canvas_w: int = CANVAS_W) -> dict:
+    """草稿文本素材 → {text, color, font_path, font_size, shadow, stroke, line_spacing}。
+
+    canvas_w 只用于把草稿里的「单位」换算成像素（字号、阴影位移/模糊），默认 1080 画布。
+    """
     out = {"text": "", "color": (255, 255, 255), "font_path": None,
            "font_candidates": _font_candidates(mat),
            "font_size": float(mat.get("font_size") or 0.0)}
@@ -531,10 +542,18 @@ def parse_text_material(mat: dict) -> dict:
     out["text"] = txt
     if mat.get("has_shadow"):
         sp = mat.get("shadow_point") or {}
+        # 位移：shadow_point 是 -45° 的单位向量分量（0.6364=1/√2），乘 distance 得「720 口径」像素，
+        # 再乘 canvas_w/720 落到本画布。旧口径（×PX_PER_UNIT=4.0 或 ×字号单位 5.625）大 2.7~3.7 倍。
+        _sh_k = float(canvas_w) / SHADOW_REF_WIDTH
+        # 模糊：shadow_smoothing 是 0..1 的滑杆（style_21 字幕 0.45、大字 0.2925），实测阴影边缘半宽
+        # 与 **字号** 成正比而与画布无关：75px 字号 σ≈4.4px、300px 大字 σ≈11.4px（两档相差 4 倍字号 →
+        # 2.6 倍 σ，线性拟合残差 ≤1px，用 0.13×font_px 同时落在两档）。旧实现 σ=smoothing×4.0=1.8px
+        # 阴影硬得像描边；truth 文件里 blur_px=diffuse×font×0.9 的算法更小（1.1px），也不是真口径。
+        _sh_em = float(out["font_size"] or 0.0) * (float(canvas_w) / 172.8) * SHADOW_BLUR_EM
         out["shadow"] = {
-            "dx": float(sp.get("x") or 0.0) * float(mat.get("shadow_distance") or 0.0) * PX_PER_UNIT,
-            "dy": float(sp.get("y") or 0.0) * float(mat.get("shadow_distance") or 0.0) * PX_PER_UNIT,
-            "blur": max(0.0, float(mat.get("shadow_smoothing") or 0.0) * PX_PER_UNIT),
+            "dx": float(sp.get("x") or 0.0) * float(mat.get("shadow_distance") or 0.0) * _sh_k,
+            "dy": float(sp.get("y") or 0.0) * float(mat.get("shadow_distance") or 0.0) * _sh_k,
+            "blur": max(0.0, float(mat.get("shadow_smoothing") or 0.0) * _sh_em),
             "alpha": float(mat.get("shadow_alpha") if mat.get("shadow_alpha") is not None else 0.9),
             "color": mat.get("shadow_color") or (0, 0, 0),
         }
@@ -2039,7 +2058,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 report["unrealized"]["text_missing_material"] = report["unrealized"].get("text_missing_material", 0) + 1
                 continue
             try:
-                spec = parse_text_material(mat)
+                spec = parse_text_material(mat, canvas_w=canvas_w)
             except Exception:
                 report["unrealized"]["text_parse_failed"] = report["unrealized"].get("text_parse_failed", 0) + 1
                 continue
@@ -2135,28 +2154,43 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             if depth == 0:
                 report["text_segments"] += 1
 
-    for t_idx, segs in cls["stickers"]:
-        for o, s in enumerate(segs):
-            mat = stk_by_id.get(s.get("material_id")) or {}
-            if mask_by_id and any(r in mask_by_id for r in (s.get("extra_material_refs") or [])):
-                report["unrealized"]["mask_on_text_or_sticker"] = report["unrealized"].get("mask_on_text_or_sticker", 0) + 1
-            src = _subst(mat.get("path") or "", base_dir)
-            if not src or not Path(src).is_file():
-                report["unrealized"]["stickers"] = report["unrealized"].get("stickers", 0) + 1
-                continue
-            tgt = s.get("target_timerange") or {}
-            t_start = float(tgt.get("start") or 0) / US
-            t_dur = float(tgt.get("duration") or 0) / US
-            cl = s.get("clip") or {}
-            sc = float((cl.get("scale") or {}).get("x") or 1.0)
-            tx = float((cl.get("transform") or {}).get("x") or 0.0)
-            ty = float((cl.get("transform") or {}).get("y") or 0.0)
-            units.append((t_idx, o, {
-                "kind": "sticker", "png": src, "pw": None, "ph": None, "t_start": t_start, "t_dur": t_dur,
-                "tx": tx, "ty": ty, "alpha": float(cl.get("alpha") or 1.0), "scale": sc,
+    # ---------- 6.4 贴纸轨：走 sticker_render（真素材 + 真几何 + 出入场动画） ----------
+    # 原来这里直接拿 materials.stickers[*].path 当图片叠。草稿是 Windows 机器的路径
+    # （Windows 草稿里的 artistEffect/<id>/<hash> 绝对路径），本机根本不存在 → 每一段都落进
+    # unrealized["stickers"]，等于**整条贴纸轨从来没画过**。style_21 的「手机屏幕边框」
+    # 10.43–12.90s 因此全缺：12.0s 那一帧主轨/文字都对，画面却差 42 级（占全片最差帧）。
+    # 现在改走短影工坊里已反解好的贴纸模块，三件事都按真值来：
+    #   · 素材：按 resource_id 反查本机 Cache/artistEffect/<id>/（sticker_assets.resolve_sticker_dir）；
+    #   · 几何：显示宽 = 原生宽 × clip.scale × 画布宽/720（720 是剪映贴纸的缩放参考宽）；
+    #   · 出入场：animations 标定 + sticker_render.STICKER_OUT_SLIDE 的「向下滑动」真值窗口
+    #     （start 缺省 = 段尾倒数 duration，缓动 p²、GAIN 1.229）。
+    # 产出是**画布大小的 RGBA mov**（内容已摆好），所以当 scale=1 的视频单元叠即可；
+    # z 序照旧由轨序决定（贴纸轨 11 > 文字轨 9/10，与草稿 render_index 14008/14009 > 14000~14007 一致）。
+    if cls["stickers"] and not audio_only:
+        from sticker_render import plan_sticker_layers  # noqa: E402
+        _stk_tidx: dict = {}
+        for _t_idx, _segs in cls["stickers"]:
+            for _s in _segs:
+                _tg = _s.get("target_timerange") or {}
+                _stk_tidx[round(float(_tg.get("start") or 0) / US, 3)] = _t_idx
+                if any(r in mask_by_id for r in (_s.get("extra_material_refs") or [])):
+                    report["unrealized"]["mask_on_text_or_sticker"] = \
+                        report["unrealized"].get("mask_on_text_or_sticker", 0) + 1
+        _stk_layers = plan_sticker_layers(draft, base_dir, W, H, float(fps), total_sec,
+                                         media_dir, report, depth=depth,
+                                         animations_by_id=anim_by_id)
+        for _k, _lay in enumerate(_stk_layers):
+            _ti = _stk_tidx.get(round(_lay.t_start, 3), cls["stickers"][0][0])
+            units.append((_ti, _k, {
+                "kind": "video", "seg": _lay.path, "matte": None,
+                "t_start": _lay.t_start, "t_dur": _lay.dur,
+                "scale": 1.0, "lw": W, "lh": H, "tx": 0.0, "ty": 0.0,
+                "alpha": 1.0, "fade": None, "pos_kf": None, "anim": True,
             }))
             if depth == 0:
                 report["sticker_segments"] += 1
+                report.setdefault("notes", []).append(
+                    f"贴纸「{_lay.name}」{_lay.t_start:.2f}s+{_lay.dur:.2f}s（真素材/720 几何/出入场真值）")
 
     # ---------- 7. 一次合成 pass：z 序 = 轨序 ----------
     units.sort(key=lambda u: (u[0], u[1]))
