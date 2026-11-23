@@ -7,6 +7,8 @@
 
   a_roll  有人脸、有声音的实拍段（口播）——Apple Vision 抽 3 帧检测，至少 2 帧有脸
   b_roll  没检出人脸的实拍段（产品或场景）
+  photo   静图（jpg/png）：**复合片段里的照片拼贴层专用**。照片层换素材必须还是图片，
+          拿视频顶就等于把「照片翻页」变成「视频墙」，结构没重建
   bgm     草稿库里 20s 以上的音乐
   sfx     3s 以内的短音效
 
@@ -44,6 +46,8 @@ maybe_reexec_in_venv()
 
 VIDEO_EXTS = (".mp4", ".mov", ".m4v")
 AUDIO_EXTS = (".mp3", ".m4a", ".wav", ".aac", ".flac")
+# 静图：复合片段里的「照片翻页/拼贴底板」层要的就是这些（**不能拿视频顶**）
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp")
 SKIP_DIRS = ("matting", "audioAlg", "videoAlg", "subquad", "subdraft", "combination",
              "qr_upload", "digitalHuman", "common_attachment", "Resources")
 
@@ -129,11 +133,14 @@ def _ref(name: str) -> str:
 
 
 def template_need(tpl: dict) -> dict:
-    """模版 → 素材池至少要凑多少条**互不相同**的视频素材。
+    """模版 → 素材池至少要凑多少条**互不相同**的素材。
 
     为什么不能只按「段数」算：主轨的 13 段是**顺序播放**的，同一条素材可以在不同时间复用；
     真正卡住的是「同一瞬间上下叠着几层」——那些层必须各自用不同素材，否则就是同源重影。
     所以需求 = 全片「同时可见的视频层数」峰值。多留 2 条余量，轮转时才不必原路复用。
+
+    photo 单独算：复合片段里的照片拼贴层是**同时**铺在一条子时间线上的（原版 5 张/7 张
+    错开入场、大半时间重叠），照片层只能用图片，所以 photo 池要按子层的最多同时层数算。
     """
     segs = [s for s in tpl.get("segments") or [] if s.get("kind") in ("video", "photo")]
     events: List[tuple] = []
@@ -150,6 +157,35 @@ def template_need(tpl: dict) -> dict:
         cur += d
         peak = max(peak, cur)
     driver_idx = next((t["index"] for t in tpl.get("tracks") or [] if t.get("is_driver")), None)
+
+    def _peak_of(child_segs: List[dict]) -> int:
+        ev: List[tuple] = []
+        for s in child_segs:
+            a = float(s.get("start_sec") or 0.0)
+            b = a + float(s.get("duration_sec") or 0.0)
+            ev.append((a + 1e-6, 1))
+            ev.append((b - 1e-6, -1))
+        ev.sort()
+        c = p = 0
+        for _t, d in ev:
+            c += d
+            p = max(p, c)
+        return p
+
+    photo_peak = 0
+
+    def _walk(child_segs: List[dict]) -> None:
+        nonlocal photo_peak
+        for s in child_segs:
+            comp = s.get("compound")
+            if not comp:
+                continue
+            sub = comp.get("segments") or []
+            photos = [x for x in sub if (x.get("asset_role") or x.get("kind")) == "photo"]
+            photo_peak = max(photo_peak, _peak_of(photos))
+            _walk(sub)
+
+    _walk(tpl.get("segments") or [])
     return {
         "video_slots": len(segs),
         "driver_segments": sum(1 for s in segs if s.get("track_index") == driver_idx),
@@ -157,11 +193,13 @@ def template_need(tpl: dict) -> dict:
         "distinct_assets_needed": max(2, peak),
         "a_roll_want": max(2, peak) + 2,
         "b_roll_want": max(2, peak) + 2,
+        "max_concurrent_photo_layers": photo_peak,
+        "photo_want": max(0, photo_peak) + 2 if photo_peak else 0,
     }
 
 
 def mine(style_id: str, *, want_a: int, want_b: int, want_sfx: int,
-         min_mb: float, max_candidates: int) -> tuple:
+         min_mb: float, max_candidates: int, want_photo: int = 0) -> tuple:
     """→ (assets{role:[path]}, pool{reach 素材清单（脱敏）}, notes[])"""
     from replica_template import resolve_draft_by_style, _replica_module
 
@@ -263,9 +301,33 @@ def mine(style_id: str, *, want_a: int, want_b: int, want_sfx: int,
     sfx_pick = _pick([{"path": str(p), "draft_ref": _ref(d.name), "dur": round(dur, 2), "draft_dir": str(d)}
                       for dur, d, p in sfx], want_sfx)
 
+    # ---- 静图：复合片段照片拼贴层专用（优先大图＋跨草稿多样） ----
+    photo_cands: List[tuple] = []
+    for d in dirs:
+        for p in _media_in(d, "video", IMAGE_EXTS):
+            try:
+                size = p.stat().st_size
+            except OSError:
+                continue
+            if size < 300_000:      # 小图多是图标/装饰角标，不是「照片」
+                continue
+            photo_cands.append((size, d, p))
+    photo_cands.sort(reverse=True, key=lambda x: x[0])
+    photo_rows: List[dict] = []
+    for size, d, p in photo_cands[: max(40, want_photo * 4)]:
+        info = _probe(p)
+        w, h = int(info.get("width") or 0), int(info.get("height") or 0)
+        if w < 480 or h < 480:      # 短边过小：拿去做拼贴底板会糊成一块
+            continue
+        photo_rows.append({"path": str(p), "draft_ref": _ref(d.name), "w": w, "h": h,
+                           "size_mb": round(size / 1e6, 1)})
+    photo_pick = _pick(photo_rows, want_photo) if want_photo else []
+    notes.append(f"静图候选 {len(photo_rows)} 张（≥300KB 且短边≥480）→ 取 {len(photo_pick)} 张做复合片段照片层")
+
     assets = {
         "a_roll": [r["path"] for r in a_pick],
         "b_roll": [r["path"] for r in b_pick],
+        "photo": [r["path"] for r in photo_pick],
         "bgm": [str(p) for _, _, p in bgm_pick],
         "sfx": [r["path"] for r in sfx_pick],
     }
@@ -285,6 +347,8 @@ def mine(style_id: str, *, want_a: int, want_b: int, want_sfx: int,
                    for i, r in enumerate(b_pick)],
         "bgm": [{"id": f"bgm-{i + 1:02d}", "draft_ref": _ref(d.name), "dur": round(dur, 2)}
                 for i, (dur, d, _p) in enumerate(bgm_pick)],
+        "photo": [{"id": f"ph-{i + 1:02d}", **{k: r[k] for k in ("draft_ref", "w", "h", "size_mb")}}
+                  for i, r in enumerate(photo_pick)],
         "sfx": [{"id": f"sfx-{i + 1:02d}", **{k: r[k] for k in ("draft_ref", "dur")}}
                 for i, r in enumerate(sfx_pick)],
         "rejected": {"no_face_broll_candidates": len(broll), "aroll_candidates": len(aroll)},
@@ -301,6 +365,8 @@ def main() -> int:
     ap.add_argument("--want-aroll", type=int, default=3)
     ap.add_argument("--want-broll", type=int, default=3)
     ap.add_argument("--want-sfx", type=int, default=4)
+    ap.add_argument("--want-photo", type=int, default=14,
+                    help="静图池张数（复合片段照片拼贴层用）；给 --template 时按子层同时层数上调")
     ap.add_argument("--min-mb", type=float, default=8.0)
     ap.add_argument("--max-candidates", type=int, default=30)
     ap.add_argument("--template", default=None,
@@ -309,22 +375,31 @@ def main() -> int:
 
     need = None
     want_a, want_b = args.want_aroll, args.want_broll
+    want_photo = args.want_photo
     if args.template:
         need = template_need(json.loads(Path(args.template).read_text(encoding="utf-8")))
         want_a = max(want_a, int(need["a_roll_want"]))
         want_b = max(want_b, int(need["b_roll_want"]))
+        want_photo = max(want_photo, int(need.get("photo_want") or 0))
 
     assets, pool, notes = mine(args.style_id, want_a=want_a, want_b=want_b, want_sfx=args.want_sfx,
-                               min_mb=args.min_mb, max_candidates=args.max_candidates)
+                               min_mb=args.min_mb, max_candidates=args.max_candidates,
+                               want_photo=want_photo)
     if need:
         short_a = max(0, int(need["distinct_assets_needed"]) - len(assets["a_roll"]))
         short_b = max(0, int(need["distinct_assets_needed"]) - len(assets["b_roll"]))
-        pool["need"] = {**need, "want_a": want_a, "want_b": want_b,
+        pool["need"] = {**need, "want_a": want_a, "want_b": want_b, "want_photo": want_photo,
                        "got_a": len(assets["a_roll"]), "got_b": len(assets["b_roll"]),
-                       "shortfall": {"a_roll": short_a, "b_roll": short_b}}
+                       "got_photo": len(assets.get("photo") or []),
+                       "shortfall": {"a_roll": short_a, "b_roll": short_b,
+                                     "photo": max(0, int(need.get("max_concurrent_photo_layers") or 0)
+                                                  - len(assets.get("photo") or []))}}
         notes.append(f"模版同时叠层峰值 {need['max_concurrent_video_layers']} 层 → 至少要 "
                      f"{need['distinct_assets_needed']} 条不同素材；实采 a_roll {len(assets['a_roll'])} 条 / "
                      f"b_roll {len(assets['b_roll'])} 条")
+        if need.get("max_concurrent_photo_layers"):
+            notes.append(f"复合片段照片层最多同时 {need['max_concurrent_photo_layers']} 层 → "
+                         f"photo 池要 {need.get('photo_want')} 张图；实采 {len(assets.get('photo') or [])} 张")
         if short_a or short_b:
             notes.append(f"素材不足：还差 a_roll {short_a} 条 / b_roll {short_b} 条，"
                          f"套用时会按硬约束留空并在 overlay_left_blank 里逐条记")
@@ -338,11 +413,14 @@ def main() -> int:
 
     for note in notes:
         print(f"[mine] {note}")
-    for role in ("a_roll", "b_roll", "bgm", "sfx"):
+    for role in ("a_roll", "b_roll", "photo", "bgm", "sfx"):
         for row in pool.get(role) or []:
             if role in ("a_roll", "b_roll"):
                 print(f"[mine] {role:7s} {row['id']} {row.get('draft_ref')} {row.get('dur')}s "
                       f"{row.get('w')}x{row.get('h')} face={row.get('face')} area={row.get('face_area')}")
+            elif role == "photo":
+                print(f"[mine] {role:7s} {row['id']} {row.get('draft_ref')} "
+                      f"{row.get('w')}x{row.get('h')} {row.get('size_mb')}MB")
             else:
                 print(f"[mine] {role:7s} {row['id']} {row.get('draft_ref')} {row.get('dur')}s")
     return 0 if (assets.get("a_roll") and assets.get("b_roll")) else 1

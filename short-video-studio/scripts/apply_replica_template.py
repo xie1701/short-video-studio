@@ -81,7 +81,10 @@ ROLE_FALLBACK = {
     "a_roll": ("a_roll", "b_roll", "photo"),
     "b_roll": ("b_roll", "a_roll", "photo"),
     "overlay_card": ("overlay_card", "b_roll", "a_roll", "photo"),
-    "photo": ("photo", "a_roll"),
+    # photo **只回落 photo**：复合片段里的「照片翻页/拼贴底板」层（原版是 5 张 scale 0.8 的静图）
+    # 在换素材后必须还是图片。拿视频顶 = 把「照片翻页」变成「视频墙」，结构没重建、只是換了张皮；
+    # 池里真没图就留空并计 photo_layer_no_image，再写到报告里——角色不匹配就如实报缺口。
+    "photo": ("photo",),
     "sticker": ("sticker",),
     "bgm": ("bgm", "sfx"),
     "sfx": ("sfx",),
@@ -103,6 +106,8 @@ def _asset_ref(path: str) -> str:
 
 # 满幅阀值：显示面积占画布 ≥85% 且不透明，就算「满幅覆层」——它盖住下层，同源就是重影。
 FULL_FRAME_COVER = 0.85
+# 静态图片扩展名：静图在素材池里的「时长」是无限的（循环显示），探不到 duration 不能当废素材丢掉。
+IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".heic")
 
 
 # 字体回落候选：模版不带商用字体文件（版权也不允许带），本机按名字也找不到时才回到系统字体。
@@ -476,13 +481,19 @@ class _Pool:
             if not Path(p).is_file():
                 report.setdefault("missing_assets", []).append(Path(p).name)
                 continue
+            is_image = Path(p).suffix.casefold() in IMAGE_EXTS
             info = probe_media(Path(p))
+            if is_image:
+                # 静图没有「时长」概念：当成无限长底片（fill() 只会取 want 那么长）。
+                # 探不到 duration 的图片不能进 unprobeable 被丢掉——那正是照片拼贴层的素材。
+                info = {"duration": 3600.0, **{k: v for k, v in info.items() if k != "duration"}}
             if info["duration"] <= 0.05:
                 report.setdefault("unprobeable_assets", []).append(Path(p).name)
                 continue
             self.items.append({"path": str(Path(p)), "dur": info["duration"],
                                "w": info["width"], "h": info["height"],
                                "rotation": int(info.get("rotation") or 0),
+                               "is_image": bool(is_image),
                                "cursor": 0.0, "uses": 0})
         self.rot = 0
 
@@ -523,6 +534,7 @@ class _Pool:
                 "reused": reused, "wrapped": wrapped,
                 "conflict_skipped": skipped_conflict,
                 "w": item["w"], "h": item["h"],
+                "is_image": bool(item.get("is_image")),
                 "asset_dur": float(item["dur"]),
                 "rotation": int(item.get("rotation") or 0)}
 
@@ -778,6 +790,26 @@ def _speed_material() -> dict:
     return {"curve_speed": None, "id": _uid(), "mode": 0, "speed": 1.0, "type": "speed"}
 
 
+def _compound_placeholder_material(name: str, root_uuid: str, w: int, h: int, dur: float,
+                                   *, audio: bool = False) -> dict:
+    """复合片段在父时间线上的**占位素材**：path 空，真身在 materials.drafts。
+
+    必须是「有 id、但没有 path」的素材——渲染器就是靠 `not mat.path` + 
+    `extra_material_refs` 里的 drafts 条目来识别复合片段的（与剪映草稿同一形状）。
+    """
+    if audio:
+        mat = _audio_material(name, root_uuid, "materials/audio", float(dur), "sound")
+        mat["path"] = ""      # 真身是子时间线，不是文件
+        mat["type"] = "music"
+        mat["name"] = name
+        return mat
+    mat = _video_material(name, root_uuid, "materials/video", w, h, float(dur))
+    mat["path"] = ""          # 真身是子时间线，不是文件
+    mat["material_name"] = name
+    mat["matting"] = {"path": ""}
+    return mat
+
+
 # uv 裁切能不能掁过来：只看「裁切框宽高比」与「新素材宽高比」是否一致（±3%）
 CROP_ASPECT_TOLERANCE = 0.0296  # ln(1.03)
 
@@ -826,6 +858,30 @@ def usable_crop(seg: dict, fill: dict, canvas_w: float, canvas_h: float,
             "asset_aspect": round(w / max(1e-6, h), 3),
         })
     return None
+
+
+def _aspect_crop(fill: dict, want_aspect: Optional[float]) -> Optional[dict]:
+    """把新图片裁成模版图层的**展示宽高比**（居中）。
+
+    为什么要这一步：模版里的 `geometry.size_ratio` 是那一层**设计好的显示矩形**（例如
+    0.45~1.667s 拼贴底板每张是 1242×344 = 3.6:1 的长条）。如果直接把 3:4 的竖图放进
+    scale 0.8 的 contain 里，方屏上会是五个大竖图叠在一起——不是「照片条拼贴」了。
+    按模板宽高比居中裁一刀，新图仍然是真的照片内容（未拉伸、未变形），只是保留了
+    原版的**长条取景**；同时在报告里计 photo_layer_aspect_cropped。
+    """
+    w, h = float(fill.get("w") or 0), float(fill.get("h") or 0)
+    if w <= 0 or h <= 0 or not want_aspect or want_aspect <= 0:
+        return None
+    got = w / h
+    if abs(math.log(max(1e-6, got) / max(1e-6, want_aspect))) <= CROP_ASPECT_TOLERANCE:
+        return None
+    if got > want_aspect:      # 太宽 → 收窄宽度
+        new_w = h * want_aspect
+        x0 = (w - new_w) / (2.0 * w)
+        return {"x0": round(x0, 4), "y0": 0.0, "x1": round(1.0 - x0, 4), "y1": 1.0}
+    new_h = w / want_aspect    # 太高 → 收窄高度
+    y0 = (h - new_h) / (2.0 * h)
+    return {"x0": 0.0, "y0": round(y0, 4), "x1": 1.0, "y1": round(1.0 - y0, 4)}
 
 
 def _anim_holder(animations: List[dict], seg_dur: float, report: dict) -> Tuple[dict, List[dict]]:
@@ -1339,6 +1395,317 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
                             "conflict_skipped": int(fill.get("conflict_skipped") or 0)}
         _placed(new_start, new_dur, fill["path"], seg["key"])
 
+    # ---- 2c. 复合片段：按子结构重建内嵌子时间线（materials.drafts + subdraft/） ----
+    #
+    # 上一轮这里是 `skipped["compound_unrealized"]`：整块跳过。结果 0.45~1.667s 那块
+    # 「三格拼贴底板」直接没了（成片只剩人像压在压暗的主轨上）。
+    #
+    # 现在：模版已经把子时间线的轨/段/几何/关键帧/动画/文字位递归拆出来了（与顶层同一
+    # schema，见 replica_template._extract_level），这里就**按同一套规则换素材**，再写回
+    # 剪映的真实结构：`materials.drafts[*].draft`（内嵌完整子时间线）+ `subdraft/<uuid>/`
+    # 目录落盘，父段用 `extra_material_refs` 引用那个 drafts 条目。
+    #
+    # 角色跨层规则（硬约束，别改）：
+    #   · 子时间线的 `photo` 层（原版 = 5 张 scale 0.8 的拼贴静图）**只能**取 photo 池的
+    #     **图片**；池里没图就留空并计 `photo_layer_no_image`，**绝不**拿视频顶
+    #     （视频顶进去就不是「照片翻页」而是「视频墙」，结构丢了）；
+    #   · 子层的 `a_roll/b_roll/overlay_card` 跟顶层一样走叠层同源硬约束（时间窗内有重叠就换一条）；
+    #   · 子层的 sticker/音效同样只取同角色，缺就计缺口。
+    subdraft_root = draft_dir / "subdraft"
+    drafts_mats: List[dict] = []
+    # 子时间线文字层的文案池：只取「无 slot 的通用文案」。带 slot 的文案是给顶层文字位
+    # 显式对位的，不能被内嵌子时间线抢去（否则顶层的字幕会整条错位）。
+    loose_texts: List[Any] = [t for t in (texts or [])
+                              if not (isinstance(t, dict) and isinstance(t.get("slot"), int))]
+    rep.setdefault("compounds_applied", 0)
+    rep.setdefault("compound_applied_detail", [])
+    rep.setdefault("compound_skipped", {})
+    rep.setdefault("sub_segments_total", 0)
+    rep.setdefault("photo_layers_mapped", 0)
+    rep.setdefault("compound_anim_clamped", 0)
+    rep.setdefault("compound_time_scaled", 0)
+    rep.setdefault("compound_length_mismatch", 0)
+    rep.setdefault("compound_canvas_refs_dropped", 0)
+
+    def _skip_compound(key: str, why: str) -> None:
+        rep["compound_skipped"][why] = rep["compound_skipped"].get(why, 0) + 1
+        rep["compound_applied_detail"].append({"key": key, "applied": False, "why": why})
+
+    def build_sub_draft(seg: dict, *, parent_start: float, parent_dur: float) -> Optional[dict]:
+        """模版段 → 一条可落盘的子时间线（与顶层草稿同一套素材/段写法）。
+
+        子段的时间反从「相对子时间线总长」按 `parent_dur/sub_dur` 比例映射到**父段新时长**：
+        父段可能因锚点重映射/素材不够而变短变长，子时间线必须跟着缩，否则父段取不满
+        （渲染器是按父段时长去抽子片段的）。
+        """
+        comp = seg.get("compound") or {}
+        sub_segs = comp.get("segments") or []
+        sub_tracks = comp.get("tracks") or []
+        sub_slots = comp.get("sub_slots") or []
+        sub_dur = float(comp.get("duration_sec") or 0.0)
+        if not sub_segs:
+            return None
+        scale = (parent_dur / sub_dur) if sub_dur > 1e-6 else 1.0
+        if abs(scale - 1.0) > 1e-3:
+            rep["compound_time_scaled"] += 1
+        if not comp.get("length_matches_parent", True):
+            rep["compound_length_mismatch"] += 1
+
+        sub_videos: Dict[str, dict] = {}
+        sub_audios: Dict[str, dict] = {}
+        sub_texts: Dict[str, dict] = {}
+        sub_anims: List[dict] = []
+        sub_speeds: List[dict] = []
+        sub_masks: List[dict] = []
+        sub_vfx: List[dict] = []
+        sub_track_segs: Dict[int, List[dict]] = {t["index"]: [] for t in sub_tracks}
+        local_taken: List[dict] = []
+        stats = {"segments": 0, "photo_layers": 0, "skipped": {}}
+
+        def _skip(why: str) -> None:
+            stats["skipped"][why] = stats["skipped"].get(why, 0) + 1
+
+        for s in sorted(sub_segs, key=lambda x: (int(x.get("track_index") or 0),
+                                                    float(x.get("start_sec") or 0.0))):
+            kind = s.get("kind")
+            role = str(s.get("asset_role") or s.get("role") or "")
+            t0 = max(0.0, float(s.get("start_sec") or 0.0) * scale)
+            dur = max(0.05, float(s.get("duration_sec") or 0.0) * scale)
+            if t0 + dur > parent_dur + 1e-3:
+                dur = max(0.05, parent_dur - t0)
+            t_i = int(s.get("track_index") or 0)
+            sub_track_segs.setdefault(t_i, [])
+            geom = dict(s.get("geometry") or {})
+            extra: List[str] = []
+            mat_id = None
+            src_in = 0.0
+            src_dur = dur
+            is_audio = False
+
+            if kind == "effect" or role == "effect":
+                _skip("effect_track_in_compound")
+                continue
+            if kind == "photo" or role == "photo":
+                # 照片层：只取图片（角色规则见上面注释）
+                avoid = _taken_near(parent_start, parent_dur) | {x["path"] for x in local_taken}
+                fill = take_for("photo", dur, avoid=avoid)
+                if fill is None:
+                    _skip("photo_layer_no_image")
+                    continue
+                name = stage(fill["path"], "video")
+                crop_use = usable_crop(s, fill, canvas_w, canvas_h, rep)
+                if not crop_use:
+                    # 模版没带 crop 时，按原版图层的**展示宽高比**居中裁一刀（详见 _aspect_crop）
+                    sr = geom.get("size_ratio")
+                    want = None
+                    if sr and len(sr) == 2 and float(sr[1] or 0) > 0:
+                        want = (float(sr[0]) * canvas_w) / max(1e-6, float(sr[1]) * canvas_h)
+                    crop_use = _aspect_crop(fill, want)
+                    if crop_use:
+                        rep["photo_layer_aspect_cropped"] = \
+                            rep.get("photo_layer_aspect_cropped", 0) + 1
+                mk = f"photo|{fill['path']}|{json.dumps(crop_use or {}, sort_keys=True)}"
+                if mk not in sub_videos:
+                    sub_videos[mk] = _video_material(name, root_uuid, "materials/video",
+                                                     fill["w"], fill["h"], float(fill["take"]),
+                                                     crop_use, is_photo=True)
+                    sub_videos[mk]["_path"] = fill["path"]
+                mat_id = sub_videos[mk]["id"]
+                stats["photo_layers"] += 1
+                local_taken.append({"start": t0, "dur": dur, "path": fill["path"]})
+                # 跨复合片段登记：两个复合片段时间窗重叠时（原版 5.3~8.2s 与 5.88~8.22s 就是），
+                # 它们的照片层不许同源叠两居——靠 _placed/_taken_near 这同一本账。
+                _placed(parent_start + t0, dur, fill["path"], f"{seg['key']}#sub{int(s.get('track_index') or 0)}")
+            elif kind in ("video",) or role in ("a_roll", "b_roll", "overlay_card"):
+                avoid = _taken_near(parent_start, parent_dur) | {x["path"] for x in local_taken}
+                fill = take_for(role if role in ROLE_FALLBACK else "b_roll", dur, avoid=avoid)
+                if fill is None:
+                    _skip("video_layer_no_asset")
+                    continue
+                name = stage(fill["path"], "video")
+                crop_use = usable_crop(s, fill, canvas_w, canvas_h, rep)
+                mk = f"{fill['path']}|{json.dumps(crop_use or {}, sort_keys=True)}"
+                if mk not in sub_videos:
+                    sub_videos[mk] = _video_material(name, root_uuid, "materials/video",
+                                                     fill["w"], fill["h"], float(fill["take"]),
+                                                     crop_use, is_photo=False)
+                    sub_videos[mk]["_path"] = fill["path"]
+                mat_id = sub_videos[mk]["id"]
+                src_in = float(fill.get("src_in") or 0.0)
+                dur = min(dur, float(fill["take"]))
+                local_taken.append({"start": t0, "dur": dur, "path": fill["path"]})
+                _placed(parent_start + t0, dur, fill["path"],
+                        f"{seg['key']}#sub{int(s.get('track_index') or 0)}")
+            elif kind == "sticker" or role == "sticker":
+                fill = take_for("sticker", dur)
+                if fill is None:
+                    _skip("sticker_layer_no_asset")
+                    continue
+                name = stage(fill["path"], "sticker")
+                mk = f"sticker|{fill['path']}"
+                if mk not in sub_videos:
+                    sub_videos[mk] = {
+                        "id": _uid(),
+                        "path": f"##_draftpath_placeholder_{root_uuid}_##/materials/sticker/{name}",
+                        "type": "sticker", "material_name": name, "_path": fill["path"],
+                    }
+                mat_id = sub_videos[mk]["id"]
+            elif kind == "audio" or role in ("bgm", "sfx"):
+                fill = take_for(role if role in ROLE_FALLBACK else "sfx", dur)
+                if fill is None:
+                    _skip("audio_layer_no_asset")
+                    continue
+                name = stage(fill["path"], "audio")
+                mk = f"{fill['path']}|{role}"
+                if mk not in sub_audios:
+                    sub_audios[mk] = _audio_material(
+                        name, root_uuid, "materials/audio", float(fill["take"]),
+                        "music" if role == "bgm" else "sound")
+                    sub_audios[mk]["_path"] = fill["path"]
+                mat_id = sub_audios[mk]["id"]
+                src_in = float(fill.get("src_in") or 0.0)
+                dur = min(dur, float(fill["take"]))
+                is_audio = True
+            elif kind == "text":
+                si = s.get("text_slot")
+                if si is None or si >= len(sub_slots):
+                    _skip("text_layer_without_slot")
+                    continue
+                slot = sub_slots[si]
+                raw = loose_texts[(int(si) % len(loose_texts))] if loose_texts else None
+                if isinstance(raw, dict):
+                    raw = raw.get("text")
+                txt = str(raw or "").strip()
+                if not txt:
+                    _skip("text_layer_no_copy")
+                    continue
+                per_line = int(slot.get("capacity_per_line") or 0)
+                max_lines = int(slot.get("max_lines") or slot.get("capacity_lines") or 1)
+                if per_line <= 0:
+                    per_line = max(1, int(slot.get("char_cap") or 12) // max(1, max_lines))
+                laid = layout_text(txt, per_line, max_lines)
+                if laid["truncated"]:
+                    rep["texts_truncated"] += 1
+                fname = str(((slot.get("font") or {}).get("name")) or "").strip()
+                hit_font = resolve_template_font(fname, style_id) if fname else None
+                fpath = hit_font["path"] if hit_font else fallback_font
+                mk = f"txt|{si}"
+                if mk not in sub_texts:
+                    sub_texts[mk] = _text_style_material(laid["text"], slot.get("style") or {}, fpath)
+                mat_id = sub_texts[mk]["id"]
+                src_in = 0.0
+                src_dur = 0.0
+            else:
+                _skip("unknown_layer_kind")
+                continue
+
+            holder, _items = _anim_holder(s.get("animations") or [], dur, rep)
+            if holder:
+                sub_anims.append(holder)
+                extra.append(holder["id"])
+                for an in (s.get("animations") or []):
+                    if float(an.get("start_ratio") or 0) * dur + float(an.get("duration_ratio") or 0) * dur \
+                            > dur + 1e-3:
+                        rep["compound_anim_clamped"] += 1
+                        break
+            if not is_audio:
+                spd = _speed_material()
+                sub_speeds.append(spd)
+                extra.append(spd["id"])
+            if s.get("mask"):
+                mask_mat = {"category": "video", "config": s["mask"].get("config") or {},
+                            "id": _uid(), "name": s["mask"].get("name"),
+                            "path": "", "resource_type": str(s["mask"].get("resource_type") or ""),
+                            "text_config": {"align_type": 15}, "type": "mask"}
+                sub_masks.append(mask_mat)
+                extra.append(mask_mat["id"])
+            for fx in s.get("effects") or []:
+                fx_mat = {"adjust_params": fx.get("adjust_params") or [],
+                          "category_id": "100000", "category_name": "画面特效",
+                          "effect_id": fx.get("effect_id"), "id": _uid(),
+                          "name": fx.get("name"), "path": "",
+                          "render_index": fx.get("render_index") or 11000,
+                          "resource_id": "", "type": "video_effect", "value": 1.0}
+                sub_vfx.append(fx_mat)
+                extra.append(fx_mat["id"])
+
+            sub_track_segs[t_i].append(_segment(
+                mat_id=mat_id, tl_start=t0, dur=dur, src_in=src_in, src_dur=src_dur,
+                geometry=geom, keyframes=_keyframes_of(s, dur, src_in),
+                extra_refs=extra, track_index=t_i))
+            stats["segments"] += 1
+
+        if not any(segs for segs in sub_track_segs.values()):
+            return None
+
+        sub_out_tracks: List[dict] = []
+        for tr in sub_tracks:
+            segs = sub_track_segs.get(tr["index"]) or []
+            if not segs or tr.get("role") == "effect":
+                continue
+            segs.sort(key=lambda x: x["target_timerange"]["start"])
+            sub_out_tracks.append({
+                "attribute": 0,
+                "flag": int(tr.get("flag") or 0),
+                "id": _uid(),
+                "is_default_name": True,
+                "name": "",
+                "segments": segs,
+                "type": TRACK_TYPE_OF_ROLE.get(tr.get("role"), tr.get("track_type") or "video"),
+            })
+
+        videos = [v for v in sub_videos.values() if v.get("type") != "sticker"]
+        stickers = [{"category_id": "", "category_name": "", "id": v["id"],
+                     "material_name": v["material_name"], "path": v["path"],
+                     "resource_id": "", "type": "sticker", "source_platform": 0,
+                     "preview_cover": "", "extra_info": ""}
+                    for v in sub_videos.values() if v.get("type") == "sticker"]
+        sub_draft = {
+            "canvas_config": {"height": canvas_h, "ratio": "original", "width": canvas_w},
+            "color_space": 0,
+            "duration": _us(parent_dur),
+            "fps": fps,
+            "id": _uid(),
+            "is_minimal_draft": True,
+            "keyframes": {"adjusts": [], "audios": [], "effects": [], "filters": [],
+                          "handwrites": [], "stickers": [], "texts": [], "videos": []},
+            "materials": {
+                "audios": list(sub_audios.values()),
+                "beats": [],
+                "canvases": [],
+                "common_mask": sub_masks,
+                "drafts": [],
+                "material_animations": sub_anims,
+                "material_colors": [],
+                "placeholder_infos": [],
+                "sound_channel_mappings": [],
+                "speeds": sub_speeds,
+                "stickers": stickers,
+                "texts": list(sub_texts.values()),
+                "transitions": [],
+                "video_effects": sub_vfx,
+                "videos": videos,
+                "vocal_separations": [],
+            },
+            "name": "sub_compound",
+            "new_version": "125.0.0",
+            "path": "",
+            "platform": {"app_id": 3704, "app_source": "lv", "app_version": "11.8.0",
+                         "os": "mac"},
+            "relationships": [],
+            "render_index_track_mode_on": True,
+            "source": "default",
+            "static_cover_image_path": "",
+            "tracks": sub_out_tracks,
+            "uneven_animation_template_info": {"composition": "none", "content": "",
+                                              "order": "none", "sub_template_id": ""},
+            "version": 360000,
+        }
+        stats["has_visual"] = any(t["type"] in ("video", "text", "sticker")
+                                  for t in sub_out_tracks)
+        stats["sub_draft"] = sub_draft
+        return stats
+
     # ---- 2. 其余轨：锚点映射 + 段内比例 ----
     skipped_text_no_slot = 0
     for seg in segments:
@@ -1352,8 +1719,69 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
         new_dur = max(0.05, old_dur * scale_at(old_start))
         fill = None
         if kind == "compound":
-            # 复合片段（内嵌子时间线）模版只标不复刻：不假装换一块素材就能顶它
-            rep["skipped"]["compound_unrealized"] = rep["skipped"].get("compound_unrealized", 0) + 1
+            reasons = seg.get("review_reasons") or []
+            comp = seg.get("compound") or {}
+            if not comp:
+                why = ("depth_exceeded" if "compound_depth_exceeded" in reasons else
+                       "sub_timeline_missing" if "compound_sub_timeline_missing" in reasons else
+                       "template_without_sub_structure")
+                _skip_compound(seg["key"], why)
+                continue
+            built = build_sub_draft(seg, parent_start=new_start, parent_dur=new_dur)
+            if built is None:
+                # 子层一个图层都没换到素材（例如只有贴纸/音效而池子空）：不写空壳子草稿，
+                # 但把逐层缺口原因带进报告（不静默丢）。
+                _skip_compound(seg["key"], "no_sub_layers_materialized")
+                continue
+            # 子层「有画面」才值得当成视频叠加层写入；纯音频复合片段走音频占位素材
+            has_visual = bool(built.get("has_visual"))
+            sub_uuid = str(uuid.uuid4())
+            sub_dir = subdraft_root / sub_uuid
+            sub_dir.mkdir(parents=True, exist_ok=True)
+            (sub_dir / "draft_content.json").write_text(
+                json.dumps(built["sub_draft"], ensure_ascii=False, indent=2), encoding="utf-8")
+            (sub_dir / "sub_draft_config.json").write_text(
+                json.dumps({"draft_id": built["sub_draft"]["id"],
+                            "draft_name": "sub_compound",
+                            "draft_fold_path": str(sub_dir).replace("\\", "/")},
+                           ensure_ascii=False, indent=2), encoding="utf-8")
+            entry_id = _uid()
+            placehold_name = ("compound_av" if has_visual else "compound_audio")
+            ph = _compound_placeholder_material(placehold_name, root_uuid, canvas_w, canvas_h,
+                                                new_dur, audio=not has_visual)
+            drafts_mats.append({
+                "combination_id": _uid(),
+                "combination_type": "none",
+                "draft": built["sub_draft"],
+                "draft_config_path": f"##_draftpath_placeholder_{root_uuid}_##/subdraft/{sub_uuid}/sub_draft_config.json",
+                "draft_cover_path": f"##_draftpath_placeholder_{root_uuid}_##/subdraft/{sub_uuid}/draft_cover.jpg",
+                "draft_file_path": f"##_draftpath_placeholder_{root_uuid}_##/subdraft/{sub_uuid}/draft_content.json",
+                "id": entry_id,
+                "type": "combination",
+            })
+            plan[seg["key"]] = {"kind": "compound", "role": role, "start": new_start,
+                                "dur": new_dur, "src_in": 0.0, "asset": None,
+                                "reused_asset": False, "old_start": old_start,
+                                "old_dur": old_dur, "track_index": seg["track_index"],
+                                "mat_id": ph["id"], "placeholder": ph,
+                                "compound_ref": entry_id, "is_audio": not has_visual,
+                                "sub_draft": built["sub_draft"]}
+            rep["compounds_applied"] += 1
+            rep["sub_segments_total"] += int(built.get("segments") or 0)
+            rep["photo_layers_mapped"] += int(built.get("photo_layers") or 0)
+            for k, v in (built.get("skipped") or {}).items():
+                rep["compound_skipped"][f"sub_{k}"] = rep["compound_skipped"].get(f"sub_{k}", 0) + v
+            rep["compound_applied_detail"].append({
+                "key": seg["key"], "applied": True,
+                "layout": (comp.get("asset_profile") or {}).get("layout"),
+                "depth": comp.get("depth"),
+                "start": round(new_start, 3), "duration": round(new_dur, 3),
+                "sub_segments": int(built.get("segments") or 0),
+                "photo_layers_mapped": int(built.get("photo_layers") or 0),
+                "visual": has_visual,
+                "time_scale": round((new_dur / float(comp.get("duration_sec") or new_dur)), 4),
+                "sub_draft_dir": str(sub_dir.relative_to(draft_dir)),
+            })
             continue
         if kind in ("video", "photo"):
             # 视频/静图叠层已在「2b. 视频叠层」里统一分配（含同源硬约束与跳过记账）：
@@ -1422,6 +1850,9 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
     vfx_mats: List[dict] = []
     out_tracks: List[dict] = []
     texts_used = 0
+    # 复合片段的占位素材（path 空、真身在 materials.drafts）：按视频/音频分两桶
+    ph_video_mats: List[dict] = []
+    ph_audio_mats: List[dict] = []
 
     # 文字位 → 新文案
     #   ① 显式对位优先：文案项写成 {"slot": 4, "text": "..."} 就精确落到第 4 个文字位
@@ -1553,6 +1984,18 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
                 audio_mats[key]["_path"] = key
             mat_id = audio_mats[key]["id"]
             is_audio = True
+        elif p["kind"] == "compound":
+            # 复合片段（内嵌子时间线）：父段引用一个**无 path 的占位素材**，
+            # 真身是同一条段 `extra_material_refs` 里的 drafts 条目（剪映的真实结构）。
+            # source_timerange 从 0 起、长度 = 父段新时长：子时间线已按父段时长重映射过。
+            mat_id = p["mat_id"]
+            extra_refs.append(p["compound_ref"])
+            src_in = 0.0
+            src_dur = p["dur"]
+            is_audio = bool(p.get("is_audio"))
+            ph = p.get("placeholder") or {}
+            if ph:
+                (ph_audio_mats if is_audio else ph_video_mats).append(ph)
         elif p["kind"] == "text":
             si = seg["text_slot"]
             if si not in slot_text:
@@ -1617,7 +2060,7 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
             "type": TRACK_TYPE_OF_ROLE.get(tr.get("role"), tr.get("track_type") or "video"),
         })
 
-    videos = [v for v in video_mats.values() if v.get("type") != "sticker"]
+    videos = [v for v in video_mats.values() if v.get("type") != "sticker"] + ph_video_mats
     stickers = [{"category_id": "", "category_name": "", "id": v["id"], "material_name": v["material_name"],
                  "path": v["path"], "resource_id": "", "type": "sticker", "source_platform": 0,
                  "preview_cover": "", "extra_info": ""}
@@ -1668,11 +2111,11 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
         "last_modified_platform": {"app_id": 3704, "app_source": "lv", "app_version": "11.8.0",
                                    "os": "mac"},
         "materials": {
-            "audios": list(audio_mats.values()),
+            "audios": list(audio_mats.values()) + ph_audio_mats,
             "beats": [],
             "canvases": [],
             "common_mask": mask_mats,
-            "drafts": [],
+            "drafts": drafts_mats,
             "material_animations": anim_mats,
             "material_colors": [],
             "placeholder_infos": [],
@@ -1858,6 +2301,26 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
         "video_overlap_same_asset": rep.get("video_overlap_same_asset", 0),
         "overlay_pairs_resolved": rep.get("overlay_pairs_resolved", []),
         "content_linked": rep.get("content_linked", 0),
+        # 复合片段重建台账（这一轮的核心）：
+        #   compounds_extracted：模版里拆出子结构的复合片段数（提取端口径，随模版传入）
+        #   compounds_applied  ：真写回 materials.drafts[*].draft + subdraft/ 的几个
+        #   compound_skipped   ：按原因分桶（含子层逐层缺素材的细分）
+        #   sub_segments_total ：真正落到子时间线里的段数
+        #   photo_layers_mapped：子时间线的照片层里换到**图片**的层数
+        "compounds_extracted": (template.get("counts") or {}).get("compounds_extracted", 0),
+        "compounds_applied": rep.get("compounds_applied", 0),
+        "compounds_skipped": rep.get("compound_skipped", {}),
+        "compound_applied_detail": rep.get("compound_applied_detail", []),
+        "sub_segments_total": rep.get("sub_segments_total", 0),
+        "photo_layers_mapped": rep.get("photo_layers_mapped", 0),
+        "compound_photo_layers_in_template": (template.get("counts") or {}).get(
+            "compound_photo_layers", 0),
+        "compound_anim_clamped": rep.get("compound_anim_clamped", 0),
+        "compound_time_scaled": rep.get("compound_time_scaled", 0),
+        "compound_length_mismatch": rep.get("compound_length_mismatch", 0),
+        "compound_depth_exceeded": (template.get("counts") or {}).get(
+            "compound_depth_exceeded", 0),
+        "compound_canvas_refs_dropped": rep.get("compound_canvas_refs_dropped", 0),
         "text_layout": text_layout_report,
         "font_resolved": font_resolved,
         "font_fallback_slots": font_fallback_slots,

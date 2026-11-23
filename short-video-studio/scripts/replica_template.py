@@ -17,8 +17,21 @@
                                            文件名指纹，不含路径）+ **按版式算出的容量**（每行字数×可容行数）
     asset_roles{素材 id -> 角色}            a_roll / b_roll / overlay_card / sticker / photo /
                                            font / bgm / sfx / unknown
-    counts{}                               unknown 计数与逐条原因（不瞎猜）
+    segments[].compound                    **复合片段的内嵌子时间线结构**（递归，最多 3 层）：
+                                           {tracks[], segments[], sub_slots[]} —— 与顶层**同一 schema**
+                                           （字段名/比例口径/角色推断规则完全一致），另带
+                                           depth / duration_sec / length_delta_sec / asset_profile
+    counts{}                               unknown 计数、复合片段计数与逐条原因（不瞎猜）
     requires_review[]                      结构里没法与素材无关表达的部分，如实标记
+
+    复合片段（compound）为什么必须递归提取
+    --------------------------------------
+    剪映的复合片段不是一块素材，而是**另一条时间线**：父段 `material_id` 指向一个
+    没有 path 的视频/音频占位，真身在 `extra_material_refs` 里的 `materials.drafts[*]`
+    条目上（`drafts[i].draft` 就是那条子时间线的 draft_content）。原版 0.45~1.667s 的
+    「三格拼贴底板」就是这种：5 张静图各自一条轨、scale 0.8、错开入场。
+    只标 `compound_unrealized` 等于把这层设计整块丢掉（成片只剩主轨压暗）。
+    所以这里按与顶层**同一个提取函数**递归拆它的轨/段/几何/关键帧/动画/文字位。
 
 推断不出的素材角色一律记 `unknown` 并计数，绝不按位置猜成某个角色。
 
@@ -39,6 +52,12 @@ from typing import Any, Dict, List, Optional
 
 US = 1_000_000
 TEMPLATE_VERSION = 1
+# 复合片段递归深度上限：与渲染器 render_replica_from_draft.MAX_COMPOUND_DEPTH 同一口径。
+# 渲染器在父深度 depth >= 3 时不再渲子时间线，所以提取端也只能拆到第 3 层为止；
+# 再深的段如实标 compound_depth_exceeded，**不静默拍平**。
+MAX_COMPOUND_DEPTH = 3
+# 子时间线总长 vs 父段时长的容差（秒）：一帧多以内算一致（原版两处差 0.0001s）。
+COMPOUND_LEN_TOL = 0.04
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = Path(__file__).resolve().parent
 DECRYPTED_ROOT = ROOT / "forensic" / "decrypted"
@@ -383,24 +402,72 @@ def infer_asset_role(mat: dict, *, track_role_of_seg: str, cover_ratio: Optional
     return "unknown"
 
 
+# ---------------------------------------------------------------- 复合片段
+
+
+def compound_sub_draft(seg: dict, mat_idx: Dict[str, dict]) -> Optional[dict]:
+    """段 → 内嵌子时间线（`materials.drafts[*].draft`）。与渲染器同一口径。
+
+    复合片段在父时间线上只是「一个没有 path 的占位素材」：`material_id` 指向
+    videos/audios 里那条空路径占位，真身挂在 `extra_material_refs` 的 drafts 条目上。
+    优先级按 `extra_material_refs` 的顺序找第一份**带 draft dict** 的 drafts 条目；
+    找不到就返回 None（调用端计 `compound_sub_timeline_missing`，绝不凭空造一个）。
+    """
+    for ref in seg.get("extra_material_refs") or []:
+        entry = mat_idx.get(ref) or {}
+        if entry.get("_kind") == "compound" and isinstance(entry.get("draft"), dict):
+            return entry["draft"]
+    return None
+
+
+def compound_asset_profile(seg_list: List[dict]) -> dict:
+    """子时间线的素材构成剖面（只用于报告与套用端定向，不含任何路径）。
+
+    为什么需要它：套用端要能回答「这层复合片段到底是照片拼贴、视频叠层还是纯音效」，
+    才能按角色去取对应池子（照片层必须取**图片**，不能拿视频顶）。
+    """
+    by_role: Dict[str, int] = {}
+    for s in seg_list:
+        r = str(s.get("asset_role") or s.get("role") or "unknown")
+        by_role[r] = by_role.get(r, 0) + 1
+    photo = by_role.get("photo", 0)
+    video = by_role.get("a_roll", 0) + by_role.get("b_roll", 0) + by_role.get("overlay_card", 0)
+    audio = by_role.get("bgm", 0) + by_role.get("sfx", 0)
+    text = by_role.get("font", 0)
+    sticker = by_role.get("sticker", 0)
+    if photo and not video and not audio:
+        layout = "photo_collage" if photo >= 2 else "photo_layer"
+    elif video and not photo and not audio:
+        layout = "video_stack"
+    elif audio and not (photo or video or text or sticker):
+        layout = "audio_only"
+    elif text and not (photo or video or audio or sticker):
+        layout = "text_only"
+    else:
+        layout = "mixed"
+    return {
+        "segments": len(seg_list),
+        "by_asset_role": by_role,
+        "photo_layers": photo,
+        "video_layers": video,
+        "audio_layers": audio,
+        "text_layers": text,
+        "sticker_layers": sticker,
+        "layout": layout,
+    }
+
+
 # ---------------------------------------------------------------- 主入口
 
 
-def extract_template(draft_path: Path | str, *, require_plaintext: bool = True) -> dict:
-    """一条草稿 → 与素材无关的结构模版 dict。"""
-    path = Path(draft_path)
-    if path.is_dir():
-        path = path / "draft_content.json"
-    if not path.is_file():
-        raise FileNotFoundError(f"草稿内容文件不存在: {path}")
-    raw_bytes = path.read_bytes()
-    try:
-        draft = json.loads(raw_bytes.decode("utf-8"))
-    except Exception as exc:  # 加密草稿：要求先落到明文快照目录
-        if require_plaintext:
-            raise ValueError(f"草稿内容不是明文 JSON（需先用解密快照）: {exc}") from exc
-        raise
+def _extract_level(draft: dict, *, depth: int = 0) -> dict:
+    """一条时间线（顶层草稿 **或**复合片段内嵌子草稿）→ 同一套结构字段。
 
+    顶层与子层走**同一个函数**，所以 `segment.compound.tracks/segments/sub_slots`
+    与模板顶层的 `tracks/segments/text_slots` 是同一 schema：字段名、时间口径
+    （start_ratio/duration_ratio 相对**本层**总时长；关键帧/动画为段内比例）、
+    角色推断规则全部一样。子层不做特殊化，否则套用端就要写第二套逻辑。
+    """
     mats = draft.get("materials") or {}
     mat_idx = _material_index(mats)
     anim_by_id = {a.get("id"): a for a in mats.get("material_animations") or [] if isinstance(a, dict)}
@@ -536,6 +603,23 @@ def extract_template(draft_path: Path | str, *, require_plaintext: bool = True) 
                     })
             if animations:
                 animations.sort(key=lambda a: (0 if a["kind"] == "in" else 1, a["start_ratio"]))
+                # 动画时长超出本段长度：结构上不可能完整播完（剪映会自动截），模版必须拆开记：
+                # 段内占比比例化后 start_ratio+duration_ratio > 1 的就是这一类。
+                # 套用端会按新段长重新钳一次并计 anim_clamped（不在提取端静默截短）。
+                over = [a for a in animations
+                        if a["start_ratio"] + a["duration_ratio"] > 1.0005]
+                if over:
+                    counts["animations_exceeding_segment"] = \
+                        counts.get("animations_exceeding_segment", 0) + len(over)
+                    anim_overflow = [{"kind": a["kind"], "name": a["name"],
+                                      "duration_sec": a["duration_sec"],
+                                      "segment_sec": round(t_dur, 4),
+                                      "overflow_sec": round(a["duration_sec"] - t_dur, 4)}
+                                     for a in over]
+                else:
+                    anim_overflow = []
+            else:
+                anim_overflow = []
 
             mask = None
             for ref in s.get("extra_material_refs") or []:
@@ -606,8 +690,8 @@ def extract_template(draft_path: Path | str, *, require_plaintext: bool = True) 
                 }
 
             seg_reasons: List[str] = []
-            if kind == "compound":
-                seg_reasons.append("compound_clip_not_extracted")
+            # 注：复合片段是否拆成 sub_structure 由下面的递归提取决定（拆成功就不加 reason）；
+            # 拆不了才在那一分支里记 compound_sub_timeline_missing / compound_depth_exceeded。
             if matting:
                 # 原来这里写的是 `person_matting_layer_not_reconstructible`（模版自称抠像层重建不了）。
                 # 改成：模版带全重建所需的**结构真值**（同素材绑定 + 描边参数），套用端在
@@ -679,6 +763,47 @@ def extract_template(draft_path: Path | str, *, require_plaintext: bool = True) 
             if mid and mid in mat_idx and kind != "effect":
                 seg_asset_role = infer_asset_role(mat_idx[mid], track_role_of_seg=role,
                                                   cover_ratio=cover_ratio, audio_is_music=audio_music)
+
+            # ---- 复合片段：递归拆内嵌子时间线（同一套 schema；深度上限与渲染器一致） ----
+            compound = None
+            if kind == "compound":
+                sub = compound_sub_draft(s, mat_idx)
+                if sub is None:
+                    seg_reasons.append("compound_sub_timeline_missing")
+                elif depth >= MAX_COMPOUND_DEPTH:
+                    # 渲染器在父深度 >= MAX_COMPOUND_DEPTH 时就不渲子时间线了；提取端同样停住，
+                    # 但**不拍平、也不丢**：父段还在，只是内容没拆开，如实计入 requires_review。
+                    seg_reasons.append("compound_depth_exceeded")
+                else:
+                    lvl = _extract_level(sub, depth=depth + 1)
+                    sub_dur = float(lvl["duration_sec"])
+                    delta = round(sub_dur - t_dur, 4)
+                    len_ok = abs(delta) <= COMPOUND_LEN_TOL
+                    if not len_ok:
+                        # 子时间线总长 ≠ 父段时长：结构上不一致，套用端必须按父段时长重映射，
+                        # 这里如实记差值（不静默按子线长度改写父段）。
+                        seg_reasons.append("compound_length_mismatch")
+                    prof = compound_asset_profile(lvl["segments"])
+                    compound = {
+                        "depth": depth + 1,
+                        "duration_sec": sub_dur,
+                        "length_delta_sec": delta,
+                        "length_matches_parent": len_ok,
+                        "tracks": lvl["tracks"],
+                        "segments": lvl["segments"],
+                        "sub_slots": lvl["text_slots"],
+                        "counts": lvl["counts"],
+                        "requires_review": lvl["requires_review"],
+                        "notes": lvl["notes"],
+                        "asset_profile": prof,
+                    }
+                    if lvl["counts"].get("animations_exceeding_segment"):
+                        seg_reasons.append("compound_animation_exceeds_sub_segment")
+                    if prof["layout"] in ("photo_collage", "photo_layer", "video_stack"):
+                        # 有可见内容的复合片段就是一种叠加构图，不再当 unknown
+                        if seg_asset_role in (None, "unknown"):
+                            seg_asset_role = "overlay_card"
+
             segments_out.append({
                 "key": seg_key,
                 "track_index": t_i,
@@ -696,11 +821,13 @@ def extract_template(draft_path: Path | str, *, require_plaintext: bool = True) 
                 "geometry": geometry,
                 "keyframes": keyframes,
                 "animations": animations,
+                "animations_overflow": anim_overflow,
                 "mask": mask,
                 "matting": matting,
                 "effects": effects,
                 "text_slot": text_slot_idx,
                 "same_material_as": None,
+                "compound": compound,
                 "requires_review": bool(seg_reasons),
                 "review_reasons": seg_reasons,
                 "file_slot": _file_slot(str(mat.get("path") or "")) if kind in ("video", "photo") else None,
@@ -794,9 +921,18 @@ def extract_template(draft_path: Path | str, *, require_plaintext: bool = True) 
                                  "真解析不到才回落系统字体，并逐位写进报告的 font_fallback_slots"})
         notes.append("文字的 alignment 字段在源草稿里缺省（None），按默认居中对齐处理")
     n_compound = sum(1 for s in segments_out if s["kind"] == "compound")
+    n_compound_extracted = sum(1 for s in segments_out if s.get("compound"))
     if n_compound:
         review.append({"scope": "compound_clip", "count": n_compound,
-                       "reason": "复合片段内容内嵌子时间线，模版只标记不复刻（套用时该段跳过并计数）"})
+                       "reason": "复合片段的内嵌子时间线已递归提取（`segments[].compound` = "
+                                 "{tracks/segments/sub_slots}，与顶层同一 schema，深度上限 "
+                                 f"{MAX_COMPOUND_DEPTH}）：套用端按子结构重写 materials.drafts[*].draft "
+                                 "+ subdraft/ 目录，父段用 extra_material_refs 引用；"
+                                 "子层照片层映射到**图片**素材（asset_role=photo），不拿视频顶"})
+    if n_compound > n_compound_extracted:
+        review.append({"scope": "compound_unresolved", "count": n_compound - n_compound_extracted,
+                       "reason": "这些复合片段没有可拆的子时间线（子草稿缺失或超过递归深度上限），"
+                                 "套用端会跳过并逐条计数，不拍平成一张图"})
     n_matte = sum(1 for s in segments_out if s.get("matting"))
     if n_matte:
         review.append({"scope": "person_matting", "count": n_matte,
@@ -813,14 +949,11 @@ def extract_template(draft_path: Path | str, *, require_plaintext: bool = True) 
         review.append({"scope": "effect", "count": n_fx,
                        "reason": "画面特效参数原样搬运，未在新素材上校核"})
 
-    template = {
-        "template_version": TEMPLATE_VERSION,
-        "kind": "replica_structure_template",
-        "source_ref": "sha256:" + hashlib.sha256(raw_bytes).hexdigest()[:16],
+    level: Dict[str, Any] = {
         "duration_sec": round(total_sec, 4),
         "fps": fps,
         "canvas": {"width": int(canvas_w), "height": int(canvas_h)},
-        "time_units": {"segment_anchor": "start_ratio/duration_ratio 相对总时长",
+        "time_units": {"segment_anchor": "start_ratio/duration_ratio 相对**本层**总时长",
                        "keyframe_time": "段内相对比例（0=段首, 1=段尾）",
                        "animation_time": "段内相对比例（start_ratio/duration_ratio）"},
         "tracks": tracks_out,
@@ -830,6 +963,105 @@ def extract_template(draft_path: Path | str, *, require_plaintext: bool = True) 
         "counts": counts,
         "unknown_items": unknown_items,
         "requires_review": review,
+        "notes": notes,
+    }
+    return level
+
+
+def _walk_compounds(segments: List[dict], *, depth: int = 1) -> List[dict]:
+    """递归拉平每一层的复合片段（只用来汇总计数，不改结构）。"""
+    out: List[dict] = []
+    for s in segments:
+        c = s.get("compound")
+        if not c:
+            continue
+        out.append({"depth": depth, "parent_key": s.get("key"),
+                    "sub_segments": len(c.get("segments") or []),
+                    "asset_profile": c.get("asset_profile") or {},
+                    "length_matches_parent": c.get("length_matches_parent"),
+                    "length_delta_sec": c.get("length_delta_sec")})
+        out.extend(_walk_compounds(c.get("segments") or [], depth=depth + 1))
+    return out
+
+
+def _scan_compound_reasons(segments: List[dict]) -> Dict[str, int]:
+    """递归扫 review_reasons：深度超限 / 子草稿缺失 / 长度不一致（含嵌套层）。"""
+    acc = {"depth_exceeded": 0, "missing": 0, "length_mismatch": 0}
+    for s in segments:
+        rs = s.get("review_reasons") or []
+        if "compound_depth_exceeded" in rs:
+            acc["depth_exceeded"] += 1
+        if "compound_sub_timeline_missing" in rs:
+            acc["missing"] += 1
+        if "compound_length_mismatch" in rs:
+            acc["length_mismatch"] += 1
+        c = s.get("compound")
+        if c:
+            sub = _scan_compound_reasons(c.get("segments") or [])
+            for k in acc:
+                acc[k] += sub[k]
+    return acc
+
+
+def extract_template(draft_path: Path | str, *, require_plaintext: bool = True) -> dict:
+    """一条草稿 → 与素材无关的结构模版 dict（含递归的复合片段子结构）。"""
+    path = Path(draft_path)
+    if path.is_dir():
+        path = path / "draft_content.json"
+    if not path.is_file():
+        raise FileNotFoundError(f"草稿内容文件不存在: {path}")
+    raw_bytes = path.read_bytes()
+    try:
+        draft = json.loads(raw_bytes.decode("utf-8"))
+    except Exception as exc:  # 加密草稿：要求先落到明文快照目录
+        if require_plaintext:
+            raise ValueError(f"草稿内容不是明文 JSON（需先用解密快照）: {exc}") from exc
+        raise
+
+    level = _extract_level(draft, depth=0)
+    counts = level["counts"]
+    notes = level["notes"]
+    review = level["requires_review"]
+
+    # ---- 复合片段台账：逐层汇总（提取/未拆/子段/照片层/长度不一致/动画溢出） ----
+    comps = _walk_compounds(level["segments"])
+    scan = _scan_compound_reasons(level["segments"])
+    counts["compound_segments"] = sum(1 for s in level["segments"] if s["kind"] == "compound")
+    counts["compounds_extracted"] = len(comps)
+    counts["compound_sub_segments_total"] = sum(c["sub_segments"] for c in comps)
+    counts["compound_photo_layers"] = sum(
+        int((c["asset_profile"] or {}).get("photo_layers") or 0) for c in comps)
+    counts["compound_depth_exceeded"] = scan["depth_exceeded"]
+    counts["compound_sub_timeline_missing"] = scan["missing"]
+    counts["compound_length_mismatch"] = scan["length_mismatch"]
+    counts["compounds_max_depth"] = max((c["depth"] for c in comps), default=0)
+    if comps:
+        notes.append(
+            f"复合片段 {len(comps)} 个已递归提取子时间线（子段共 "
+            f"{counts['compound_sub_segments_total']} 个，其中照片层 "
+            f"{counts['compound_photo_layers']} 层，最深第 {counts['compounds_max_depth']} 层）："
+            f"子层与顶层同一 schema，套用端按子结构重建 materials.drafts[*].draft + subdraft/")
+    if counts["compound_length_mismatch"]:
+        notes.append(f"其中 {counts['compound_length_mismatch']} 个复合片段子时间线总长与父段时长不一致"
+                     f"（已在段 review_reasons 记 compound_length_mismatch，套用端按父段重映射）")
+
+    template = {
+        "template_version": TEMPLATE_VERSION,
+        "kind": "replica_structure_template",
+        "source_ref": "sha256:" + hashlib.sha256(raw_bytes).hexdigest()[:16],
+        "duration_sec": level["duration_sec"],
+        "fps": level["fps"],
+        "canvas": level["canvas"],
+        "max_compound_depth": MAX_COMPOUND_DEPTH,
+        "time_units": level["time_units"],
+        "tracks": level["tracks"],
+        "segments": level["segments"],
+        "text_slots": level["text_slots"],
+        "asset_roles": level["asset_roles"],
+        "counts": counts,
+        "unknown_items": level["unknown_items"],
+        "requires_review": review,
+        "compounds": comps,
         "notes": notes,
     }
     return template

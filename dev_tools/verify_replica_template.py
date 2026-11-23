@@ -504,6 +504,8 @@ def video_overlap_pairs(draft: dict, draft_dir: Path, canvas_w: int = 1080,
     """
     mats = {m["id"]: m for m in (draft.get("materials") or {}).get("videos") or []}
     vfx_by_id = {e.get("id"): e for e in (draft.get("materials") or {}).get("video_effects") or []}
+    drafts_ids = {d["id"] for d in (draft.get("materials") or {}).get("drafts") or []
+                  if d.get("draft")}
     try:
         import importlib
         R = importlib.import_module("render_replica_from_draft")
@@ -516,6 +518,10 @@ def video_overlap_pairs(draft: dict, draft_dir: Path, canvas_w: int = 1080,
         for si, s in enumerate(tr.get("segments") or []):
             mat = mats.get(s.get("material_id")) or {}
             src = _draft_media_path(mat, draft_dir)
+            # 复合片段的父段只是个容器（占位素材没 path），它的像素在子层里——子层单独入账，
+            # 容器本身不进对账，否则每条复合片段都会跟自己的子层冒出一堆「同源=None」的假对。
+            if src is None and any(r in drafts_ids for r in (s.get("extra_material_refs") or [])):
+                continue
             tgt = s.get("target_timerange") or {}
             t0 = float(tgt.get("start") or 0) / 1e6
             dur = float(tgt.get("duration") or 0) / 1e6
@@ -552,7 +558,76 @@ def video_overlap_pairs(draft: dict, draft_dir: Path, canvas_w: int = 1080,
                           "src_in": round(src_in, 4), "blur_sigma": (round(blur, 2) if blur else None),
                           # 抠像层：素材带 matting 结构 → 渲染器走「Vision 抠像 + alphamerge」合成，
                           # 这一层的像素是**带 alpha 的**，不是同源第二份满幅画面。
-                          "cutout": bool((mat.get("matting") or {}).get("path"))})
+                          "cutout": bool((mat.get("matting") or {}).get("path")),
+                          "in_compound": False})
+
+    # ---- 复合片段的子层也要进对账 ----
+    # 为什么：复合片段的内层（照片拼贴/卡片堆）在时间上互相重叠、且跟主轨/抠像层同时在画面上，
+    # 不展开子时间线就会漏掉「两块复合片段同时铺开且用了同一张图」这类重影。
+    # 子层的时间轴 = 父段起点 + 子段入点 × (父段时长/子时间线总长)。
+    drafts_by_id = {d["id"]: d for d in (draft.get("materials") or {}).get("drafts") or []
+                    if d.get("draft")}
+    for ti, tr in enumerate(draft.get("tracks") or []):
+        if tr.get("type") != "video":
+            continue
+        for si, s in enumerate(tr.get("segments") or []):
+            entry = next((drafts_by_id[r] for r in (s.get("extra_material_refs") or [])
+                          if r in drafts_by_id), None)
+            if entry is None:
+                continue
+            sub = entry.get("draft") or {}
+            sub_dur = float(sub.get("duration") or 0) / 1e6
+            p_start = float((s.get("target_timerange") or {}).get("start") or 0) / 1e6
+            p_dur = float((s.get("target_timerange") or {}).get("duration") or 0) / 1e6
+            k = (p_dur / sub_dur) if sub_dur > 1e-6 else 1.0
+            sub_vids = {m["id"]: m for m in (sub.get("materials") or {}).get("videos") or []}
+            sub_fx = {e.get("id"): e for e in (sub.get("materials") or {}).get("video_effects") or []}
+            for sti, st in enumerate(sub.get("tracks") or []):
+                if st.get("type") != "video":
+                    continue
+                for ss in st.get("segments") or []:
+                    m2 = sub_vids.get(ss.get("material_id")) or {}
+                    if not m2:
+                        continue
+                    src2 = _draft_media_path(m2, draft_dir)
+                    tgt2 = ss.get("target_timerange") or {}
+                    t2 = p_start + float(tgt2.get("start") or 0) / 1e6 * k
+                    d2 = float(tgt2.get("duration") or 0) / 1e6 * k
+                    sc2 = float(((ss.get("clip") or {}).get("scale") or {}).get("x") or 1.0)
+                    al2 = float(((ss.get("clip") or {}).get("alpha")
+                                 if (ss.get("clip") or {}).get("alpha") is not None else 1.0))
+                    cover2 = None
+                    blur2 = None
+                    if R is not None and src2 is not None:
+                        try:
+                            g2 = R.layer_geometry(m2, str(src2), canvas_w, canvas_h, sc2)
+                            cover2 = (g2["lw"] * g2["lh"]) / float(canvas_w * canvas_h)
+                        except Exception:
+                            cover2 = None
+                        for ref in ss.get("extra_material_refs") or []:
+                            fx = sub_fx.get(ref) or {}
+                            if "模糊" not in str(fx.get("name") or ""):
+                                continue
+                            val = 0.0
+                            for p_ in fx.get("adjust_params") or []:
+                                if str(p_.get("name")) == "effects_adjust_blur":
+                                    v_ = p_.get("value")
+                                    val = float(v_ if v_ is not None else 0.0)
+                            if val > 0:
+                                try:
+                                    blur2 = (R.yes_blur_sigma(val, g2["lw"], g2["lh"])
+                                             if cover2 is not None else None)
+                                except Exception:
+                                    blur2 = None
+                    items.append({
+                        "track": ti, "idx": si * 100 + sti,
+                        "seg_id": ss.get("id"), "src": str(src2) if src2 else None,
+                        "start": t2, "dur": d2, "alpha": al2, "scale": sc2, "cover": cover2,
+                        "src_in": round(float((ss.get("source_timerange") or {}).get("start") or 0) / 1e6, 4),
+                        "blur_sigma": (round(blur2, 2) if blur2 else None),
+                        "cutout": False, "in_compound": True, "sub_track": sti,
+                        "photo": (m2.get("type") or "") == "photo"})
+
     pairs: List[dict] = []
     for i in range(len(items)):
         a = items[i]
@@ -586,6 +661,9 @@ def video_overlap_pairs(draft: dict, draft_dir: Path, canvas_w: int = 1080,
                 "same_in_point": bool(abs(top_ip - bot_ip) <= 0.06),
                 "in_point_delta": round(abs(top_ip - bot_ip), 3),
                 "same_scale": bool(abs(float(top["scale"]) - float(bot["scale"])) <= 0.06),
+                # 子层（复合片段内部）的对比要单独标出来：它们不在顶层轨上，z 序取父轨
+                "a_in_compound": bool(a.get("in_compound")),
+                "b_in_compound": bool(b.get("in_compound")),
             })
     return pairs
 
@@ -763,6 +841,380 @@ def render_main_only(draft: dict, draft_dir: Path, work: Path, fps: int, style_i
         return None
 
 
+def compound_structure_audit(template: dict, apply_rep: dict, draft: dict,
+                             draft_dir: Path) -> dict:
+    """复合片段台账 + 「子结构真的落地了」核对（不信 apply 自报，去看草稿/磁盘）。
+
+    一项一项回答：
+      · 模版拆出了几个复合片段、题几个子段、几个照片层（提取端口径）
+      · 套用端写回了几个（compounds_applied）
+      · 没写的分别为什么（compounds_skipped）
+      · 写回的那些在草稿里是不是真有两个层次：父段（path 空的占位素材）→ extra_material_refs
+        里的 drafts 条目 → 子时间线 tracks/segments，且 subdraft/<uuid>/draft_content.json 在盘上
+      · 子时间线的照片层是不是真的都是**图片**（material.type==photo 且文件后缀是图）
+        — 这是「角色跨层映射」的硬校验：photo 层映射成视频就算失败
+    """
+    tpl_counts = template.get("counts") or {}
+    mats = draft.get("materials") or {}
+    vid_by_id = {m["id"]: m for m in (mats.get("videos") or [])}
+    aud_by_id = {m["id"]: m for m in (mats.get("audios") or [])}
+    drafts_by_id = {d["id"]: d for d in (mats.get("drafts") or [])}
+    IMG_EXT = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".heic")
+
+    rows: List[dict] = []
+    photo_checked = 0
+    photo_wrong_type = 0
+    sub_segments_found = 0
+    sub_photo_found = 0
+    subdraft_files_ok = 0
+    for ti, tr in enumerate(draft.get("tracks") or []):
+        for s in tr.get("segments") or []:
+            refs = [r for r in (s.get("extra_material_refs") or []) if r in drafts_by_id]
+            if not refs:
+                continue
+            entry = drafts_by_id[refs[0]]
+            sub = entry.get("draft") or {}
+            mat = vid_by_id.get(s.get("material_id")) or aud_by_id.get(s.get("material_id")) or {}
+            sub_tracks = sub.get("tracks") or []
+            sub_segs = [sg for t in sub_tracks for sg in (t.get("segments") or [])]
+            sub_segments_found += len(sub_segs)
+            sub_mats = {m["id"]: m for m in (sub.get("materials") or {}).get("videos") or []}
+            sub_photo = 0
+            for t in sub_tracks:
+                for sg in t.get("segments") or []:
+                    m2 = sub_mats.get(sg.get("material_id")) or {}
+                    if (m2.get("type") or "") != "photo":
+                        continue
+                    sub_photo += 1
+                    photo_checked += 1
+                    p = _draft_media_path(m2, draft_dir)
+                    if p is None or p.suffix.casefold() not in IMG_EXT:
+                        photo_wrong_type += 1
+            sub_photo_found += sub_photo
+            # subdraft/ 落盘核对：路径里的 <uuid> 目录下真有 draft_content.json
+            file_ok = False
+            fp = str(entry.get("draft_file_path") or "")
+            if "_##/" in fp:
+                rel = fp.split("_##/", 1)[1].replace("\\", "/")
+                file_ok = (draft_dir / rel).is_file()
+            if file_ok:
+                subdraft_files_ok += 1
+            rows.append({
+                "track": ti, "track_type": tr.get("type"), "flag": tr.get("flag"),
+                "start": round(float((s.get("target_timerange") or {}).get("start") or 0) / 1e6, 3),
+                "duration": round(float((s.get("target_timerange") or {}).get("duration") or 0) / 1e6, 3),
+                "parent_material_has_path": bool(mat.get("path")),
+                "drafts_ref": refs[0][:8],
+                "sub_duration_sec": round(float(sub.get("duration") or 0) / 1e6, 3),
+                "sub_tracks": len(sub_tracks),
+                "sub_segments": len(sub_segs),
+                "sub_photo_layers": sub_photo,
+                "subdraft_file_on_disk": file_ok,
+            })
+
+    return {
+        "compounds_in_template": tpl_counts.get("compounds_extracted", 0),
+        "compound_segments_in_template": tpl_counts.get("compound_segments", 0),
+        "compounds_extracted": tpl_counts.get("compounds_extracted", 0),
+        "compounds_applied": apply_rep.get("compounds_applied", 0),
+        "compounds_skipped": apply_rep.get("compounds_skipped") or {},
+        "sub_segments_total": apply_rep.get("sub_segments_total", 0),
+        "sub_segments_found_in_draft": sub_segments_found,
+        "photo_layers_mapped": apply_rep.get("photo_layers_mapped", 0),
+        "photo_layers_found_in_draft": sub_photo_found,
+        "photo_layers_wrong_type": photo_wrong_type,
+        "compound_photo_layers_in_template": tpl_counts.get("compound_photo_layers", 0),
+        "compound_anim_clamped": apply_rep.get("compound_anim_clamped", 0),
+        "compound_time_scaled": apply_rep.get("compound_time_scaled", 0),
+        "compound_length_mismatch": apply_rep.get("compound_length_mismatch", 0),
+        "compound_depth_exceeded": tpl_counts.get("compound_depth_exceeded", 0),
+        "subdraft_dirs_on_disk_ok": subdraft_files_ok,
+        "drafts_entries_in_draft": len(drafts_by_id),
+        "detail": rows,
+        "ok": bool(apply_rep.get("compounds_applied", 0) == len(rows) and photo_wrong_type == 0
+                   and subdraft_files_ok == len(rows)),
+    }
+
+
+def _components_of_mask(mask, min_area: int = 200, max_boxes: int = 8) -> List[dict]:
+    """二值 mask → 连通区域包围盒（下采样后的粗略 BFS，够用来数「几块」）。"""
+    import numpy as np
+    h, w = mask.shape
+    seen = np.zeros_like(mask, dtype=bool)
+    boxes: List[dict] = []
+    for y in range(h):
+        for x in range(w):
+            if not mask[y, x] or seen[y, x]:
+                continue
+            stack = [(y, x)]
+            seen[y, x] = True
+            ys, xs = [], []
+            while stack:
+                cy, cx = stack.pop()
+                ys.append(cy)
+                xs.append(cx)
+                for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    ny, nx = cy + dy, cx + dx
+                    if 0 <= ny < h and 0 <= nx < w and mask[ny, nx] and not seen[ny, nx]:
+                        seen[ny, nx] = True
+                        stack.append((ny, nx))
+            if len(ys) < min_area:
+                continue
+            boxes.append({"x0": int(min(xs)), "x1": int(max(xs)),
+                          "y0": int(min(ys)), "y1": int(max(ys)), "px": len(ys)})
+    boxes.sort(key=lambda b: -b["px"])
+    return boxes[:max_boxes]
+
+
+def compound_region_check(final_mp4: Path, main_only: Optional[Path], frames_dir: Path,
+                          window: Tuple[float, float], *, reference_mp4: Optional[Path] = None,
+                          fps: int = 60, tag: str = "collage") -> dict:
+    """抽复合片段那段的帧 + 逐帧差量，回答「拼贴底板真的出现了吗」。
+
+    三个判据说三条事：
+      ① **不是空白/纯黑**：该段帧的亮度不能接近全黑，且与「只渲主轨」对照版的差量
+         必须显著（mean MAE > 0.02）——差量≈ 0 就意味着那一层根本没上；
+      ② **不是单张大图**：把「成片 − 只渲主轨」差量 mask 做连通区域，看是不是 3+ 块
+         分开的小区域（原版是 5 条错开的照片条）；当然也看草稿结构（子层图层数/缩放）；
+      ③ 有原版参考就逐帧比 MAE：构图不同但「同样有拼贴层」，MAE 应该明显小于
+         「成片 vs 白色底」而不是≈0（后者意味两边都没东西）。
+    """
+    import numpy as np
+    from PIL import Image
+
+    t0, t1 = float(window[0]), float(window[1])
+    frames_dir = Path(frames_dir)
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    out: Dict[str, Any] = {"window": [round(t0, 3), round(t1, 3)], "samples": []}
+
+    # ---- ① 逐帧差量：成片 vs 只渲主轨（同一时间点，解码后定位同一帧）----
+    step = max(1, int(round(fps / 10)))   # 每秒取样 ~10 点
+    samples: List[dict] = []
+    t = t0
+    k = 0
+    while t <= t1 + 1e-6 and k < 60:
+        fa = _grab_frame(final_mp4, t, frames_dir / f"{tag}_frame{k:02d}_{t:.2f}s.jpg")
+        delta = None
+        if main_only is not None:
+            fb = _grab_frame(main_only, t, frames_dir / "ghost" / f"{tag}_main{k:02d}_{t:.2f}s.jpg")
+            delta = _frame_delta(fa, fb)
+        samples.append({"t": round(t, 3), "frame": fa.name if fa else None,
+                        "delta_vs_main_only": delta})
+        t += step / float(fps)
+        k += 1
+    out["samples"] = samples
+    maes = [s["delta_vs_main_only"]["mae"] for s in samples
+            if s.get("delta_vs_main_only")]
+    out["delta_vs_main_only"] = {
+        "frames": len(maes),
+        "mean_mae": round(float(np.mean(maes)), 4) if maes else None,
+        "max_mae": round(float(np.max(maes)), 4) if maes else None,
+        "min_mae": round(float(np.min(maes)), 4) if maes else None,
+        "frames_above_0.02": int(sum(1 for m in maes if m > 0.02)),
+    }
+
+    # ---- ② 连通区域：差量 mask 是不是 3+ 块分开的条带（而不是一整张大图/一片空白）----
+    mid = (t0 + t1) / 2.0
+    fa = _grab_frame(final_mp4, mid, frames_dir / f"{tag}_mid_{mid:.2f}s.jpg")
+    blocks = 0
+    boxes: List[dict] = []
+    lum = None
+    if fa and main_only is not None:
+        fb = _grab_frame(main_only, mid, frames_dir / "ghost" / f"{tag}_midmain_{mid:.2f}s.jpg")
+        if fb:
+            a = np.asarray(Image.open(fa).convert("RGB").resize((270, 480)), dtype=np.float32) / 255.0
+            b = np.asarray(Image.open(fb).convert("RGB").resize((270, 480)), dtype=np.float32) / 255.0
+            d = np.abs(a - b).mean(axis=2)
+            mask = d > 0.08
+            boxes = _components_of_mask(mask, min_area=120, max_boxes=8)
+            blocks = len(boxes)
+            lum = round(float(a.mean()), 4)
+    out["mid_frame"] = fa.name if fa else None
+    out["luminance_mid"] = lum
+    out["visible_blocks"] = blocks
+    out["visible_block_boxes"] = boxes
+    out["blocks_basis"] = ("diff(成片 − 只渲主轨) 的连通区域数：含抠像层/文字等所有被抳掉的层，"
+                          "不等于拼贴块数；拼贴本身的块数看下面 layer_reference")
+    out["not_blank"] = bool(lum is not None and lum > 0.03)
+
+    # ---- ③ 原版同段参考：同时间点逐帧 MAE ----
+    if reference_mp4 is not None and Path(reference_mp4).is_file():
+        ref_rows: List[dict] = []
+        for i, s in enumerate(samples):
+            if i % 3:      # 每 3 帧比一次，够看趋势也省时间
+                continue
+            fr = _grab_frame(reference_mp4, s["t"], frames_dir / f"{tag}_ref{i:02d}_{s['t']:.2f}s.jpg")
+            fd = _grab_frame(final_mp4, s["t"], frames_dir / f"{tag}_new{i:02d}_{s['t']:.2f}s.jpg")
+            ref_rows.append({"t": s["t"],
+                             "delta": _frame_delta(fd, fr),
+                             "ref_frame": fr.name if fr else None,
+                             "new_frame": fd.name if fd else None})
+        dm = [r["delta"]["mae"] for r in ref_rows if r.get("delta")]
+        out["vs_reference"] = {
+            "reference": _rel(reference_mp4),
+            "frames": len(dm),
+            "mean_mae": round(float(np.mean(dm)), 4) if dm else None,
+            "min_mae": round(float(np.min(dm)), 4) if dm else None,
+            "max_mae": round(float(np.max(dm)), 4) if dm else None,
+            "rows": ref_rows,
+        }
+    return out
+
+
+def reference_original_render(out: Path, style_id: str, tpl: dict,
+                              style_dir_name: str) -> Optional[Path]:
+    """用**同一个渲染器**渲一遍原版草稿，作为「原版同段」参考帧（只读调用）。
+
+    为什么要渲原版：验收要求「0.45~1.667s 的帧与原版同段对比」，而原版成片不在仓库里。
+    这里的参考是「原版草稿 + 原版素材 + 同一渲染器」，因此两边差异只来自**换素材**，
+    与渲染口径无关——这是能拿到的最干净的对照。原版素材不在本机时返回 None。
+    """
+    try:
+        import importlib
+        R = importlib.import_module("render_replica_from_draft")
+        draft_path = resolve_draft_by_style(style_id)
+        root = Path(R._discover_root("drafts"))
+        base = root / style_dir_name
+        if not base.is_dir():
+            return None
+        draft = json.loads(Path(draft_path).read_text(encoding="utf-8"))
+        rr = {"style_id": f"{style_id}_origref", "draft": "origref", "main_segments": 0,
+              "overlay_segments": 0, "matte_done": 0, "matte_failed": 0, "text_segments": 0,
+              "sticker_segments": 0, "masked_main_segments": 0, "masked_overlay_segments": 0,
+              "compounds_rendered": [], "unrealized": {}, "notes": []}
+        mp4 = Path(R.render_timeline(draft, base, f"{style_id}_origref", out / "original_render",
+                                     int(round(float(tpl.get("fps") or 30))), False, rr, depth=0))
+        (out / "original_render" / "orig_report.json").write_text(
+            json.dumps(rr, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        return mp4 if Path(mp4).is_file() else None
+    except Exception as exc:
+        (out / "original_render").mkdir(parents=True, exist_ok=True)
+        (out / "original_render" / "error.txt").write_text(f"{type(exc).__name__}: {exc}",
+                                                            encoding="utf-8")
+        return None
+
+
+def _pick_compound_entry(draft: dict, t_start: float, tol: float = 0.2) -> Optional[dict]:
+    """按父段的绝对起点找复合片段的 drafts 条目（不提草稿名、不靠下标）。"""
+    mats = draft.get("materials") or {}
+    drafts_by_id = {d["id"]: d for d in (mats.get("drafts") or []) if d.get("draft")}
+    for tr in draft.get("tracks") or []:
+        for s in tr.get("segments") or []:
+            st = float((s.get("target_timerange") or {}).get("start") or 0) / 1e6
+            if abs(st - float(t_start)) > tol:
+                continue
+            for r in s.get("extra_material_refs") or []:
+                if r in drafts_by_id:
+                    return drafts_by_id[r]
+    return None
+
+
+def _render_layer_gray(sub_draft: dict, base_dir: Path, work: Path, fps: int,
+                       times: List[float], tag: str) -> List[Optional[Path]]:
+    """把一条子时间线单独渲成带 alpha 的 MOV，再合成到中性灰底上抽帧。
+
+    为什么在中性灰底上看：子时间线单独渲出来背景是**透明的**（alpha MOV），直接存 jpg
+    是全黑；合成到灰底上才能人眼看到「到底画了几块」。"""
+    import importlib
+    work.mkdir(parents=True, exist_ok=True)
+    R = importlib.import_module("render_replica_from_draft")
+    rr = {"style_id": tag, "draft": tag, "main_segments": 0, "overlay_segments": 0,
+          "matte_done": 0, "matte_failed": 0, "text_segments": 0, "sticker_segments": 0,
+          "masked_main_segments": 0, "masked_overlay_segments": 0, "compounds_rendered": [],
+          "unrealized": {}, "notes": []}
+    out: List[Optional[Path]] = []
+    try:
+        mov = Path(R.render_timeline(sub_draft, base_dir, tag, work / "layer", fps, False,
+                                     rr, depth=1, alpha_out=True))
+    except Exception:
+        return [None for _ in times]
+    for i, t in enumerate(times):
+        jpg = work / f"{tag}_gray_{i}_{t:.2f}.jpg"
+        try:
+            _run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi",
+                  "-i", f"color=c=0x555555:s=1080x1920:r={fps}:d={max(0.2, t + 0.2):.3f}",
+                  "-ss", f"{t:.4f}", "-i", str(mov),
+                  "-filter_complex", "[1:v]setpts=PTS-STARTPTS[ov];[0:v][ov]overlay=0:0:shortest=1",
+                  "-frames:v", "1", "-q:v", "2", str(jpg)])
+        except Exception:
+            out.append(None)
+            continue
+        out.append(jpg if jpg.is_file() else None)
+    return out
+
+
+def compound_layer_reference(out: Path, style_id: str, tpl: dict, draft_dir: Path,
+                             draft: dict, window: Tuple[float, float],
+                             frames_dir: Path) -> dict:
+    """「原版同段」的**层级别**对比：把原版复合片段的子时间线和新子时间线各渲一遍。
+
+    为什么还要这一份（已有「成片 vs 原版成片」）：成片对比里两边主轨素材不同，差异
+    混在一起；子层单独渲在灰底上，比的才是同一件事——「拼贴底板这个结构还在不在」。
+    两边都只用各自的素材，所以「块数/位置/长条比例」一致才说明结构真的搬过来了。
+    """
+    import numpy as np
+    from PIL import Image
+    res: Dict[str, Any] = {"window": [round(window[0], 3), round(window[1], 3)]}
+    try:
+        src_draft = json.loads(Path(resolve_draft_by_style(style_id)).read_text(encoding="utf-8"))
+        import importlib
+        R = importlib.import_module("render_replica_from_draft")
+        src_base = Path(R._discover_root("drafts")) / Path(resolve_draft_by_style(style_id)).parent.name
+    except Exception as exc:
+        res["error"] = f"{type(exc).__name__}: {exc}"
+        return res
+
+    # 模版里这块复合片段的父段起点（用它去原版草稿里找同一个子时间线）
+    parent = None
+    for s in tpl.get("segments") or []:
+        if s.get("compound") and (s["compound"].get("asset_profile") or {}).get("photo_layers", 0) >= 2:
+            if parent is None or float(s["start_sec"]) < float(parent["start_sec"]):
+                parent = s
+    if parent is None:
+        res["error"] = "template_has_no_photo_compound"
+        return res
+    orig_entry = _pick_compound_entry(src_draft, float(parent["start_sec"]))
+    new_entry = _pick_compound_entry(draft, float(parent["start_sec"]), tol=1.0)
+    if not orig_entry or not new_entry:
+        res["error"] = ("original_compound_not_found" if not orig_entry
+                        else "new_compound_not_found")
+        return res
+
+    fps = int(round(float(tpl.get("fps") or 30)))
+    dur = float(window[1]) - float(window[0])
+    times = [round(min(max(0.15, dur * f), max(0.2, dur - 0.05)), 3) for f in (0.25, 0.55, 0.85)]
+    ref_dir = Path(frames_dir) / "compound_ref"
+    ref_frames = _render_layer_gray(orig_entry["draft"], src_base, ref_dir / "orig", fps, times, "orig")
+    new_frames = _render_layer_gray(new_entry["draft"], Path(draft_dir), ref_dir / "new", fps, times, "new")
+
+    rows: List[dict] = []
+    for i, t in enumerate(times):
+        rf, nf = ref_frames[i], new_frames[i]
+        row: Dict[str, Any] = {"t": t}
+        d = _frame_delta(nf, rf)
+        row["delta_vs_original_layer"] = d
+        try:
+            if rf is not None:
+                a = np.asarray(Image.open(rf).convert("RGB").resize((270, 480)), dtype=np.float32) / 255.0
+                bg = np.abs(a - (0x55 / 255.0)).mean(axis=2) > 0.06
+                row["original_blocks"] = len(_components_of_mask(bg, min_area=120))
+            if nf is not None:
+                b = np.asarray(Image.open(nf).convert("RGB").resize((270, 480)), dtype=np.float32) / 255.0
+                bg2 = np.abs(b - (0x55 / 255.0)).mean(axis=2) > 0.06
+                row["new_blocks"] = len(_components_of_mask(bg2, min_area=120))
+                row["new_nonbg_frac"] = round(float(bg2.mean()), 4)
+        except Exception as exc:
+            row["error"] = f"{type(exc).__name__}: {exc}"
+        row["original_frame"] = str(rf.relative_to(frames_dir)) if rf else None
+        row["new_frame"] = str(nf.relative_to(frames_dir)) if nf else None
+        rows.append(row)
+    res["rows"] = rows
+    res["original_parent_start"] = float(parent["start_sec"])
+    res["note"] = ("两边都是子时间线单独渲在 0x555555 中性灰底上的帧；blocks = 灰底以外的"
+                   "连通区域数（原版是 5 条错开的照片条，所以不应是 1）")
+    return res
+
+
 def check_overlay_ghosting(draft: dict, draft_dir: Path, full_mp4: Path, main_mp4: Optional[Path],
                            frames_dir: Path, *, rejected: Optional[List[dict]] = None,
                            spot_times: Optional[List[float]] = None, tol: float = 0.02,
@@ -792,9 +1244,15 @@ def check_overlay_ghosting(draft: dict, draft_dir: Path, full_mp4: Path, main_mp
     还会对**被拒接的叠层**（apply 报告的 overlay_left_blank_detail）做点检：这些时间点上
     成片应与「只渲主轨」**几乎相同**（mae ≈ 0）——不是重影消失，而是那一层根本没上。
     """
-    pairs = video_overlap_pairs(draft, draft_dir,
-                                int((draft.get("canvas_config") or {}).get("width") or 1080),
-                                int((draft.get("canvas_config") or {}).get("height") or 1920))
+    pairs_all = video_overlap_pairs(draft, draft_dir,
+                                   int((draft.get("canvas_config") or {}).get("width") or 1080),
+                                   int((draft.get("canvas_config") or {}).get("height") or 1920))
+    # 复合片段的子层对账：**不同素材的两层不可能重影**（像素不是同一份），所以只对
+    # 涉及子层的「同源」对真抽帧验，其余只计数。这不是放水：同源就是重影的充要前提，
+    # 而子层同源对（两块复合片段时间重叠又用了同一张图）现在全部会被抽到。
+    pairs = [p for p in pairs_all
+             if not ((p.get("a_in_compound") or p.get("b_in_compound")) and not p["same_source"])]
+    compound_pairs_skipped = len(pairs_all) - len(pairs)
     # 对比帧单独落 frames/ghost/：frames/ 顶层只留那几张人眼要看的关键帧，不混取证帧
     frames_dir = Path(frames_dir) / "ghost"
     frames_dir.mkdir(parents=True, exist_ok=True)
@@ -886,6 +1344,10 @@ def check_overlay_ghosting(draft: dict, draft_dir: Path, full_mp4: Path, main_mp
         "ok": bool(not fails and rej_ok),
         "tolerance_mae": tol,
         "pairs_checked": len(rows),
+        "pairs_total_with_compound": len(pairs_all),
+        "compound_pairs_skipped_distinct_assets": compound_pairs_skipped,
+        "compound_same_source_pairs_checked": sum(
+            1 for r in rows if r["same_source"] and (r.get("a_in_compound") or r.get("b_in_compound"))),
         "ghost_rejected": len(fails),
         "pairs_same_source": sum(1 for r in rows if r["same_source"]),
         "pairs_same_source_cutout": sum(1 for r in rows if r["same_source"] and r.get("top_is_cutout")),
@@ -934,6 +1396,8 @@ def main() -> int:
     ap.add_argument("--frames", type=int, default=10, help="关键帧数量")
     ap.add_argument("--no-face-check", action="store_true")
     ap.add_argument("--no-render", action="store_true")
+    ap.add_argument("--no-reference-original", action="store_true",
+                    help="不渲原版参考片（省 ~2 分钟；默认渲染，用于「原版同段」对比）")
     args = ap.parse_args()
 
     out = Path(args.out)
@@ -961,6 +1425,10 @@ def main() -> int:
         "unknown_assets": tpl["counts"].get("unknown", 0),
         "unknown_items": tpl["unknown_items"],
         "requires_review": tpl["requires_review"],
+        # 复合片段：提取端递归拆出的子结构（子层与顶层同一 schema）
+        "compounds": tpl.get("compounds") or [],
+        "compound_counts": {k: v for k, v in (tpl.get("counts") or {}).items()
+                            if "compound" in k},
         "elapsed_sec": round(time.time() - t0, 2),
     }
 
@@ -1026,6 +1494,17 @@ def main() -> int:
         "video_overlap_same_asset": apply_rep.get("video_overlap_same_asset", 0),
         "crop_uv_dropped": apply_rep.get("crop_uv_dropped", 0),
         "crop_uv_dropped_detail": apply_rep.get("crop_uv_dropped_detail") or [],
+        # 复合片段重建台账：拆出多少 / 写回多少 / 没写的原因 / 子段数 / 照片层映射数
+        "compounds_extracted": apply_rep.get("compounds_extracted", 0),
+        "compounds_applied": apply_rep.get("compounds_applied", 0),
+        "compounds_skipped": apply_rep.get("compounds_skipped") or {},
+        "compound_applied_detail": apply_rep.get("compound_applied_detail") or [],
+        "sub_segments_total": apply_rep.get("sub_segments_total", 0),
+        "photo_layers_mapped": apply_rep.get("photo_layers_mapped", 0),
+        "compound_anim_clamped": apply_rep.get("compound_anim_clamped", 0),
+        "compound_time_scaled": apply_rep.get("compound_time_scaled", 0),
+        "compound_length_mismatch": apply_rep.get("compound_length_mismatch", 0),
+        "photo_layer_aspect_cropped": apply_rep.get("photo_layer_aspect_cropped", 0),
         "skipped": apply_rep.get("skipped"),
         "anchors_sample": (apply_rep.get("anchors") or [])[:5],
         "elapsed_sec": round(time.time() - t0, 2),
@@ -1038,6 +1517,9 @@ def main() -> int:
         "fallback_font": apply_rep.get("font_fallback"),
     }
     report["steps"]["text_layout"] = apply_rep.get("text_layout") or []
+    # 复合片段：不信套用端的自报，回草稿里逐条核「两个层次真写进去了没」
+    report["steps"]["compounds"] = compound_structure_audit(
+        tpl, apply_rep, draft, Path(draft_json).parent)
     # 模版里每一对时间重叠的视频段 → 新片里的处置（逐对列，不靠汇总数字猜）
     report["steps"]["overlay_pairs"] = {
         "template_pairs": apply_rep.get("overlay_pairs_resolved") or [],
@@ -1058,8 +1540,11 @@ def main() -> int:
         "背景板按「主轨同素材同入点 + 模糊」重建（按抠像层切块对齐），不另接 B-roll：参考片"
         "原帧里模糊底仍能看到人形轮廓（同一人的虚化版），另接一条 B-roll 会出现「清晰的人 +"
         "背后模糊的另一个人」（实测 Vision 逐帧数出两个人）。",
-        "复合片段（三格拼贴/画面拼贴，含 0–1.7s 那块底板）仍按 compound_unrealized 跳过："
-        "内容在内嵌子时间线里，模版不携带，不猜、不凑。",
+        "复合片段（内嵌子时间线，含 0.45~1.667s 那块照片拼贴底板）**已递归提取并重建**："
+        "模版 `segments[].compound` 与顶层同一 schema，套用端按子结构重写 "
+        "materials.drafts[*].draft + subdraft/<uuid>/ 并让父段用 extra_material_refs 引用；"
+        "子时间线的照片层（asset_role=photo）**只映射到新图片**（按原版图层宽高比居中裁一刀，"
+        "保留长条取景），不拿视频顶。没有贴纸/音效素材的复合片段跳过并逐条计 compounds_skipped。",
     ]
 
     # ---- 4. 渲出片（只读调用复刻渲染器） ----
@@ -1106,6 +1591,25 @@ def main() -> int:
                           "elapsed_sec": round(time.time() - t0, 1)}
     report["steps"]["render"] = render_rep
 
+    # ---- 4b. 原版参考渲染（只读调用同一个渲染器；原版素材不在本机时跳过）----
+    # 为什么要渲:验收要求「0.45~1.667s 的帧与原版同段对比」，而原版成片
+    # 不在仓库里。这里用「原版草稿 + 原版素材 + 同一渲染器」当参考，两边差异就只来自
+    # 「换素材/换文案」，不含渲染口径差异。
+    reference_mp4: Optional[Path] = None
+    if not args.no_render and not args.no_reference_original:
+        t0 = time.time()
+        try:
+            src_dir_name = resolve_draft_by_style(args.style_id).parent.name
+            reference_mp4 = reference_original_render(out, args.style_id, tpl, src_dir_name)
+        except Exception as exc:
+            reference_mp4 = None
+            report.setdefault("original_reference_error", f"{type(exc).__name__}: {exc}")
+        report["steps"]["original_reference"] = {
+            "mp4": _rel(reference_mp4) if reference_mp4 else None,
+            "ok": bool(reference_mp4), "elapsed_sec": round(time.time() - t0, 1)}
+    else:
+        report["steps"]["original_reference"] = {"skipped": True}
+
     # ---- 5. 关键帧 + 人脸检测 ----
     if final_mp4.is_file() and not args.no_render:
         canvas = tpl.get("canvas") or {}
@@ -1136,6 +1640,7 @@ def main() -> int:
 
         # ---- 5b. 逐对验重影（真跑：多渲一版「只渲主轨」，再逐对抽帧比差）----
         t0 = time.time()
+        main_only = None
         try:
             fps_i = int(round(float(tpl.get("fps") or 30)))
             main_only = render_main_only(draft, Path(draft_json).parent, out / "render",
@@ -1152,6 +1657,36 @@ def main() -> int:
             ghost = {"ok": False, "error": f"{type(exc).__name__}: {exc}",
                      "elapsed_sec": round(time.time() - t0, 1)}
         report["steps"]["ghost_check"] = ghost
+
+        # ---- 5c. 复合片段那段（照片拼贴底板）：抽帧 + 逐帧差量 + 原版同段对比 ----
+        t0 = time.time()
+        comp_window = None
+        for s in tpl.get("segments") or []:
+            c = s.get("compound") or {}
+            if (c.get("asset_profile") or {}).get("photo_layers", 0) >= 2:
+                if comp_window is None or float(s["start_sec"]) < comp_window[0]:
+                    comp_window = (float(s["start_sec"]),
+                                   float(s["start_sec"]) + float(s["duration_sec"]))
+        if comp_window is not None:
+            try:
+                fps_i = int(round(float(tpl.get("fps") or 30)))
+                region = compound_region_check(
+                    final_mp4, main_only, frames_dir,
+                    (comp_window[0] + 0.08, comp_window[1] - 0.04),
+                    reference_mp4=(reference_mp4 if reference_mp4 else None), fps=fps_i)
+                region["elapsed_sec"] = round(time.time() - t0, 1)
+            except Exception as exc:
+                region = {"error": f"{type(exc).__name__}: {exc}"}
+            # 层级别对比：原版子时间线 vs 新子时间线（各自单独渲在灰底上）
+            try:
+                region["layer_reference"] = compound_layer_reference(
+                    out, args.style_id, tpl, Path(draft_json).parent, draft,
+                    (comp_window[0] + 0.08, comp_window[1] - 0.04), frames_dir)
+            except Exception as exc:
+                region["layer_reference"] = {"error": f"{type(exc).__name__}: {exc}"}
+            report["steps"]["compound_region"] = region
+        else:
+            report["steps"]["compound_region"] = {"skipped": "no_photo_compound_in_template"}
     else:
         ghost = {"ok": False, "reason": "no_render"}
         report["steps"]["frames"] = {"skipped": True}
@@ -1195,6 +1730,22 @@ def main() -> int:
         "cutout_alpha_transparent": (report["steps"].get("cutout_alpha") or {}).get("layers_with_transparent_alpha"),
         "cutout_edge_zooms": [z.get("frame") for z in ((report["steps"].get("cutout_alpha") or {}).get("edge_zooms") or [])],
         "ghost_ok": (report["steps"].get("ghost_check") or {}).get("ok"),
+        # 复合片段（这一轮的核心验收）
+        "compounds_extracted": apply_rep.get("compounds_extracted", 0),
+        "compounds_applied": apply_rep.get("compounds_applied", 0),
+        "compounds_skipped": apply_rep.get("compounds_skipped") or {},
+        "sub_segments_total": apply_rep.get("sub_segments_total", 0),
+        "photo_layers_mapped": apply_rep.get("photo_layers_mapped", 0),
+        "compound_structure_ok": (report["steps"].get("compounds") or {}).get("ok"),
+        "compound_region": {
+            "window": (report["steps"].get("compound_region") or {}).get("window"),
+            "delta_vs_main_only": (report["steps"].get("compound_region") or {}).get(
+                "delta_vs_main_only"),
+            "visible_blocks": (report["steps"].get("compound_region") or {}).get("visible_blocks"),
+            "vs_reference": (report["steps"].get("compound_region") or {}).get("vs_reference"),
+            "layer_reference": (report["steps"].get("compound_region") or {}).get(
+                "layer_reference"),
+        },
     }
     (out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2),
                                      encoding="utf-8")
@@ -1222,6 +1773,27 @@ def main() -> int:
         else:
             print(f"[verify] 渲染失败: {render_rep.get('error')}")
     fr = report["steps"].get("frames") or {}
+    cp = report["steps"].get("compounds") or {}
+    if cp:
+        print(f"[verify] 复合片段: 提取 {cp.get('compounds_extracted')} / 写回 {cp.get('compounds_applied')} "
+              f"/ 跳过 {cp.get('compounds_skipped')} · 子段 {cp.get('sub_segments_total')} "
+              f"（草稿内 {cp.get('sub_segments_found_in_draft')}）· 照片层映射 {cp.get('photo_layers_mapped')} "
+              f"（错类型 {cp.get('photo_layers_wrong_type')}）· subdraft 落盘 {cp.get('subdraft_dirs_on_disk_ok')}")
+    cr = report["steps"].get("compound_region") or {}
+    if cr.get("window"):
+        dm = cr.get("delta_vs_main_only") or {}
+        vr = cr.get("vs_reference") or {}
+        print(f"[verify] 拼贴底板段 {cr['window']}: 帧 {dm.get('frames')} 张 · 与只渲主轨 "
+              f"MAE 均 {dm.get('mean_mae')} / 最小 {dm.get('min_mae')} · >0.02 的帧 {dm.get('frames_above_0.02')} "
+              f"· 中帧亮度 {cr.get('luminance_mid')} · 可见块 {cr.get('visible_blocks')}")
+        if vr:
+            print(f"[verify]   与原版同段: 帧 {vr.get('frames')} · MAE 均 {vr.get('mean_mae')} "
+                  f"/ 范围 {vr.get('min_mae')}~{vr.get('max_mae')}")
+        lr = cr.get("layer_reference") or {}
+        for row in (lr.get("rows") or []):
+            d = row.get("delta_vs_original_layer") or {}
+            print(f"[verify]   子层对比 @{row.get('t')}s: 原版块 {row.get('original_blocks')} / "
+                  f"新版块 {row.get('new_blocks')} · MAE {d.get('mae')}")
     if fr.get("face_check", {}).get("ok"):
         print(f"[verify] 关键帧 {fr['count']} 张 · 检出人脸 {fr['face_check']['frames_with_face']} 张")
     if ff.get("summary"):
