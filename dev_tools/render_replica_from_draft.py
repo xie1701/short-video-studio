@@ -811,7 +811,10 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
     canvas = draft.get("canvas_config") or {}
     canvas_w = int(canvas.get("width") or CANVAS_W)
     canvas_h = int(canvas.get("height") or CANVAS_H)
-    pxu = canvas_w / 192.0  # 剑映字号单位：实测 font_size × 画布宽/192 ≈ 真实像素
+    # 字号单位：实测 font_size × 画布宽/172.8 ≈ 真实像素。
+    # 旧值 /192 偏小 11%——硬证据：style_17 6.0s 的黄字「不要想着买新车」(size 12) 原版墨高 69px、复刻 62px，
+    # 宽 517 vs 468，两个方向都是 10.5%，与 192/172.8=1.111 严丝合缝。
+    pxu = canvas_w / 172.8
     total_sec = float(draft.get("duration") or 0) / US
     if total_sec <= 0:
         segs_all = [s for t in draft.get("tracks") or [] for s in (t.get("segments") or [])]
