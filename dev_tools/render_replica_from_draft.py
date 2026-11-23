@@ -243,7 +243,7 @@ def media_start_time(path: str) -> float:
     剪映草稿的 `source_timerange.start` 是相对**素材容器时间轴**的，而 mp4 容器可能自带
     非零 start_time（实测 `二手车.mp4` = 0.033008s ≈ 一帧@30fps）。不补这个偏移，整段画面
     就比原版晚一帧（style_17 逐点验证：原版最优偏移 k=-1、复刻 k=0，13.5/14.0/15.0 三点一致）。
-    `24-美业.mp4` 的 start_time 是 0，所以对 style_21 无影响。
+    另一套草稿的素材容器 start_time 是 0，所以对 style_21 无影响。
     """
     if os.environ.get("SVS_IGNORE_START_TIME") == "1":
         return 0.0
