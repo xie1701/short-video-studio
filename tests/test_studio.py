@@ -3332,5 +3332,38 @@ class StickerRenderTests(unittest.TestCase):
             self.assertEqual(bb[3], 1920)        # 下侧被画布裁掉
 
 
+class OverlayFrameRenderTests(unittest.TestCase):
+    """带 keyframe 的叠加层按帧渲染（ffmpeg scale 不能逐帧改尺寸，只能自己算）。"""
+
+    def test_display_size_uses_natural_height(self):
+        from overlay_frame_render import display_size
+        # 主页素材 1080×1440、scale 0.2341 → 原版实测 189×336
+        w, h = display_size((1080, 1440), 0.2341, (1080, 1920))
+        self.assertEqual((w, h), (190, 337))
+        # 9:16 素材照旧 = 画布 × scale
+        self.assertEqual(display_size((1080, 1920), 0.5, (1080, 1920)), (540, 960))
+
+    def test_keyframe_interp_holds_ends(self):
+        from overlay_frame_render import _interp
+        kf = [(0.0, 1.0), (2.0, 0.01)]
+        self.assertAlmostEqual(_interp(kf, -1.0)[0], 1.0)
+        self.assertAlmostEqual(_interp(kf, 1.0)[0], 0.505)
+        self.assertAlmostEqual(_interp(kf, 5.0)[0], 0.01)
+
+    def test_zero_alpha_frames_skipped(self):
+        import tempfile
+        from PIL import Image
+        from overlay_frame_render import AnimLayer, render_layer_seq
+        with tempfile.TemporaryDirectory() as td:
+            im = Image.new("RGBA", (108, 144), (250, 40, 40, 255))
+            layer = AnimLayer(image=im, natural=(108, 144), t_dur=0.3,
+                              base_scale=0.5, alpha_kf=[(0.0, 1.0), (0.1, 0.0)])
+            n = render_layer_seq(layer, 108, 192, 10.0, Path(td))
+            # 帧点是 0/0.1/0.2s，只有首帧 alpha=1，后两帧全透明不该落盘
+            self.assertEqual(n, 1)
+            self.assertTrue((Path(td) / "f00000.png").is_file())
+            self.assertFalse((Path(td) / "f00002.png").exists())
+
+
 if __name__ == "__main__":
     unittest.main()
