@@ -247,8 +247,9 @@ def anim_state(specs: List[AnimSpec], t_local: float, seg_dur: float,
             ux = uy = None
         if ux is not None:
             sign = -1.0 if sp.kind == "in" else 1.0
-            st.dx += sign * ux * W * w
-            st.dy += sign * uy * H * w
+            gain = float(cfg.get("slide_gain") or 1.0)
+            st.dx += sign * ux * W * gain * w
+            st.dy += sign * uy * H * gain * w
     # 钳位
     st.alpha = max(0.0, min(1.0, st.alpha))
     st.blur = max(0.0, min(64.0, st.blur))
