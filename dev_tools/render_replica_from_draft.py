@@ -185,6 +185,11 @@ def split_pieces_by_mask(pieces: list, sched: list, t_start: float) -> list:
             out.append((a, b, sc, tx, ty, cfg))
     return out
 PX_PER_UNIT = 4.0  # 兜底值；实际按画布推导 canvas_w/192（实测 1080 宽草稿 = 5.625，与标题/字幕墨高吻合）
+# 字幕底框内边距（单位：em，即 font_px 的倍数）。剪映草稿里不带这个值，只能从原版成片反解：
+# style_17 13.0/13.4s「如果你不清楚」底框 336×84、字迹墨框 295×44；15.5s「我帮你推荐一下」底框 386×84
+# （383=336+50，即每字 50px 字距）→ 四边内边距都是 20.5px，而该处 font_px ≈ 50 → 0.41em。
+# 底框按**墨迹框**外扩：多行/描边/阴影都能自然包住。
+SUB_BG_PAD_EM = 0.41
 CANVAS_W, CANVAS_H = 1080, 1920
 MAX_COMPOUND_DEPTH = 3
 
@@ -345,24 +350,6 @@ def layer_vf(geom: dict, canvas_w: int, canvas_h: int) -> str:
     return ",".join(parts)
 
 
-def asset_time_offset(path: str) -> float:
-    """素材容器 start_time：剪映按「首帧=0」算素材时间，ffmpeg `-ss` 却按 PTS 算。
-
-    style_17 的 二手车.mp4 首帧 PTS=0.033008（一帧），实测原版成片比「草稿 src_start + 时间线偏移」
-    早 1 帧（13.5/14.0/15.0s 三处源帧匹配：原版最优偏移 k=-1，复刻 k=0）。
-    这里把 start_time 交还给调用方，seek 时加上，两端就落在同一帧上。
-    """
-    key = str(path)
-    if key in _MEDIA_SIZE_CACHE:
-        return 0.0
-    try:
-        proc = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=start_time",
-                               "-of", "csv=p=0", key], capture_output=True, text=True, timeout=60)
-        return max(0.0, float((proc.stdout or "0").strip() or 0.0))
-    except Exception:
-        return 0.0
-
-
 def _discover_root(kind: str) -> str:
     """剪映（mac 版）缓存/草稿根：环境变量优先，否则在 ~/Movies 下按结构自动发现。
 
@@ -477,6 +464,20 @@ def parse_text_material(mat: dict) -> dict:
                 max(0, min(255, round(v * 255))) if v <= 1.0 else int(v) for v in vals
             )
     out["line_spacing"] = float(mat.get("line_spacing") or 0.0)
+    # 字幕「背景」样式：草稿 material.background_style/background_color/background_alpha
+    # （style_17 10.27/12.93/13.77/14.47/15.10 五段识别字幕都是 style=1、#000000、alpha=0.7；
+    #   手打文本段这些字段为空 → 本来就没底框，不能硬加）
+    if mat.get("background_style"):
+        bg_alpha = float(mat.get("background_alpha") if mat.get("background_alpha") is not None else 1.0)
+        bg_col = mat.get("background_color") or "#000000"
+        rgb = (0, 0, 0)
+        if isinstance(bg_col, str) and bg_col.strip().startswith("#") and len(bg_col.strip()) >= 7:
+            s = bg_col.strip()
+            rgb = tuple(int(s[i:i + 2], 16) for i in (1, 3, 5))
+        elif isinstance(bg_col, (list, tuple)) and len(bg_col) >= 3:
+            rgb = tuple(max(0, min(255, round(float(c) * (255 if float(c) <= 1.0 else 1)))) for c in bg_col[:3])
+        if bg_alpha > 0.01:
+            out["background"] = {"color": rgb, "alpha": min(1.0, bg_alpha)}
     return out
 
 
@@ -538,6 +539,18 @@ def render_text_png(spec: dict, scale: float, out_png: Path, fail_log: list | No
         else:
             draw.text((pad, y_off), ln, font=font, fill=(*spec["color"], 255))
         y_off += line_h
+    # 字幕底框：把画布裁成「墨迹框 + 内边距」，先在底层铺矩形再叠字迹（剪映 style=1 是直角）
+    bg = spec.get("background")
+    if bg:
+        ink = img.split()[3].getbbox()
+        if ink:
+            pad_bg = max(2, int(round(SUB_BG_PAD_EM * font_px)))
+            bw = max(2, int(round((ink[2] - ink[0]) + 2 * pad_bg)))
+            bh = max(2, int(round((ink[3] - ink[1]) + 2 * pad_bg)))
+            layer = Image.new("RGBA", (bw, bh), (*bg["color"], int(round(255 * bg["alpha"]))))
+            layer.alpha_composite(img.crop(ink), (pad_bg, pad_bg))
+            img = layer
+            w, h = img.size
     out_png.parent.mkdir(parents=True, exist_ok=True)
     img.save(out_png)
     # 自证：墨迹宽度与预期差太多 = 字体回退了，留痕不假装
@@ -973,17 +986,31 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             if _a0 > 1e-3:
                 pieces.append((t_start, t_start + _a0, _s0, tx, ty))
             if min(_s0, _s1) >= 0.999:
-                # 纯推近（zoom≥1）：交给渲染器 ken_burns 逐帧插值
-                pieces.append((t_start + _a0, t_start + _a1, None, tx, ty))
-                report["unrealized"]["main_kf_zoom_kenburns"] = report["unrealized"].get("main_kf_zoom_kenburns", 0) + 1
-            else:
-                # 含缩窗（scale<1）：拆成按 2 帧步长的静态子段（黑底缩窗），近似动画
-                _span = max(1e-3, _a1 - _a0)
-                _n = max(2, int(round(_span * fps / 2)))
+                # 纯推近/拉远（zoom≥1）：改成**逐帧静态子段**，每段用自己的 scale 走几何。
+                # 原来交给渲染器的 ken_burns 逐帧插值，但 ken_burns 的 z 曲线与剪映的关键帧不等价：
+                # 原版 13.0s（12.93 起 1.1→1.0 / 0.333s）实测 zoom=1.08，而 ken_burns 段首几帧
+                # 仍停在 1.10，全帧边缘错位 → 该点副本差量 26。改成 1 帧一步后子段 zoom 与草稿插值对齐。
+                # 切点必须落在整帧上（按帧号算而非按秒均分），否则子段长度不是整帧，拼接后帧网格漂移。
+                _f0 = int(round((t_start + _a0) * fps))
+                _f1 = int(round((t_start + _a1) * fps))
+                _n = max(1, min(16, _f1 - _f0))
                 for _i in range(_n):
-                    _ta = t_start + _a0 + _span * _i / _n
-                    _tb = t_start + _a0 + _span * (_i + 1) / _n
-                    _ss = _s0 + (_s1 - _s0) * (_i + 0.5) / _n
+                    _ta = (_f0 + _i) / fps
+                    _tb = (_f0 + _i + 1) / fps
+                    _ss = _s0 + (_s1 - _s0) * ((_i + 0.5) / _n)
+                    pieces.append((_ta, _tb, _ss, tx, ty))
+                report["unrealized"]["main_kf_zoom_sliced"] = report["unrealized"].get("main_kf_zoom_sliced", 0) + _n
+            else:
+                # 含缩窗（scale<1）：拆成静态子段（黑底缩窗），2 帧一步，切点同样按整帧算
+                _f0 = int(round((t_start + _a0) * fps))
+                _f1 = int(round((t_start + _a1) * fps))
+                _n = max(1, int(round(max(1, _f1 - _f0) / 2)))
+                for _i in range(_n):
+                    _ta = (_f0 + (_f1 - _f0) * _i / _n) / fps
+                    _tb = (_f0 + (_f1 - _f0) * (_i + 1) / _n) / fps
+                    if _i == _n - 1:
+                        _tb = _f1 / fps
+                    _ss = _s0 + (_s1 - _s0) * ((_i + 0.5) / _n)
                     pieces.append((_ta, _tb, _ss, tx, ty))
                 report["unrealized"]["main_kf_zoom_sliced"] = report["unrealized"].get("main_kf_zoom_sliced", 0) + _n
             if _t_end > t_start + _a1 + 1e-4:
@@ -1040,28 +1067,20 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             if _seg_blur:
                 # 段级特效（模糊）要在缩放/缩窗前作用于源画面
                 _vf_extra.append(f"gblur=sigma={_seg_blur:.2f}")
-            if _sc_p is None:
-                # ken_burns：从首帧 zoom 到末帧（两端均 ≥1）
-                _clip["ken_burns"] = {"zoom_start": _s0, "zoom_end": _s1}
+            if _sc_p < 0.999:
+                # 缩窗：草稿真值是黑底居中缩窗（原版四角纯黑），不是渲染器默认的自身模糊铺底
                 _clip["pip_layout"] = None
-                _zoom_piece = True
+                w2 = int(round(W * _sc_p / 2)) * 2
+                h2 = int(round(H * _sc_p / 2)) * 2
+                px = max(0, min(W - w2, int(round((W - w2) / 2 + _ptx * W / 2))))
+                py = max(0, min(H - h2, int(round((H - h2) / 2 - _pty * H / 2))))
+                _vf_extra.append(f"scale={w2}:{h2}:flags=bicubic,pad={W}:{H}:{px}:{py}:black")
+            elif _sc_p > 1.001 or abs(_ptx) > 1e-4 or abs(_pty) > 1e-4:
+                # face_anchor 显式置 None（顶层）：复刻用草稿的居中缩放，禁止人脸锚定推近
+                _clip["pip_layout"] = {"mode": "geometry_pip", "face_anchor": None,
+                                       "main": {"scale": _sc_p, "x": _ptx, "y": -_pty}}
             else:
-                _zoom_piece = False
-            if not _zoom_piece:
-                if _sc_p < 0.999:
-                    # 缩窗：草稿真值是黑底居中缩窗（原版四角纯黑），不是渲染器默认的自身模糊铺底
-                    _clip["pip_layout"] = None
-                    w2 = int(round(W * _sc_p / 2)) * 2
-                    h2 = int(round(H * _sc_p / 2)) * 2
-                    px = max(0, min(W - w2, int(round((W - w2) / 2 + _ptx * W / 2))))
-                    py = max(0, min(H - h2, int(round((H - h2) / 2 - _pty * H / 2))))
-                    _vf_extra.append(f"scale={w2}:{h2}:flags=bicubic,pad={W}:{H}:{px}:{py}:black")
-                elif _sc_p > 1.001 or abs(_ptx) > 1e-4 or abs(_pty) > 1e-4:
-                    # face_anchor 显式置 None（顶层）：复刻用草稿的居中缩放，禁止人脸锚定推近
-                    _clip["pip_layout"] = {"mode": "geometry_pip", "face_anchor": None,
-                                           "main": {"scale": _sc_p, "x": _ptx, "y": -_pty}}
-                else:
-                    _clip["pip_layout"] = None
+                _clip["pip_layout"] = None
             if abs(alpha - 1.0) > 1e-3:
                 # 主轨半透明＝与黑底混合：把 RGB 乘 alpha 烘进段里
                 _a = max(0.0, min(1.0, alpha))
@@ -1069,6 +1088,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             if _vf_extra:
                 _clip["vf_extra"] = ",".join(_vf_extra)
             if mat.get("crop"):
+                # 主轨素材裁切真值（crop_ratio 预裁）尚未接入主轨链路，计数据实上报
                 report["unrealized"]["material_crop"] = report["unrealized"].get("material_crop", 0) + 1
             clips.append(_clip)
     if depth == 0:
@@ -1217,7 +1237,9 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 _ov_blur = _seg_blur_sigma(s)
                 fl = (f"gblur=sigma={_ov_blur:.2f}," if _ov_blur else "") + fl
                 _geom_vf = layer_vf(geom, W, H)
-                _geom_vf = ("," + _geom_vf) if _geom_vf else ""
+                # 拼接滤镜链：空段不能留逗号（`fps=30,` 这种尾部空滤镜 ffmpeg 会报 "No such filter: ''"）
+                _pre = ",".join(x for x in (fl.rstrip(","), _geom_vf) if x)
+                _pre = ("," + _pre) if _pre else ""
                 if ov_mask:
                     # 遮罩作用于图层（裁切+缩放后）自身的 uv 空间：先裁/缩到图层尺寸，再按图层宽高比 alphamerge
                     _png = mask_alpha_png(ov_mask, lw, lh)
@@ -1226,7 +1248,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                             else ["-ss", f"{s_in:.4f}", "-t", f"{max(0.05, s_dur):.4f}", "-i", src])
                     run_ffmpeg([ffmpeg_bin, "-y", *_in0, "-loop", "1", "-i", str(_png),
                                 "-filter_complex",
-                                f"[0:v]fps={fps},setpts=PTS-STARTPTS,format=rgba,{fl[:-1]}" + _geom_vf + "[fg];"
+                                f"[0:v]fps={fps},setpts=PTS-STARTPTS,format=rgba{_pre}[fg];"
                                 f"[1:v]fps={fps},setpts=PTS-STARTPTS,format=gray[mask];[fg][mask]alphamerge[v]",
                                 "-map", "[v]", "-frames:v", str(_nfr), "-an",
                                 "-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le",
@@ -1236,19 +1258,19 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 elif alpha_src:
                     # 复合片段输出是 ProRes4444 带 alpha：抽段必须保 alpha
                     run_ffmpeg([ffmpeg_bin, "-y", "-ss", f"{s_in:.4f}", "-t", f"{max(0.05, s_dur):.4f}", "-i", src,
-                                "-vf", f"fps={fps},format=rgba,{fl[:-1]}" + _geom_vf,
+                                "-vf", f"fps={fps},format=rgba{_pre}",
                                 "-an", "-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le", str(seg_p)], timeout=600)
                 else:
                     if (mat.get("type") or "") == "photo":
                         # 静图：-t 放在 -i 前会限制输入读取（单帧图只能得 ~2 帧），必须 -loop 1 + 输出侧 -t
                         run_ffmpeg([ffmpeg_bin, "-y", "-loop", "1", "-i", src,
-                                    "-vf", f"fps={fps},{fl[:-1]}" + _geom_vf,
+                                    "-vf", f"fps={fps}{_pre}",
                                     "-t", f"{max(0.05, s_dur):.4f}",
                                     "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "14",
                                     "-pix_fmt", "yuv420p", str(seg_p)])
                     else:
                         run_ffmpeg([ffmpeg_bin, "-y", "-ss", f"{s_in:.4f}", "-t", f"{max(0.05, s_dur):.4f}", "-i", src,
-                                    "-vf", f"fps={fps},{fl[:-1]}" + _geom_vf,
+                                    "-vf", f"fps={fps}{_pre}",
                                     "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "14",
                                     "-pix_fmt", "yuv420p", str(seg_p)])
             matte_p = None
