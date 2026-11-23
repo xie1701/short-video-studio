@@ -214,12 +214,6 @@ def face_inside(rect: Dict[str, int], anchor: Dict[str, Any], src_w: int, src_h:
     )
 
 
-def center_offset(rect: Dict[str, int], anchor: Dict[str, Any], src_w: int, src_h: int) -> float:
-    """脸中心相对裁切窗中心的横向偏移（0 = 正中），用于人眼核对。"""
-    fx = float(anchor["cx"]) * src_w
-    return round(abs(fx - (rect["x"] + rect["w"] / 2.0)) / max(1.0, rect["w"]), 4)
-
-
 def cover_crop_vf(w: int, h: int, anchor: Optional[Dict[str, Any]] = None,
                   face_bias: bool = False) -> str:
     """填满窗口的裁切滤镜：有人脸锚点就按脸取景，否则退回原居中（或原 0.24 偏上）逻辑。

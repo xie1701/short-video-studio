@@ -23,10 +23,8 @@ from __future__ import annotations
 import json
 import math
 import platform
-import shutil
 import subprocess
 import sys
-import tempfile
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -44,7 +42,12 @@ from common import (
     find_commercial_font,
     get_cached_font,
     hex_to_rgba,
+    maybe_reexec_in_venv,
 )
+
+if __name__ == "__main__" or str(sys.argv[0]).endswith(".py"):
+    maybe_reexec_in_venv()
+
 from overlay_motion import (
     MOTION_MODES,
     MOTION_PAD,
@@ -1428,62 +1431,3 @@ def render_animated_overlay_mov(
     if proc.returncode != 0 or not out_mov.is_file():
         return None
     return out_mov, cw, ch
-
-
-def render_vision_person_cutout_frame(
-    fg_image: Image.Image,
-    bg_image: Image.Image,
-    outline_px: int = 10,
-    outline_rgb: Tuple[int, int, int] = (255, 255, 255),
-) -> Optional[Image.Image]:
-    """
-    macOS 原生 Apple Vision 单帧真人前景白边剪纸抠像合成器（用于静态封面或单帧验收）。
-    """
-    if platform.system() != "Darwin" or not shutil.which("swift"):
-        return None
-    try:
-        with tempfile.TemporaryDirectory(prefix="svs_vis_mat_") as td:
-            in_p = Path(td) / "fg.png"
-            mask_p = Path(td) / "mask.png"
-            fg_rgb = fg_image.convert("RGB")
-            fg_rgb.save(in_p)
-            swift_code = f'''
-import Foundation
-import Vision
-import CoreImage
-import AppKit
-
-let url = URL(fileURLWithPath: "{in_p.as_posix()}")
-guard let ciImg = CIImage(contentsOf: url) else {{ exit(2) }}
-let req = VNGeneratePersonSegmentationRequest()
-req.qualityLevel = .balanced
-req.outputPixelFormat = kCVPixelFormatType_OneComponent8
-let handler = VNImageRequestHandler(ciImage: ciImg, options: [:])
-try handler.perform([req])
-guard let obs = req.results?.first as? VNPixelBufferObservation else {{ exit(3) }}
-let maskCI = CIImage(cvPixelBuffer: obs.pixelBuffer)
-let sx = ciImg.extent.width / maskCI.extent.width
-let sy = ciImg.extent.height / maskCI.extent.height
-let scaled = maskCI.transformed(by: CGAffineTransform(scaleX: sx, y: sy))
-let ctx = CIContext()
-guard let cg = ctx.createCGImage(scaled, from: ciImg.extent) else {{ exit(4) }}
-let rep = NSBitmapImageRep(cgImage: cg)
-guard let png = rep.representation(using: .png, properties: [:]) else {{ exit(5) }}
-try png.write(to: URL(fileURLWithPath: "{mask_p.as_posix()}"))
-'''
-            proc = subprocess.run(["swift", "-e", swift_code], capture_output=True, text=True, timeout=20)
-            if proc.returncode != 0 or not mask_p.is_file():
-                return None
-            mask_l = Image.open(mask_p).convert("L").resize(fg_rgb.size, Image.Resampling.BILINEAR)
-            bg_rgba = bg_image.convert("RGBA").resize(fg_rgb.size, Image.Resampling.LANCZOS)
-            fg_rgba = fg_rgb.convert("RGBA")
-            if outline_px > 0:
-                dil = mask_l.filter(ImageFilter.MaxFilter(size=max(3, (outline_px * 2) | 1)))
-                dil = dil.point(lambda v: 255 if v >= 120 else 0)
-                outline_layer = Image.new("RGBA", fg_rgb.size, (*outline_rgb, 255))
-                bg_rgba.paste(outline_layer, (0, 0), dil)
-            soft_mask = mask_l.point(lambda v: 255 if v >= 135 else (0 if v <= 60 else int((v - 60) * 255 / 75)))
-            bg_rgba.paste(fg_rgba, (0, 0), soft_mask)
-            return bg_rgba
-    except Exception:
-        return None

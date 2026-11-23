@@ -23,7 +23,7 @@
 | Step 8 | `08_mixed_master.wav` + `08_stem_nosfx.wav` + `08_voice_master.wav` + `08_bgm_ducked.wav` + `08_sfx_master.wav` + `08_sfx_audit_window.json` + `08_mix_metrics.json` | 广播人声链 + 双频段闪避 + 特写现场动作声轻混 + 总线防削波三轨解耦 + `-14.0 ±1.5 LUFS` 混音 |
 | Step 9 | `09_title_cover.md` + `09_title_cover.json` + `09_cover.jpg` + `09_cover_3x4.jpg` + `09_cover_360px_feed.jpg` + `09_ui_safe_preview.jpg` + `09_publish_copy_pack.{md,json}` (+ `09_cover_land_4k.png` / `09_cover_port_4k.png`) | 全片情绪+眼部锐度优选封面、3:4 防裁切封面、360px 手机信息流模拟小图、UI 遮罩预览、分平台发布文案包及可选双比例 4K 代码封面 |
 | 出片 | `output_preview.mp4` / `output_final.mp4` / `jianying_draft/` / `hyperframes_draft/` | 本地 MP4 渲染（支持双源 `-i` 真画中画与并发分镜编码）+ 相对 URL FCPXML + 原生 HyperFrames Studio |
-| 质检与盲审 | `10_qa_report.json` + `10_qa_report.md` + `10_blind_review_pack.md` | **23 项白盒 + 单遍解码黑盒门禁**（三态 `PASS \| FAIL \| SKIPPED_UNAVAILABLE`，含残留重说扫描、540px OCR 居中实测、True Peak `≤ -1.0 dBTP`）与一页式《独立盲审取证包》 |
+| 质检与盲审 | `10_qa_report.json` + `10_qa_report.md` + `10_blind_review_pack.md` | **全套白盒 + 单遍解码黑盒门禁**（三态 `PASS \| FAIL \| SKIPPED_UNAVAILABLE`，含残留重说扫描、540px OCR 居中实测、True Peak `≤ -1.0 dBTP`）与一页式《独立盲审取证包》 |
 | 交付与清理 | `out/*` + `11_delivery_summary.md` + `review_player.html` + `10_action_strips.jpg` (+ `VERIFY.md`) + `tidy_report.json` | 交付物同步入 `out/` + 离线打点审片 + 单次 `select` 动作连拍条 + 默认清理大体积过程文件并保留锁轨 ASSETS 以支撑 `reedit-visuals` |
 | 进化闭环 | `content-log/weekly_review_<track>.md` + `content-log/account_profile_<track>.json` | 按 `--account` 与 `--track` 双重隔离复盘，同条件分子/分母对账、对照实验评估与掉点反查 EDL 镜头 |
 

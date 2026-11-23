@@ -1,6 +1,6 @@
 ---
 name: short-video-studio
-version: 4.0.0
+version: 4.0.2
 description: 策划、剪辑和交付面向实体门店获客或个人账号增长的短视频。适用于从真实素材策划选题、编写口播和拍摄任务卡、剪辑已有实拍，或用代码制作图解与产品演示。以锁定音轨为剪辑骨架，支持成片质检、MP4 与可编辑工程导出，以及发布数据复盘。
 ---
 
@@ -24,7 +24,7 @@ description: 策划、剪辑和交付面向实体门店获客或个人账号增�
 
 ### 1.2 每一轮回复强制携带【四要素掌控感进度卡】（MUST）
 在陪伴用户推进项目的**每一轮回复**中，AI 必须同步运行 `workflow_guard.py status --pipeline-dir <dir> [--user-type <类型>]`，按 [interactive-coach-protocol.md](references/interactive-coach-protocol.md) 第二节格式展示大白话四要素进度卡（`当前进度 / 我刚做了或正在做 / 现在轮到你(附 A/B/C 选项) / 离能发还差`，严禁技术缩写或黑话）：
-- **选画面样式不甩全表**：按用户所属人群和有无真人出镜素材（`apply_style_spectrum.py --list --has-aroll no`）只挑 **3~4 款最对口的大白话样式**让用户选 A/B/C/D；全仓默认输出风格为 **`style_01`（门店爆款原生风，全屏无画中画干扰）**。
+- **选画面样式不甩全表也不背编号**：按用户所属人群与有无真人出镜素材运行 `apply_style_spectrum.py --menu <store|creator> [--has-aroll no]`，把现算出的 **3~4 款大白话点单**原样给用户选 A/B/C/D；全仓默认输出风格为 **`style_01`（门店爆款原生风，以全屏实拍为主、按源草稿少量叠加抠像/推近窗）**。
 - **先确认文案与剪辑方案再动手（硬门禁）**：不管是新写稿还是带已有素材来剪，**绝不能没让用户看过说话文案和镜头排查结果就直接剪成片**！先运行 `--mode plan-only` 输出大白话确认单 `00_confirm_plan.md`（含缺镜提醒与耗时预估），用户点头（或运行 `workflow_guard.py confirm-plan`）后再正式开剪；用户否决的废镜/时间窗立刻用 `workflow_guard.py exclude-shot` 持久化标废。
 - **任务耗时预估 + Windows 非 C 盘 + 跨项目零冗余**：每次启动长任务前给出清晰中文等待时间预期；Windows 环境下首次工作区避开 C 盘并询问用户存放位置（持久化至 `~/.short-video-studio/config.json`）；同一账号不同项目自动通过内容指纹 + 硬链接零冗余复用已归一素材，不重复占满硬盘。
 - **内置 `gbro-cover-design` 封面技能 + Cola 智能体自动联动**：已完整内置 `subskills/gbro-cover-design/`。当检测到当前智能体为 Cola（`PI_PROVIDER=cola` 或 `COLA_ACCOUNT_DIR` 存在或任一 `COLA_*` 环境变量命中）时，`step9_title_cover.py` 会自动从 A-roll 筛选五官最清晰自然的一帧保存为 `09_host_face_ref.png` 作为图 1 垫图，并产出 `09_gbro_cover_prompt.md` 与 `09_gbro_cover_handoff.json`，AI 直接调用该内置封面技能交付 3:4 爆款真人封面。
@@ -74,10 +74,10 @@ description: 策划、剪辑和交付面向实体门店获客或个人账号增�
     ```bash
     python3 scripts/code_video_spec.py --init-spec --title "<标题>" --one-idea "<核心命题>" --out-dir <pipeline目录>
     python3 scripts/code_video_spec.py --validate-spec <pipeline目录>/00_code_spec.json
-    python3 scripts/run_pipeline.py --account <账号> --workspace-root <工作区> --track <store|creator> --mode code-video --code-spec <pipeline目录>/00_code_spec.json --script-json <台词JSON> --style-id style_14
+    python3 scripts/run_pipeline.py --account <账号> --workspace-root <工作区> --track <store|creator> --mode code-video --code-spec <pipeline目录>/00_code_spec.json --script-json <台词JSON> --style-id <按赛道取值：store→style_01，creator→style_11>
     ```
   - **口播增强套件（语音岛粗剪、动态讲解窗口 + 平滑圆环人像双源画中画、词边界 DP 短句字幕、15 种动效拟音与字体子集化）**：
-    - `step2_transcribe.py`（语音能量岛 + 5s 重叠短窗防吞重说）→ `step4_build_edl.py`（自动探测动态讲解窗口并绑定真双源圆环画中画）→ `step5_subtitles.py`（词边界 DP 断句 + `terms.txt` 保护词 + 双层柔和阴影 ASS/SRT + `05_subtitle_check.txt`）→ `synth_motion_sfx.py`（15 种无版权动效拟音峰值对齐）→ `step9_title_cover.py --code-cover-4k`（分平台发布文案包 `09_publish_copy_pack.md` + 360px 手机信息流小图预览 + 16:9/3:4 双比例 4K 封面）→ `subset_fonts.py`（按工程用字自动压缩子集字体）。
+    - `step2_transcribe.py`（语音能量岛定界 + 成片滑窗重说复查）→ `step4_build_edl.py`（自动探测动态讲解窗口并绑定真双源圆环画中画）→ `step5_subtitles.py`（词边界 DP 断句 + `terms.txt` 保护词 + 双层柔和阴影 ASS/SRT + `05_subtitle_check.txt`）→ `synth_motion_sfx.py`（15 种无版权动效拟音峰值对齐）→ `step9_title_cover.py --code-cover-4k`（分平台发布文案包 `09_publish_copy_pack.md` + 360px 手机信息流小图预览 + 16:9/3:4 双比例 4K 封面）→ `subset_fonts.py`（按工程用字自动压缩子集字体）。
 
 ### 专属工作区隔离、合规门禁与诚实基线（MUST）
 - **原素材严格只读**：所有加工、转码、临时帧和成片导出统一写入独立专属目录（默认 `~/.short-video-studio/workspaces/accounts/<account_slug>/projects/<project_id>/`，可用 `--workspace-root` 指定），**严禁向 `--raw-dir` 写入任何文件**。
@@ -173,13 +173,14 @@ python3 scripts/content_log_review.py --account <账号> --track <store|creator>
 
 ## 六、 风格谱参考包装库与环境初始化
 
-- 已内置 **24 套 v4.0 剪映实测风格库**（`style_01` ~ `style_24`，24/24 全部解密自真实剪映主稿 `draft_content.json`，每套带 `source_hash`；指标由 `dev_tools/build_style_library_v4.py` 从草稿推导，`dev_tools/verify_style_parity.py` 逐字段校验 24/24 PASS）与 **3 大共享剪辑规则字典**：
+- 已内置 **24 套 v4.0 剪映实测风格库**（`style_01` ~ `style_24`，24/24 全部解密自真实剪映主稿 `draft_content.json`，每套带 `source_hash`；指标由 `dev_tools/build_style_library_v4.py` 从草稿推导，`dev_tools/verify_style_parity.py` 逐字段校验 24/24 PASS）与 **4 大共享剪辑规则字典**：
   - **全局/门店获客默认（`style_01`）**：全屏实景出镜、中下部高低错落斜标开场、57% 店内特写穿插（保留 `-10dB` 现场动作真声）、居中无底框双色暖黄重点字、双段音乐；同组还有真轮廓白边抠像（`style_07` 60%、`style_21` 76% / 7 处抠像）、清冷奶油极简宋体（`style_04`）、暖金双格对比（`style_17`）、户外探盘 3D 金属立体大字（`style_18`）、国风古字典体大字（`style_20`）、人像压巨字+矩形画框（`style_05`）、上圆角框下黑幕（`style_13`）、慢调空镜微纪录（`style_23` 46%、4.08s 中位）。
   - **个人账号默认（`style_11`）**：清亮通透无底框大字；同组还有暗灰底框极速跳剪（`style_02` 11%、1.13s）、顶栏引语卡+10 条巨型浅黄大字（`style_03`）、黑底拍立得手写金句（`style_06`）、专家长镜 29.23s 一镜到底+方角底框（`style_08`）、多重圆窗纪实（`style_09`）、190 次/分高频推拉（`style_10`）、顶置双色悬念标（`style_12`）、纯黑聚光圆窗（`style_14`）、弹性双色花字流（`style_15` 10 条巨字）、羽化分屏书摘（`style_16`）、抠像长句大字（`style_19`）、案例轮播（`style_22` 41%）、不露脸快切混剪（`style_24` 55%）。
   - **口径**：所有风格源草稿转场数均为 0，默认硬切；B-roll 占比是风格先验、运行时按素材动态自适应（±15pp）；字体按 `source_font_family` 声明，缺源字体时回落替代并标 `exact_1to1=false`。
   - 完整大白话选用指南见 [assets/style_spectrum/STYLE_SPECTRUM_REPORT.md](assets/style_spectrum/STYLE_SPECTRUM_REPORT.md)。
   ```bash
-  python3 scripts/apply_style_spectrum.py --list [--has-aroll no]
+  python3 scripts/apply_style_spectrum.py --menu <store|creator> [--has-aroll no]   # 给用户点单的 3~4 款
+  python3 scripts/apply_style_spectrum.py --list [--has-aroll no]                  # 维护/排查时看全表
   python3 scripts/apply_style_spectrum.py --style-id style_01 --apply-pipeline <项目目录>/pipeline --apply-full --keep-edl
   python3 scripts/apply_style_spectrum.py --style-id style_01 --export-hyperframes <out_dir>
   ```

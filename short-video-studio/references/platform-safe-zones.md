@@ -27,17 +27,18 @@
 
 配置定义于 `assets/subtitle_templates/templates.json`（含 **4 套基础轨道模板** + **24 套风格谱模板 `style_01` ~ `style_24`**，全库 100% 绑定免费可商用开源字体，零私有系统字体）：
 
-1. **`store_bold_yellow` / `style_14`（默认门店原生爆款风 · 居中双字号暖黄高亮）**：
-   - 门店实景高转化旗舰模板，默认用于**门店轨**。
-   - **无底框** 62px 粗黑体白字 + 4px 粗黑描边；关键词放大 `1.133x`（70px）并高亮为暖金 `#FFE28A`，绝对正中于 `X=540, Y=1310`。
+1. **`store_bold_yellow`（门店基础字幕轨，默认配套 `style_01`）**：
+   - 门店实景高转化基础模板，默认用于**门店轨**；`style_01` 是门店默认风格谱，两者不是同一套，别再混写。
+   - **无底框** 64px 粗黑体白字 + 5px 粗黑描边；关键词放大 `1.16x` 并高亮为暖金 `#FFE24A`，绝对正中于 `X=540, Y=1330`。
+   - `style_01` 按源草稿实测为 48px 同族字 + 暖金 `#FFE28A` 关键词、`Y=1309`；以 `assets/subtitle_templates/templates.json` 为准。
 2. **`creator_clean_white`（基础极简白）与 `style_11`（默认博主风格谱）**：
    - `creator_clean_white` 为基础轨道模板：白字 + 深灰半透明圆角底框 + 天青蓝 `#4FC3F7` 关键词高亮；
-   - `style_11` 为博主轨默认风格谱：干净通透圆角底框字幕 + 暖亮高亮色 + 角落圆形例证小窗。
+   - `style_11` 为博主轨默认风格谱：干净通透无底框大字 + 关键词高亮，讲到数据或流程时才轻量切入图解窗口，不是常驻圆窗。
 3. **`contrast_red_punch`（强反差争议红黑）**：
    - 用于颠覆认知、内幕揭秘、对比警示等强冲击视频；深灰底框 `#18181BB8` + 强反差红 `#FF453A` 关键词高亮 + 5px 粗黑描边。
 4. **`warm_persona_cream`（温情故事暖米色）**：
    - 用于创业经历、做事底线、真实故事类表达；暖米白 `#FFF8E7` + 柔和棕黑描边 + 暖橙高亮 `#FF8A65`。
-5. **`style_01` ~ `style_24`**：完整映射 6 大视觉流派与 4 套高空镜形态（85%–100% 特写/实景/图解），详见 [STYLE_SPECTRUM_REPORT.md](../assets/style_spectrum/STYLE_SPECTRUM_REPORT.md)。
+5. **`style_01` ~ `style_24`**：完整映射 5 大视觉流派与 4 套高空镜形态（85%–100% 特写/实景/图解），详见 [STYLE_SPECTRUM_REPORT.md](../assets/style_spectrum/STYLE_SPECTRUM_REPORT.md)。
 
 ---
 

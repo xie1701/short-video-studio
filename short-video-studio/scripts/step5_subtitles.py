@@ -15,10 +15,8 @@ import argparse
 import difflib
 import math
 import re
-import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -348,59 +346,6 @@ def fmt_srt_time(sec: float) -> str:
     m, rem = divmod(rem, 60_000)
     s, ms_r = divmod(rem, 1000)
     return f"{h:02d}:{m:02d}:{s:02d},{ms_r:03d}"
-
-
-def burn_ass_safely(
-    video_in: Path,
-    ass_path: Path,
-    video_out: Path,
-    font_path: Optional[Path] = None,
-    expected_font_hint: Optional[str] = None,
-) -> Dict[str, Any]:
-    """
-    安全烧录 ASS 字幕：把 ASS 和单个字体复制到纯 ASCII 临时目录规避中文/冒号转义坑，
-    并从 libass verbose 日志确认实际命中的字体，防止静默回退系统默认字体。
-    """
-    ffmpeg = find_bin("ffmpeg")
-    if not ffmpeg:
-        raise RuntimeError("需要 ffmpeg 烧录 ASS 字幕。")
-    with tempfile.TemporaryDirectory(prefix="svs_ass_") as td:
-        tdp = Path(td)
-        tmp_ass = tdp / "sub.ass"
-        shutil.copy2(ass_path, tmp_ass)
-        fonts_dir = tdp / "fonts"
-        fonts_dir.mkdir(exist_ok=True)
-        if font_path and Path(font_path).is_file():
-            # 保留原始商用字体文件名（替换非 ASCII 字符），便于 libass fontselect 精准核对命中
-            safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", Path(font_path).stem) or "commercial_font"
-            shutil.copy2(font_path, fonts_dir / f"{safe_stem}{Path(font_path).suffix.lower()}")
-        ass_esc = str(tmp_ass).replace("\\", "/").replace(":", "\\:")
-        fd_esc = str(fonts_dir).replace("\\", "/").replace(":", "\\:")
-        vf = f"ass='{ass_esc}':fontsdir='{fd_esc}'"
-        proc = subprocess.run(
-            [
-                ffmpeg, "-y", "-hide_banner", "-loglevel", "verbose",
-                "-i", str(video_in), "-vf", vf,
-                "-c:v", "libx264", "-preset", "medium", "-crf", "17", "-pix_fmt", "yuv420p",
-                *BT709_FFMPEG_ARGS,
-                "-c:a", "copy", "-movflags", "+faststart", str(video_out),
-            ],
-            capture_output=True, text=True, encoding="utf-8", errors="replace",
-        )
-        font_hits = re.findall(r"fontselect:\s*\(([^)]+)\)\s*->\s*(.+)", proc.stderr or "")
-        if proc.returncode != 0:
-            matched_ok = False
-        elif expected_font_hint:
-            matched_ok = bool(font_hits) and any(
-                expected_font_hint.lower() in f"{a} {b}".lower() for a, b in font_hits
-            )
-        else:
-            matched_ok = bool(font_hits)
-        return {
-            "returncode": proc.returncode,
-            "font_select_hits": [f"{a} -> {b.strip()}" for a, b in font_hits[:6]],
-            "font_matched_expected": matched_ok,
-        }
 
 
 def strip_display_punctuation(text: str) -> str:

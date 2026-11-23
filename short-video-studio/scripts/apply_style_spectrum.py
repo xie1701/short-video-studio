@@ -13,7 +13,7 @@ import html
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import (
@@ -29,8 +29,6 @@ from common import (
 
 if __name__ == "__main__":
     maybe_reexec_in_venv()
-
-from export_hyperframes import attach_hyperframes_launchers
 
 STYLE_DIR = ASSETS_DIR / "style_spectrum"
 LIB_PATH = STYLE_DIR / "style_spectrum_library.json"
@@ -104,6 +102,85 @@ def list_styles(lib: Dict[str, Any]) -> None:
         med = s.get("shot_distribution", {}).get("median_sec")
         bpm = s.get("beat_alignment", {}).get("estimated_bpm")
         print(f"{sid:<10} {name:<26} {track:<8} {_num(med, '.2f'):<9} {_num(bpm, '.1f'):<7} {sid}")
+
+
+STYLE_MENU_ROLES: Dict[str, List[Tuple[str, Tuple[str, ...]]]] = {
+    "store": [
+        ("门店默认", ("style_01",)),
+        ("信任/避坑", ("style_07", "style_20", "style_04")),
+        ("不露脸/工艺", ("style_21", "style_23", "style_24")),
+        ("对比带看", ("style_17", "style_18", "style_13")),
+    ],
+    "creator": [
+        ("日常干货", ("style_11",)),
+        ("证据/案例", ("style_09", "style_19", "style_22")),
+        ("书摘/拆解", ("style_16", "style_03", "style_15")),
+        ("人物/观点", ("style_05", "style_10", "style_02")),
+    ],
+}
+
+
+def _menu_metric(entry: Dict[str, Any], key: str) -> float:
+    value = (entry.get("shot_distribution") or {}).get(key)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _menu_distance(candidate: Dict[str, Any], selected: List[Dict[str, Any]]) -> float:
+    """与已选款式拉开差异：特写占比、中位镜长、画中画形态各占一份。"""
+    if not selected:
+        return 0.0
+    score = []
+    for chosen in selected:
+        ratio_gap = abs(_menu_metric(candidate, "broll_coverage_ratio") - _menu_metric(chosen, "broll_coverage_ratio")) / 0.5
+        length_gap = abs(_menu_metric(candidate, "median_sec") - _menu_metric(chosen, "median_sec")) / 3.0
+        pip_gap = 0.0 if (candidate.get("pip_composition_spec") or {}).get("mode") == (chosen.get("pip_composition_spec") or {}).get("mode") else 1.5
+        score.append(ratio_gap + length_gap + pip_gap)
+    return min(score)
+
+
+def build_style_menu(lib: Dict[str, Any], track: str, has_aroll: bool = True, limit: int = 4) -> List[Dict[str, Any]]:
+    """按人群、出镜条件与「款式职责」从库里现算点单菜单，杜绝文档里手写编号后漂移。"""
+    pool = [s for s in (lib.get("styles") or []) if str(s.get("recommended_track") or "") == track]
+    if not has_aroll:
+        pool = [s for s in pool if str(s.get("requires_aroll") or "optional") != "required"]
+    by_id = {s["style_id"]: s for s in pool}
+    selected: List[Dict[str, Any]] = []
+    selected_ids: set[str] = set()
+    for _, candidates in STYLE_MENU_ROLES.get(track, []):
+        for sid in candidates:
+            if len(selected) >= limit:
+                break
+            if sid in by_id and sid not in selected_ids:
+                selected.append(by_id[sid])
+                selected_ids.add(sid)
+                break
+    while len(selected) < limit:
+        rest = [s for s in pool if s["style_id"] not in selected_ids]
+        if not rest:
+            break
+        pick = max(rest, key=lambda s: (_menu_distance(s, selected), -int(s.get("index") or 99)))
+        selected.append(pick)
+        selected_ids.add(pick["style_id"])
+    return selected
+
+
+def print_style_menu(lib: Dict[str, Any], track: str, has_aroll: bool = True) -> None:
+    track_cn = "实体店" if track == "store" else "个人博主"
+    aroll_cn = "有真人出镜素材" if has_aroll else "无需真人出镜"
+    menu = build_style_menu(lib, track, has_aroll=has_aroll)
+    print(f"[风格点单] {track_cn} · {aroll_cn} · 只给最对口的 {len(menu)} 款，别甩全表")
+    for i, entry in enumerate(menu):
+        sid = entry["style_id"]
+        sd = entry.get("shot_distribution") or {}
+        med = sd.get("median_sec")
+        ratio = sd.get("broll_coverage_ratio")
+        print(f"\n**选 {chr(65 + i)} · {entry.get('style_name_cn', sid)}（{sid}）**")
+        print(f"  大白话：{entry.get('plain_cn_pitch') or entry.get('style_name_cn', sid)}")
+        if med is not None and ratio is not None:
+            print(f"  实测：中位镜长 {float(med):.2f}s · 特写/空镜占比 {float(ratio) * 100:.0f}%")
 
 
 def bg_slab_hex(bp: Dict[str, Any]) -> str:
@@ -311,6 +388,8 @@ def export_hyperframes_html(
         config = out_html.parent / "hyperframes.json"
         if not config.exists():
             write_json(config, {"media": {"autoProxy": True}})
+        from export_hyperframes import attach_hyperframes_launchers
+
         attach_hyperframes_launchers(out_html.parent)
     print(f"[apply-style] HyperFrames 样板 HTML 已导出 -> {out_html}")
     return out_html
@@ -421,6 +500,7 @@ def apply_full_visual_refresh(
 def main() -> None:
     parser = argparse.ArgumentParser(description="应用「风格谱」至流水线或导出 HyperFrames 样板")
     parser.add_argument("--list", action="store_true", help="列出全部风格谱")
+    parser.add_argument("--menu", choices=["store", "creator"], help="按人群与出镜条件现算 4 款大白话点单菜单")
     parser.add_argument("--has-aroll", choices=["auto", "yes", "no"], default="auto", help="按有无出镜素材过滤推荐模板")
     parser.add_argument("--style-id", help="风格 ID（如 style_01）")
     parser.add_argument("--apply-pipeline", help="目标流水线目录")
@@ -434,6 +514,9 @@ def main() -> None:
     args = parser.parse_args()
 
     lib = load_library()
+    if args.menu:
+        print_style_menu(lib, args.menu, has_aroll=args.has_aroll != "no")
+        return
     if args.list:
         if args.has_aroll == "no":
             filtered = {**lib, "styles": filter_styles_by_aroll(lib, has_aroll=False)}

@@ -21,7 +21,19 @@
 from __future__ import annotations
 
 import math
+import sys
+from pathlib import Path
 from typing import Callable, Dict, List, Optional
+
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from common import maybe_reexec_in_venv
+
+# 被脚本导入时也要在 PIL 缺席前切到专用 venv；REPL / 测试进程内不重启宿主进程。
+if __name__ == "__main__" or str(sys.argv[0]).endswith(".py"):
+    maybe_reexec_in_venv()
 
 from PIL import Image, ImageDraw, ImageFilter
 
@@ -157,18 +169,6 @@ ANIM_NAME_TO_PRIMITIVE: Dict[str, str] = {
 def primitive_of(anim_name: str) -> Optional[str]:
     """单个剪映动效原名 → 中文原语名（未知返回 None）。"""
     return ANIM_NAME_TO_PRIMITIVE.get(str(anim_name or "").strip())
-
-
-def primitive_sequence(anim_names: List[str], limit: int = 3) -> List[str]:
-    """把 anims_top 顺序映射为去重后的原语名列表；不足 limit 时顺延取后续名次补齐。"""
-    out: List[str] = []
-    for name in anim_names or []:
-        prim = primitive_of(name)
-        if prim and prim not in out:
-            out.append(prim)
-        if len(out) >= limit:
-            break
-    return out[:limit]
 
 
 def resolve_mode(primitive: str, default: str = "bounce_smash") -> str:

@@ -12,6 +12,12 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "short-video-studio" / "scripts"))
 
+# 测试入口自己先切到专用 venv：被 import 的脚本（如 independent_verifier）不可能在 import 期
+# 重启宿主进程，所以「用系统 python3 直接跑测试」只能在这里切一次，否则一到 numpy 就 ImportError。
+from common import maybe_reexec_in_venv
+
+maybe_reexec_in_venv()
+
 from common import ASSETS_DIR, load_subtitle_templates, read_json, review_checks, sha256_file, write_json
 from independent_verifier import verify_exports_blackbox
 from compliance_guard import audit_text_line, build_asset_license_manifest
@@ -2452,6 +2458,32 @@ class PackagingSmokeTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr[-400:])
         self.assertIn("style_01", r.stdout)
         self.assertIn("style_24", r.stdout)
+
+    def test_style_menu_is_computed_from_library_not_hand_written(self):
+        """点单菜单必须从库里现算：门店默认 style_01，绝不把 creator 的 style_14 塞给门店。"""
+        from apply_style_spectrum import build_style_menu, load_library
+
+        lib = load_library()
+        store = build_style_menu(lib, "store", has_aroll=True)
+        self.assertEqual([s["style_id"] for s in store][0], "style_01")
+        self.assertNotIn("style_14", [s["style_id"] for s in store])
+        self.assertTrue(all(s["recommended_track"] == "store" for s in store))
+        self.assertGreaterEqual(len(store), 3)
+
+        no_face = build_style_menu(lib, "creator", has_aroll=False)
+        self.assertTrue(all(str(s.get("requires_aroll") or "optional") != "required" for s in no_face))
+
+        r = subprocess.run([sys.executable, str(ROOT / "short-video-studio" / "scripts" / "apply_style_spectrum.py"),
+                            "--menu", "store"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr[-400:])
+        self.assertIn("选 A", r.stdout)
+        self.assertIn("style_01", r.stdout)
+
+    def test_repo_consistency_audit_passes(self):
+        """文档默认值/数量/路径/命令/点单菜单必须与代码和资产单源一致。"""
+        r = subprocess.run([sys.executable, str(ROOT / "dev_tools" / "audit_consistency.py")],
+                           capture_output=True, text=True, cwd=str(ROOT))
+        self.assertEqual(r.returncode, 0, (r.stdout + r.stderr)[-1200:])
 
     def test_install_targets_are_recognizable_skills(self):
         import install_skill

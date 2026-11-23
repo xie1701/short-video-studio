@@ -23,7 +23,8 @@ if str(_SCRIPTS_DIR) not in sys.path:
 
 from common import maybe_reexec_in_venv
 
-if __name__ == "__main__":
+# 该模块会被 knowledge_animator 在 import 阶段加载；必须在 import numpy 之前完成 venv 切换。
+if __name__ == "__main__" or str(sys.argv[0]).endswith(".py"):
     maybe_reexec_in_venv()
 
 import numpy as np

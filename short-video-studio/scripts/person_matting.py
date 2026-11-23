@@ -32,8 +32,12 @@ from common import (
     find_bin,
     find_commercial_font,
     get_cached_font,
+    maybe_reexec_in_venv,
     run_cmd,
 )
+
+if __name__ == "__main__" or str(sys.argv[0]).endswith(".py"):
+    maybe_reexec_in_venv()
 
 import numpy as np
 from PIL import Image, ImageDraw

@@ -27,7 +27,7 @@ DEMO_RECORDS = [
         "video_id": "v_001", "date": "2026-11-08", "track": "store", "platform": "douyin",
         "traffic_source": "local_feed", "observation_hours": 48, "duration_sec": 42,
         "published_at": "2026-11-08T10:00:00+08:00", "captured_at": "2026-11-10T10:00:00+08:00",
-        "title": "价格越高的菜利润越低", "style_id": "style_14",
+        "title": "价格越高的菜利润越低", "style_id": "style_01",
         "metrics": {
             "retention_3s": {"numerator": 11840, "denominator": 18500},
             "completion_rate": {"numerator": 6290, "denominator": 18500},
@@ -38,7 +38,7 @@ DEMO_RECORDS = [
         "video_id": "v_002", "date": "2026-11-09", "track": "store", "platform": "douyin",
         "traffic_source": "local_feed", "observation_hours": 48, "duration_sec": 44,
         "published_at": "2026-11-09T10:00:00+08:00", "captured_at": "2026-11-11T10:00:00+08:00",
-        "title": "八年老店老板的底线", "style_id": "style_14",
+        "title": "八年老店老板的底线", "style_id": "style_01",
         "metrics": {
             "retention_3s": {"numerator": 5336, "denominator": 9200},
             "completion_rate": {"numerator": 2852, "denominator": 9200},
@@ -60,7 +60,7 @@ DEMO_RECORDS = [
         "video_id": "v_004", "date": "2026-11-13", "track": "store", "platform": "douyin",
         "traffic_source": "local_feed", "observation_hours": 48, "duration_sec": 41,
         "published_at": "2026-11-13T10:00:00+08:00", "captured_at": "2026-11-15T10:00:00+08:00",
-        "title": "高于20块才敢用的鲜羊排真相", "style_id": "style_14",
+        "title": "高于20块才敢用的鲜羊排真相", "style_id": "style_01",
         "metrics": {
             "retention_3s": {"numerator": 16974, "denominator": 24600},
             "completion_rate": {"numerator": 9348, "denominator": 24600},

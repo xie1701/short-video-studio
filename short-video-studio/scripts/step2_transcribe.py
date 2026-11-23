@@ -1775,57 +1775,6 @@ def detect_speech_islands(
     return islands
 
 
-def probe_overlap_windows(
-    wav_path: Path,
-    win_sec: float = 5.0,
-    hop_sec: float = 2.5,
-    whisper_model: Optional[str] = None,
-    dialect: str = "mandarin",
-) -> List[Dict[str, Any]]:
-    """
-    重叠短窗口复核转写（真正不带文案 prompt、禁用前文条件依赖、纯离线缓存优先）：
-    专门暴露长句整段转写中容易被语言模型“顺滑合并吞掉”的重复起句与半截重说。
-    """
-    y16, sr = load_wav_16k_mono(wav_path)
-    total_sec = len(y16) / float(sr) if sr > 0 else 0.0
-    if total_sec < 0.4:
-        return []
-    eff_model = whisper_model or find_cached_whisper_model()
-    if not eff_model:
-        return []
-    try:
-        model = get_cached_whisper_model(eff_model, local_files_only=True)
-    except Exception:
-        return []
-    if model is None:
-        return []
-
-    lang_arg = "yue" if str(dialect or "").lower() in ("cantonese", "yue") else "zh"
-    rows: List[Dict[str, Any]] = []
-    t = 0.0
-    while t < total_sec:
-        s0 = int(t * sr)
-        s1 = int(min(t + win_sec, total_sec) * sr)
-        if s1 - s0 < int(sr * 0.4):
-            break
-        seg_audio = y16[s0:s1].astype(np.float32)
-        segs, _ = model.transcribe(
-            seg_audio,
-            language=lang_arg,
-            condition_on_previous_text=False,
-            temperature=0.0,
-            word_timestamps=False,
-        )
-        txt = "".join(str(sg.text or "").strip() for sg in segs).strip()
-        rows.append({
-            "win_start_sec": round(t, 2),
-            "win_end_sec": round(min(t + win_sec, total_sec), 2),
-            "text": txt,
-        })
-        t += max(0.5, float(hop_sec))
-    return rows
-
-
 def main() -> None:
     maybe_reexec_in_venv(("faster_whisper",))
     parser = argparse.ArgumentParser(description="Step 2: 语音转写、声学强制对齐、向量化指纹去画外音与 NG 择优")

@@ -38,11 +38,12 @@ from common import (
     write_json,
     write_wav_48k_stereo,
 )
+
+if __name__ == "__main__" or str(sys.argv[0]).endswith(".py"):
+    maybe_reexec_in_venv()
+
 from subset_fonts import collect_project_chars, subset_font_file
 from synth_motion_sfx import mix_sfx_cues
-
-if __name__ == "__main__":
-    maybe_reexec_in_venv()
 
 import numpy as np
 

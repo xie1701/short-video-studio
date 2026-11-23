@@ -361,8 +361,43 @@ def get_preferred_python() -> str:
     return sys.executable
 
 
+def _reexec_argv(preferred: str) -> List[str]:
+    """拼出「换成另一个解释器后要重跑的那条命令」。
+
+    `sys.argv[0]` 在 `python -m xxx` 下可能是 `"python3.15 -m unittest"` 这种带空格、
+    并不是文件路径的字符串（3.14+ 改的行为）；直接拿它当脚本名会得到
+    `can't open file '.../python3.15 -m unittest'`。优先用 `sys.orig_argv` 还原原始命令行。
+    """
+    orig = list(getattr(sys, "orig_argv", None) or [])
+    if orig and os.path.abspath(orig[0]) != os.path.abspath(preferred):
+        return [preferred, *orig[1:]]
+    argv0 = sys.argv[0] or ""
+    if argv0 and os.path.isfile(argv0):
+        return [preferred, *sys.argv]
+    return [preferred, *sys.argv[1:]]
+
+
+def _hosted_by_test_runner() -> bool:
+    """当前进程是不是被 pytest 之类的测试宿主拉起来的。
+
+    这些模块会在 import 期就调用 maybe_reexec_in_venv()（趁着 PIL 还没被 import、
+    缺包时还能切走）。但测试宿主下重启进程等于把测试运行器整个换掉：
+    `python -m pytest` 的 sys.argv[0] 正是 `.../pytest/__main__.py`，一样以 .py 结尾，
+    于是会拿「缺 scipy/edge_tts 的解释器」去 execve 专用 venv 跑 pytest，
+    结果没有任何报错地整场测试消失（exit 1、零输出）。测试进程一律不重启。
+    """
+    if os.environ.get("SVS_NO_REEXEC") == "1":
+        return True
+    if "pytest" in sys.modules or "unittest" in sys.modules and os.environ.get("PYTEST_CURRENT_TEST"):
+        return True
+    argv0 = os.path.abspath(sys.argv[0] or "")
+    return f"{os.sep}site-packages{os.sep}" in argv0 or "_pytest" in argv0
+
+
 def maybe_reexec_in_venv(extra_modules: Tuple[str, ...] = ()) -> None:
     """若核心渲染/声学包或指定扩展包缺失且专用 venv 可用，自动切换至专用 venv 执行。"""
+    if _hosted_by_test_runner():
+        return
     required = ("PIL", "numpy", "scipy", "edge_tts", *extra_modules)
     missing = any(importlib.util.find_spec(m) is None for m in required)
     if not missing:
@@ -372,7 +407,7 @@ def maybe_reexec_in_venv(extra_modules: Tuple[str, ...] = ()) -> None:
     if os.path.abspath(preferred) != os.path.abspath(sys.executable) and os.environ.get("SVS_IN_VENV") != "1":
         env = os.environ.copy()
         env["SVS_IN_VENV"] = "1"
-        os.execvpe(preferred, [preferred, *sys.argv], env)
+        os.execvpe(preferred, _reexec_argv(preferred), env)
 
 
 def find_bin(name: str) -> Optional[str]:
