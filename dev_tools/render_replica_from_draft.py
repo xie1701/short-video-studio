@@ -44,8 +44,145 @@ def _cache_tag(*parts) -> str:
     global _CODE_SIG
     if not _CODE_SIG:
         _CODE_SIG = _h.sha1(Path(__file__).read_bytes()).hexdigest()[:8]
-    blob = "|".join(str(p) for p in parts) + "|" + _CODE_SIG
+    blob = "|".join(str(p) for p in parts) + "|" + _CODE_SIG + "|" + _mask_code_sig()
     return _h.sha1(blob.encode()).hexdigest()[:8]
+
+
+def _mask_code_sig() -> str:
+    """mask_shapes.py 的指纹：shader 数学一改，遮罩 PNG/烘焙段全部失效重算。"""
+    import hashlib as _h
+    try:
+        return _h.sha1((SCRIPTS / "mask_shapes.py").read_bytes()).hexdigest()[:8]
+    except Exception:
+        return "nomask"
+
+
+# ---------- 剪映遮罩（materials.common_mask）真值解析 ----------
+# 遮罩挂在 segment.extra_material_refs（**不是** clip.mask），配置见 materials.common_mask[*].config。
+MASK_KF_PROPS = {
+    "KFTypeCommonMaskRoundCorner": "roundCorner",
+    "KFTypeCommonMaskFeather": "feather",
+    "KFTypeCommonMaskPositionX": "centerX",
+    "KFTypeCommonMaskPositionY": "centerY",
+}
+
+
+def mask_config(mat: dict) -> dict:
+    """common_mask 素材 → mask_shapes.mask_alpha 的 cfg（resource_type 提到顶层）。"""
+    cfg = dict(mat.get("config") or {})
+    cfg["resource_type"] = str(mat.get("resource_type") or cfg.get("resource_type") or "")
+    return cfg
+
+
+def segment_mask_config(seg: dict, mask_by_id: dict, report: dict | None = None) -> dict | None:
+    """段 → 遮罩 config（无遮罩 / 未复刻的遮罩类型返回 None，后者进 unrealized 不静默）。
+
+    草稿里遮罩被「关掉」时 material.type == "none"（style_21 实测：线性遮罩 type=none，原版成片根本没遮），
+    这种不是未实现，而是本来就不该生效 —— 不计数、不报 unrealized。
+    """
+    for ref in seg.get("extra_material_refs") or []:
+        m = mask_by_id.get(ref)
+        if not m:
+            continue
+        if str(m.get("type") or "mask").lower() == "none":
+            return None
+        cfg = mask_config(m)
+        if not _mask_shapes_ok(cfg):
+            if report is not None:
+                key = f"mask_unsupported_type:{cfg.get('resource_type') or '?'}"
+                report["unrealized"][key] = report["unrealized"].get(key, 0) + 1
+            return None
+        return cfg
+    return None
+
+
+def _mask_shapes_ok(cfg: dict) -> bool:
+    """只上真复刻过的遮罩类型（矩形/圆形/线性）；其它类型宁可不遮也不乱遮。"""
+    try:
+        from mask_shapes import is_supported  # noqa: E402  (SCRIPTS 已在调用方入 sys.path)
+        return is_supported(cfg.get("resource_type"))
+    except Exception:
+        return True
+
+
+def mask_keyframe_series(seg: dict, src_in: float, report: dict | None = None) -> dict:
+    """段上遮罩参数的关键帧序列 {prop: [(段内相对秒, 值)]}（keyframe 时间是源时间）。"""
+    out: dict = {}
+    for kfo in seg.get("common_keyframes") or []:
+        ptype = kfo.get("property_type") or ""
+        prop = MASK_KF_PROPS.get(ptype)
+        if prop is None:
+            if "Mask" in ptype and report is not None:
+                report["unrealized"]["mask_keyframe_unsupported"] = \
+                    report["unrealized"].get("mask_keyframe_unsupported", 0) + 1
+            continue
+        pts = []
+        for k in kfo.get("keyframe_list") or []:
+            v = k.get("values") or []
+            if v:
+                pts.append((max(0.0, float(k.get("time_offset") or 0) / US - float(src_in or 0.0)),
+                            float(v[0])))
+        if pts:
+            pts.sort()
+            out[prop] = pts
+    return out
+
+
+def mask_schedule(seg: dict, base_cfg: dict, dur: float, src_in: float, fps: int,
+                  report: dict | None = None) -> list:
+    """段内遮罩参数时间表 [(t0, t1, cfg)]，覆盖 [0, dur)，帧对齐。
+
+    无遮罩关键帧 → 单段静态（config 即真值）；有关键帧 → 首帧前保持首值、末帧后保持末值、
+    中间两点线性（与原版逐帧实测的顶边位置一致），**逐帧**烘焙后合并相同态，不按段近似。
+    """
+    ser = mask_keyframe_series(seg, src_in, report)
+    if not ser:
+        return [(0.0, float(dur), dict(base_cfg))]
+
+    def val(prop: str, t: float):
+        pts = ser.get(prop)
+        if not pts:
+            return base_cfg.get(prop)
+        if t <= pts[0][0]:
+            return pts[0][1]
+        if t >= pts[-1][0]:
+            return pts[-1][1]
+        for (t0, v0), (t1, v1) in zip(pts, pts[1:]):
+            if t0 <= t <= t1:
+                return v0 if t1 - t0 <= 1e-9 else v0 + (v1 - v0) * (t - t0) / (t1 - t0)
+        return pts[-1][1]
+
+    n_frames = max(1, int(round(float(dur) * fps)))
+    raw = []
+    for i in range(n_frames):
+        t0 = i / float(fps)
+        t1 = min(float(dur), (i + 1) / float(fps))
+        mid = 0.5 * (t0 + t1)
+        cfg = dict(base_cfg)
+        for prop in ser:
+            cfg[prop] = round(float(val(prop, mid)), 6)
+        raw.append((t0, t1, cfg))
+    merged: list = []
+    for t0, t1, cfg in raw:
+        if merged and merged[-1][2] == cfg and abs(merged[-1][1] - t0) < 1e-9:
+            merged[-1] = (merged[-1][0], t1, cfg)
+        else:
+            merged.append((t0, t1, cfg))
+    return merged
+
+
+def split_pieces_by_mask(pieces: list, sched: list, t_start: float) -> list:
+    """把主轨几何 pieces 按遮罩时间表切开，attach 对应遮罩 cfg（无遮罩时 cfg=None）。
+    注意两套时轴：pieces 用时间线秒，sched 用段内相对秒 —— 这里把 sched 平移 t_start。"""
+    out: list = []
+    for piece in pieces:
+        ta, tb, sc, tx, ty = piece[:5]
+        for m0, m1, cfg in sched:
+            a, b = max(ta, t_start + m0), min(tb, t_start + m1)
+            if b - a <= 1e-4:
+                continue
+            out.append((a, b, sc, tx, ty, cfg))
+    return out
 PX_PER_UNIT = 4.0  # 兜底值；实际按画布推导 canvas_w/192（实测 1080 宽草稿 = 5.625，与标题/字幕墨高吻合）
 CANVAS_W, CANVAS_H = 1080, 1920
 MAX_COMPOUND_DEPTH = 3
@@ -378,8 +515,11 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
     sys.path.insert(0, str(SCRIPTS))
     from common import read_json, write_json, find_bin, get_wav_duration_sec  # noqa: E402
     import render_mp4 as R  # noqa: E402
+    import mask_shapes as MS  # noqa: E402
     from step7_color_grade import run_step7  # noqa: E402
     from person_matting import generate_person_matte_video  # noqa: E402
+
+    ffmpeg_bin = find_bin("ffmpeg")
 
     tag = "tl" if depth == 0 else f"c{depth}"
     pdir = work / "pipeline"
@@ -428,7 +568,43 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
         return None
     txt_by_id = {t["id"]: t for t in mats.get("texts") or []}
     stk_by_id = {s["id"]: s for s in mats.get("stickers") or []}
+    mask_by_id = {m["id"]: m for m in mats.get("common_mask") or []}
     drafts_entries = {dr["id"]: dr for dr in (mats.get("drafts") or []) if dr.get("draft")}
+
+    # ---------- 1.5 剪映遮罩：alpha 场按 shader 数学算（mask_shapes），按 cfg+脚本指纹缓存 ----------
+    def mask_alpha_png(cfg: dict) -> Path:
+        import hashlib as _hl
+        key = _hl.sha1((json.dumps(cfg, sort_keys=True, ensure_ascii=False)
+                        + f"|{W}x{H}|{MS.FEATHER_GAIN}|{_mask_code_sig()}").encode()).hexdigest()[:12]
+        png = media_dir / f"mask_alpha_{key}.png"
+        if not png.is_file():
+            MS.save_alpha_png(MS.mask_alpha(W, H, cfg), png)
+        return png
+
+    def masked_media(src: str, s_in: float, dur: float, cfg: dict) -> Path:
+        """主轨口径：遮罩区内显示画面、区外纯黑，**整帧不透明**（烘成因×alpha 叠在黑底上）。
+
+        遮罩作用于图层（源画面）自身的 uv 空间，因此必须在 scale/位移/缩窗之前烘进画面。
+        """
+        dur = max(0.05, float(dur))
+        nfr = max(1, int(round(dur * fps)))
+        out = media_dir / ("masked_" + _cache_tag("mask_main", s_in, dur, json.dumps(cfg, sort_keys=True)) + ".mp4")
+        if not out.is_file():
+            png = mask_alpha_png(cfg)
+            # setpts + shortest=1：不给两条输入对齐 pts 的话，overlay 的 framesync 在 t=0 取不到 mask 帧，
+            # 会把首帧输出成纯黑（实测每个遮罩子段开头黑 1 帧）。
+            run_ffmpeg([ffmpeg_bin, "-y",
+                        "-f", "lavfi", "-i", f"color=c=black:s={W}x{H}:r={fps}:d={dur:.4f}",
+                        "-ss", f"{s_in:.4f}", "-t", f"{dur:.4f}", "-i", src,
+                        "-loop", "1", "-i", str(png),
+                        "-filter_complex",
+                        f"[1:v]fps={fps},setpts=PTS-STARTPTS,{cover_crop_vf(W, H)},format=rgba[fg];"
+                        f"[2:v]fps={fps},setpts=PTS-STARTPTS,format=gray[mask];[fg][mask]alphamerge[ma];"
+                        f"[0:v]setpts=PTS-STARTPTS[bg];"
+                        f"[bg][ma]overlay=0:0:shortest=1:eof_action=repeat:format=auto,format=yuv420p[v]",
+                        "-map", "[v]", "-frames:v", str(nfr), "-an",
+                        "-c:v", "libx264", "-preset", "medium", "-crf", "12", str(out)], timeout=600)
+        return out
 
     def resolve_compound(seg: dict) -> dict | None:
         """段 → 内嵌子时间线 dict（经 extra_material_refs 关联）。"""
@@ -676,7 +852,17 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             if _fs is not None or _fx is not None or _fy is not None:
                 report["unrealized"]["main_keyframe_static_end"] = report["unrealized"].get("main_keyframe_static_end", 0) + 1
             pieces.append((t_start, _t_end, _fs if _fs is not None else sc0, tx, ty))
-        for _pi, (_ta, _tb, _sc_p, _ptx, _pty) in enumerate(pieces):
+        # 剪映遮罩：config/keyframe → 时间表（静态就是单段），再把几何 pieces 按表切开
+        _mask_cfg = segment_mask_config(s, mask_by_id, report)
+        if _mask_cfg is not None:
+            _sched = mask_schedule(s, _mask_cfg, t_dur, s_in, fps, report)
+            if len(_sched) > 1:
+                report.setdefault("notes", []).append(
+                    f"主轨 {k}: 遮罩参数逐帧（{len(_sched)} 态）烘焙")
+            pieces = split_pieces_by_mask(pieces, _sched, t_start)
+        else:
+            pieces = [tuple(p[:5]) + (None,) for p in pieces]
+        for _pi, (_ta, _tb, _sc_p, _ptx, _pty, _mcfg) in enumerate(pieces):
             if _tb - _ta <= 1e-4:
                 continue
             _f_in = int(round(_ta * fps))
@@ -689,11 +875,18 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 _f_out = _f_in + 1
             _s_in_p = s_in + (_f_in / fps - t_start) * speed
             _s_out_p = _s_in_p + ((_f_out - _f_in) / fps) * speed
+            _piece_src = src
+            if _mcfg is not None:
+                # 遮罩在图层空间：先烘成「画面×alpha 叠黑底」的不透明整帧，再走 scale/缩窗几何
+                _piece_src = str(masked_media(src, _s_in_p, _s_out_p - _s_in_p, _mcfg))
+                _s_in_p, _s_out_p = 0.0, _s_out_p - _s_in_p
+                if depth == 0:
+                    report["masked_main_segments"] = report.get("masked_main_segments", 0) + 1
             cid = f"m{k:03d}" if len(pieces) == 1 else f"m{k:03d}p{_pi}"
             _clip = {
                 "clip_id": cid,
                 "track_role": "a_roll",
-                "media_path": src,
+                "media_path": _piece_src,
                 "source_in_sec": round(_s_in_p, 4),
                 "source_out_sec": round(_s_out_p, 4),
                 "duration_sec": round((_f_out - _f_in) / fps, 4),
@@ -782,7 +975,6 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
         color_plan = {"clip_plans": [], "lut_path": ""}
 
     # ---------- 5. 主轨渲染 ----------
-    ffmpeg_bin = find_bin("ffmpeg")
     if clips:
         base_mp4 = R.build_base_video_track(pdir, edl, color_plan, master, manifest={"items": []}, preview=preview)
     elif alpha_out:
@@ -871,12 +1063,32 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             # 注：不做「与主轨同素材同几何就跳过」——那是 z 序三明治手法（主轨上面盖卡片、
             # 再叠同素材抠像人物），删了会把 8s 这类层序弄丢；抠像错位问题已由 fps 对齐根治。
             alpha_src = bool(ckey and _compound_is_visual(drafts_entries[ckey]["draft"]))
-            seg_p = media_dir / (f"ov_{t_idx:02d}_{o:02d}_{_cache_tag('ov', s_in, s_dur, sc, tx, ty, alpha, fps, flip)}" + (".mov" if alpha_src else ".mp4"))
+            # 叠加轨遮罩：遮罩区外必须**透明**（透出下层），所以走 alpha 路径（ProRes4444 + alphamerge）
+            ov_mask = segment_mask_config(s, mask_by_id, report)
+            seg_ext = ".mov" if (alpha_src or ov_mask) else ".mp4"
+            seg_p = media_dir / (f"ov_{t_idx:02d}_{o:02d}_{_cache_tag('ov', s_in, s_dur, sc, tx, ty, alpha, fps, flip, json.dumps(ov_mask, sort_keys=True) if ov_mask else '')}" + seg_ext)
             if not seg_p.is_file():
                 fl = "hflip," if flip.get("h") else ("vflip," if flip.get("v") else "")
                 _ov_blur = _seg_blur_sigma(s)
                 fl = (f"gblur=sigma={_ov_blur:.2f}," if _ov_blur else "") + fl
-                if alpha_src:
+                _ov_scale = (f",scale={int(round(W * sc / 2)) * 2}:{int(round(H * sc / 2)) * 2}:flags=bicubic"
+                             if abs(sc - 1.0) > 1e-3 else "")
+                if ov_mask:
+                    # 遮罩作用于图层（源画面）uv 空间：先 cover-crop 到整帧，再 alphamerge，最后才缩放
+                    _png = mask_alpha_png(ov_mask)
+                    _nfr = max(1, int(round(max(0.05, s_dur) * fps)))
+                    _in0 = (["-loop", "1", "-i", src] if (mat.get("type") or "") == "photo"
+                            else ["-ss", f"{s_in:.4f}", "-t", f"{max(0.05, s_dur):.4f}", "-i", src])
+                    run_ffmpeg([ffmpeg_bin, "-y", *_in0, "-loop", "1", "-i", str(_png),
+                                "-filter_complex",
+                                f"[0:v]fps={fps},setpts=PTS-STARTPTS,format=rgba,{fl}" + cover_crop_vf(W, H) + "[fg];"
+                                f"[1:v]fps={fps},setpts=PTS-STARTPTS,format=gray[mask];[fg][mask]alphamerge" + _ov_scale + "[v]",
+                                "-map", "[v]", "-frames:v", str(_nfr), "-an",
+                                "-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le",
+                                str(seg_p)], timeout=600)
+                    if depth == 0:
+                        report["masked_overlay_segments"] = report.get("masked_overlay_segments", 0) + 1
+                elif alpha_src:
                     # 复合片段输出是 ProRes4444 带 alpha：抽段必须保 alpha
                     run_ffmpeg([ffmpeg_bin, "-y", "-ss", f"{s_in:.4f}", "-t", f"{max(0.05, s_dur):.4f}", "-i", src,
                                 "-vf", f"fps={fps},format=rgba,{fl}" + cover_crop_vf(W, H)
@@ -927,6 +1139,9 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
     for t_idx, segs in cls["texts"]:
         for o, s in enumerate(segs):
             mat = txt_by_id.get(s.get("material_id")) or {}
+            if mask_by_id and any(r in mask_by_id for r in (s.get("extra_material_refs") or [])):
+                # 文本层遮罩没接（目前只做了视频轨）：计数不静默跳过
+                report["unrealized"]["mask_on_text_or_sticker"] = report["unrealized"].get("mask_on_text_or_sticker", 0) + 1
             if not mat:
                 report["unrealized"]["text_missing_material"] = report["unrealized"].get("text_missing_material", 0) + 1
                 continue
@@ -959,6 +1174,8 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
     for t_idx, segs in cls["stickers"]:
         for o, s in enumerate(segs):
             mat = stk_by_id.get(s.get("material_id")) or {}
+            if mask_by_id and any(r in mask_by_id for r in (s.get("extra_material_refs") or [])):
+                report["unrealized"]["mask_on_text_or_sticker"] = report["unrealized"].get("mask_on_text_or_sticker", 0) + 1
             src = _subst(mat.get("path") or "", base_dir)
             if not src or not Path(src).is_file():
                 report["unrealized"]["stickers"] = report["unrealized"].get("stickers", 0) + 1
@@ -1147,6 +1364,7 @@ def replicate_style(style_id: str, draft_name: str, out_dir: Path, draft_root: P
         "style_id": style_id, "draft": draft_dir.name,
         "main_segments": 0, "overlay_segments": 0, "matte_done": 0, "matte_failed": 0,
         "text_segments": 0, "sticker_segments": 0,
+        "masked_main_segments": 0, "masked_overlay_segments": 0,
         "compounds_rendered": [], "unrealized": {}, "notes": [],
     }
     final = render_timeline(draft, draft_dir, style_id, work, 30, preview, report, depth=0)
