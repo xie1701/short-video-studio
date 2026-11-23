@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -104,6 +105,20 @@ def render_one_layer(
     return out
 
 
+def _layer_tag(draw_w: int, draw_h: int, cx: float, cy: float, dur: float, fps: float) -> str:
+    """图层缓存指纹：几何/时长/帧率 + 脚本自身 sha1 前 8 位。
+
+    只按文件名（st_01_010433.mov）缓存会让上一版算错的图层被永久复用——
+    曾经出现过“素材解对了但叠上去还是全透明”的假象，真因就是陈旧缓存。
+    """
+    src = f"{draw_w}x{draw_h}@{cx:.1f},{cy:.1f}|{dur:.4f}|{fps:g}"
+    try:
+        src += "|" + hashlib.sha1(Path(__file__).read_bytes()).hexdigest()[:8]
+    except OSError:
+        pass
+    return hashlib.sha1(src.encode("utf-8")).hexdigest()[:8]
+
+
 def plan_sticker_layers(
     draft: dict, base_dir: Path, canvas_w: int, canvas_h: int,
     out_fps: float, total_sec: float, work: Path, report: dict,
@@ -162,7 +177,7 @@ def plan_sticker_layers(
                 report.setdefault("sticker_notes", []).append(f"{mat.get('name')}: 旋转 {rot:.1f}° 未实现")
             if depth == 0:
                 pass
-            out = work / "stickers" / (f"st_{k:02d}_{int(t_start * 1000):06d}.mov")
+            out = work / "stickers" / (f"st_{k:02d}_{int(t_start * 1000):06d}_{_layer_tag(draw_w, draw_h, cx, cy, dur, out_fps)}.mov")
             if not out.is_file() or out.stat().st_size < 1024:
                 render_one_layer(seq.frames_dir, seq.static, seq.fps, out,
                                  canvas_w, canvas_h, draw_w, draw_h, cx, cy,
@@ -190,9 +205,12 @@ def overlay_stickers(video_in: Path, layers: List[StickerLayer], video_out: Path
     chain = []
     cur = "[0:v]"
     for i, l in enumerate(layers, start=1):
-        en = f"between(t,{l.t_start:.4f},{l.t_start + l.dur:.4f})"
+        # overlay 的第二路输入按**绝对时间**取帧：必须把图层从 0 平移到它的时间窗口，
+        # 否则 10.4s 才开始的那层在 10.4s 时早已 EOF（eof_action=pass 直接跳过 → 什么都不叠）。
+        chain.append(f"[{i}:v]setpts=PTS+{l.t_start:.4f}/TB,format=rgba[l{i}]")
         nxt = f"[v{i}]"
-        chain.append(f"{cur}[{i}:v]overlay=0:0:eof_action=pass:enable='{en}'{nxt}")
+        en = f"between(t,{l.t_start:.4f},{l.t_start + l.dur:.4f})"
+        chain.append(f"{cur}[l{i}]overlay=0:0:format=auto:eof_action=pass:enable='{en}'{nxt}")
         cur = nxt
     graph = ";".join(chain)
     _run(["ffmpeg", "-y", "-v", "error", *inputs,
