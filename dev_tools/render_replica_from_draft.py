@@ -409,6 +409,18 @@ def layer_geometry(mat: dict, src_path: str, canvas_w: int, canvas_h: int, scale
     return {"lw": max(2, int(round(lw / 2)) * 2), "lh": max(2, int(round(lh / 2)) * 2), "crop": crop}
 
 
+def layer_geometry_xy(mat: dict, src_path: str, canvas_w: int, canvas_h: int,
+                      sx: float, sy: float) -> dict:
+    """非等比几何：剪映的 scale.x / scale.y 可以不同（KFTypeScaleX/KFTypeScaleY 分开插值）。
+
+    layer_geometry 只吃一个标量（等比），这里先用 1.0 倍算出 contain 基准尺寸，再按轴各自缩放。
+    """
+    g = layer_geometry(mat, src_path, canvas_w, canvas_h, 1.0)
+    return {"lw": max(2, int(round(g["lw"] * float(sx) / 2)) * 2),
+            "lh": max(2, int(round(g["lh"] * float(sy) / 2)) * 2),
+            "crop": g.get("crop")}
+
+
 def layer_vf(geom: dict, canvas_w: int, canvas_h: int) -> str:
     """图层几何 → ffmpeg 滤镜串（crop → scale）；几何与整帧相同时返回空串（不白降画质）。"""
     parts = []
@@ -719,6 +731,56 @@ def _kv(pts: list, t: float) -> float:
             span = max(1e-6, t1 - t0)
             return v0 + (v1 - v0) * (t - t0) / span
     return pts[-1][1]
+
+
+KF_SCALE_MAX_SLICES = 120
+
+
+def kf_scale_schedule(px: list, py: list, t_start: float, t_dur: float, fps: float):
+    """缩放关键帧点列 → 逐帧几何时间表 [(段内起, 段内止, scale_x, scale_y)]，覆盖整段 [0, t_dur]。
+
+    为什么必须逐帧（旧实现取「保持最久」的稳态值一处画完）：
+      剪映把「连续缩小」写成两点 keyframe，播放时是**逐帧插值**——既不是常数、也不是两段拼接。
+      style_21 人像叠层 KFTypeScaleX 1.5 → 1.2（源时间 2.4→2.5667，即段内 0→0.1667s），
+      旧实现按常数 1.2 画，人像整层小一圈：1.683s 整帧差 14.77，同段稳定帧只有 6–8。
+
+    采样口径与主轨缩窗那条（已验证）一致：**帧起点**采样，第 i 帧用「这一帧起点时刻」的曲线值
+    （t = (f0+i)/fps），不做半帧中点补偿——中点采样会让整段领先原版半帧，缩窗那段实测差 83 px。
+    掐点按帧号对齐（round(t·fps)）；按秒均分会取到非整帧的子段，拼接后帧网格漂移。
+
+    px/py 的 t 都是**段内相对秒**（调用方已用容器 PTS 基归一）；py 缺省 = 跟 px 等比。
+    返回 None = 这条曲线不值得/不能切帧（单点、零跨度、或帧数超上限）。
+    """
+    if not px or len(px) < 2:
+        return None
+    pts = sorted(px)
+    t0, t1 = pts[0][0], pts[-1][0]
+    if t1 - t0 <= 1e-6:
+        return None
+    t1 = min(t1, float(t_dur))
+    f0 = int(round((t_start + t0) * fps))
+    f1 = int(round((t_start + t1) * fps))
+    n = f1 - f0
+    if n <= 0 or n > KF_SCALE_MAX_SLICES:
+        return None
+
+    def _pair(t_rel: float):
+        sx = float(_kv(pts, t_rel))
+        sy = float(_kv(sorted(py), t_rel)) if py else sx
+        return sx, sy
+
+    out = []
+    a0 = f0 / fps - t_start
+    if a0 > 1e-6:
+        out.append((0.0, a0) + _pair(a0))
+    for i in range(n):
+        ta = (f0 + i) / fps - t_start
+        tb = (f0 + i + 1) / fps - t_start
+        out.append((ta, tb) + _pair(ta))
+    a1 = f1 / fps - t_start
+    if t_dur - a1 > 1e-6:
+        out.append((a1, float(t_dur)) + _pair(a1))
+    return out
 
 
 def _anim_base_png(src: str, mat: dict, geom: dict, out_png: Path, flip: dict | None = None) -> Path:
@@ -1760,12 +1822,36 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 alpha = 1.0
                 report["unrealized"]["overlay_keyframe_animations"] = report["unrealized"].get("overlay_keyframe_animations", 0) + 1
             pos_kf = None
-            # 叠加层缩放 keyframe：取“保持最久”的稳态值（卡片是 0.234 保持到 2.22s 再飞走，取终值 0.01 等于弄丢图层）
-            _kfsx = _kf_rel(s, "KFTypeScaleX", s_in)
-            _sc_steady = _kf_steady(_kfsx, t_dur)
+            # 叠加层缩放 keyframe：**逐帧**渲染（旧实现取「保持最久」的稳态值一处画完）。
+            #
+            # 旧行为 = 「取稳态常数」：style_21 人像叠层 KFTypeScaleX 1.5→1.2（段内 0→0.1667s），
+            # 两点各保持 0s / 0.983s → 选终值 1.2 铺满全段。原版这 0.167s 内是连续缩小的，
+            # 于是 1.683s 那人像整层小 22%（整帧差 14.77，同段稳定帧 6–8）。
+            #
+            # 时间口径：keyframe 的 time_offset 与 source_timerange.start 同为**容器 PTS**口径
+            # （= 段源入点 + 素材首帧 PTS），所以基要加 media_start_time；用 ffmpeg 的 -ss 口径
+            # 会整体偏一帧（主轨缩窗那条已验证）。
+            _kf_base = s_in + media_start_time(src)
+            _kfsx = _kf_rel(s, "KFTypeScaleX", _kf_base)
+            _kfsy = _kf_rel(s, "KFTypeScaleY", _kf_base)
+            if len(_kfsy) != len(_kfsx):
+                _kfsy = []          # Y 轴点数对不上就当等比（宁可等比也不乱堆一条错曲线）
+            _sc_series = _kfsx or _kfsy
+            _sc_anim = None
+            if len(_sc_series) >= 2:
+                _vmin = min(v for _t, v in _sc_series)
+                _vmax = max(v for _t, v in _sc_series)
+                # 跨度太小 = 同一值写了两点（不是动画）；≤0.05 是「打字机/缩放入场起手态」，
+                # 那种按下面的稳态分支处理（铺开画），不能拿它逐帧当 0 面积渲染。
+                if abs(_vmax - _vmin) > 1e-3 and _vmin > 0.05:
+                    _sc_anim = kf_scale_schedule(_kfsx or _kfsy, _kfsy, t_start, t_dur, float(fps))
+            _sc_steady = _kf_steady(_sc_series, t_dur)
             if _sc_steady is not None and abs(_sc_steady - sc) > 1e-3 and not (sc < 0.05):
+                # 抽段/抠像仍按稳态尺寸做（避免为了一段动画把整段重新抠像），
+                # 逐帧几何在合成侧按比例缩放（见 composite 的 scale_kf 分支）。
                 sc = _sc_steady
-                report["unrealized"]["overlay_keyframe_scale_end"] = report["unrealized"].get("overlay_keyframe_scale_end", 0) + 1
+                if _sc_anim is None:
+                    report["unrealized"]["overlay_keyframe_scale_end"] = report["unrealized"].get("overlay_keyframe_scale_end", 0) + 1
             if len(_kfx) == 2 and len(_kfy) == 2 and _kfx[1][0] > _kfx[0][0] and _kfy[1][0] > _kfy[0][0]:
                 pos_kf = (_kfx, _kfy)
                 report["unrealized"]["overlay_keyframe_position"] = report["unrealized"].get("overlay_keyframe_position", 0) + 1
@@ -1823,6 +1909,24 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                     for _nm in fallback_names(_specs):
                         report["unrealized"][_nm] = report["unrealized"].get(_nm, 0) + 1
                 continue
+            # 缩放关键帧的逐帧几何表：合成时一路输入切 K 段、每段各自 scale。
+            # 遮罩层 / 已走 PIL 逐帧动画的层不在这里切（两者的几何通路会打架），如实计数。
+            scale_kf = None
+            if _sc_anim:
+                if ov_mask is None:
+                    scale_kf = []
+                    for (_ta, _tb, _sxa, _sya) in _sc_anim:
+                        if abs(_sxa - sc) < 1e-9 and abs(_sya - sc) < 1e-9:
+                            _g = geom          # 稳态帧：就是抽段本身的尺寸，不白多一次重采样
+                        else:
+                            _g = layer_geometry_xy(mat, src, W, H, _sxa, _sya)
+                        scale_kf.append((t_start + _ta, t_start + _tb, _g["lw"], _g["lh"]))
+                    if depth == 0:
+                        report["unrealized"]["overlay_kf_scale_sliced"] = \
+                            report["unrealized"].get("overlay_kf_scale_sliced", 0) + len(scale_kf)
+                else:
+                    report["unrealized"]["overlay_kf_scale_masked"] = \
+                        report["unrealized"].get("overlay_kf_scale_masked", 0) + 1
             seg_ext = ".mov" if (alpha_src or ov_mask) else ".mp4"
             # 缓存指纹必须含模糊 sigma：否则改了标定系数旧段会被永久复用（“改了不生效”陷阱）
             seg_p = media_dir / (f"ov_{t_idx:02d}_{o:02d}_{_cache_tag('ov', s_in, s_dur, sc, tx, ty, alpha, fps, flip, json.dumps(geom, sort_keys=True), json.dumps(ov_mask, sort_keys=True) if ov_mask else '', _seg_blur_sigma(s))}" + seg_ext)
@@ -1918,7 +2022,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             units.append((t_idx, o, {
                 "kind": "video", "seg": seg_p, "matte": matte_p, "t_start": t_start, "t_dur": t_dur,
                 "scale": sc, "lw": lw, "lh": lh, "tx": tx, "ty": ty, "alpha": alpha,
-                "fade": fade, "pos_kf": pos_kf,
+                "fade": fade, "pos_kf": pos_kf, "scale_kf": scale_kf,
             }))
             if depth == 0:
                 report["overlay_segments"] += 1
@@ -2113,17 +2217,83 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 matte_i = n_in
                 inputs += ["-i", str(u["matte"])]
                 n_in += 1
-                dur_u = min(u["t_dur"], total_sec - u["t_start"])
-                t0_u = u["t_start"]
-                # 前景与 matte 强制同 fps 同长（Vision 抠像输出帧率会漂，不拉齐就是逐帧错位的鬼影）；
-                # 流必须平移到 t_start：enable 只管显隐，叠层流从 0 开始消费会让内容时间戳全错
-                fc_parts.append(
-                    f"[{seg_i}:v]fps={fps},setpts=PTS-STARTPTS,trim=duration={dur_u:.4f},setpts=PTS+{t0_u:.4f}/TB,format=rgba[fg{n}];"
-                    f"[{matte_i}:v]fps={fps},setpts=PTS-STARTPTS,trim=duration={dur_u:.4f},setpts=PTS+{t0_u:.4f}/TB,format=gray[mm{n}];"
-                    f"[fg{n}][mm{n}]alphamerge[cut{n}]"
-                )
-            else:
-                fc_parts.append(f"[{seg_i}:v]fps={fps},setpts=PTS+{u['t_start']:.4f}/TB,format=rgba[cut{n}]")
+            _skf = u.get("scale_kf") or []
+            if not _skf:
+                if u["matte"]:
+                    dur_u = min(u["t_dur"], total_sec - u["t_start"])
+                    t0_u = u["t_start"]
+                    # 前景与 matte 强制同 fps 同长（Vision 抠像输出帧率会漂，不拉齐就是逐帧错位的鬼影）；
+                    # 流必须平移到 t_start：enable 只管显隐，叠层流从 0 开始消费会让内容时间戳全错
+                    fc_parts.append(
+                        f"[{seg_i}:v]fps={fps},setpts=PTS-STARTPTS,trim=duration={dur_u:.4f},setpts=PTS+{t0_u:.4f}/TB,format=rgba[fg{n}];"
+                        f"[{matte_i}:v]fps={fps},setpts=PTS-STARTPTS,trim=duration={dur_u:.4f},setpts=PTS+{t0_u:.4f}/TB,format=gray[mm{n}];"
+                        f"[fg{n}][mm{n}]alphamerge[cut{n}]"
+                    )
+                else:
+                    fc_parts.append(f"[{seg_i}:v]fps={fps},setpts=PTS+{u['t_start']:.4f}/TB,format=rgba[cut{n}]")
+            if _skf:
+                # 缩放关键帧逐帧：一路输入 split 成 K 支，每支 trim 出自己那几帧、各自 scale 到
+                # 「该帧自己的图层像素尺寸」，再按它自己的时间窗 overlay。
+                # 为什么不在 PIL 里烘：这层带抠像（人物 alpha 在单独的 matte 流里），
+                # PIL 烘图层会绕开 alphamerge；切片方式让 alphamerge 照旧逐帧做，
+                # 几何只换成「这一帧的尺寸」，其它（抠像/描边/遮罩外的 z 序）一点不动。
+                # 渐隐/透明度必须留在 split 之前：fade 是按绝对时间算的，切片后每段起点不同会算错。
+                _K = len(_skf)
+                _t0u = u["t_start"]
+                # 时间轴：整条流一次性平移到 t_start，**切片不再各自 setpts**。
+                # 为什么不能逐片 setpts：`setpts=PTS+{ta:.4f}/TB` 的 ta/TB 会截断成整数帧号，
+                # ta=0.0833 → 4.998 → 4（早了整整一帧），于是首片之后就整体领先原版 1 帧
+                # （实测 0–1.67s 叠层内容错一帧，奇偶帧交替差 2.5–3.9）。一次性平移只有一个
+                # 全局截断（≤1/60 帧、所有帧一起），切片只靠 trim 选帧 + enable 管显隐。
+                _pre = f"fps={fps},setpts=PTS-STARTPTS+{_t0u:.6f}/TB,format=rgba"
+                if u.get("fade"):
+                    _d0, _dd, _ds = u["fade"]
+                    _pre += f",fade=t={_d0}:st={_t0u + _ds:.4f}:d={_dd:.4f}:alpha=1"
+                if abs(u["alpha"] - 1.0) > 1e-3:
+                    _pre += f",colorchannelmixer=aa={u['alpha']:.3f}"
+                fc_parts.append(f"[{seg_i}:v]{_pre},split={_K}"
+                                + "".join(f"[kf{n}_{k}]" for k in range(_K)))
+                if u["matte"]:
+                    fc_parts.append(
+                        f"[{matte_i}:v]fps={fps},setpts=PTS-STARTPTS+{_t0u:.6f}/TB,format=gray,split={_K}"
+                        + "".join(f"[km{n}_{k}]" for k in range(_K)))
+                _dbg = []
+                # enable 窗口整体前移 2 ms（1/60 帧的 12%）：每个切片只覆盖「自己那几帧」。
+                # 不能直接用 [ta, tb]：秒值只能写到 1e-4，而帧间隔是 1/60=0.0166667，
+                # 四舍五入后边界会落在帧时间的一侧——t=0.0666667 对 0.0667 来说「不到」，
+                # 上一段又已经在 0.0667 结束，那一帧就落到上一段的尾帧上（逐帧错位一帧，
+                # 实测 0–1.67s 叠层逐帧后奇偶帧交替差 2.5–3.9，偶数帧与旧实现一致）。
+                # 结论：边界必须带一个小于半帧的固定偏移，每一帧就恰好落在一个窗口里。
+                _EPS = 0.002
+                for k, (_ta, _tb, _kw, _kh) in enumerate(_skf):
+                    _fa = max(0, int(round((_ta - _t0u) * fps)))
+                    _fb = max(_fa + 1, int(round((_tb - _t0u) * fps)))
+                    _tbe = min(_tb, total_sec)
+                    fc_parts.append(
+                        f"[kf{n}_{k}]trim=start_frame={_fa}:end_frame={_fb},"
+                        f"scale={_kw}:{_kh}:flags=lanczos[kfg{n}_{k}]")
+                    if u["matte"]:
+                        fc_parts.append(
+                            f"[km{n}_{k}]trim=start_frame={_fa}:end_frame={_fb},"
+                            f"scale={_kw}:{_kh}:flags=bicubic[kmg{n}_{k}]")
+                        fc_parts.append(f"[kfg{n}_{k}][kmg{n}_{k}]alphamerge[kfa{n}_{k}]")
+                    _lbl = f"[kfa{n}_{k}]" if u["matte"] else f"[kfg{n}_{k}]"
+                    _en = f"enable='between(t,{_ta - _EPS:.4f},{_tbe - _EPS:.4f})'"
+                    if u.get("pos_kf"):
+                        _pkx, _pky = u["pos_kf"]
+                        _xs = _kf_piecewise(_pkx, _t0u, W / 2.0, W / 2.0 - _kw / 2)
+                        _ys = _kf_piecewise(_pky, _t0u, -H / 2.0, H / 2.0 - _kh / 2)
+                        _xs_s, _ys_s = f"'{_xs}'", f"'{_ys}'"
+                    else:
+                        _xs_s = f"{int(round((W - _kw) / 2 + u['tx'] * W / 2))}"
+                        _ys_s = f"{int(round((H - _kh) / 2 - u['ty'] * H / 2))}"
+                    fc_parts.append(f"{cur}{_lbl}overlay=x={_xs_s}:y={_ys_s}:{_en}[v{n}_{k}]")
+                    cur = f"[v{n}_{k}]"
+                    _dbg.append(f"{_ta:.3f}-{_tbe:.3f}:{_kw}x{_kh}")
+                if depth == 0:
+                    report.setdefault("notes", []).append(
+                        f"叠层 {t_idx}/{o}: 缩放关键帧逐帧 {_K} 段（{_dbg[0]} … {_dbg[-1]}）")
+                continue
             _cut_lbl = f"[cut{n}]"
             if u.get("fade"):
                 _dir, _d, _st_off = u["fade"]
