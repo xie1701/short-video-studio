@@ -1,0 +1,191 @@
+{
+ "note": "剪映字体名（含扩展名）→ 随包字体文件。kind：bundled=已随包（assets/fonts/jianying/<剪映原名>）、alias=剪映商品名对应的开源字体已在 assets/fonts/ 根、missing=本机也没有（套用时回落并在报告计 font_fallback_slots）",
+ "entries": {
+  "得意黑.ttf": {
+   "kind": "alias",
+   "file": "assets/fonts/SmileySans-Oblique.ttf",
+   "note": "得意黑 即 Smiley Sans（开源），内置目录已有该开源字体"
+  },
+  "思源宋体-Bold.otf": {
+   "kind": "alias",
+   "file": "assets/fonts/SourceHanSerifCN-Bold.otf",
+   "note": "思源宋体 Bold 即 Source Han Serif CN Bold（内置目录已有）"
+  },
+  "思源宋体-Heavy.otf": {
+   "kind": "alias",
+   "file": "assets/fonts/SourceHanSerifCN-Heavy.otf",
+   "note": "思源宋体 Heavy 即 Source Han Serif CN Heavy（内置目录已有）"
+  },
+  "阿里巴巴普惠体-Bold.otf": {
+   "kind": "alias",
+   "file": "assets/fonts/AlimamaShuHeiTi-Bold.otf",
+   "note": "阿里巴巴普惠体（内置目录已有）"
+  },
+  "马善政毛笔楷书.ttf": {
+   "kind": "alias",
+   "file": "assets/fonts/MaShanZheng-Regular.ttf",
+   "note": "马善政楷书（内置目录已有）"
+  },
+  "FZQKBYSJW.ttf": {
+   "kind": "bundled",
+   "file": "assets/fonts/jianying/FZQKBYSJW.ttf",
+   "sha12": "574df42f593b",
+   "bytes": 4041244
+  },
+  "新青年体-文跃新青年体.ttf": {
+   "kind": "bundled",
+   "file": "assets/fonts/jianying/新青年体-文跃新青年体.ttf",
+   "sha12": "3965eb207306",
+   "bytes": 1314056
+  },
+  "封神榜书.ttf": {
+   "kind": "bundled",
+   "file": "assets/fonts/jianying/封神榜书.ttf",
+   "sha12": "4a2701607972",
+   "bytes": 28680172
+  },
+  "JYyoumo.ttf": {
+   "kind": "bundled",
+   "file": "assets/fonts/jianying/JYyoumo.ttf",
+   "sha12": "51e6d8565dfb",
+   "bytes": 12049392
+  },
+  "字语圆体.ttf": {
+   "kind": "bundled",
+   "file": "assets/fonts/jianying/字语圆体.ttf",
+   "sha12": "359d4e9e135b",
+   "bytes": 3205832
+  },
+  "WenYue-HuiMoShouShu-J.otf": {
+   "kind": "bundled",
+   "file": "assets/fonts/jianying/WenYue-HuiMoShouShu-J.otf",
+   "sha12": "7f2e2973b7b9",
+   "bytes": 35102220
+  },
+  "Aa研宋.ttf": {
+   "kind": "bundled",
+   "file": "assets/fonts/jianying/Aa研宋.ttf",
+   "sha12": "bc9cadc3746b",
+   "bytes": 2659208
+  },
+  "FZCuJinLJW.ttf": {
+   "kind": "bundled",
+   "file": "assets/fonts/jianying/FZCuJinLJW.ttf",
+   "sha12": "3c15643db0ef",
+   "bytes": 6189036
+  },
+  "Aa未来黑.ttf": {
+   "kind": "bundled",
+   "file": "assets/fonts/jianying/Aa未来黑.ttf",
+   "sha12": "0dbecd3aed30",
+   "bytes": 1599044
+  },
+  "特黑体-思源黑体1号.otf": {
+   "kind": "bundled",
+   "file": "assets/fonts/jianying/特黑体-思源黑体1号.otf",
+   "sha12": "f178cae1188a",
+   "bytes": 8785564
+  },
+  "SourceHanSerifCN-Heavy.otf": {
+   "kind": "bundled",
+   "file": "assets/fonts/jianying/SourceHanSerifCN-Heavy.otf",
+   "sha12": "78101f93fb76",
+   "bytes": 11304840
+  },
+  "HelloFont_ID_JianSong_95.ttf": {
+   "kind": "bundled",
+   "file": "assets/fonts/jianying/HelloFont_ID_JianSong_95.ttf",
+   "sha12": "50ecdf538363",
+   "bytes": 2143588
+  },
+  "黄令东齐伋复刻体.ttf": {
+   "kind": "bundled",
+   "file": "assets/fonts/jianying/黄令东齐伋复刻体.ttf",
+   "sha12": "dd8ba1e7db11",
+   "bytes": 41498576
+  },
+  "造字工房俊雅体.ttf": {
+   "kind": "bundled",
+   "file": "assets/fonts/jianying/造字工房俊雅体.ttf",
+   "sha12": "23dbc7c65f6c",
+   "bytes": 4817812
+  },
+  "默陌专辑手写体.ttf": {
+   "kind": "bundled",
+   "file": "assets/fonts/jianying/默陌专辑手写体.ttf",
+   "sha12": "99569a75ff8e",
+   "bytes": 9637932
+  },
+  "喜鹊古字典体(字节试用版).ttf": {
+   "kind": "bundled",
+   "file": "assets/fonts/jianying/喜鹊古字典体(字节试用版).ttf",
+   "sha12": "2a4b23cb00d3",
+   "bytes": 25682572
+  },
+  "DouyinSansBold.otf": {
+   "kind": "bundled",
+   "file": "assets/fonts/jianying/DouyinSansBold.otf",
+   "sha12": "575beb5f2379",
+   "bytes": 2082964
+  },
+  "知新体.ttf": {
+   "kind": "bundled",
+   "file": "assets/fonts/jianying/知新体.ttf",
+   "sha12": "50a5bf5ddc62",
+   "bytes": 1532380
+  },
+  "尔雅新大黑.ttf": {
+   "kind": "bundled",
+   "file": "assets/fonts/jianying/尔雅新大黑.ttf",
+   "sha12": "7280a6264558",
+   "bytes": 4985900
+  },
+  "SuXinShiGuYinSongJian-1.ttf": {
+   "kind": "bundled",
+   "file": "assets/fonts/jianying/SuXinShiGuYinSongJian-1.ttf",
+   "sha12": "d62b636cf0d5",
+   "bytes": 10200124
+  },
+  "FZZJ-JHTJW.ttf": {
+   "kind": "bundled",
+   "file": "assets/fonts/jianying/FZZJ-JHTJW.ttf",
+   "sha12": "f51aa4f65c7a",
+   "bytes": 16471816
+  },
+  "方正超粗黑繁体.ttf": {
+   "kind": "missing",
+   "file": null,
+   "note": "本机字体目录与剪映缓存都没有，需另行获取"
+  },
+  "后现代体.otf": {
+   "kind": "missing",
+   "file": null,
+   "note": "本机字体目录与剪映缓存都没有，需另行获取"
+  },
+  "汉仪天宇风行体W.ttf": {
+   "kind": "missing",
+   "file": null,
+   "note": "本机字体目录与剪映缓存都没有，需另行获取"
+  },
+  "AGaramond-BoldItalic.otf": {
+   "kind": "missing",
+   "file": null,
+   "note": "本机字体目录与剪映缓存都没有，需另行获取"
+  },
+  "AGaramond-Italic.otf": {
+   "kind": "missing",
+   "file": null,
+   "note": "本机字体目录与剪映缓存都没有，需另行获取"
+  },
+  "HYXinRenWenSong65F.ttf": {
+   "kind": "missing",
+   "file": null,
+   "note": "本机字体目录与剪映缓存都没有，需另行获取"
+  },
+  "DINNextW1G-Black.otf": {
+   "kind": "missing",
+   "file": null,
+   "note": "本机字体目录与剪映缓存都没有，需另行获取"
+  }
+ }
+}

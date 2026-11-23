@@ -983,7 +983,10 @@ def find_source_font(source_family: Optional[str], style_id: Optional[str] = Non
 
 
 def _font_search_dirs() -> List[Path]:
-    dirs: List[Path] = [ASSETS_DIR / "fonts"]
+    # `assets/fonts` 是随包的开源字体；`assets/fonts/jianying` 是**按剪映原名**随包的字体
+    # （24 套模版一共用到 30 种字体，其中 21 种只有剪映缓存里有 —— 不带一份，换台没有剪映的
+    # 电脑就全回落成系统字体，字号/字宽跟着变，模版就不成立）。见 assets/fonts/font_aliases.json。
+    dirs: List[Path] = [ASSETS_DIR / "fonts", ASSETS_DIR / "fonts" / "jianying"]
     sys_name = platform.system()
     if sys_name == "Darwin":
         dirs += [

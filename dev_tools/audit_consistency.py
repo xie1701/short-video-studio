@@ -54,7 +54,10 @@ def check_bad_patterns(errors: list[str]) -> None:
 def check_counts(errors: list[str], library: dict, templates: dict) -> None:
     style_count = len(library["styles"])
     template_count = len(templates)
-    font_count = len(list((SKILL / "assets/fonts").glob("*")))
+    # 只数「随包开源字体」那一层：`assets/fonts/jianying/` 是**按剪映原名**随包的
+    # 30 套模版所需字体（另一个来源、另一个用途），把它算进「字体数」会让文档口径失真。
+    font_count = len([q for q in (SKILL / "assets/fonts").glob("*")
+                      if q.is_file() and q.suffix.lower() in (".ttf", ".otf", ".ttc")])
     archetype_count = len(library.get("archetypes") or [])
     rulebook_count = len(library.get("shared_rulebooks") or {})
     for doc in DOCS:

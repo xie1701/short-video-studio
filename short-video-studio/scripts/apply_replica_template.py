@@ -266,10 +266,54 @@ def _via_of(path: str) -> str:
     return "system"
 
 
+FONT_ALIAS_PATH = Path(__file__).resolve().parents[1] / "assets" / "fonts" / "font_aliases.json"
+_FONT_ALIAS: Optional[dict] = None
+
+
+def font_alias_table() -> dict:
+    """随包字体别名表：剪映字体名（含扩展名）→ {kind, file, ...}。
+
+    为什么要有这张表：24 套模版一共用到 **30 种**字体，其中 21 种只在剪映缓存里有、
+    5 种有开源对应名（得意黑=Smiley Sans、思源宋体=Source Han Serif…），另 4 种本机没有。
+    换到别的电脑（没有剪映、没有这些字体文件）时，光靠「扫本机目录」会 29/30 全部回落成
+    系统字体——字号/字宽全变，模版就不成立了。所以把字体文件随包带一份，按剪映原名索引，
+    这样「另一台机器上也能照原样排字」。
+    """
+    global _FONT_ALIAS
+    if _FONT_ALIAS is None:
+        try:
+            _FONT_ALIAS = (json.loads(FONT_ALIAS_PATH.read_text(encoding="utf-8")) or {}).get("entries") or {}
+        except Exception:
+            _FONT_ALIAS = {}
+    return _FONT_ALIAS
+
+
+def _bundled_font(name: str) -> Optional[dict]:
+    """查随包字体表。name 可带扩展名也可不带（模版里存的是「名+扩展名」，实际调用常见只给名）。"""
+    tbl = font_alias_table()
+    if not tbl:
+        return None
+    cands = [str(name or "")]
+    cands += [k for k in tbl if Path(k).stem == str(name or "")]
+    for k in cands:
+        ent = tbl.get(k)
+        if not ent or ent.get("kind") == "missing":
+            continue
+        rel = ent.get("file")
+        if not rel:
+            continue
+        path = (Path(__file__).resolve().parents[1] / rel) if not Path(rel).is_absolute() else Path(rel)
+        if path.is_file():
+            return {"name": str(name), "path": str(path), "via": "bundled"}
+    return None
+
+
 def resolve_template_font(name: str, style_id: Optional[str] = None) -> Optional[dict]:
     """模版字体名 → 本机字体文件。返回 {name, path, via}；真找不到返回 None。
 
-    via: assets（随仓风格字体）/ system（系统字体目录）/ cache（剪辑软件缓存字体）。
+    via: bundled（随包字体表命中）/ assets（随仓风格字体）/ system（系统字体目录）/
+         cache（剪辑软件缓存字体）。
+    顺序：先查随包表（换电脑后仍然成立），再查本机风格资产 / 系统 / 缓存。
     结果带进程内缓存（同一字体名不会反复扫目录）。
     """
     norm = _norm_font_name(name)
@@ -278,7 +322,7 @@ def resolve_template_font(name: str, style_id: Optional[str] = None) -> Optional
     ck = (str(style_id or ""), norm)
     if ck in _RESOLVED_FONTS:
         return _RESOLVED_FONTS[ck]
-    found: Optional[dict] = None
+    found: Optional[dict] = _bundled_font(name)
     # ① 风格字体资产（assets/style_spectrum/fonts[/<style_id>]）
     try:
         from common import find_source_font
