@@ -7,6 +7,7 @@ import unittest
 import wave
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -2490,6 +2491,150 @@ class PackagingSmokeTests(unittest.TestCase):
 
         self.assertTrue(install_skill.recognized_skill(ROOT / "short-video-studio"))
         self.assertIn("version:", (ROOT / "short-video-studio" / "SKILL.md").read_text(encoding="utf-8")[:400])
+
+
+class StyleLockTests(unittest.TestCase):
+    """用户实测过：Agent 会「顺手」改风格的标准，而且不说。
+
+    所以不是要求 AI 承诺 100% 套用，而是把「库里写的」和「管线里实际在用的」逐字段对撞，
+    改一处就抓一处，只有用户点名的字段才算豁免。
+    """
+
+    def _pipeline(self, tmp: str, style_id: str = "style_01", tamper: Optional[Dict[str, Any]] = None) -> Path:
+        from apply_style_spectrum import apply_to_pipeline, load_library
+        from common import load_subtitle_templates
+
+        pdir = Path(tmp) / "pipeline"
+        pdir.mkdir(parents=True, exist_ok=True)
+        apply_to_pipeline(load_library(), style_id, pdir)
+        tpl = dict(load_subtitle_templates()[style_id])
+        if tamper:
+            tpl.update(tamper)
+        write_json(pdir / "05_subtitles.json", {"template_id": style_id, "template_config": tpl})
+        return pdir
+
+    def test_untouched_pipeline_passes(self):
+        from style_lock import audit_pipeline
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pdir = self._pipeline(tmp)
+            rep = audit_pipeline(pdir)
+            self.assertTrue(rep["ok"], rep)
+            self.assertEqual(rep["style_id"], "style_01")
+            self.assertEqual(rep["deviations"], [])
+
+    def test_agent_changing_style_standard_is_caught_and_named(self):
+        from style_lock import audit_pipeline, render_report
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pdir = self._pipeline(tmp, tamper={"font_size": 64, "keyword_color": "#FF0000"})
+            rep = audit_pipeline(pdir)
+            self.assertFalse(rep["ok"])
+            fields = {d["field"]: d for d in rep["deviations"]}
+            self.assertIn("subtitles.font_size", fields)
+            self.assertIn("subtitles.keyword_color", fields)
+            # 必须能说清「库是多少、实际是多少」，不能只说一句不一致
+            self.assertEqual(fields["subtitles.font_size"]["expected"], 48)
+            self.assertEqual(fields["subtitles.font_size"]["actual"], 64)
+            report = render_report(rep)
+            self.assertIn("字幕字号", report)
+            self.assertIn("48", report)
+
+    def test_only_fields_the_user_agreed_to_are_waived(self):
+        from style_lock import audit_pipeline, write_waiver
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pdir = self._pipeline(tmp, tamper={"font_size": 56, "keyword_color": "#FF0000"})
+            write_waiver(pdir, "style_01", ["subtitles.font_size"], "用户说字太小，同意放大")
+            rep = audit_pipeline(pdir)
+            self.assertIn("subtitles.font_size", rep["waived"])
+            self.assertFalse(rep["ok"], "只同意字号，颜色仍应拦住")
+            self.assertEqual([d["field"] for d in rep["deviations"]], ["subtitles.keyword_color"])
+
+            write_waiver(pdir, "style_01", ["subtitles.keyword_color"], "用户要求品牌红")
+            self.assertTrue(audit_pipeline(pdir)["ok"])
+
+    def test_waiver_for_another_style_does_not_count(self):
+        from style_lock import audit_pipeline, write_waiver
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pdir = self._pipeline(tmp, tamper={"font_size": 56})
+            write_waiver(pdir, "style_02", ["subtitles.font_size"], "串了风格")
+            rep = audit_pipeline(pdir)
+            self.assertFalse(rep["ok"])
+            self.assertEqual(rep["waived"], [])
+
+    def test_broll_ratio_and_transition_tampering_is_caught(self):
+        from style_lock import audit_pipeline
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pdir = self._pipeline(tmp)
+            applied = read_json(pdir / "style_spectrum_applied.json")
+            applied["broll_overlay_ratio_target"] = 0.95
+            applied["transition_and_packaging"] = dict(
+                applied["transition_and_packaging"], transitions=["叠化 0.5s"]
+            )
+            write_json(pdir / "style_spectrum_applied.json", applied)
+            fields = {d["field"] for d in audit_pipeline(pdir)["deviations"]}
+            self.assertIn("applied.broll_overlay_ratio_target", fields)
+            self.assertIn("applied.transition_and_packaging", fields)
+
+    def test_every_style_asset_is_self_consistent(self):
+        """24 套的库 / 蓝图 / 字幕模板之间不许有漂移，否则风格锁一上线就全红。"""
+        from style_lock import audit_assets
+
+        bad = {}
+        for i in range(1, 25):
+            sid = f"style_{i:02d}"
+            rep = audit_assets(sid)
+            if not rep["ok"]:
+                bad[sid] = [d["field"] for d in rep["deviations"]]
+        self.assertEqual(bad, {}, f"以下风格资产自相矛盾：{bad}")
+
+    def test_progress_card_shows_style_lock_state(self):
+        """进度卡是每轮必读的面板：样式有没有被改，必须挂在上面。"""
+        from workflow_guard import render_progress_card
+
+        with tempfile.TemporaryDirectory() as tmp:
+            pdir = self._pipeline(tmp, tamper={"font_size": 64})
+            card = render_progress_card(pdir, track="store", write_files=False)
+            self.assertIn("画面样式", card["markdown_card"])
+            self.assertIn("style_01", card["markdown_card"])
+            self.assertIn("没经你同意", card["markdown_card"])
+
+            write_json(pdir / "05_subtitles.json", {"template_id": "style_01", "template_config": dict(load_subtitle_templates()["style_01"])})
+            card2 = render_progress_card(pdir, track="store", write_files=False)
+            self.assertIn("完全按你选的这套执行", card2["markdown_card"])
+
+    def test_default_style_comes_from_library_not_hardcoded_code(self):
+        """run_pipeline 里曾经写死 store→style_14，库里默认早就是 style_01 —— 一开跑就换风格。"""
+        from common import default_style_id
+
+        self.assertEqual(default_style_id("store"), "style_01")
+        self.assertEqual(default_style_id("creator"), "style_11")
+        src = (ROOT / "short-video-studio" / "scripts" / "run_pipeline.py").read_text(encoding="utf-8")
+        self.assertNotIn('"style_14" if track == "store"', src)
+        self.assertIn("default_style_id(track)", src)
+
+    def test_render_gate_refuses_deviation_without_user_consent(self):
+        """出片前那道闸：偏离且无豁免 → 退出码 3，不能静默出片。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            pdir = self._pipeline(tmp, tamper={"font_size": 64})
+            r = subprocess.run(
+                [sys.executable, str(ROOT / "short-video-studio" / "scripts" / "style_lock.py"),
+                 "--pipeline-dir", str(pdir)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+            self.assertIn("字幕字号", r.stdout)
+
+            r2 = subprocess.run(
+                [sys.executable, str(ROOT / "short-video-studio" / "scripts" / "style_lock.py"),
+                 "--pipeline-dir", str(pdir), "--waive", "subtitles.font_size", "--reason", "用户同意放大"],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(r2.returncode, 0, r2.stdout + r2.stderr)
+            self.assertIn("PASS", r2.stdout)
 
 
 class BrollSemanticsTests(unittest.TestCase):

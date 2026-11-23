@@ -36,6 +36,7 @@ from common import (
     estimate_task_eta,
     find_bin,
     fit_text_line,
+    default_style_id,
     load_style_applied,
     load_style_spectrum_entry,
     maybe_reexec_in_venv,
@@ -514,7 +515,7 @@ def _render_code_scenes_from_spec(
     ae = read_json(ae_p) if ae_p.is_file() else {}
     tr = read_json(tr_p) if tr_p.is_file() else {}
 
-    eff_style = active_style_id or str(spec.get("style_id") or ("style_14" if track == "store" else "style_11"))
+    eff_style = active_style_id or str(spec.get("style_id") or default_style_id(track))
     locked_dur = max(3.0, float(ae.get("total_duration_sec", ae.get("locked_duration_sec", (spec.get("format") or {}).get("target_duration_sec", 12.0)))))
     sentences = ae.get("sentences") or tr.get("segments") or tr.get("sentences") or []
     sections = spec.get("sections") or []
@@ -722,7 +723,7 @@ def _run_code_video_branch(
     whisper_model: Optional[str] = None,
 ) -> Path:
     """入口 3 纯代码制片工作流：00_code_spec 规约 -> 音轨先锁 -> 比例对齐与校验 -> 单浏览器批量渲染分场。"""
-    eff_style = active_style_id or ("style_14" if track == "store" else "style_11")
+    eff_style = active_style_id or default_style_id(track)
 
     seed_items: List[Dict[str, Any]] = []
     if script_p and script_p.exists():
@@ -861,6 +862,60 @@ def _run_code_video_branch(
     )
 
 
+def _record_cli_style_choices(
+    pipeline_dir: Path,
+    style_id: Optional[str],
+    subtitle_template: Optional[str],
+    lut_name: Optional[str],
+) -> None:
+    """用户自己在命令行点名换了字幕模板/调色，算用户同意，记进豁免，别被风格锁误判。
+
+    「未经用户同意不得偏离风格」不等于「用户明确指定了也不许用」——命令行显式传参就是用户
+    自己的决定。这里只是把它落成一条留痕，避免风格锁把用户的主动选择当成 Agent 擅自改动。
+    """
+    if not style_id:
+        return
+    try:
+        from style_lock import write_waiver
+        entry = load_style_spectrum_entry(style_id) or {}
+        fields: List[str] = []
+        reasons: List[str] = []
+        if subtitle_template and subtitle_template != style_id:
+            fields.append("subtitles.template_id")
+            reasons.append(f"用户命令行指定 --subtitle-template {subtitle_template}")
+        lut_expect = str((entry.get("color_and_lut") or {}).get("lut_file") or f"{style_id}.cube")
+        if lut_name and Path(str(lut_name)).name != lut_expect:
+            fields.append("applied.color_and_lut")
+            reasons.append(f"用户命令行指定 --lut {lut_name}")
+        if fields:
+            write_waiver(pipeline_dir, style_id, fields, "；".join(reasons), approved_by="用户（命令行显式指定）")
+            print(f"[pipeline] 已记录用户命令行显式指定：{'；'.join(reasons)}")
+    except Exception as exc:
+        print(f"[pipeline] [WARN] 命令行风格选择未记录为豁免：{exc}")
+
+
+def _enforce_style_lock(pipeline_dir: Path, allow_deviation: bool = False) -> None:
+    """出片前最后一道闸：未经用户同意，不许偏离所选风格的库标准。
+
+    用户实测过「Agent 会默认改风格的标准」——放大字号、换颜色、加转场、动 B-roll 比例，
+    而且不说。这里在渲染前把「库里写的」和「管线里实际在用的」对撞一次，
+    不一致就停下，把差异原样打印出来，让人先做决定，而不是先出一版片子再说。
+    """
+    from style_lock import audit_pipeline, render_report
+
+    rep = audit_pipeline(pipeline_dir)
+    if rep.get("ok"):
+        return
+    print("\n" + render_report(rep))
+    if allow_deviation:
+        print("[GATE] 已按 --allow-style-deviation 放行；这一片不是 100% 套用风格，交付时必须说明。")
+        return
+    print("[GATE] 风格锁门禁已生效：改回库里的值，或先问用户；用户同意后再执行")
+    print("       python3 scripts/style_lock.py --pipeline-dir <项目>/pipeline --waive <字段> --reason \"用户原话\"")
+    print("       若确认要带着偏离出片，加 --allow-style-deviation，并在交付说明里写清改了哪几项。")
+    sys.exit(3)
+
+
 def _render_and_verify_only(
     pipeline_dir: Path,
     track: str,
@@ -947,6 +1002,7 @@ def run_visual_to_delivery(
     keep_edl: bool = False,
     no_flower_text: bool = False,
     agent: Optional[str] = None,
+    allow_style_deviation: bool = False,
 ) -> Dict[str, Any]:
     edl_p = pipeline_dir / "04_edl.json"
     if keep_edl and edl_p.is_file():
@@ -974,10 +1030,12 @@ def run_visual_to_delivery(
             account_profile=account_profile,
             edit_profile=edit_profile,
         )
+    _record_cli_style_choices(pipeline_dir, style_id, subtitle_template, lut_name)
     run_step5(pipeline_dir, track=track, template_id=subtitle_template)
     run_step6(pipeline_dir, style_id=style_id, no_flower_text=no_flower_text, keep_manual_texts=keep_edl)
     write_source_review(pipeline_dir)
     run_step7(pipeline_dir, track=track, lut_name=lut_name, style_id=style_id)
+    _enforce_style_lock(pipeline_dir, allow_deviation=allow_style_deviation)
     run_step8(
         pipeline_dir,
         licenses_path=licenses_path,
@@ -1003,6 +1061,7 @@ def run_visual_to_delivery(
         hook_variants=hook_variants,
         ws=ws,
         sync_window=sync_window,
+        allow_style_deviation=allow_style_deviation,
     )
 
 
@@ -1046,6 +1105,12 @@ def main() -> None:
     parser.add_argument("--pause-sec", type=float, help="基准句间停顿，显式值覆盖账号配置 (0.14-0.32s)")
     parser.add_argument("--j-cut-frames", type=int, default=None, help="句间 J-cut 声先入帧数 (默认 3，或由 --style-id 决定)")
     parser.add_argument("--style-id", help="可选：套用风格谱模板 ID (style_01 ~ style_24)")
+    parser.add_argument(
+        "--allow-style-deviation",
+        action="store_true",
+        help="默认关闭：出片前会校验是否 100%% 套用了所选风格的库标准，发现偏离即停下。"
+             "只有用户明确同意偏离时才加这个开关，并在交付说明里写清改了哪几项",
+    )
     parser.add_argument("--subtitle-template", help="字幕模板 ID")
     parser.add_argument("--lut", help="调色 LUT 文件名")
     parser.add_argument("--prefer-broll-only", action="store_true", help="改画模式：尽量切换为纯 B-roll/代码补镜")
@@ -1478,6 +1543,7 @@ def main() -> None:
             dialect=args.dialect,
             store_anchor=args.store_anchor,
             require_lock=args.require_lock,
+            allow_style_deviation=args.allow_style_deviation,
             strict_asr=args.strict_asr,
             export_mode=args.exports,
             edit_profile=edit_profile,
@@ -1544,6 +1610,7 @@ def main() -> None:
             dialect=args.dialect,
             store_anchor=args.store_anchor,
             require_lock=args.require_lock,
+            allow_style_deviation=args.allow_style_deviation,
             strict_asr=args.strict_asr,
             export_mode=args.exports,
             edit_profile=edit_profile,
@@ -1646,6 +1713,7 @@ def main() -> None:
             dialect=args.dialect,
             store_anchor=args.store_anchor,
             require_lock=args.require_lock,
+            allow_style_deviation=args.allow_style_deviation,
             strict_asr=args.strict_asr,
             export_mode=args.exports,
             edit_profile=edit_profile,

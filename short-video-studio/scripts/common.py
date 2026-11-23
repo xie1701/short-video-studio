@@ -1035,6 +1035,23 @@ def load_style_applied(pipeline_dir: Path) -> Optional[str]:
     return None
 
 
+def default_style_id(track: str = "store") -> str:
+    """库里声明的默认风格（门店取 default_style_id，博主取 default_creator_style_id）。
+
+    以前 run_pipeline 里有几处写死 `"style_14" if track == "store"`：库里的默认早就是
+    style_01 了，代码还在用 style_14，于是 Agent 一开跑就“自作主张换了风格”。
+    默认值一律从库里读，库里改了代码就跟着改，再有漂移就是 audit_consistency 的活。
+    """
+    fallback = "style_11" if str(track) == "creator" else "style_01"
+    lib_p = ASSETS_DIR / "style_spectrum" / "style_spectrum_library.json"
+    try:
+        lib = read_json(lib_p)
+        key = "default_creator_style_id" if str(track) == "creator" else "default_style_id"
+        return str(lib.get(key) or fallback)
+    except Exception:
+        return fallback
+
+
 def load_style_spectrum_entry(style_id: str) -> Optional[Dict[str, Any]]:
     """统一查询 style_spectrum_library.json 中的风格条目。"""
     lib_p = ASSETS_DIR / "style_spectrum" / "style_spectrum_library.json"

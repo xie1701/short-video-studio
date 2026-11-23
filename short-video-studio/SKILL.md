@@ -1,6 +1,6 @@
 ---
 name: short-video-studio
-version: 4.0.2
+version: 4.0.3
 description: 策划、剪辑和交付面向实体门店获客或个人账号增长的短视频。适用于从真实素材策划选题、编写口播和拍摄任务卡、剪辑已有实拍，或用代码制作图解与产品演示。以锁定音轨为剪辑骨架，支持成片质检、MP4 与可编辑工程导出，以及发布数据复盘。
 ---
 
@@ -25,6 +25,11 @@ description: 策划、剪辑和交付面向实体门店获客或个人账号增�
 ### 1.2 每一轮回复强制携带【四要素掌控感进度卡】（MUST）
 在陪伴用户推进项目的**每一轮回复**中，AI 必须同步运行 `workflow_guard.py status --pipeline-dir <dir> [--user-type <类型>]`，按 [interactive-coach-protocol.md](references/interactive-coach-protocol.md) 第二节格式展示大白话四要素进度卡（`当前进度 / 我刚做了或正在做 / 现在轮到你(附 A/B/C 选项) / 离能发还差`，严禁技术缩写或黑话）：
 - **选画面样式不甩全表也不背编号**：按用户所属人群与有无真人出镜素材运行 `apply_style_spectrum.py --menu <store|creator> [--has-aroll no]`，把现算出的 **3~4 款大白话点单**原样给用户选 A/B/C/D；全仓默认输出风格为 **`style_01`（门店爆款原生风，以全屏实拍为主、按源草稿少量叠加抠像/推近窗）**。
+- **风格必须 100% 照做，没有用户点头一项都不许改（硬门禁）**：一旦选定了 `style_XX`，就**完整套用库里这套的全部参数**——字号、关键词倍数、主色/关键词色、描边、底框、纵向位置、每行字数、B-roll 占比、画中画构图、转场（恒为硬切）、巨字条数、花字密度、调色与 LUT。**未经用户明确同意，禁止自行"优化"任何一项**（常见犯规：觉得字太小就放大、觉得颜色不够跳就换色、觉得节奏慢就加转场、觉得素材不够就调低 B-roll 占比、觉得花字少就多塞几条）。想改，先把"库里是 X、我想改成 Y、为什么"说清楚，等用户点头；用户点头后用 `style_lock.py --waive <字段> --reason "用户原话"` 留痕，再改。没有这条豁免记录就改，`run_pipeline.py` 在出片前会直接停下（退出码 3），`qa_inspector` 的 `style_lock_intact` 也会 FAIL。
+  ```bash
+  python3 scripts/style_lock.py --pipeline-dir <项目>/pipeline        # PASS / FAIL 逐项列出「库是多少、实际是多少」
+  python3 scripts/style_lock.py --pipeline-dir <项目>/pipeline --waive subtitles.font_size --reason "用户说字太小"
+  ```
 - **先确认文案与剪辑方案再动手（硬门禁）**：不管是新写稿还是带已有素材来剪，**绝不能没让用户看过说话文案和镜头排查结果就直接剪成片**！先运行 `--mode plan-only` 输出大白话确认单 `00_confirm_plan.md`（含缺镜提醒与耗时预估），用户点头（或运行 `workflow_guard.py confirm-plan`）后再正式开剪；用户否决的废镜/时间窗立刻用 `workflow_guard.py exclude-shot` 持久化标废。
 - **任务耗时预估 + Windows 非 C 盘 + 跨项目零冗余**：每次启动长任务前给出清晰中文等待时间预期；Windows 环境下首次工作区避开 C 盘并询问用户存放位置（持久化至 `~/.short-video-studio/config.json`）；同一账号不同项目自动通过内容指纹 + 硬链接零冗余复用已归一素材，不重复占满硬盘。
 - **内置 `gbro-cover-design` 封面技能 + Cola 智能体自动联动**：已完整内置 `subskills/gbro-cover-design/`。当检测到当前智能体为 Cola（`PI_PROVIDER=cola` 或 `COLA_ACCOUNT_DIR` 存在或任一 `COLA_*` 环境变量命中）时，`step9_title_cover.py` 会自动从 A-roll 筛选五官最清晰自然的一帧保存为 `09_host_face_ref.png` 作为图 1 垫图，并产出 `09_gbro_cover_prompt.md` 与 `09_gbro_cover_handoff.json`，AI 直接调用该内置封面技能交付 3:4 爆款真人封面。

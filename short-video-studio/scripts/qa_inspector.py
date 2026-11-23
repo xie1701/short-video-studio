@@ -603,6 +603,35 @@ def inspect_video(
             "10 秒内 0 处意外重复短语、0 处半截起句残留",
         ))
 
+        # 11c. 风格锁：必须 100% 套用所选风格的库标准（用户实测过 Agent 会擅自改风格标准）
+        try:
+            from style_lock import audit_pipeline as _audit_style_lock
+            _sl = _audit_style_lock(pipeline_dir)
+            _sl_ok = bool(_sl.get("ok"))
+            _sl_detail = (
+                f"{_sl.get('style_id') or '未记录'} 完全套用"
+                if _sl_ok else
+                f"{len(_sl.get('deviations') or [])} 处未经用户同意的偏离："
+                + "；".join(f"{d['cn']} 库={d['expected']} 实际={d['actual']}" for d in (_sl.get("deviations") or [])[:3])
+            )
+            if _sl.get("waived"):
+                _sl_detail += f"（已同意偏离：{', '.join(_sl['waived'])}）"
+            checks.append(_mk_check(
+                "style_lock_intact",
+                "风格严格套用（未经同意不得改动）",
+                "PASS" if _sl_ok else "FAIL",
+                _sl_detail,
+                "所选风格的库参数逐项一致，或偏离项都有用户同意的豁免记录",
+            ))
+        except Exception as exc:  # 风格锁自身出错不能掩盖其它检查
+            checks.append(_mk_check(
+                "style_lock_intact",
+                "风格严格套用（未经同意不得改动）",
+                "FAIL",
+                f"风格锁校验未跑通：{exc}",
+                "所选风格的库参数逐项一致，或偏离项都有用户同意的豁免记录",
+            ))
+
         # 12–22. 独立黑盒外部验收（复用 audio_ctx，严格 Fail-Closed 三态）
         bb_res = run_blackbox_verification(
             video_path,
@@ -753,6 +782,7 @@ def inspect_video(
         "sentence_integrity": "没有把话说一半硬切断",
         "forbidden_meta_text": "画面和文案没有多余乱码或模板字样",
         "residual_repeat_scan": "没有漏剪的口误重说和半截话",
+        "style_lock_intact": "画面样式严格按你选的那套来，没被偷偷改",
         "bb_audio_master": "成品声音饱满清晰、无爆音无穿帮",
         "bb_ocr_av_loop": "成片字幕实测正中对齐、字句准确",
         "bb_pixel_readability": "字幕不挡脸且对比清晰好认",

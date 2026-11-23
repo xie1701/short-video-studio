@@ -24,7 +24,7 @@
    - Step 3 锁定纯语音 + CC0 真实录制配乐节拍（支持开场/正文双段配乐切换、真实波形起拍校准、语音岛静音中段切点微调），后续切镜、顺滑转场、特写动作声轻混与音效花字严格绑定音频事件帧。
    - 字幕四端（MP4 / 剪映 / HyperFrames / 质检）强锁 `X = 540px` 正中对称带 `[220, 860]`（宽 `640px`）与 `Y = 1310px` 基准，7 点自动避脸不撞点赞按钮。
 5. **独立黑盒裁判与一页式盲审取证包**
-   - 每次出片自动跑 23 项白盒契约 + 单遍解码黑盒校验（`-14.0 ±1.5 LUFS`、True Peak `≤ -1.0 dBTP`、单帧黑屏、含尾段的长静音检测、残留重说扫描、540px OCR 居中实测、单框 WCAG、BT.709 肤色、切点像素跳变、SFX 5ms 起音校准、本地 Whisper 盲听与商用授权清查），同时生成《独立盲审取证包》（`10_blind_review_pack.md` + `10_action_strips.jpg` + `09_cover_360px_feed.jpg` 手机信息流小图预览）。
+   - 每次出片自动跑全套白盒契约 + 单遍解码黑盒校验（`-14.0 ±1.5 LUFS`、True Peak `≤ -1.0 dBTP`、单帧黑屏、含尾段的长静音检测、残留重说扫描、540px OCR 居中实测、单框 WCAG、BT.709 肤色、切点像素跳变、SFX 5ms 起音校准、本地 Whisper 盲听与商用授权清查），同时生成《独立盲审取证包》（`10_blind_review_pack.md` + `10_action_strips.jpg` + `09_cover_360px_feed.jpg` 手机信息流小图预览）。
 
 ---
 
@@ -97,7 +97,7 @@ cd short-video-studio
      --output ./my_video/broll_data.mp4 --mode data_chart --title "200平纯手工明档厨房" \
      --items-json '[{"label":"纯手工现点现做","value":34,"unit":"%"},{"label":"拒绝预制菜占比","value":100,"unit":"%"}]'
    ```
-5. **运行端到端流水线（七大执行模式）**
+5. **运行端到端流水线（多种执行模式）**
    ```bash
    # 粗剪预览（打断 #3）
    python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --track store --mode lock-preview
@@ -178,19 +178,44 @@ cd short-video-studio
 python3 dev_tools/audit_broll_semantics.py --pipeline-dir ./output/<项目目录>/pipeline
 ```
 
+## 五之三、 样式不许偷偷改（v4.0.2 新增）
+
+选定一套样式之后，**它的每个数字都是真草稿量出来的，未经你同意一项都不许动**——字号、重点词颜色、
+描边、底条、字幕高低、每行字数、插画面占比、小窗构图、转场（永远是硬切）、大字条数、花字密度、整体调色。
+
+AI 常见的手滑：嫌字小就放大、嫌颜色闷就换色、嫌节奏慢就加转场、素材不够就悄悄降占比。
+这些现在都会被抓住：
+
+```bash
+python3 scripts/style_lock.py --pipeline-dir ./output/<项目目录>/pipeline
+# PASS：完全按这套执行
+# FAIL：逐项列出「库里是 X、实际是 Y」
+python3 scripts/style_lock.py --pipeline-dir ./output/<项目目录>/pipeline \
+    --waive subtitles.font_size --reason "用户说字太小，同意放大"
+```
+
+- 只有你点过头的字段才算豁免，其余照拦；豁免记错样式整份作废。
+- `run_pipeline.py` 在出片前会跑一次：有偏离就停下（退出码 3），要带着偏离出片必须显式加
+  `--allow-style-deviation`，并在交付说明里写清改了哪几项。
+- 成片质检多了 `style_lock_intact`，每轮的进度卡上有一行「🎨 画面样式」，红了你就能看见。
+
 ## 六、 可商用内置资产与风格谱复刻库
 
 详尽授权溯源见 [assets-attribution.md](short-video-studio/references/assets-attribution.md)：
 - **背景音乐 & 物理音效**：实拍与常规混音采用 `short-video-studio/assets/sound_vibe/` 下的 **CC0 1.0 真实录制 Freesound 音频**（均已完成波形起拍校准与 48kHz 统一处理）；知识讲解动画与动态图解叠加由 `scripts/synth_motion_sfx.py` 按需合成的 **15 种无版权动效拟音**。
-- **字幕与动画字体**：随仓内置 4 款免费可商用字体——**阿里妈妈数黑体**、**得意黑（SIL OFL 1.1）**、**思源宋体 Bold & Heavy（SIL OFL 1.1）**；本机若合法安装思源黑体同样识别放行，系统私有字体（如苹方/华文黑体/微软雅黑）全程拦截。
-- **风格谱资产库**：内置 **6 大包装流派母版**与 **24 套量化「风格谱 (`style_01` ~ `style_24`)」**（含 `style_21` ~ `style_24` 四套 85%–100% 高空镜纯画面/少出镜风格，配套 24 套 `17³` CC0 `.cube` 3D LUT 与 28 套可商用字幕模板），详见 [STYLE_SPECTRUM_REPORT.md](short-video-studio/assets/style_spectrum/STYLE_SPECTRUM_REPORT.md)。
+- **字幕与动画字体**：随仓内置 5 款免费可商用字体——**阿里妈妈数黑体**、**得意黑（SIL OFL 1.1）**、**思源宋体 Bold & Heavy（SIL OFL 1.1）**、**马善政毛笔手写体（SIL OFL 1.1）**；本机若合法安装思源黑体同样识别放行，系统私有字体（如苹方/华文黑体/微软雅黑）全程拦截。
+- **风格谱资产库**：内置 **5 大包装流派母版**与 **24 套量化「风格谱 (`style_01` ~ `style_24`)」**（含 `style_21` ~ `style_24` 四套 85%–100% 高空镜纯画面/少出镜风格，配套 24 套 `17³` CC0 `.cube` 3D LUT 与 28 套可商用字幕模板），详见 [STYLE_SPECTRUM_REPORT.md](short-video-studio/assets/style_spectrum/STYLE_SPECTRUM_REPORT.md)。
 
 ```bash
-# 查看全库 24 套风格谱摘要
+# 给用户点单：按人群与出镜条件现算 3~4 款（不甩全表）
+python3 short-video-studio/scripts/apply_style_spectrum.py --menu store
+python3 short-video-studio/scripts/apply_style_spectrum.py --menu creator --has-aroll no
+
+# 查看全库 24 套风格谱摘要（维护/排查用）
 python3 short-video-studio/scripts/apply_style_spectrum.py --list
 
-# 套用指定风格谱出片（门店默认 style_14，博主默认 style_11）
-python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --track store --mode full --style-id style_14
+# 套用指定风格谱出片（门店默认 style_01，博主默认 style_11）
+python3 short-video-studio/scripts/run_pipeline.py --account demo --raw-dir ./raw_media --track store --mode full --style-id style_01
 
 # 导出某套风格谱的离线 HyperFrames 样板工程
 python3 short-video-studio/scripts/apply_style_spectrum.py --style-id style_16 --export-hyperframes ./out_style_16_hyperframes

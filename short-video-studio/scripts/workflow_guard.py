@@ -41,6 +41,7 @@ from common import (
     ffprobe_media,
     find_bin,
     find_commercial_font,
+    load_style_applied,
     maybe_reexec_in_venv,
     parse_fps,
     read_json,
@@ -1462,6 +1463,28 @@ def render_progress_card(
     empty = "□" * max(0, total_steps - cur_step)
     prog_bar = f"[{filled}{empty}]"
 
+    # 画面样式必须 100% 按用户选的那套执行：把状态放进每轮必读的进度卡里，Agent 绕不过去
+    style_line = ""
+    try:
+        _sid_applied = load_style_applied(pipeline_dir)
+        if _sid_applied:
+            from style_lock import audit_pipeline as _audit_style_lock
+            _sl = _audit_style_lock(pipeline_dir)
+            if _sl.get("ok"):
+                _waived = _sl.get("waived") or []
+                style_line = (
+                    f"🎨 **画面样式**：`{_sid_applied}` 完全按你选的这套执行"
+                    + (f"（你同意过的偏离：{', '.join(_waived)}）" if _waived else "，一个字都没改")
+                )
+            else:
+                _names = "、".join(d["cn"] for d in (_sl.get("deviations") or [])[:3])
+                style_line = (
+                    f"🎨 **画面样式**：`{_sid_applied}` 有 {len(_sl.get('deviations') or [])} 处不是这套标准里的值"
+                    f"（{_names}），我没经你同意不该这么改 → 先说要不要改回去"
+                )
+    except Exception:
+        style_line = ""
+
     choices_md = "\n".join(f"   - **{c.split('：')[0]}**：{c.split('：', 1)[1]}" if "：" in c else f"   - {c}" for c in choices)
     missing_suffix = f"（温馨提示：{missing_items[0]}）" if missing_items else ""
     md_card = "\n".join([
@@ -1470,6 +1493,7 @@ def render_progress_card(
         f"🤖 **我刚做了 / 正在做**：{ai_status}",
         f"👉 **现在轮到你**：{user_action}",
         choices_md,
+        *([style_line] if style_line else []),
         f"⏳ **离能发还差**：{remaining}{missing_suffix}",
         "---",
     ])
@@ -1490,6 +1514,7 @@ def render_progress_card(
         "remaining_cn": remaining,
         "missing_items_cn": missing_items,
         "plan_confirmed": plan_confirmed,
+        "style_line_cn": style_line,
         "estimated_next_eta_cn": next_stage_eta["eta_cn"],
         "human_approved": is_approved,
         "markdown_card": md_card,
