@@ -461,6 +461,9 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
         segs = []
         for _idx, tl in cls_local["audios"]:
             segs += tl
+        # 主轨视频**自带的声音**：剪映里口播常常就是主轨素材的原声（草稿里没有独立口播音轨），
+        # 只拼音效轨/叠加轨会把整段人声丢掉。
+        segs += list(cls_local["main"][1])
         # 复合片段音效叠层挂在视频轨上的：也按其段位置进母带
         for _idx, segs_v in cls_local["overlays"]:
             segs += segs_v
