@@ -5,14 +5,18 @@
 文字位容量、素材角色映射、时长重映射所需的锚点。它**不含**任何素材路径、字体路径、
 本机绝对路径、草稿名，也不含源文案；源草稿只留一枚脱敏哈希（`source_ref`）。
 
-    模版 JSON 结构（v1）
+    模版 JSON 结构（v2）
     -------------------
     duration_sec / fps / canvas            画布与时长
-    tracks[]                               role / track_type / render_index（数组序即 z 序）/ 段数 / 覆盖时长
+    tracks[]                               role / track_type / render_index（原版 z 序键，见下）/ 段数 / 覆盖时长
+    z_order{}                              该层按 render_index 升序后的轨序 + 与数组序差了哪几条
+    tracks[]/segments[]                    **两个 z 口径分开记**：段级 `render_index` = 原草稿里段上那个值
+                                           （剪映的 z 序），轨级 `render_index` = 该轨段级值的聚合键（max）；
+                                           `track_index`/`index` 才是数组序（= 草稿的 track_render_index）
     segments[]                             role / slot / start_ratio / duration_ratio /
                                            geometry{scale,transform,crop,size_ratio,cover_ratio} /
                                            keyframes（**段内相对比例时间**）/ animations（名字+时长+段内比例）/
-                                           mask / effects / text_slot
+                                           mask / effects / text_slot / render_index
     text_slots[]                           文字位：字号/颜色/描边/阴影/底框 + **字体身份**（名字/扩展名/
                                            文件名指纹，不含路径）+ **按版式算出的容量**（每行字数×可容行数）
     asset_roles{素材 id -> 角色}            a_roll / b_roll / overlay_card / sticker / photo /
@@ -35,6 +39,17 @@
 
 推断不出的素材角色一律记 `unknown` 并计数，绝不按位置猜成某个角色。
 
+    z 序为什么必须记成**结构字段**（v2 的主要变化）
+    ----------------------------------------------
+    原草稿里有两个不同的东西，以前被当成同一个：
+      · `segments[].track_render_index` = **轨数组序**（原版 0.45~1.667s 的拼贴轨是 2、缩图层是 6）；
+      · `segments[].render_index`        = **剪映的 z 序**（同一时刻拼贴=3、缩图层=2，拼贴在上）。
+    两者在原版里就是冲突的：数组序说拼贴在缩图层**下面**，render_index 说它在**上面**；
+    成片证明后者对（拼贴看得见）。以前 `tracks[].render_index` 直接写的是数组序 t_i，
+    套用端又把它当轨下标用，于是拼贴永远落到缩图层下面——条带几何一点没变却「看起来更少」。
+    现在按原版语义分开记：段级留原值，轨级留聚合键（同一轨里段值不统一时取 max，理由见
+    apply 端 `_track_z_key()`），并额外给一个 `z_order` 小结，让套用端**按它排序**而不是猜。
+
 用法：
     python3 scripts/replica_template.py --style-id style_21 --out /tmp/replica_tpl.json
     python3 scripts/replica_template.py --draft <草稿目录或 draft_content.json> --out ...
@@ -51,7 +66,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 US = 1_000_000
-TEMPLATE_VERSION = 1
+# v2：tracks[]/segments[] 的 render_index 改成「原版 z 序」语义（原来写的是轨下标），
+# 并新增 tracks[].render_index_values / z_order{}。旧 v1 模版仍能被套用端读（缺字段时退回数组序）。
+TEMPLATE_VERSION = 2
 # 复合片段递归深度上限：与渲染器 render_replica_from_draft.MAX_COMPOUND_DEPTH 同一口径。
 # 渲染器在父深度 depth >= 3 时不再渲子时间线，所以提取端也只能拆到第 3 层为止；
 # 再深的段如实标 compound_depth_exceeded，**不静默拍平**。
@@ -807,6 +824,7 @@ def _extract_level(draft: dict, *, depth: int = 0) -> dict:
                         "length_matches_parent": len_ok,
                         "tracks": lvl["tracks"],
                         "segments": lvl["segments"],
+                        "z_order": lvl["z_order"],
                         "sub_slots": lvl["text_slots"],
                         "counts": lvl["counts"],
                         "requires_review": lvl["requires_review"],
@@ -843,6 +861,10 @@ def _extract_level(draft: dict, *, depth: int = 0) -> dict:
                 "effects": effects,
                 "text_slot": text_slot_idx,
                 "same_material_as": None,
+                # 原版 z 序真值（段级）：剪映就是按它决定谁盖住谁。取原草稿里段上那个值（可能缺省=
+                # 主轨/音频轨），**不能**换成轨下标——两者在同一份原版里就不一致（见模块注释）。
+                "render_index": (None if s.get("render_index") is None
+                                  else int(s.get("render_index"))),
                 "compound": compound,
                 "requires_review": bool(seg_reasons),
                 "review_reasons": seg_reasons,
@@ -869,12 +891,21 @@ def _extract_level(draft: dict, *, depth: int = 0) -> dict:
                 if ref in mat_idx and mat_idx[ref]["_kind"] == "compound":
                     _note_usage(ref, cover_ratio)
 
+        z_values = sorted({int(s.get("render_index")) for s in segs
+                           if s.get("render_index") is not None})
         tracks_out.append({
             "index": t_i,
             "track_type": ttype,
             "role": role,
             "flag": tr.get("flag"),
-            "render_index": t_i,  # 数组序即 z 序：越靠后越在上层
+            # 原来什么：`"render_index": t_i`（数组下标）——这与原草稿里**段上那个** render_index
+            # 完全是两个字段（原版拼贴轨数组序 2 / 段 render_index 3），套用端按它排序才会把拼贴
+            # 排到缩图层（数组序 6 / render_index 2）下面，成片里拼贴被盖住。
+            # 改成什么：记**原版 z 序键**——该轨段级 render_index 的聚合值（一条轨里段值不统一时
+            # 取 max，理由见 apply_replica_template._track_z_key 的注释；此处无段值时退回数组序）。
+            "render_index": (max(z_values) if z_values else t_i),
+            "render_index_values": z_values,   # 该轨段级 render_index 的全部取值（升序去重）
+            "render_index_basis": ("max_of_segments" if z_values else "track_array_order"),
             "segment_count": len(segs),
             "total_sec": round(t_total, 4),
             "cover_ratio": round(max(sizes) if sizes else 1.0, 4),
@@ -977,6 +1008,7 @@ def _extract_level(draft: dict, *, depth: int = 0) -> dict:
                        "animation_time": "段内相对比例（start_ratio/duration_ratio）"},
         "tracks": tracks_out,
         "segments": segments_out,
+        "z_order": z_order_summary(tracks_out, segments_out),
         "text_slots": text_slots,
         "asset_roles": asset_roles,
         "counts": counts,
@@ -985,6 +1017,98 @@ def _extract_level(draft: dict, *, depth: int = 0) -> dict:
         "notes": notes,
     }
     return level
+
+
+# ---------------------------------------------------------------- z 序
+
+# 有画面 z 序的轨类型（音频轨不参入排序：渲染器另起一路做混音，不看轨序）
+AUDIO_TRACK_TYPES = ("audio",)
+
+
+def track_z_key(track: dict) -> float:
+    """一层时间线里某条轨的 z 序键（**只有画面轨**才该被调用）。
+
+    取模版已记好的轨级 `render_index`；缺字段（v1 老模版）就逐条退回数组序，
+    行为与旧版一致（宁可不变，也不凭猜测重排）。
+    """
+    ri = track.get("render_index")
+    if isinstance(ri, (int, float)):
+        return float(ri)
+    return float(track.get("index") or 0)
+
+
+def sort_tracks_by_render_index(tracks: List[dict]) -> List[dict]:
+    """按原版 `render_index` 升序排轨（同值保持原有相对顺序 = 稳定排序），音频轨留到最后。
+
+    为什么升序：本项目渲染器「**轨序即 z 序**」（units.sort 用轨下标），数组越靠后越在上层；
+    而剪映的 `render_index` 也是越大越在上。两者方向一致，所以只要按 render_index 升序
+    写出去，输出轨序与输出段上的 render_index 就自洽了。
+    为什么音频轨不参与：音频没有画面 z 序（原版音频轨段的 render_index 就是缺省），
+    把它混进画面排序里只会让轨序无端变动；原版也把音频轨放在数组末尾。
+    """
+    visual = [t for t in tracks if t.get("track_type") not in AUDIO_TRACK_TYPES
+              and t.get("role") != "audio"]
+    vis_ids = {id(t) for t in visual}
+    audio = [t for t in tracks if id(t) not in vis_ids]
+    visual.sort(key=lambda t: (track_z_key(t), int(t.get("index") or 0)))
+    return visual + audio
+
+
+def z_order_summary(tracks: List[dict], segments: List[dict], *,
+                    max_pairs: int = 8) -> dict:
+    """一层时间线的 z 序小结（只描述结构，不改轨序）。
+
+    顶层与子时间线都要有：套用端是按它排序写 tracks 的，报告也靠它对账。
+    两个关键量：
+      · `moved_tracks`：按 render_index 升序应该移动几条轨（= 迁移幅度）；
+      · `array_order_vs_render_index_conflicts`：**原版自己**的数组序与 render_index 冲突的
+        视频层对数（原版 0.45~1.667s 的拼贴 vs 缩图层就是一对）。冲突 > 0 说明这套草稿的
+        「数组序」不能当 z 序用，必须按 render_index 重排——这正是上一轮条带被盖住的原因。
+    """
+    order_by_array = [int(t.get("index") or 0) for t in tracks]
+    order_by_z = [int(t.get("index") or 0) for t in sort_tracks_by_render_index(tracks)]
+    moved = sum(1 for i, idx in enumerate(order_by_z) if order_by_array[i] != idx)
+
+    track_type_of = {int(t.get("index") or 0): t.get("track_type") for t in tracks}
+    video_segs = [s for s in segments
+                  if s.get("render_index") is not None
+                  and track_type_of.get(int(s.get("track_index") or 0)) == "video"]
+    conflicts: List[dict] = []
+    n_conf = 0
+    for i, a in enumerate(video_segs):
+        for b in video_segs[i + 1:]:
+            if a.get("track_index") == b.get("track_index"):
+                continue
+            ov = min(float(a["start_sec"]) + float(a["duration_sec"]),
+                     float(b["start_sec"]) + float(b["duration_sec"])) \
+                - max(float(a["start_sec"]), float(b["start_sec"]))
+            if ov <= 0.02:
+                continue
+            by_z = float(a["render_index"]) - float(b["render_index"])
+            by_array = float(a["track_index"]) - float(b["track_index"])
+            if by_z * by_array < 0:
+                n_conf += 1
+                if len(conflicts) < max_pairs:
+                    conflicts.append({
+                        "overlap": [round(max(float(a["start_sec"]), float(b["start_sec"])), 3),
+                                    round(min(float(a["start_sec"]) + float(a["duration_sec"]),
+                                              float(b["start_sec"]) + float(b["duration_sec"])), 3)],
+                        "on_top_by_render_index": a["key"] if by_z > 0 else b["key"],
+                        "on_top_by_array_order": a["key"] if by_array > 0 else b["key"],
+                        "render_index": [a["render_index"], b["render_index"]],
+                        "track_index": [a["track_index"], b["track_index"]],
+                    })
+    return {
+        "order_by_array": order_by_array,
+        "order_by_render_index": order_by_z,
+        "moved_tracks": moved,
+        "audio_tracks_kept_last": sum(1 for t in tracks
+                                      if t.get("track_type") in AUDIO_TRACK_TYPES
+                                      or t.get("role") == "audio"),
+        "array_order_vs_render_index_conflicts": n_conf,
+        "conflict_pairs": conflicts,
+        "basis": ("轨级 render_index = 该轨段级值的 max；缺字段退回数组序（v1 老模版不重排）"),
+    }
 
 
 def _walk_compounds(segments: List[dict], *, depth: int = 1) -> List[dict]:
@@ -1063,6 +1187,15 @@ def extract_template(draft_path: Path | str, *, require_plaintext: bool = True) 
     if counts["compound_length_mismatch"]:
         notes.append(f"其中 {counts['compound_length_mismatch']} 个复合片段子时间线总长与父段时长不一致"
                      f"（已在段 review_reasons 记 compound_length_mismatch，套用端按父段重映射）")
+    zo = level["z_order"]
+    if zo.get("array_order_vs_render_index_conflicts"):
+        notes.append(
+            f"轨**数组序**与原版 `render_index` 有 {zo['array_order_vs_render_index_conflicts']} 处冲突"
+            f"（原版 0.45~1.667s 的拼贴 vs 同源缩图层就是一对：数组序说拼贴在下、render_index 说它在上）："
+            f"套用端必须按 `render_index` 升序重排写 tracks（见 z_order.order_by_render_index），"
+            f"否则拼贴会被缩图层整块盖住——这就是上一轮「条带看着更少」的真因")
+    if zo.get("moved_tracks"):
+        notes.append(f"按 render_index 升序应移动 {zo['moved_tracks']} 条轨（音频轨留末尾、不参入排序）")
 
     template = {
         "template_version": TEMPLATE_VERSION,
@@ -1075,6 +1208,7 @@ def extract_template(draft_path: Path | str, *, require_plaintext: bool = True) 
         "time_units": level["time_units"],
         "tracks": level["tracks"],
         "segments": level["segments"],
+        "z_order": level["z_order"],
         "text_slots": level["text_slots"],
         "asset_roles": level["asset_roles"],
         "counts": counts,

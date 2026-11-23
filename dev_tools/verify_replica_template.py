@@ -1079,12 +1079,19 @@ def compound_region_check(final_mp4: Path, main_only: Optional[Path], frames_dir
 
 
 def reference_original_render(out: Path, style_id: str, tpl: dict,
-                              style_dir_name: str) -> Optional[Path]:
+                              style_dir_name: str,
+                              meta: Optional[dict] = None) -> Optional[Path]:
     """用**同一个渲染器**渲一遍原版草稿，作为「原版同段」参考帧（只读调用）。
 
     为什么要渲原版：验收要求「0.45~1.667s 的帧与原版同段对比」，而原版成片不在仓库里。
     这里的参考是「原版草稿 + 原版素材 + 同一渲染器」，因此两边差异只来自**换素材**，
     与渲染口径无关——这是能拿到的最干净的对照。原版素材不在本机时返回 None。
+
+    **渲染前先按原版 `render_index` 排一遍轨序**（`_sort_draft_z_order`，子稿递归）：
+    本项目渲染器「轨序即 z 序」，直接拿原版草稿（数组序）去渲，参考片自己就把 0.45~1.667s
+    的拼贴画在同源缩图层**下面**了——旧报告里 orig_visible 1/0/0/0/0/0、以及「原版也看不见
+    条带」的误判都是这么来的。剪映放出来的原版是按 render_index 排的，这步只是把参考片
+    还原成它本来的样子，不是改设计。
     """
     try:
         import importlib
@@ -1095,6 +1102,9 @@ def reference_original_render(out: Path, style_id: str, tpl: dict,
         if not base.is_dir():
             return None
         draft = json.loads(Path(draft_path).read_text(encoding="utf-8"))
+        draft, zfix = _sort_draft_z_order(draft, scope="original")
+        if meta is not None:
+            meta["z_order_fix"] = zfix
         rr = {"style_id": f"{style_id}_origref", "draft": "origref", "main_segments": 0,
               "overlay_segments": 0, "matte_done": 0, "matte_failed": 0, "text_segments": 0,
               "sticker_segments": 0, "masked_main_segments": 0, "masked_overlay_segments": 0,
@@ -1343,6 +1353,398 @@ def _main_track_idx(draft: dict) -> Optional[int]:
         if tr is mt:
             return ti
     return None
+
+
+# ---------------------------------------------------------------- z 序（谁盖住谁）
+# 本项目渲染器「轨序即 z 序」，剪映草稿的 z 序在**段上的 render_index**。验证端要回答两件事：
+#   ① 原版/新版草稿里，同一时刻哪一层在上（结构真值，不需要渲）；
+#   ② 它真的能在那份成片上看见吗（层单独渲 + 可见性判定，防「结构说在上、实际被抹掉」）。
+
+
+def _draft_track_z_key(tr: dict, idx: int) -> float:
+    """一条草稿轨的 z 序键 = 段上 render_index 的最大值（与套用端 `_track_z_key` 同一口径）。"""
+    vals = [float(s["render_index"]) for s in (tr.get("segments") or [])
+            if isinstance(s.get("render_index"), (int, float))]
+    return max(vals) if vals else float(idx)
+
+
+def _sort_draft_z_order(draft: dict, *, scope: str = "top") -> Tuple[dict, dict]:
+    """把草稿轨序按 render_index 升序排好（递归进复合片段子稿），返回副本 + 台账。
+
+    为什么验证端也要排：参考片是「原版草稿 + 原版素材 + 同一个渲染器」渲的，而渲染器只认轨序。
+    直接拿原版草稿去渲，渲染器会把拼贴画在缩图层**下面**（数组序），参考片自己就把拼贴盖住
+    了——旧报告里 orig_visible 1/0/0/0/0/0 就是这么来的，拿它做基准等于拿错的真值。
+    按原版 render_index 排一遍再渲，参考片才是「剪映放出来的原版」。
+    音频轨留末尾（没有画面 z 序）；同键稳定（保持原相对顺序）。
+    """
+    d = json.loads(json.dumps(draft))
+    levels: List[dict] = []
+
+    def _one(level: dict, sc: str) -> None:
+        trs = level.get("tracks") or []
+        keyed = [(_draft_track_z_key(t, i), i) for i, t in enumerate(trs)]
+        visual = [k for k in keyed if trs[k[1]].get("type") != "audio"]
+        audio = [k for k in keyed if trs[k[1]].get("type") == "audio"]
+        visual.sort(key=lambda k: (k[0], k[1]))
+        order = [k[1] for k in visual + audio]
+        level["tracks"] = [trs[i] for i in order]
+        levels.append({"scope": sc, "tracks": len(order),
+                       "moved_tracks": sum(1 for pos, old in enumerate(order) if old != pos),
+                       "new_order_old_indices": order})
+        for mat in (level.get("materials") or {}).get("drafts") or []:
+            sub = mat.get("draft")
+            if isinstance(sub, dict):
+                _one(sub, f"{sc}/draft:{(mat.get('id') or '')[:8]}")
+
+    _one(d, scope)
+    return d, {"levels": levels,
+               "moved_tracks": sum(l["moved_tracks"] for l in levels),
+               "basis": "轨级 z 键 = 段上 render_index 的 max；音频轨留末尾；同键稳定"}
+
+
+def _draft_video_layers(draft: dict) -> List[dict]:
+    """草稿里**主轨以外**的视频叠层（只带结构指纹，不带素材路径）。"""
+    from replica_template import layer_size_ratio
+    mats = draft.get("materials") or {}
+    canvas = draft.get("canvas_config") or {}
+    cw = float(canvas.get("width") or 1080)
+    ch = float(canvas.get("height") or 1920)
+    drafts_ids = {d.get("id") for d in (mats.get("drafts") or []) if d.get("id")}
+    by_id = {m["id"]: m for m in (mats.get("videos") or []) if m.get("id")}
+    main_ti = _main_track_idx(draft)
+    out: List[dict] = []
+    for ti, tr in enumerate(draft.get("tracks") or []):
+        if tr.get("type") != "video" or ti == main_ti:
+            continue
+        for s in tr.get("segments") or []:
+            tg = s.get("target_timerange") or {}
+            a = float(tg.get("start") or 0) / 1e6
+            dur = float(tg.get("duration") or 0) / 1e6
+            cl = s.get("clip") or {}
+            scale = float((cl.get("scale") or {}).get("x") or 1.0)
+            alpha = 1.0 if cl.get("alpha") is None else float(cl.get("alpha"))
+            mat = by_id.get(s.get("material_id")) or {}
+            size = layer_size_ratio(mat, cw, ch, scale) if mat.get("width") else None
+            cover = round(size[0] * size[1], 3) if size else None
+            is_comp = bool(drafts_ids & set(s.get("extra_material_refs") or []))
+            out.append({"track": ti, "start": round(a, 3), "end": round(a + dur, 3),
+                        "scale": round(scale, 3), "alpha": round(alpha, 3),
+                        "render_index": s.get("render_index"),
+                        "kind": "compound" if is_comp else str(mat.get("type") or "video"),
+                        "cover": cover})
+    return out
+
+
+def _layer_qualifies(layer: dict) -> bool:
+    """「同时间重叠且都满幅/半透明」的层才算 z 序有意义的一对（小窗叠层另当别论）。"""
+    if float(layer.get("alpha") or 0.0) <= 0.05:
+        return False          # 全透明层：不存在「盖不盖住」
+    cover = layer.get("cover")
+    return (cover is None or float(cover) >= 0.85) or float(layer.get("alpha") or 1.0) <= 0.98
+
+
+def _layer_pairs(layers: List[dict]) -> List[dict]:
+    out: List[dict] = []
+    for i, a in enumerate(layers):
+        if not _layer_qualifies(a):
+            continue
+        for b in layers[i + 1:]:
+            if b["track"] == a["track"] or not _layer_qualifies(b):
+                continue
+            ov0, ov1 = max(a["start"], b["start"]), min(a["end"], b["end"])
+            if ov1 - ov0 <= 0.02:
+                continue
+            out.append({"a": a, "b": b, "overlap": [round(ov0, 3), round(ov1, 3)]})
+    return out
+
+
+def _match_layers(src: dict, candidates: List[dict]) -> List[dict]:
+    """原版一层 → 新版里对应的**那一组**层段（靠「同类 + 同 scale + 时间窗重叠」匹配，不看素材）。
+
+    为什么不用素材匹配：套用端本来就换了一批素材，路径/指纹都对不上；而**结构指纹**
+    （复合片段 vs 普通视频、clip.scale、在哪个时间窗里）是原版与新版都该一致的。
+    为什么返回一组而不是一个：套用端会把一段长叠层按新素材长度**切成几段**（原版 t1 那条
+    5.3~9.65s 的层在新稿里就是 4 段），一对一匹配会直接找不到；一组里取最高轨位就是
+    「这一组（这一层设计）在新稿里被放在哪里」。
+    """
+    out: List[dict] = []
+    for cand in candidates:
+        if (cand["kind"] == "compound") != (src["kind"] == "compound"):
+            continue
+        if abs(cand["scale"] - src["scale"]) > 0.05:
+            continue
+        if src["kind"] == "compound" and (abs(cand["start"] - src["start"]) > 0.35
+                                          or abs(cand["end"] - src["end"]) > 0.35):
+            # 复合片段不会被切成几段（父段时间跟着锚点走），所以要求起止都对得上：
+            # 不要求的话原版的 0.45s 拼贴和 5.88s 拼贴（都是 compound/scale 1.0）会互相串。
+            continue
+        ov = min(cand["end"], src["end"]) - max(cand["start"], src["start"])
+        short = min(cand["end"] - cand["start"], src["end"] - src["start"])
+        if ov < 0.6 * max(1e-6, short):
+            continue
+        out.append(cand)
+    return out
+
+
+def _top_of_group(group: List[dict], t_mid: float | None = None) -> dict | None:
+    """一组层段里**位置最高**的那层（轨位最大）；给了 t_mid 就优先取盖住该时刻的那段。"""
+    if not group:
+        return None
+    pool = group
+    if t_mid is not None:
+        covering = [g for g in group if g["start"] - 0.05 <= t_mid <= g["end"] + 0.05]
+        if covering:
+            pool = covering
+    return max(pool, key=lambda g: g["track"])
+
+
+def _us_of(sec: float) -> int:
+    return int(round(max(0.0, float(sec)) * 1e6))
+
+
+def _solo_layer_draft(draft: dict, layer: dict, t0: float, t1: float) -> Optional[dict]:
+    """只留这一层的迷你草稿（时间裁到 [t0,t1] 并反到 0 起），用来「层单独渲染」。"""
+    trs = draft.get("tracks") or []
+    if layer["track"] >= len(trs):
+        return None
+    tr = trs[layer["track"]]
+    segs: List[dict] = []
+    for s in tr.get("segments") or []:
+        tg = s.get("target_timerange") or {}
+        a = float(tg.get("start") or 0) / 1e6
+        d = float(tg.get("duration") or 0) / 1e6
+        lo, hi = max(a, t0), min(a + d, t1)
+        if hi - lo <= 0.02:
+            continue
+        s2 = json.loads(json.dumps(s))
+        s2["target_timerange"] = {"start": _us_of(lo - t0), "duration": _us_of(hi - lo)}
+        src = s.get("source_timerange") or {}
+        # 段被窗口从中间切开时源入点跟着走（只在窗口端点那一段发生）
+        s2["source_timerange"] = {"start": _us_of(float(src.get("start") or 0) / 1e6 + (lo - a)),
+                                  "duration": _us_of(hi - lo)}
+        segs.append(s2)
+    if not segs:
+        return None
+    mini = json.loads(json.dumps(draft))
+    mini["tracks"] = [{"id": tr.get("id"), "is_default_name": True,
+                       "segments": segs, "type": "video"}]   # 去掉 flag，让它成为这条迷你时间线的主轨
+    mini["duration"] = _us_of(t1 - t0)
+    mini.pop("keyframes", None)
+    return mini
+
+
+def _solo_layer_frames(drf: dict, base: Path, layer: dict, t0: float, t1: float, t_mid: float,
+                       work: Path, fps: int, tag: str) -> Optional[Path]:
+    """「层单独渲染」一张灰底帧。
+
+    复合片段层直接渲它的**子时间线**（它自己就是这层的内容；把父段塞进迷你草稿会让
+    渲染器在子稿里重建占位素材，与铺在成片里的不是同一份东西）；普通视频层用只留这一层的
+    迷你草稿（窗口裁到 [t0,t1] 并反到 0 起，1~2 秒的短渲）。两边都落在 0x555555 灰底上，
+    才能用「灰底以外的块」做可见性判定。
+    """
+    if layer.get("kind") == "compound":
+        entry = _pick_compound_entry(drf, float(layer["start"]), tol=0.2)
+        sub = (entry or {}).get("draft")
+        if isinstance(sub, dict):
+            rel = max(0.02, min(float(t_mid) - float(layer["start"]),
+                                max(0.05, float(layer["end"]) - float(layer["start"]) - 0.05)))
+            jpgs = _render_layer_gray(sub, base, work, fps, [round(rel, 3)], tag)
+            return jpgs[0] if jpgs else None
+    solo = _solo_layer_draft(drf, layer, float(t0), float(t1))
+    if solo is None:
+        return None
+    jpgs = _render_layer_gray(solo, base, work, fps, [round(max(0.02, t_mid - t0), 3)], tag)
+    return jpgs[0] if jpgs else None
+
+
+def _visible_blocks(final_jpg: Optional[Path], solo_jpg: Optional[Path]) -> dict:
+    """层单独渲的每一块，在成片同一位置还认不认得出（NCC ≥ 0.5 算看得见）。"""
+    import numpy as np
+    from PIL import Image
+    if final_jpg is None or solo_jpg is None:
+        return {"blocks": None, "visible": None, "ncc": []}
+    try:
+        solo = np.asarray(Image.open(solo_jpg).convert("RGB").resize((270, 480)),
+                          dtype=np.float32) / 255.0
+        fin = np.asarray(Image.open(final_jpg).convert("RGB").resize((270, 480)),
+                         dtype=np.float32) / 255.0
+    except Exception as exc:
+        return {"blocks": None, "visible": None, "ncc": [], "error": f"{type(exc).__name__}"}
+    mask = np.abs(solo - (0x55 / 255.0)).mean(axis=2) > 0.06
+    boxes = _components_of_mask(mask, min_area=120, max_boxes=8)
+    vis, nccs = 0, []
+    for b in boxes:
+        y0, y1 = max(0, b["y0"]), min(479, b["y1"])
+        x0, x1 = max(0, b["x0"]), min(269, b["x1"])
+        if y1 - y0 < 3 or x1 - x0 < 3:
+            continue
+        lc = solo[y0:y1 + 1, x0:x1 + 1].mean(axis=2)
+        if float(lc.std()) < 0.04:
+            continue
+        c = _ncc(lc, fin[y0:y1 + 1, x0:x1 + 1].mean(axis=2))
+        nccs.append(round(c, 3))
+        if c >= 0.5:
+            vis += 1
+    return {"blocks": len(boxes), "visible": vis,
+            "visible_frac": round(vis / max(1, len(boxes)), 3), "ncc": nccs}
+
+
+def z_layer_order_audit(final_mp4: Optional[Path], draft: dict, draft_dir: Path,
+                        style_id: str, tpl: dict, frames_dir: Path, *,
+                        reference_mp4: Optional[Path] = None,
+                        max_render_pairs: int = 3) -> dict:
+    """**z 序回归防线**：对每对「同时间重叠且都满幅/半透明」的视频层，
+    比较原版与新版**谁在上面**；不一致就报 `z_order_inverted`。
+
+    判「谁在上面」两个口径都用上：
+      · 结构：原版 = 段上 render_index（剪映真值），新版 = 轨序（本项目渲染器真值）；
+      · 像素：把该层**单独渲**在 0x555555 灰底上，再拿它的每一块去成片里比内容（NCC ≥ 0.5 = 看得见）。
+        结构说在上的那层如果实际看不见（被抹掉/遮罩/抠像失败），计 `top_layer_not_visible`——
+        这是「结构对了但成片没上」的另一类坑，不能只看结构就放行。
+    原版侧比的是**按 render_index 排好序再渲的参考片**（见 _sort_draft_z_order），否则参考片自己
+    就把拼贴盖住了，等于拿错的真值来对账。
+    """
+    res: Dict[str, Any] = {"window": None, "pairs": [], "z_order_inverted": 0,
+                           "top_layer_not_visible": 0, "ok": False}
+    if final_mp4 is None or not Path(final_mp4).is_file():
+        res["skipped"] = "no_final_render"
+        return res
+    try:
+        src_draft = json.loads(Path(resolve_draft_by_style(style_id)).read_text(encoding="utf-8"))
+        import importlib
+        R = importlib.import_module("render_replica_from_draft")
+        src_base = Path(R._discover_root("drafts")) / Path(resolve_draft_by_style(style_id)).parent.name
+    except Exception as exc:
+        res["error"] = f"{type(exc).__name__}: {exc}"
+        return res
+    # 原版这边统一用「按 render_index 排好序」的副本（与参考片同一口径，子稿也递归排了）：
+    # 否则层单独渲出来的是数组序下的原版，跟参考片对不上，z 序比较也就成了两个口径。
+    src_draft, res["original_z_fix"] = _sort_draft_z_order(src_draft, scope="original")
+
+    orig_layers = _draft_video_layers(src_draft)
+    new_layers = _draft_video_layers(draft)
+    pairs = _layer_pairs(orig_layers)
+    res["orig_layers"] = len(orig_layers)
+    res["new_layers"] = len(new_layers)
+    res["candidate_pairs"] = len(pairs)
+    if not pairs:
+        res.update({"ok": True, "note": "原版没有「同时间重叠且都满幅/半透明」的视频层对"})
+        return res
+
+    work = Path(frames_dir) / "zorder"
+    work.mkdir(parents=True, exist_ok=True)
+    for stale in work.rglob("*.jpg"):
+        stale.unlink()
+    fps = int(round(float(tpl.get("fps") or 30)))
+
+    rows: List[dict] = []
+    for k, pair in enumerate(pairs):
+        a, b = pair["a"], pair["b"]
+        row: Dict[str, Any] = {"idx": k, "overlap": pair["overlap"],
+                              "orig": {"a": _layer_brief(a), "b": _layer_brief(b)},
+                              "inverted": None}
+        # 原版谁在上：render_index 大者
+        ri_a, ri_b = a.get("render_index"), b.get("render_index")
+        if ri_a is None or ri_b is None:
+            row["skipped"] = "render_index_missing_in_original"
+            rows.append(row)
+            continue
+        row["orig"]["top"] = "a" if float(ri_a) > float(ri_b) else "b"
+        # 新版对应层组（结构指纹匹配；套用端会把长叠层切成几段，所以要按「组」比）
+        ga = _match_layers(a, new_layers)
+        gb = _match_layers(b, new_layers)
+        t_mid = round((pair["overlap"][0] + pair["overlap"][1]) / 2, 3)
+        ta, tb = _top_of_group(ga, t_mid), _top_of_group(gb, t_mid)
+        if ta is None or tb is None:
+            row["skipped"] = "new_layer_not_matched"
+            row["new_matched"] = {"a": len(ga), "b": len(gb)}
+            rows.append(row)
+            continue
+        if ta["track"] == tb["track"]:
+            row["skipped"] = "matched_to_same_track"
+            rows.append(row)
+            continue
+        row["new"] = {"a": _layer_brief(ta), "b": _layer_brief(tb),
+                      "a_group_tracks": sorted({g["track"] for g in ga}),
+                      "b_group_tracks": sorted({g["track"] for g in gb})}
+        row["new"]["top"] = "a" if ta["track"] > tb["track"] else "b"
+        row["inverted"] = row["new"]["top"] != row["orig"]["top"]
+        if row["inverted"]:
+            res["z_order_inverted"] += 1
+        row["_top_layer"] = {"a": ta, "b": tb}
+        rows.append(row)
+
+    # 像素证据（只对前 max_render_pairs 对做，优先做判反转的、以及涉及复合片段的）
+    def _rank(r: dict) -> tuple:
+        return (0 if r.get("inverted") else 1,
+                0 if "compound" in json.dumps(r.get("orig") or {}) else 1,
+                r["idx"])
+    judged = [r for r in rows if r.get("inverted") is not None]
+    for row in sorted(judged, key=_rank)[:max_render_pairs]:
+        t_mid = round((row["overlap"][0] + row["overlap"][1]) / 2, 3)
+        ev: Dict[str, Any] = {"t": t_mid}
+        for tag, drf, base, mp4, layers in (
+                ("new", draft, Path(draft_dir), final_mp4, new_layers),
+                ("orig", src_draft, src_base, reference_mp4, orig_layers)):
+            if mp4 is None:
+                ev[tag] = {"skipped": "no_render"}
+                continue
+            top_key = row[tag]["top"]
+            brief = row[tag][top_key]
+            # 从层列表里重新定位「结构说在上」的那一层（同轨同起点）
+            cand = [l for l in layers if l["track"] == brief["track"]
+                    and abs(l["start"] - brief["start"]) < 0.02]
+            if not cand:
+                ev[tag] = {"skipped": "top_layer_not_located"}
+                continue
+            wdir = work / f"{tag}{row['idx']}"
+            solo_jpg = _solo_layer_frames(drf, base, cand[0], row["overlap"][0],
+                                          row["overlap"][1], t_mid, wdir, fps,
+                                          f"{tag}{row['idx']}")
+            if solo_jpg is None:
+                ev[tag] = {"skipped": "solo_render_failed"}
+                continue
+            fin_jpg = _grab_frame(Path(mp4), t_mid, wdir / f"final_{t_mid:.2f}s.jpg")
+            vb = _visible_blocks(fin_jpg, solo_jpg)
+            # 这一对的上层若还被**更上面的第三层**盖住，那它看不见与「谁在上」无关，
+            # 不能拿来判失败（否则会把「上面还压着一层满幅不透明层」误报成 z 序问题）。
+            upper = [l for l in layers
+                     if l["start"] - 0.05 <= t_mid <= l["end"] + 0.05
+                     and l["track"] > brief["track"]
+                     and float(l.get("alpha") or 1.0) > 0.5]
+            ev[tag] = {**vb,
+                       "solo_frame": str(solo_jpg.relative_to(frames_dir)) if solo_jpg else None,
+                       "final_frame": str(fin_jpg.relative_to(frames_dir)) if fin_jpg else None,
+                       "top_track": brief["track"], "top_scale": brief["scale"],
+                       "top_kind": brief["kind"],
+                       "covered_by_upper_track": (max(l["track"] for l in upper)
+                                                  if upper else None)}
+        row["evidence"] = ev
+        nv = (ev.get("new") or {}).get("visible_frac")
+        new_ev = ev.get("new") or {}
+        if (nv is not None and nv < 0.5 and new_ev.get("covered_by_upper_track") is None):
+            row["top_layer_not_visible"] = True
+            res["top_layer_not_visible"] += 1
+
+    for row in rows:
+        row.pop("_top_layer", None)
+    res["pairs"] = rows
+    res["pairs_judged"] = len(judged)
+    res["pairs_unmatched"] = sum(1 for r in rows if r.get("skipped"))
+    res["ok"] = bool(res["z_order_inverted"] == 0 and res["top_layer_not_visible"] == 0)
+    res["verdict"] = ("可接受：重叠层对的上下关系与原版一致（结构 + 层单独渲的可见性都对得上）"
+                      if res["ok"] else
+                      f"需修：{res['z_order_inverted']} 对层序与原版相反（z_order_inverted）"
+                      f" · {res['top_layer_not_visible']} 对「结构说在上、成片里看不见」")
+    return res
+
+
+def _layer_brief(layer: dict) -> dict:
+    """层的最小指纹（报告里不出现素材路径/文件名）。"""
+    return {"track": layer["track"], "start": layer["start"], "end": layer["end"],
+            "scale": layer["scale"], "alpha": layer["alpha"],
+            "render_index": layer.get("render_index"), "kind": layer["kind"],
+            "cover": layer.get("cover")}
 
 
 def strip_visibility(final_mp4: Path, main_only: Optional[Path], draft: dict,
@@ -1789,6 +2191,11 @@ def main() -> int:
         "segments_total": apply_rep.get("segments_total"),
         "segments_by_role": apply_rep.get("segments_by_role"),
         "tracks_out": apply_rep.get("tracks_out"),
+        # z 序迁移（这一轮的核心）：重排幅度 / 残留错位 / 每个复合片段子稿的排序结果
+        "tracks_reordered": apply_rep.get("tracks_reordered"),
+        "z_order_mismatch": apply_rep.get("z_order_mismatch"),
+        "z_order_inverted_pairs": apply_rep.get("z_order_inverted_pairs"),
+        "track_order": apply_rep.get("track_order"),
         "asset_reused": apply_rep.get("asset_reused"),
         "content_linked": apply_rep.get("content_linked", 0),
         "asset_wrapped": apply_rep.get("asset_wrapped"),
@@ -1928,15 +2335,21 @@ def main() -> int:
     reference_mp4: Optional[Path] = None
     if not args.no_render and not args.no_reference_original:
         t0 = time.time()
+        ref_meta: Dict[str, Any] = {}
         try:
             src_dir_name = resolve_draft_by_style(args.style_id).parent.name
-            reference_mp4 = reference_original_render(out, args.style_id, tpl, src_dir_name)
+            reference_mp4 = reference_original_render(out, args.style_id, tpl, src_dir_name,
+                                                     meta=ref_meta)
         except Exception as exc:
             reference_mp4 = None
             report.setdefault("original_reference_error", f"{type(exc).__name__}: {exc}")
         report["steps"]["original_reference"] = {
             "mp4": _rel(reference_mp4) if reference_mp4 else None,
-            "ok": bool(reference_mp4), "elapsed_sec": round(time.time() - t0, 1)}
+            "ok": bool(reference_mp4), "elapsed_sec": round(time.time() - t0, 1),
+            # 参考片是按原版 render_index 排过序才渲的（否则渲染器的「轨序即 z 序」会
+            # 把原版的拼贴也盖住，基准就错了）；这里记录动了多少轨
+            "z_order_fix": ref_meta.get("z_order_fix"),
+        }
     else:
         report["steps"]["original_reference"] = {"skipped": True}
 
@@ -2027,12 +2440,26 @@ def main() -> int:
             report["steps"]["compound_region"] = region
         else:
             report["steps"]["compound_region"] = {"skipped": "no_photo_compound_in_template"}
+
+        # ---- 5d. z 序回归防线（这一轮的核心）：同时间重叠的满幅/半透明层，原版 vs 新版谁在上 ----
+        t0 = time.time()
+        try:
+            z_audit = z_layer_order_audit(
+                final_mp4, draft, Path(draft_json).parent, args.style_id, tpl, frames_dir,
+                reference_mp4=reference_mp4)
+            z_audit["elapsed_sec"] = round(time.time() - t0, 1)
+        except Exception as exc:
+            z_audit = {"ok": False, "z_order_inverted": None,
+                       "error": f"{type(exc).__name__}: {exc}",
+                       "elapsed_sec": round(time.time() - t0, 1)}
+        report["steps"]["z_order"] = z_audit
     else:
         ghost = {"ok": False, "reason": "no_render"}
         report["steps"]["frames"] = {"skipped": True}
         report["steps"]["face_framing"] = {"skipped": True}
         report["steps"]["cutout_alpha"] = {"skipped": True}
         report["steps"]["ghost_check"] = {"skipped": True}
+        report["steps"]["z_order"] = {"skipped": True}
 
     # ---- 6. 结论 ----
     ff = report["steps"].get("face_framing") or {}
@@ -2052,6 +2479,14 @@ def main() -> int:
         "template_pairs_same_source_kept": sum(
             1 for r in (apply_rep.get("overlay_pairs_resolved") or [])
             if r["resolution"] == "kept_same_source"),
+        # z 序迁移（这一轮的核心）：重排幅度 + 残留错位 + 逐对层序防线
+        "tracks_reordered": apply_rep.get("tracks_reordered"),
+        "z_order_mismatch": apply_rep.get("z_order_mismatch"),
+        "z_order_inverted_pairs_apply": apply_rep.get("z_order_inverted_pairs"),
+        "z_order_inverted": (report["steps"].get("z_order") or {}).get("z_order_inverted"),
+        "z_order_top_layer_not_visible": (report["steps"].get("z_order") or {}).get(
+            "top_layer_not_visible"),
+        "z_order_ok": (report["steps"].get("z_order") or {}).get("ok"),
         "unknown_assets": tpl["counts"].get("unknown", 0),
         "fonts_resolved": {k: v.get("via") for k, v in (apply_rep.get("font_resolved") or {}).items()},
         "font_fallback_slots": [f["slot"] for f in (apply_rep.get("font_fallback_slots") or [])],
@@ -2111,6 +2546,17 @@ def main() -> int:
           f"用到不同图 {a['photo_assets_distinct']} 张 / 池 {a['photo_pool_size']} 张")
     print(f"[verify] 复用/回卷/缩段: {a['asset_reused']} / {a['asset_wrapped']} / {a['slot_shrunk']} · "
           f"跟随主轨同素材 {a['content_linked']} 段 · skipped {a['skipped']}")
+    to = a.get("track_order") or {}
+    if to.get("top"):
+        tp = to["top"]
+        print(f"[verify] z 序迁移: 重排 {tp['tracks_reordered']}/{tp['tracks_total']} 条轨 · "
+              f"残留错位 {tp['z_order_mismatch']} 条 / 反转层对 {tp['z_order_inverted_pairs']} · "
+              f"子稿重排共 {to.get('tracks_reordered_total', 0) - tp['tracks_reordered']} 条 "
+              f"（{len(to.get('compounds') or [])} 个复合片段）")
+        print(f"[verify]   轨序(原数组序→按 render_index): {tp['order_before']} → {tp['order_after']}")
+        for c in (to.get("compounds") or []):
+            print(f"[verify]   子稿 {c['scope']}: 重排 {c['tracks_reordered']}/{c['tracks_total']} · "
+                  f"{c['order_before']} → {c['order_after']} · 错位 {c['z_order_mismatch']}")
     print(f"[verify] 字体: {report['verdict']['fonts_resolved']} · "
           f"回落到系统字体的文字位 {report['verdict']['font_fallback_slots']}")
     print(f"[verify] 文字: 用 {report['verdict']['texts_used']} 位 · "
@@ -2188,12 +2634,38 @@ def main() -> int:
         print(f"[verify] 叠层重影检查未完成: {gc.get('reason') or gc.get('error') or 'skipped'}")
     print(f"[verify] 叠层留空 {report['verdict']['overlay_left_blank']} 段（原因见 report.json "
           f"overlay_left_blank_detail）")
+    zo = report["steps"].get("z_order") or {}
+    if zo.get("skipped"):
+        print("[verify] z 序防线: 未跑（无渲染产物）")
+    elif zo.get("error"):
+        print(f"[verify] z 序防线出错: {zo['error']}")
+    elif zo.get("pairs") is not None:
+        print(f"[verify] z 序防线: 候选层对 {zo.get('candidate_pairs')} · 判了 {zo.get('pairs_judged')} "
+              f"· 序反转 {zo.get('z_order_inverted')} · 说在上却看不见 {zo.get('top_layer_not_visible')} "
+              f"→ {'OK' if zo.get('ok') else 'FAIL'}")
+        for row in (zo.get("pairs") or []):
+            if row.get("skipped"):
+                print(f"[verify]   {row['overlap']}s: 跳过（{row['skipped']}）")
+                continue
+            ev = row.get("evidence") or {}
+            nv = (ev.get("new") or {}).get("visible_frac")
+            ov = (ev.get("orig") or {}).get("visible_frac")
+            print(f"[verify]   {row['overlap']}s: 原版在上={row['orig']['top']} "
+                  f"(ri {row['orig']['a']['render_index']}/{row['orig']['b']['render_index']}) · "
+                  f"新版在上={row['new']['top']} (轨 {row['new']['a']['track']}/{row['new']['b']['track']})"
+                  f" → {'**反转**' if row['inverted'] else '一致'}"
+                  f" · 上层可见占比 原版 {ov} / 新版 {nv}")
+        if zo.get("pairs_judged") is not None:
+            print(f"[verify]   层单独渲的对照帧: {_rel(out / 'frames' / 'zorder')}")
     print(f"[verify] 抠像三明治: 重建 {report['verdict']['cutout_layers_rebuilt']} 层 · "
           f"跳过 {report['verdict']['cutout_layers_skipped']} · "
           f"背景板重建 {report['verdict']['backdrop_rebuilt']} · 描边 {report['verdict']['stroke_applied']} 层 · "
           f"渲染 matte {report['verdict']['cutout_matte_done_render']} / 失败 {report['verdict']['cutout_matte_failed_render']}")
     return 0 if (report["verdict"]["draft_ok"] and report["verdict"]["render_ok"] is not False
-                 and not (gc.get("ok") and gc.get("ghost_rejected")) ) else 1
+                 and not (gc.get("ok") and gc.get("ghost_rejected"))
+                 and not ((report["steps"].get("z_order") or {}).get("z_order_inverted")
+                          or (report["steps"].get("z_order") or {}).get("top_layer_not_visible"))
+                 ) else 1
 
 
 def _seg_roles(segments: List[dict]) -> Dict[str, int]:

@@ -959,7 +959,8 @@ def _keyframes_of(seg: dict, seg_dur: float, src_in: float) -> List[dict]:
 
 def _segment(*, mat_id: str, tl_start: float, dur: float, src_in: float, src_dur: float,
              geometry: dict, keyframes: List[dict], extra_refs: List[str],
-             track_index: int, visible: bool = True, volume: float = 1.0) -> dict:
+             track_index: int, visible: bool = True, volume: float = 1.0,
+             render_index: Optional[float] = None) -> dict:
     scale = geometry.get("scale") or [1.0, 1.0]
     transform = geometry.get("transform") or [0.0, 0.0]
     return {
@@ -986,7 +987,13 @@ def _segment(*, mat_id: str, tl_start: float, dur: float, src_in: float, src_dur
         "keyframe_refs": [],
         "last_nonzero_volume": float(volume),
         "material_id": mat_id,
-        "render_index": int(track_index),
+        # 原来什么：`"render_index": int(track_index)` —— 把**轨数组序**写成了 z 序。剪映草稿里这是
+        # 两个字段（`track_render_index` 才是数组序），原版同一时刻拼贴轨数组序=2 而 render_index=3
+        # （在上）。套用端这样写，拼贴就被同源缩图层盖住了。
+        # 改成什么：段上写**原版 render_index**（模版已按原版语义记好）；原版本来就缺省的那种
+        # 段（主轨 / 音频轨）退回到模版轨序号——它们在剪映里本来就没有 z 值，写什么都只看轨序，
+        # 这里不自作主张给它们编一个 z 层。
+        "render_index": int(render_index) if render_index is not None else int(track_index),
         "render_timerange": {},
         "responsive_layout": {"enable": False, "horizontal_pos_layout": 0,
                               "target_follow": False, "vertical_pos_layout": 0},
@@ -1003,6 +1010,126 @@ def _segment(*, mat_id: str, tl_start: float, dur: float, src_in: float, src_dur
         "visible": bool(visible),
         "volume": float(volume),
     }
+
+
+# ---------------------------------------------------------------- z 序（轨序即 z 序）
+# 本项目渲染器是「**轨序即 z 序**」（render_replica_from_draft 里 units.sort 用轨下标，数组越靠后
+# 越在上层）。而模版来自剪映草稿，它的 z 序是**段上的 render_index**（越大越上）。两者方向一致，
+# 所以迁移 z 序 = **按 render_index 升序写出 tracks**，而不是把 render_index 当轨下标用。
+#
+# 为什么这是真因（不再重挖）：原版 0.45~1.667s 的拼贴父段 render_index=3、同源缩图层 render_index=2，
+# 而它们在数组里是 2 号轨/6 号轨；旧实现按数组序写，拼贴落到缩图层**下面**，条带被整块盖住。
+
+AUDIO_TRACK_TYPES = ("audio",)
+
+
+def _track_z_key(track: dict) -> float:
+    """轨的 z 序键 = 原版段级 `render_index` 的聚合值（模版轨级 render_index）。
+
+    一条轨里段的 render_index 可能不统一（原版这块拼贴轨：0.45~1.667s 是 3、5.88~8.22s 是 14），
+    取 **max**：让这条轨站在它曾到达的最高层。取 min 会让它在 5.88~8.22s 反被 render_index=13
+    的那条轨盖住（原版那一段拼贴在**上**）——用 max 才与所有重叠窗口的先后关系一致。
+    缺字段（v1 老模版）退回轨数组序：行为与旧版一模一样，宁可不变也不凭猜测重排。
+    """
+    ri = track.get("render_index")
+    if isinstance(ri, (int, float)):
+        return float(ri)
+    return float(track.get("index") or 0)
+
+
+def _z_sort_tracks(tracks: List[dict]) -> List[dict]:
+    """按 render_index 升序排轨（同值保持原有相对顺序 = 稳定排序）；音频轨留到最后。
+
+    音频轨不参入排序：音频没有画面 z 序（原版音频轨段的 render_index 就是缺省），渲染器也是
+    另起一路做混音、不看轨序；原版自己也把音频轨放在数组末尾。文字/贴纸/特效轨**参入**排序：
+    原版 render_index 三就分档——文字 14000+ / 特效 11000 / 贴纸 14008，必须排在视频层（1~15）之上。
+    """
+    visual = [t for t in tracks if t.get("track_type") not in AUDIO_TRACK_TYPES
+              and t.get("role") != "audio"]
+    vis_ids = {id(t) for t in visual}
+    audio = [t for t in tracks if id(t) not in vis_ids]
+    visual.sort(key=lambda t: (_track_z_key(t), int(t.get("index") or 0)))
+    return visual + audio
+
+
+def _z_order_stats(scope: str, all_tracks: List[dict], emitted: List[dict],
+                   segments: List[dict]) -> dict:
+    """一层时间线排完 z 序后的对账（顶层与每个复合片段子稿各一份）。
+
+    `all_tracks` = 模版里的**原数组序**（含被跳过没写出去的 effect/空轨），`emitted` = 真正
+    写进草稿的轨（已按 render_index 排好）。`before` 只取 emitted 里的那些、仍按原数组序，
+    这样「动了多少」只算真写出去的轨，不会被跳过的 effect 轨干扰。
+
+    三个量各管一事，别混着当同一个看：
+      · `tracks_reordered`：**位置变了**的轨数（= 这次重排的幅度）；
+      · `z_order_mismatch`：排序后仍有残留错位的**轨数**（涉及反转对的轨去重），正确产物 = 0；
+      · `z_order_inverted_pairs`：时间重叠的两层里，轨序先后与原版 render_index 先后**相反**的
+        对数，正确产物 = 0。
+    判反转只看两边都记了 render_index 的段（缺值无法比较，不瞎判）。
+    """
+    emitted_ids = {id(t) for t in emitted}
+    before_list = [t for t in all_tracks if id(t) in emitted_ids]
+    order_before = [int(t.get("index") or 0) for t in before_list]
+    order_after = [int(t.get("index") or 0) for t in emitted]
+    moved = sum(1 for pos, idx in enumerate(order_after) if order_before[pos] != idx)
+    pos_of = {idx: pos for pos, idx in enumerate(order_after)}
+    segs = [{"track": int(s.get("track_index") or 0),
+             "key": s.get("key"),
+             "ri": float(s["render_index"]),
+             "a": float(s.get("start_sec") or 0.0),
+             "b": float(s.get("start_sec") or 0.0) + float(s.get("duration_sec") or 0.0)}
+            for s in segments
+            if s.get("render_index") is not None and int(s.get("track_index") or 0) in pos_of]
+    inverted: List[dict] = []
+    n_inv = 0
+    bad_tracks: set = set()
+    for i, x in enumerate(segs):
+        for y in segs[i + 1:]:
+            if x["track"] == y["track"]:
+                continue
+            ov = min(x["b"], y["b"]) - max(x["a"], y["a"])
+            if ov <= 0.02:
+                continue
+            by_z = x["ri"] - y["ri"]
+            by_out = pos_of[x["track"]] - pos_of[y["track"]]
+            if by_z * by_out < 0:
+                n_inv += 1
+                bad_tracks.update((x["track"], y["track"]))
+                if len(inverted) < 8:
+                    inverted.append({"overlap": [round(max(x["a"], y["a"]), 3),
+                                                 round(min(x["b"], y["b"]), 3)],
+                                     "a": x["key"], "b": y["key"],
+                                     "render_index": [x["ri"], y["ri"]],
+                                     "track_pos": [pos_of[x["track"]], pos_of[y["track"]]]})
+    return {
+        "scope": scope,
+        "tracks_total": len(emitted),
+        "tracks_reordered": moved,
+        "z_order_mismatch": len(bad_tracks),
+        "z_order_inverted_pairs": n_inv,
+        "audio_tracks_kept_last": sum(1 for t in emitted
+                                      if t.get("track_type") in AUDIO_TRACK_TYPES
+                                      or t.get("role") == "audio"),
+        "order_before": order_before,
+        "order_after": order_after,
+        "inverted_pairs": inverted,
+        "basis": ("轨序即 z 序：按原版 render_index 升序写 tracks；渲染器/剪映两个口径都自洽"),
+    }
+
+
+def _z_apply_render_index(out_tracks: List[dict]) -> List[dict]:
+    """排完序后回填 `track_render_index`，让草稿自洽（`track_render_index` = 轨数组序 = 输出位置）。
+
+    `render_index` 不必改写：它已按**原版 z 序**写好（见 _segment），而输出轨序又是按它升序排的，
+    所以「轨序 → 段上 render_index」本来就单调一致；这里只给真缺值（None）的段补一个位置，
+    不做多余改写（改了反而会让剪映侧看到的层号与轨序不符）。
+    """
+    for pos, tr in enumerate(out_tracks):
+        for seg in tr.get("segments") or []:
+            seg["track_render_index"] = pos
+            if seg.get("render_index") is None:
+                seg["render_index"] = pos
+    return out_tracks
 
 
 # ---------------------------------------------------------------- 主入口
@@ -1512,6 +1639,8 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
     #   · 子层的 sticker/音效同样只取同角色，缺就计缺口。
     subdraft_root = draft_dir / "subdraft"
     drafts_mats: List[dict] = []
+    # 每个复合片段子稿的 z 序对账（写入报告：tracks_reordered / z_order_mismatch / 排序结果）
+    sub_order_stats: List[dict] = []
     # 子时间线文字层的文案池：只取「无 slot 的通用文案」。带 slot 的文案是给顶层文字位
     # 显式对位的，不能被内嵌子时间线抢去（否则顶层的字幕会整条错位）。
     loose_texts: List[Any] = [t for t in (texts or [])
@@ -1735,14 +1864,17 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
             sub_track_segs[t_i].append(_segment(
                 mat_id=mat_id, tl_start=t0, dur=dur, src_in=src_in, src_dur=src_dur,
                 geometry=geom, keyframes=_keyframes_of(s, dur, src_in),
-                extra_refs=extra, track_index=t_i))
+                extra_refs=extra, track_index=t_i, render_index=s.get("render_index")))
             stats["segments"] += 1
 
         if not any(segs for segs in sub_track_segs.values()):
             return None
 
         sub_out_tracks: List[dict] = []
-        for tr in sub_tracks:
+        # 子时间线也必须按原版 render_index 升序写（渲染器进复合片段后同样「轨序即 z 序」，
+        # 不排序就会把子层里本该在上面的那层写到下面）。原来什么：直接按模版数组序写。
+        sub_tracks_ordered = _z_sort_tracks(sub_tracks)
+        for tr in sub_tracks_ordered:
             segs = sub_track_segs.get(tr["index"]) or []
             if not segs or tr.get("role") == "effect":
                 continue
@@ -1756,6 +1888,13 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
                 "segments": segs,
                 "type": TRACK_TYPE_OF_ROLE.get(tr.get("role"), tr.get("track_type") or "video"),
             })
+        # 子稿的 z 序对账：只统计真正写出去的轨（effect 轨被跳过不计入）
+        _z_apply_render_index(sub_out_tracks)
+        sub_order_stats.append(_z_order_stats(
+            f"compound:{seg['key']}", sub_tracks,
+            [t for t in sub_tracks_ordered
+             if sub_track_segs.get(t["index"]) and t.get("role") != "effect"],
+            sub_segs))
 
         videos = [v for v in sub_videos.values() if v.get("type") != "sticker"]
         stickers = [{"category_id": "", "category_name": "", "id": v["id"],
@@ -2151,9 +2290,16 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
             mat_id=mat_id, tl_start=p["start"], dur=p["dur"], src_in=src_in,
             src_dur=src_dur if p["kind"] not in ("text",) else 0.0,
             geometry=geometry, keyframes=kfs, extra_refs=extra_refs,
-            track_index=t_i, volume=1.0))
+            track_index=t_i, volume=1.0, render_index=seg.get("render_index")))
 
-    for tr in tracks:
+    # ---- 写 tracks：**按原版 render_index 升序**（不是模版数组序）----
+    # 原来什么：`for tr in tracks:` —— 照模版数组序写，于是拼贴（数组第 2 条）写在缩图层（数组第 6 条）
+    # **前面**，而本项目渲染器「轨序即 z 序」→ 拼贴被盖住（条带只看得见几条的真因）。
+    # 改成什么：先按原版 render_index 升序排序（同值稳定；音频轨留末尾），再按这个顺序写 tracks，
+    # 写完后把每条轨的 `track_render_index` 回填成输出位置（轨序 / render_index 两口径自洽）。
+    tracks_ordered = _z_sort_tracks(tracks)
+    emitted_tracks: List[dict] = []
+    for tr in tracks_ordered:
         segs = track_segs.get(tr["index"]) or []
         if not segs or tr.get("role") == "effect":
             continue
@@ -2166,6 +2312,9 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
             "segments": segs,
             "type": TRACK_TYPE_OF_ROLE.get(tr.get("role"), tr.get("track_type") or "video"),
         })
+        emitted_tracks.append(tr)
+    _z_apply_render_index(out_tracks)
+    top_order_stats = _z_order_stats("top", tracks, emitted_tracks, segments)
 
     videos = [v for v in video_mats.values() if v.get("type") != "sticker"] + ph_video_mats
     stickers = [{"category_id": "", "category_name": "", "id": v["id"], "material_name": v["material_name"],
@@ -2386,7 +2535,23 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
         "segments_by_role": by_role,
         "tracks_out": [{"role": next((t.get("role") for t in tracks if t["index"] == idx),
                                     None), "segments": len(s)} for idx, s in
-                       ((tr["index"], track_segs[tr["index"]]) for tr in tracks if track_segs.get(tr["index"]))],
+                       ((tr["index"], track_segs[tr["index"]]) for tr in tracks_ordered
+                        if track_segs.get(tr["index"]) and tr.get("role") != "effect")],
+        # z 序迁移台账（这一轮的核心）：重排幅度 / 残留错位 / 每个复合片段子稿的排序结果
+        "tracks_reordered": top_order_stats["tracks_reordered"],
+        "z_order_mismatch": top_order_stats["z_order_mismatch"] + sum(
+            s["z_order_mismatch"] for s in sub_order_stats),
+        "z_order_inverted_pairs": top_order_stats["z_order_inverted_pairs"] + sum(
+            s["z_order_inverted_pairs"] for s in sub_order_stats),
+        "track_order": {
+            "top": top_order_stats,
+            "compounds": sub_order_stats,
+            "tracks_reordered_total": top_order_stats["tracks_reordered"] + sum(
+                s["tracks_reordered"] for s in sub_order_stats),
+            "note": ("轨序即 z 序：按原版 render_index 升序写 tracks（同值稳定、音频轨留末尾）；"
+                     "tracks_reordered = 位置变了的轨数（重排幅度），z_order_mismatch = 排序后仍有残留"
+                     "错位的轨数，z_order_inverted_pairs = 重叠层对里先后仍与原版相反的对数，后两个正确时应为 0"),
+        },
         "texts_used": texts_used,
         "texts_truncated": rep.get("texts_truncated", 0),
         "crop_uv_dropped": rep.get("crop_uv_dropped", 0),
