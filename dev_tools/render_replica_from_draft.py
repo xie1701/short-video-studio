@@ -885,6 +885,151 @@ def _seg_blur_sigma_of(seg: dict, vfx: dict):
     return None
 
 
+# ---------- 抠像「撕纸描边」（materials.videos[*].matting.strokes） ----------
+# 草稿真值（style_21 0–1.667s 那条人像叠加层）：
+#   enable_matting_stroke=true, color [1,1,1,1],
+#   effects_adjust_size=0.35 / effects_adjust_distance=0.25 / effects_adjust_texture=0.6,
+#   resource_name「撕纸描边」。旧实现完全没做 → 原版沿人像轮廓那圈白色纸边全丢。
+#   **归因如实：它不是那三点的主因。** 按最优环宽画回去只降 0.75（1.0s：21.12→20.37），
+#   因为原版纸带里只有约 1/3 面积是纸白（lum>200 的占比：环带 33% vs 环内/远景基线 19%/15%），
+#   剩下的差量在一条 30–80 px 的宽环带上——那里我们的背景层整块暗 15–20 级、
+#   且与原版相关性≈ 0（不同内容，不是调色/模糊/色域能拉的，见交付报告）。
+#
+# 像素换算常数全部由**原版帧反解**，不是拍脑袋：
+#   · 取样：原版 style_21 的 0.5/1.0/1.5s 三帧；图层 scale=1.5（草稿 clip.scale 稳态值，
+#     layer_geometry 得 1620×2880 贴回 1080×1920 画布）→ 图层像素 1:1 等于画布像素。
+#   · 环宽：x=430..660 共 58 条扫描线，量「人像 alpha 边界之外」的连续白带垂直厚度，
+#     中位 12–14 px；该段轮廓法向与竖直夹角 30–40° → 法向环宽 ≈ 10–11 px。
+#     另取 x=540 单列逐像素复核：白带 y=226..236（11 px），内缘 225:139→226:236，
+#     外缘 236:235→237:194→238:136 → 两侧各约 2 px 过渡。
+#   · 与素材原生像素的关系：图层被 ×1.5 放大，故源像素环宽 = 11/1.5 ≈ 7.3 px，
+#     羽化 sigma ≈ 1.0/1.5 ≈ 0.67 源像素。
+#   · 反解常数：GAIN = 7.3 / size(0.35) ≈ 21 px/单位（1080 宽口径）；
+#     羽化 = 0.67 源像素/单位。撕纸本身不规则，沿轮廓实测 7–13 px，单常数残差 ±2.5 px。
+#   · distance=0.25 实测**没有可见间隙**（x=540 处白带内缘直接贴住头发 alpha 边界，
+#     中间那 1 px 是头发自身的抗锯齿），所以不做成旋钮——留一个能调但不生效的参数
+#     比不做更坏，这里如实记成「实测 0 间隙」。
+STROKE_SIZE_GAIN = float(os.environ.get("REPLICA_STROKE_GAIN") or 21.0)      # px / size 单位（1080 宽口径）
+STROKE_FEATHER_SRC = float(os.environ.get("REPLICA_STROKE_FEATHER") or 0.667)  # 高斯 sigma / 源像素
+# texture：撕纸颗粒。0.6 档反解为「外缘半径抖动 + 环内 alpha 颗粒」。系数扫掠实测
+# （同一段、只改这两个系数，三点差量 0.5/1.0/1.5s）：
+#   texture 全关        14.51 / 20.57 / 19.91
+#   1 八度 0.35/0.25    14.36 / 20.37 / 19.79
+#   2 八度 0.50/0.50    14.11 / 20.13 / 19.54  ← 取这档（指标与视觉都最好）
+# 所以 texture 不是「能调但不生效」的空捻钮；仍然是反解值域内的粗标定。
+STROKE_TEX_JITTER = float(os.environ.get("REPLICA_STROKE_TEX_JITTER") or 0.5)
+STROKE_TEX_GRAIN = float(os.environ.get("REPLICA_STROKE_TEX_GRAIN") or 0.5)
+
+
+def matting_stroke_spec(mat: dict) -> dict | None:
+    """素材 matting → 撕纸描边 cfg；没启用描边返回 None。
+
+    只有 matting.path 非空（原版真的抠了像）且 enable_matting_stroke=true 才成立。
+    描边是**从 alpha 派生**的：抠像失败时 alpha 全黑，环宽自然归零，不会凭空画白圈。
+    """
+    mt = mat.get("matting") or {}
+    if not mt.get("path") or not mt.get("enable_matting_stroke"):
+        return None
+    strokes = mt.get("strokes") or []
+    st = strokes[0] if strokes else {}
+    vals = {}
+    for p in st.get("adjust_params") or []:
+        v = p.get("value")
+        vals[str(p.get("name"))] = float(v if v is not None else (p.get("default_value") or 0.0))
+    col = list(st.get("color") or [1.0, 1.0, 1.0, 1.0]) + [1.0, 1.0, 1.0]
+    rgb = tuple(max(0, min(255, int(round(float(c) * 255)))) for c in col[:3])
+    return {
+        "color": rgb,
+        "size": vals.get("effects_adjust_size", 0.35),
+        "texture": vals.get("effects_adjust_texture", 0.0),
+    }
+
+
+def bake_stroke_layer(seg_video: Path, matte_video: Path, out_mov: Path, spec: dict,
+                      size: tuple, fps: int, ffmpeg_bin: str = "ffmpeg") -> Path:
+    """人像 RGBA + 撕纸描边 → 一条 ProRes4444 图层（描边压在人物**下方**）。
+
+    为什么逐帧 numpy 而不是滤镜图：环宽要按 alpha 的距离场算（等距圆环，不能像可分离
+    膨胀那样在 45° 方向胖 41%），纸纹还要一张稳定的噪声场；ffmpeg 的 morpho 只吃二值
+    结构元、noise 又是逐帧随机，拼不出稳定纸纹。这段只有 1.5 秒，烘一次就缓存住。
+    """
+    import numpy as np
+    from scipy import ndimage
+
+    W, H = int(size[0]), int(size[1])
+    scale = W / float(CANVAS_W)
+    width = max(1.5, float(spec["size"]) * STROKE_SIZE_GAIN * scale)
+    sigma = max(0.3, STROKE_FEATHER_SRC * scale)
+    tex = max(0.0, min(1.0, float(spec.get("texture") or 0.0)))
+    rgb = np.array(spec["color"], dtype=np.float32)
+
+    # 纸纹：双八度平滑噪声场（粗 16px 块起伏 + 细 4px 纸纤维），整段共用一张——
+    # 撕纸纹理是贴在纸上的，不逐帧闪。只用单一粗噪声时环宽是「平滑波浪」，
+    # 拉不出原版那种锯齿+毛边（自评 4/10）；加一层细八度才有纤维感。
+    rng = np.random.default_rng(20261123)
+
+    def _octave(shrink: int) -> np.ndarray:
+        s = rng.random((H // shrink + 2, W // shrink + 2)).astype(np.float32)
+        return ndimage.zoom(s, shrink, order=3)[:H, :W]
+
+    field = np.clip(0.55 * _octave(16) + 0.45 * _octave(4), 0.0, 1.0)
+    field = (field - field.min()) / max(1e-6, field.max() - field.min())
+
+    out_mov.parent.mkdir(parents=True, exist_ok=True)
+    dec_v = subprocess.Popen([ffmpeg_bin, "-v", "error", "-i", str(seg_video),
+                              "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    dec_m = subprocess.Popen([ffmpeg_bin, "-v", "error", "-i", str(matte_video),
+                              "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    enc = subprocess.Popen([ffmpeg_bin, "-y", "-v", "error", "-f", "rawvideo",
+                            "-pix_fmt", "rgba", "-s", f"{W}x{H}", "-r", f"{fps}", "-i", "-",
+                            "-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le",
+                            str(out_mov)], stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    fsz_v, fsz_m = W * H * 3, W * H
+    n_done = 0
+    try:
+        while True:
+            bv = dec_v.stdout.read(fsz_v)
+            bm = dec_m.stdout.read(fsz_m)
+            if not bv or not bm or len(bv) < fsz_v or len(bm) < fsz_m:
+                break
+            fg = np.frombuffer(bv, np.uint8).reshape(H, W, 3).astype(np.float32)
+            a = np.frombuffer(bm, np.uint8).reshape(H, W).astype(np.float32) / 255.0
+            inside = a > 0.5
+            dt = ndimage.distance_transform_edt(~inside)      # 0=人像内，>0=向外第几像素
+            w_field = width * (1.0 + STROKE_TEX_JITTER * tex * (2.0 * field - 1.0))
+            ring = np.clip(w_field - dt + 1.0, 0.0, 1.0)      # 环：alpha 边界向外 width px（半径不等距）
+            ring *= (1.0 - a)                                 # 内缘跟着人像 alpha 走
+            if STROKE_TEX_GRAIN > 0 and tex > 0:
+                ring *= np.clip(1.0 - STROKE_TEX_GRAIN * tex * (1.0 - field), 0.0, 1.0)
+            if sigma > 0.2:
+                ring = ndimage.gaussian_filter(ring, sigma)   # 羽化（实测两侧各 ~2 px 过渡）
+            ring = np.clip(ring, 0.0, 1.0)
+            out_a = a + ring * (1.0 - a)                      # 描边压在人物下方
+            denom = np.maximum(out_a, 1e-4)[:, :, None]
+            out_rgb = (fg * a[:, :, None] + rgb[None, None, :] * (ring * (1.0 - a))[:, :, None]) / denom
+            frame = np.concatenate([np.clip(out_rgb, 0, 255),
+                                    (np.clip(out_a, 0, 1) * 255.0)[:, :, None]], axis=2)
+            enc.stdin.write(frame.astype(np.uint8).tobytes())
+            n_done += 1
+    finally:
+        for p in (dec_v, dec_m):
+            try:
+                p.stdout.close()
+            except Exception:
+                pass
+            p.wait()
+        try:
+            enc.stdin.close()
+        except Exception:
+            pass
+        enc.wait()
+    if n_done == 0 or not out_mov.is_file():
+        raise RuntimeError(f"撕纸描边烘焙失败（{seg_video} + {matte_video}）")
+    return out_mov
+
+
 def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_default: int,
                     preview: bool, report: dict, depth: int = 0, audio_only: bool = False,
                     alpha_out: bool = False) -> Path:
@@ -1615,6 +1760,24 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 report["matte_failed"] += 1
                 report["unrealized"]["overlay_matte_failed"] = report["unrealized"].get("overlay_matte_failed", 0) + 1
                 continue  # 抠像失败不下假前景
+            # 抠像描边（撕纸描边）：从同一份 matte 派生白色纸边，烘成 RGBA 图层压在人物下方。
+            # 必须在 matte 成功之后做——描边跟着 alpha 走，抠像失败就没有描边，也绝不含糊。
+            _stroke = matting_stroke_spec(mat) if matte_p else None
+            _had_matte = matte_p is not None
+            if _stroke:
+                # 缓存指纹必须含像素换算常数（含环境变量覆盖）：否则改了 GAIN 旧烘片会被永久
+                # 复用，看上去就是「改了不生效」——这个坑 hash 里已经吃过一次。
+                _stroke_p = matte_dir / (
+                    f"ov_{t_idx:02d}_{o:02d}_"
+                    f"{_cache_tag('stroke', s_in, s_dur, fps, lw, lh, json.dumps(_stroke, sort_keys=True),
+                                  STROKE_SIZE_GAIN, STROKE_FEATHER_SRC,
+                                  STROKE_TEX_JITTER, STROKE_TEX_GRAIN)}"
+                    "_stroke.mov")
+                if not _stroke_p.is_file():
+                    bake_stroke_layer(seg_p, matte_p, _stroke_p, _stroke, (lw, lh), fps, ffmpeg_bin)
+                seg_p, matte_p = _stroke_p, None   # 描边已烘进 RGBA 层，alpha 直接走 overlay
+                if depth == 0:
+                    report["matte_stroke_segments"] = report.get("matte_stroke_segments", 0) + 1
             units.append((t_idx, o, {
                 "kind": "video", "seg": seg_p, "matte": matte_p, "t_start": t_start, "t_dur": t_dur,
                 "scale": sc, "lw": lw, "lh": lh, "tx": tx, "ty": ty, "alpha": alpha,
@@ -1622,7 +1785,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             }))
             if depth == 0:
                 report["overlay_segments"] += 1
-                if matte_p:
+                if _had_matte:
                     report["matte_done"] += 1
 
     for t_idx, segs in cls["texts"]:
