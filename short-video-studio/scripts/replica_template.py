@@ -1249,7 +1249,10 @@ def resolve_draft_by_style(style_id: str, *, decrypted_root: Path | None = None,
     if not target:
         raise SystemExit(f"{style_id} 没有 source_hash，无法定位草稿")
     root = Path(decrypted_root or DECRYPTED_ROOT)
-    candidates = sorted(root.glob("*/draft_content.json"))
+    # 明文快照有两种落盘名：正常解密的 `draft_content.json`，以及「主稿缺失、从 .backup 复原」
+    # 的那套写成 `__latest_close.json`（style_01 就是这一种 —— 只认前者会让它永远解析不到，
+    # 实测哈希与风格库 `source_hash` 完全一致，纯粹是文件名不同）。
+    candidates = sorted(list(root.glob("*/draft_content.json")) + list(root.glob("*/__latest_close.json")))
     for cand in candidates:
         if sha256_of_file(cand) == target:
             return cand
