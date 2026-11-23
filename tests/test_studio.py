@@ -3203,5 +3203,92 @@ class EndCardPixelTests(unittest.TestCase):
             self.assertEqual(log, [], "没有拼音证据时不许动两字词")
 
 
+class VisionAgentEngineTests(unittest.TestCase):
+    """画面理解必须走大模型：本地只能显式兜底，且结果要打标。"""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.out = Path(self.temp.name) / "work"
+        self.out.mkdir()
+
+    def test_tasks_packet_keeps_frames_and_asks_in_plain_words(self):
+        import vision_agent as VA
+
+        clips = [{"file": "IMG_1938.MOV", "duration_sec": 12.4,
+                  "frame_paths": [{"path": "/tmp/f0.jpg", "t": 1.2}, {"path": "/tmp/f1.jpg", "t": 5.0}]}]
+        p = VA.write_tasks(self.out, clips)
+        data = json.loads(p.read_text(encoding="utf-8"))
+        clip = data["clips"][0]
+        self.assertEqual(len(clip["frames"]), 2)
+        self.assertTrue(clip["frames"][0]["path"].startswith("/"))
+        self.assertIn("主体", clip["ask"])
+        self.assertIn("不要编", clip["ask"])
+
+    def test_unjudged_clips_are_named_not_silently_passed(self):
+        import vision_agent as VA
+
+        write_json(self.out / VA.SEMANTICS_NAME, {"clips": [{"file": "a.MOV"}, {"file": "b.MOV"}]})
+        write_json(self.out / VA.LABELS_NAME, {"clips": [{"file": "a.MOV", "summary": "后厨穿串", "tags": ["后厨"]}]})
+        rep = VA.merge_labels(self.out)
+        self.assertEqual(rep["clips"], 1)
+        self.assertEqual(rep["missing"], ["b.MOV"])
+        sem = read_json(self.out / VA.SEMANTICS_NAME)
+        self.assertEqual(sem["clips"][0]["vision_engine"], "agent")
+        self.assertEqual(sem["clips"][1]["vision_engine"], "pending_agent")
+        self.assertIn("待 Agent 判定", (self.out / VA.NOTES_NAME).read_text(encoding="utf-8"))
+
+    def test_local_engine_refuses_without_explicit_consent(self):
+        r = subprocess.run([sys.executable, str(ROOT / "short-video-studio" / "scripts" / "tag_frames.py"),
+                            "--input-dir", self.temp.name, "--out", str(self.out), "--engine", "local"],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 3)
+        self.assertIn("拒绝用本地分类冒充大模型理解", r.stderr)
+
+    def test_local_engine_marks_result_as_fallback(self):
+        import vision_agent as VA
+
+        src = (ROOT / "short-video-studio" / "scripts" / "tag_frames.py").read_text(encoding="utf-8")
+        self.assertIn("user_accepted_local_fallback", src)
+        self.assertIn("user_accepted_local_fallback", VA.LOCAL_VISION_REFUSAL)
+
+
+class AdaptiveWorkersTests(unittest.TestCase):
+    def test_never_takes_every_core_and_respects_item_count(self):
+        from common import adaptive_workers
+
+        w = adaptive_workers(100, cap=8)
+        self.assertGreaterEqual(w, 1)
+        self.assertLessEqual(w, 8)
+        self.assertLessEqual(adaptive_workers(3, cap=8), 3)
+
+
+class BlindSheetTests(unittest.TestCase):
+    """盲审接触表：左右随机，但对照表要能对上。"""
+
+    def test_pairs_styles_and_writes_key(self):
+        import importlib.util
+        from PIL import Image
+
+        spec = importlib.util.spec_from_file_location(
+            "blind_contact_sheet", str(ROOT / "dev_tools" / "blind_contact_sheet.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        td = Path(self.id().replace(".", "_"))
+        with tempfile.TemporaryDirectory() as tmp:
+            o, u = Path(tmp) / "orig", Path(tmp) / "ours"
+            o.mkdir(); u.mkdir()
+            for i in (1, 2):
+                Image.new("RGB", (540, 960), (180, 40, 40)).save(o / f"style_{i:02d}.png")
+                Image.new("RGB", (540, 960), (40, 40, 180)).save(u / f"style_{i:02d}.png")
+            rep = mod.build_sheet(mod.collect(o), mod.collect(u), Path(tmp) / "s.jpg", Path(tmp) / "k.csv")
+            self.assertEqual(rep["styles"], 2)
+            rows = (Path(tmp) / "k.csv").read_text(encoding="utf-8").strip().splitlines()
+            self.assertEqual(rows[0], "style_id,A,B,verdict,note")
+            for row in rows[1:]:
+                _, a, b, _v, _n = row.split(",")
+                self.assertEqual({a, b}, {"orig", "our"})
+
+
 if __name__ == "__main__":
     unittest.main()

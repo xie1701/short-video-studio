@@ -99,6 +99,23 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageOps
 from vision_inspector import compute_laplacian_sharpness, inspect_images
 
+
+_LOCAL_VISION_WARNED = False
+
+
+def _local_vision_allowed() -> bool:
+    """本地分类只在你明确说了 SVS_LOCAL_VISION=1 时才用于语义判断。"""
+    global _LOCAL_VISION_WARNED
+    if os.environ.get("SVS_LOCAL_VISION") == "1":
+        return True
+    if not _LOCAL_VISION_WARNED:
+        _LOCAL_VISION_WARNED = True
+        print("[inventory] 画面语义留给大模型判：这次盘点不写本地物件标签（scene_labels_source=pending_agent）。"
+              "\n[inventory] 交大模型判：scripts/tag_frames.py --input-dir <素材目录> --out <工作目录> "
+              "-> 把 00_vision_tasks.json 给 Agent，判定写 00_vision_labels.json 后 --apply。"
+              "\n[inventory] 只想先跑一遍临时标签：设 SVS_LOCAL_VISION=1（结果会打降级标记）。")
+    return False
+
 TABOO_KEYWORD_MAP: Dict[str, Tuple[str, ...]] = {
     "raw_meat": ("生肉", "血水", "宰杀", "内脏", "冻肉", "解冻", "raw_meat", "rawmeat", "blood"),
     "kitchen_trash": ("垃圾", "泔水", "厨余", "脏乱", "油污", "苍蝇", "kitchen_trash", "trash", "dirty"),
@@ -972,10 +989,17 @@ def inventory_directory(
             for fp in f_list:
                 for lb in (vis_map.get(str(fp), {}) or {}).get("labels") or []:
                     all_labels.append(lb)
-            scene_tags, label_evidence = labels_to_tags(all_labels)
-            clips[c_idx]["scene_tags_zh"] = scene_tags
-            clips[c_idx]["scene_tag_groups"] = tag_groups(scene_tags)
-            clips[c_idx]["scene_label_evidence"] = label_evidence[:6]
+            # 画面"讲什么"必须由大模型判（用户 2026-11-23 明确要求）。
+            # 本地 ImageNet 标签只给物件级、置信度常 <0.3，拿它当语义依据就是假装有依据。
+            if _local_vision_allowed():
+                scene_tags, label_evidence = labels_to_tags(all_labels)
+                clips[c_idx]["scene_tags_zh"] = scene_tags
+                clips[c_idx]["scene_tag_groups"] = tag_groups(scene_tags)
+                clips[c_idx]["scene_label_evidence"] = label_evidence[:6]
+                clips[c_idx]["scene_labels_source"] = "local_fallback_accepted"
+            else:
+                clips[c_idx]["scene_tags_zh"] = []
+                clips[c_idx]["scene_labels_source"] = "pending_agent"
             clips[c_idx]["faces"] = faces
             ve = clips[c_idx].get("_v_idx_entry")
             if not (ve and ve.get("shot_size")):

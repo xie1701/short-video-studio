@@ -459,6 +459,38 @@ def _vendor_bin_usable(path: Path) -> bool:
     return ok
 
 
+def adaptive_workers(n_items: int = 0, cap: int = 8, floor: int = 1) -> int:
+    """按这台机器**现在的**负载决定并发数，不去抢用户正在用的程序。
+
+    用户原话：「任务执行过程中有条件尽量并行处理，但要结合用户终端算力，
+    不能影响用户正常使用其它进程。」所以不是拍一个 cpu_count 出来就用满：
+
+    * 先看 1 分钟平均负载：已经超过核数一半，就只给 1–2 个线程；
+    * 负载低时才逐步放开，上限 cap（默认 8），并且至少留一个核给用户；
+    * 数量还受这轮要处理的任务数限制（没必要开 8 个线程处理 3 段素材）。
+    """
+    try:
+        cpus = os.cpu_count() or 2
+    except Exception:
+        cpus = 2
+    reserve = 1 if cpus > 2 else 0
+    budget = max(floor, cpus - reserve)
+    load1 = None
+    try:
+        load1 = os.getloadavg()[0]
+    except Exception:
+        load1 = None
+    if load1 is not None:
+        if load1 >= max(1.0, cpus * 0.75):
+            budget = max(floor, min(budget, 1))
+        elif load1 >= cpus * 0.5:
+            budget = max(floor, min(budget, 2))
+    workers = min(cap, budget)
+    if n_items > 0:
+        workers = min(workers, max(1, n_items))
+    return max(floor, workers)
+
+
 def find_bin(name: str) -> Optional[str]:
     """查找二进制可执行文件：优先命中离线包内置 vendor/bin/（且验活），再查找系统 PATH。"""
     vendor_bin_dir = VENDOR_DIR / "bin"

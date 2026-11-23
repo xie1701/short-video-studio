@@ -138,22 +138,45 @@ def _vlm_describe(cfg: Dict[str, str], images: List[Path], hint: str) -> Optiona
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="抽密帧 + 多模态识别，产出《素材说明》草稿")
-    ap.add_argument("--input-dir", required=True, help="素材目录")
+    ap = argparse.ArgumentParser(description="抽密帧 + 交大模型判断画面（默认不本地猜）")
+    ap.add_argument("--input-dir", help="素材目录")
     ap.add_argument("--out", required=True, help="输出目录（建议放在 _SVS工作区/ 或项目目录下）")
+    ap.add_argument("--engine", choices=["agent", "local"], default="agent",
+                    help="agent（默认）=抽帧后交大模型/Agent 判定；local=本地分类兜底（需 --i-accept-local）")
+    ap.add_argument("--i-accept-local", action="store_true",
+                    help="明确同意用本地分类兜底（结果会打降级标记，且不知道画面在讲什么）")
+    ap.add_argument("--apply", action="store_true",
+                    help="把 00_vision_labels.json 里大模型的判定并进结果与《素材说明》草稿")
+    ap.add_argument("--labels", default="", help="判定文件路径（默认 <out>/00_vision_labels.json）")
     ap.add_argument("--frames-per-clip", type=int, default=6, help="每段抽几帧（默认 6，长的建议 10–12）")
-    ap.add_argument("--workers", type=int, default=4, help="并发线程数（默认 4）")
-    ap.add_argument("--vlm", action="store_true",
-                    help="额外用视觉语言模型描述画面（需要 SVS_VLM_ENDPOINT，本地 Ollama 也行）")
+    ap.add_argument("--workers", type=int, default=0, help="并发线程数（默认按机器负载自适应）")
+    ap.add_argument("--vlm", action="store_true", help="local 模式下额外用 VLM 描述（需 SVS_VLM_ENDPOINT）")
     ap.add_argument("--limit", type=int, default=0, help="只处理前 N 段（试跑用）")
     args = ap.parse_args()
 
-    from vision_scene_labels import labels_to_tags, tag_groups
+    out_dir = Path(args.out).expanduser()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    import vision_agent as VA
+
+    if args.apply:
+        rep = VA.merge_labels(out_dir, VA.load_labels(out_dir, Path(args.labels) if args.labels else None) or None)
+        print(f"[tag-frames] 大模型判定已并入：{rep['clips']}/{rep['total']} 段")
+        if rep["missing"]:
+            print(f"[tag-frames] 还有 {len(rep['missing'])} 段没判定（配镜时会被当成没依据）："
+                  + "、".join(rep["missing"][:5]) + ("…" if len(rep["missing"]) > 5 else ""))
+        print(f"[tag-frames] 结果 -> {out_dir / VA.SEMANTICS_NAME}")
+        print(f"[tag-frames] 说明草稿 -> {out_dir / VA.NOTES_NAME}")
+        return
+
+    if args.engine == "local" and not args.i_accept_local:
+        print(VA.LOCAL_VISION_REFUSAL, file=sys.stderr)
+        raise SystemExit(3)
+    if not args.input_dir:
+        ap.error("--input-dir 必填（--apply 模式除外）")
+
     from vision_inspector import inspect_images
 
     src_dir = Path(args.input_dir).expanduser()
-    out_dir = Path(args.out).expanduser()
-    out_dir.mkdir(parents=True, exist_ok=True)
     files = _collect(src_dir)
     if args.limit:
         files = files[: args.limit]
@@ -163,94 +186,123 @@ def main() -> None:
     if not ffmpeg:
         raise SystemExit("没找到 ffmpeg")
 
-    print(f"[tag-frames] {len(files)} 段素材 · 每段 {args.frames_per_clip} 帧 · 并发 {args.workers}")
+    workers = args.workers or _adaptive_workers(len(files))
+    print(f"[tag-frames] {len(files)} 段素材 · 每段 {args.frames_per_clip} 帧 · "
+          f"并发 {workers}（按当前机器负载算的，不抢你正在用的程序）· 引擎 {args.engine}")
+
+    frames_root = out_dir / "frames"
 
     def work(item: tuple) -> Dict[str, Any]:
         idx, src = item
         probe = ffprobe_media(src) or {}
         dur = float(probe.get("duration_sec") or 0.0)
-        with tempfile.TemporaryDirectory(prefix="svs_frames_") as td:
-            frames = _extract_frames(ffmpeg, src, dur, args.frames_per_clip, Path(td))
-            if not frames:
-                return {"file": src.name, "path": str(src), "frames": 0, "error": "抽帧失败"}
-            try:
-                vis = inspect_images(frames)
-            except Exception as exc:
-                vis = {}
-                note = f"视觉识别不可用：{type(exc).__name__}"
-            else:
-                note = ""
-            labels: List[Dict[str, Any]] = []
-            ocr: List[str] = []
-            for f in frames:
-                v = vis.get(str(f)) or {}
-                labels.extend(v.get("labels") or [])
-                for t in v.get("texts") or []:
-                    s = str((t or {}).get("text") or "").strip()
-                    if s and s not in ocr:
-                        ocr.append(s)
-        tags, evidence = labels_to_tags(labels)
-        desc: Optional[str] = None
-        if args.vlm:
-            cfg = _vlm_config()
-            desc = _vlm_describe(cfg, frames, src.name)
-            if desc is None and not cfg.get("endpoint"):
-                note = (note + " " if note else "") + "vlm: not_configured"
-        sentence_parts = [desc] if desc else []
-        sentence_parts += tags[:4]
-        sentence_parts += [t[:12] for t in ocr[:3]]
-        sentence = "、".join([x for x in sentence_parts if x])[:60]
-        return {
+        keep = frames_root / f"{idx:03d}_{VA.slug_of(src.name)}"
+        keep.mkdir(parents=True, exist_ok=True)
+        frames = _extract_frames(ffmpeg, src, dur, args.frames_per_clip, keep)
+        if not frames:
+            return {"file": src.name, "path": str(src), "duration_sec": round(dur, 2),
+                    "frames": 0, "error": "抽帧失败"}
+        base = {
             "file": src.name,
             "path": str(src),
             "duration_sec": round(dur, 2),
             "frames": len(frames),
+            "frame_paths": [{"path": str(p), "t": 0.0} for p in frames],
+            "frames_dir": str(keep),
+        }
+        return base
+
+    results: List[Dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+        for i, r in enumerate(ex.map(work, list(enumerate(files))), start=1):
+            results.append(r)
+            if i % 20 == 0 or i == len(files):
+                print(f"[tag-frames] 抽帧 {i}/{len(files)}")
+
+    # 帧的时间点用文件名里的序号反推（_extract_frames 按等分时间抽）
+    for r in results:
+        d = float(r.get("duration_sec") or 0.0)
+        n = len(r.get("frame_paths") or [])
+        if n:
+            for k, fd in enumerate(r["frame_paths"]):
+                fd["t"] = round(d * (k + 0.5) / n, 2)
+
+    if args.engine == "agent":
+        tasks_p = VA.write_tasks(out_dir, results)
+        write_json(out_dir / VA.SEMANTICS_NAME, {
+            "step": "frame_semantics",
+            "engine": "agent_pending",
+            "input_dir": str(src_dir.resolve()),
+            "frames_per_clip": args.frames_per_clip,
+            "clips": [{k: v for k, v in r.items() if k != "frame_paths"} for r in results],
+        })
+        notes = ["# 一行一条：文件名 + 一句画面内容（等大模型判定后自动填，别手改也行）"]
+        notes += [f"{r['file']}  （待 Agent 判定）" for r in results]
+        (out_dir / VA.NOTES_NAME).write_text("\n".join(notes) + "\n", encoding="utf-8")
+        print(f"[tag-frames] 已抽 {sum(int(r.get('frames') or 0) for r in results)} 帧 -> {frames_root}")
+        print(f"[tag-frames] 任务包 -> {tasks_p}")
+        print("[tag-frames] 下一步：把帧交给 Agent/大模型判，把结论写进 "
+              f"{out_dir / VA.LABELS_NAME}，然后跑 --apply --out {out_dir}")
+        print("[tag-frames] 在你判定之前，配镜会明确标成『没有画面依据』，不会偷偷用文件名瞎配")
+        return
+
+    # 本地兜底：用户明确同意过，结果打标记
+    from vision_scene_labels import labels_to_tags, tag_groups
+    for r in results:
+        frames = [Path(x["path"]) for x in (r.get("frame_paths") or [])]
+        try:
+            vis = inspect_images(frames) if frames else {}
+        except Exception as exc:
+            vis, r["note"] = {}, f"视觉识别不可用：{type(exc).__name__}"
+        labels: List[Dict[str, Any]] = []
+        ocr: List[str] = []
+        for f in frames:
+            v = vis.get(str(f)) or {}
+            labels.extend(v.get("labels") or [])
+            for t in v.get("texts") or []:
+                s = str((t or {}).get("text") or "").strip()
+                if s and s not in ocr:
+                    ocr.append(s)
+        tags, evidence = labels_to_tags(labels)
+        desc = None
+        if args.vlm:
+            cfg = _vlm_config()
+            desc = _vlm_describe(cfg, frames, r["file"])
+            if desc is None and not cfg.get("endpoint"):
+                r["note"] = (str(r.get("note") or "") + " vlm: not_configured").strip()
+        r.update({
+            "vision_engine": "user_accepted_local_fallback",
             "scene_tags_zh": tags,
             "scene_tag_groups": tag_groups(tags),
             "label_evidence": evidence[:10],
             "ocr_texts": ocr[:8],
             "vlm_description": desc,
-            "suggested_note": sentence,
-            "note": note,
-        }
+            "suggested_note": "、".join([x for x in ([desc] if desc else []) + tags[:4] + ocr[:3] if x])[:60],
+        })
 
-    results: List[Dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=max(1, args.workers)) as ex:
-        for i, r in enumerate(ex.map(work, list(enumerate(files))), start=1):
-            results.append(r)
-            if i % 20 == 0 or i == len(files):
-                print(f"[tag-frames] {i}/{len(files)}")
-
-    write_json(out_dir / "00_frame_semantics.json", {
+    write_json(out_dir / VA.SEMANTICS_NAME, {
         "step": "frame_semantics",
+        "engine": "local_fallback",
+        "engine_ack": "user_accepted_local_fallback",
+        "warning": "本地分类只给物件级标签，不知道画面在讲什么；这不是大模型理解结果。",
         "input_dir": str(src_dir.resolve()),
-        "frames_per_clip": args.frames_per_clip,
-        "backends": {
-            "vision_classify": "apple_vision" if sys.platform == "darwin" else "unavailable",
-            "ocr": "apple_vision" if sys.platform == "darwin" else "unavailable",
-            "vlm": (_vlm_config()["model"] if (_vlm_config()["endpoint"] and args.vlm) else "not_configured"),
-        },
-        "clips": results,
+        "clips": [{k: v for k, v in r.items() if k != "frame_paths"} for r in results],
     })
-
-    # 直接产出一份能用的《素材说明》草稿：文件名 + 一句画面内容
-    lines = ["# 一行一条：文件名 + 一句画面内容（下面是自动识别出来的草稿，改两个字就准了）"]
-    filled = 0
+    lines = ["# 一行一条：文件名 + 一句画面内容（本地兜底标签，只作临时参考）"]
     for r in results:
-        note = r.get("suggested_note") or ""
-        if note:
-            filled += 1
-        lines.append(f"{r['file']} {note}".rstrip())
-    note_path = out_dir / "素材说明_待填写.txt"
-    note_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        lines.append(f"{r['file']} {r.get('suggested_note') or ''}".rstrip())
+    (out_dir / VA.NOTES_NAME).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("[tag-frames] 已按你的要求走本地兜底（结果打了降级标记）")
+    print(f"[tag-frames] 结果 -> {out_dir / VA.SEMANTICS_NAME}")
 
-    with_tags = sum(1 for r in results if r.get("scene_tags_zh"))
-    with_ocr = sum(1 for r in results if r.get("ocr_texts"))
-    with_vlm = sum(1 for r in results if r.get("vlm_description"))
-    print(f"[tag-frames] 识别出画面内容 {with_tags}/{len(results)} 段 · 有画面文字 {with_ocr} 段"
-          f" · 视觉模型描述 {with_vlm} 段")
-    print(f"[tag-frames] 识别结果 -> {(out_dir / '00_frame_semantics.json')}")
-    print(f"[tag-frames] 说明草稿 -> {note_path}（{filled}/{len(results)} 段已有初稿）")
+
+def _adaptive_workers(n_items: int) -> int:
+    """并发数按机器现状算，别把用户正在用的程序一起拖垮。"""
+    try:
+        from common import adaptive_workers
+        return adaptive_workers(n_items, cap=8)
+    except Exception:
+        return max(1, min(4, os.cpu_count() or 2))
 
 
 if __name__ == "__main__":
