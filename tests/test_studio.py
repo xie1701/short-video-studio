@@ -3160,5 +3160,48 @@ class CrossPlatformTests(unittest.TestCase):
             self.assertFalse(mod._is_dynamic_homebrew_bin(Path("/bin/ls")))
 
 
+class EndCardPixelTests(unittest.TestCase):
+    """尾卡要真的画出来——不能只写在 06_packaging.json 里（这就是上次"只跑不生效"的老坑）。"""
+
+    def test_end_card_renders_both_lines(self):
+        import numpy as np
+        from render_mp4 import render_packaging_png
+
+        img = render_packaging_png({
+            "kind": "end_card_cta",
+            "fg_hex": "#FFE28A",
+            "stroke_hex": "#000000",
+            "text_or_asset": "在珠海想烧烤的，直接来老杨家烧烤看看",
+            "subtext": "香洲区凤凰路 12 号，报我名字就行",
+        }, "style_01")
+        alpha = np.array(img)[:, :, 3]
+        rows = (alpha > 40).sum(axis=1)
+        bands, inb, start = [], False, 0
+        for i, v in enumerate(rows):
+            if v > 0 and not inb:
+                start, inb = i, True
+            elif v == 0 and inb:
+                bands.append((start, i))
+                inb = False
+        if inb:
+            bands.append((start, len(rows)))
+        solid = [b for b in bands if b[1] - b[0] > 3]
+        self.assertGreaterEqual(len(solid), 2, f"主句和副行都要有墨迹，实际行带：{solid}")
+        self.assertGreater(int(alpha.max()), 200, "字要不透明，不能被背景吃掉")
+
+    def test_two_char_homophone_only_fixed_when_pinyin_available(self):
+        import asr_glossary as G
+
+        segs = [{"text": "我们做厨柜", "words": [{"word": "我们"}, {"word": "做"}, {"word": "厨柜"}]}]
+        g = {"terms": ["橱柜"], "replacements": {}, "background": "", "sources": []}
+        import importlib.util
+        g["pinyin_available"] = importlib.util.find_spec("pypinyin") is not None
+        log = G.apply_to_transcript(segs, g)
+        if g["pinyin_available"]:
+            self.assertTrue(log and segs[0]["text"] == "我们做橱柜", "同音两字词应当纠对")
+        else:
+            self.assertEqual(log, [], "没有拼音证据时不许动两字词")
+
+
 if __name__ == "__main__":
     unittest.main()

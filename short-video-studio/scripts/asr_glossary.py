@@ -242,6 +242,8 @@ def apply_to_transcript(segments: Iterable[Dict[str, Any]], glossary: Dict[str, 
         seg["text_before_glossary"] = old
         # words 是字幕的落字与时间来源，必须同步改；同一替换通常落在单个词里
         for w in seg.get("words") or []:
+            if not isinstance(w, dict):
+                continue  # 防御：有的上游把 words 写成纯字符串列表
             wt = str(w.get("word") or "")
             if not wt:
                 continue

@@ -1572,6 +1572,7 @@ def main() -> None:
             dialect=args.dialect,
             store_anchor=args.store_anchor,
             multi_speaker=args.multi_speaker,
+            glossary_dirs=[eff_raw, project_dir],
         )
         tr_data = read_json(pipeline_dir / "02_transcript.json") if (pipeline_dir / "02_transcript.json").is_file() else {}
         mf_data = read_json(pipeline_dir / "01_manifest.json") if (pipeline_dir / "01_manifest.json").is_file() else {}
@@ -1640,6 +1641,7 @@ def main() -> None:
                 dialect=args.dialect,
                 store_anchor=args.store_anchor,
                 multi_speaker=args.multi_speaker,
+                glossary_dirs=[eff_raw, project_dir],
             )
             record_milestone(pipeline_dir, "stop1_script", "Step 2 脚本转写与合规门禁完成")
             if args.require_plan_confirm and not is_plan_confirmed(pipeline_dir):
@@ -1684,6 +1686,7 @@ def main() -> None:
                 dialect=args.dialect,
                 store_anchor=args.store_anchor,
                 multi_speaker=args.multi_speaker,
+                glossary_dirs=[eff_raw, project_dir],
             )
             record_milestone(pipeline_dir, "stop1_script", "relock-voice 脚本重建完成")
             run_step3(
