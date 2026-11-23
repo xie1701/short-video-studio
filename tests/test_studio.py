@@ -3290,5 +3290,47 @@ class BlindSheetTests(unittest.TestCase):
                 self.assertEqual({a, b}, {"orig", "our"})
 
 
+class StickerRenderTests(unittest.TestCase):
+    """贴纸几何：显示尺寸 = 原生 × scale × 画布宽/720（用原版帧反解出来的真值）。"""
+
+    def test_paint_size_matches_original_frame(self):
+        from sticker_render import paint_size
+        # 24-美业「手机屏幕边框」：原生 475×540、scale 2.18822、画布 1080
+        w, h = paint_size(475, 540, 2.18822212042551, 1080)
+        self.assertEqual((w, h), (1560, 1772))
+        # 上边界 = 中心 y 1104 − 高/2 = 218 → 画布 11.35%，原版量到 11.5%
+        cy = 1920 / 2 - (-0.14987714987715) * 1920 / 2
+        self.assertAlmostEqual((cy - h / 2) / 1920, 0.1135, places=3)
+
+    def test_resolve_sticker_dir_rejects_unknown(self):
+        from sticker_assets import resolve_sticker_dir
+        self.assertIsNone(resolve_sticker_dir("/no/such/dir", "1"))
+        self.assertIsNone(resolve_sticker_dir("", ""))
+
+    def test_overwide_sticker_cropped_to_canvas(self):
+        """渲染宽 1560 > 画布 1080：按交集裁切后 pad，alpha 只能落在画布内。"""
+        import tempfile
+        from PIL import Image
+        from sticker_render import render_one_layer
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td) / "f00000.png"
+            Image.new("RGBA", (475, 540), (255, 0, 0, 255)).save(src)
+            out = Path(td) / "layer.mov"
+            render_one_layer(Path(td), True, 0.0, out, 1080, 1920, 1560, 1772,
+                             849, 1104, 0.0, 0.4, 30.0)
+            r = subprocess.run(["ffmpeg", "-v", "error", "-i", str(out), "-frames:v", "1",
+                                "-f", "image2pipe", "-vcodec", "png", "-"], capture_output=True)
+            self.assertTrue(r.stdout, "贴纸图层渲染失败")
+            import io
+            im = Image.open(io.BytesIO(r.stdout)).convert("RGBA")
+            self.assertEqual(im.size, (1080, 1920))
+            bb = im.getchannel("A").getbbox()
+            self.assertIsNotNone(bb)
+            self.assertEqual(bb[0], 69)          # 左边界：849 − 1560/2
+            self.assertEqual(bb[1], 218)         # 上边界：1104 − 1772/2
+            self.assertEqual(bb[2], 1080)        # 右侧被画布裁掉
+            self.assertEqual(bb[3], 1920)        # 下侧被画布裁掉
+
+
 if __name__ == "__main__":
     unittest.main()

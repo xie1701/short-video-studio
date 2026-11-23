@@ -187,8 +187,8 @@ def cut_times(frames: List[np.ndarray], fps: float) -> List[float]:
         d = np.abs(frames[i].astype(np.int16) - frames[i - 1].astype(np.int16)).mean()
         diffs.append(float(d))
     arr = np.array(diffs)
-    thr = float(arr.mean() + 2.0 * arr.std())
-    cand = [(i + 1) / fps for i, v in enumerate(diffs) if v >= thr and v >= 6.0]
+    thr = max(float(arr.mean() + 2.0 * arr.std()), 12.0)
+    cand = [(i + 1) / fps for i, v in enumerate(diffs) if v >= thr]
     # 合并相邻候选（间隔 < 0.3s 只留最强）
     merged: List[float] = []
     for t in cand:
@@ -222,10 +222,12 @@ def compute_metrics(orig: Path, rep: Path, samp_fps: float = 2.0) -> Dict:
             pix_r.append(b.reshape(-1, 3)[::7])
     # 字幕带 / 顶部标题带：相对差取全片最大（任一处字幕没画对都算账）
     def worst_rel(pairs):
+        """对称相对差；两侧都接近空白（基底 < 0.004）时跳过，避免百分比炸到天文数字。"""
         worst, at = 0.0, 0.0
         for i, (x, y) in enumerate(pairs):
-            base = max(x, 1e-6)
-            rel = abs(y - x) / base
+            if max(x, y) < 0.004:
+                continue
+            rel = abs(y - x) / max(x, y)
             if rel > worst:
                 worst, at = rel, i / samp_fps
         return worst, at
@@ -258,6 +260,8 @@ def compute_metrics(orig: Path, rep: Path, samp_fps: float = 2.0) -> Dict:
         "grade_quantiles_rep": [[round(float(x), 1) for x in row] for row in qr],
         "cuts_orig": [round(t, 2) for t in co],
         "cuts_rep": [round(t, 2) for t in cr],
+        "cuts_count_orig": len(co),
+        "cuts_count_rep": len(cr),
         "cut_max_delta_s": round(cut_delta, 3),
         "lufs_orig": lufs(orig),
         "lufs_rep": lufs(rep),
