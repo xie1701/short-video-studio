@@ -26,6 +26,7 @@ import hashlib
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -300,12 +301,35 @@ def load_draft(draft_dir: Path, decrypted_root: Path) -> dict:
 
 
 def run_ffmpeg(cmd: list, timeout: int = 600) -> None:
-    cmd = list(cmd)
+    """跑 ffmpeg：超时必须**把整组进程收掉**，不能只报错留进程。
+
+    旧实现用 `subprocess.run(timeout=)`：调用方（批量驱动器）到点先杀 python 父进程时，
+    ffmpeg 变成孤儿继续在 filtergraph 里空转（实测单个 ffmpeg 710% CPU 跑了几十分钟，
+    下一个 style 抢不到 CPU）。现在 `start_new_session=True` 把它放进独立进程组，
+    超时按 **进程组** SIGKILL，再等它彻底退出，任何路径都不留活进程。
+    """
+    cmd = [str(c) for c in cmd]
     if "-nostdin" not in cmd:
         cmd.insert(1, "-nostdin")
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            start_new_session=True)
+    try:
+        _out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        try:
+            proc.communicate(timeout=30)
+        except Exception:
+            pass
+        raise RuntimeError(f"ffmpeg 超时 {timeout}s 已被整组终止: {cmd[1] if len(cmd) > 1 else cmd[0]}")
     if proc.returncode != 0:
-        raise RuntimeError("ffmpeg 失败: " + (proc.stderr or "")[-1200:])
+        raise RuntimeError("ffmpeg 失败: " + (err or "")[-1200:])
 
 
 def ffprobe_has_audio(path: str) -> bool:
@@ -356,6 +380,80 @@ def src_seek_time(draft_src: float, src_path: str) -> float:
     return max(0.0, float(draft_src) - media_start_time(src_path))
 
 
+_MEDIA_DUR_CACHE: dict = {}
+
+
+def media_duration_sec(path: str) -> float:
+    """素材真实时长（秒，ffprobe format.duration，按路径缓存）；探不到返回 0.0。"""
+    key = str(path)
+    if key in _MEDIA_DUR_CACHE:
+        return _MEDIA_DUR_CACHE[key]
+    dur = 0.0
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", key],
+            capture_output=True, text=True, timeout=60)
+        lines = [x for x in (proc.stdout or "").strip().splitlines() if x and x != "N/A"]
+        if lines:
+            dur = max(0.0, float(lines[0]))
+    except Exception:
+        dur = 0.0
+    _MEDIA_DUR_CACHE[key] = dur
+    return dur
+
+
+def clamp_source_in(src: str, s_in: float, dur: float, t_start: float | None = None) -> tuple:
+    """把取段源入点夹进素材真实时长，返回 (新入点, 是否改过)。
+
+    为什么必须夹：抽段/烘遮罩的 ffmpeg 一律是 `-ss s_in -t dur -i src`。入点一旦落到素材
+    末帧之后（复合片段的 source_timerange 被写成父轨时间口径、或段比素材本身长），前景
+    输入**一帧都不产出**；而遮罩那一路是 `-loop 1` 的无限输入，framesync 会一直等一帧
+    永远不来的前景帧 —— 整条 ffmpeg 空转到超时（实测 710% CPU 数十分钟不结束，`-frames:v`
+    也救不回来，因为输出端一帧都没收到）。夹到「末段窗口」既保证至少一帧，内容也仍来自
+    同一素材；被夹过的调用点都计数上报，不静默。
+    """
+    s_in = max(0.0, float(s_in))
+    need = max(0.02, float(dur))
+    md = media_duration_sec(src)
+    if md <= 0.0 or s_in + need <= md + 1e-4:
+        return s_in, False
+    if t_start is not None:
+        # 复合片段：草稿把父轨时间写进源时间时，减掉段起点才是「片段内部时间」
+        loc = s_in - float(t_start)
+        if -1e-6 <= loc and loc + need <= md + 1e-4:
+            return max(0.0, loc), True
+    return max(0.0, md - min(need, md)), True
+
+
+def normalize_layer_size(path, w: int, h: int, fps: int, ffmpeg_bin: str):
+    """把中间片归一到「图层像素尺寸 + 方形像素」；尺寸已一致就原样返回（不动文件）。
+
+    抠像 matte 由系统 Vision 按 transformedSize（**显示**尺寸）建，并向下取偶：素材带
+    非方形像素（SAR 1071:1072 这种）时前景是 1340x2380、matte 只有 1338x2380，差 2px。
+    差一点点就够 alphamerge 报 `Input frame sizes do not match`、描边逐帧读取整块错位，
+    整片渲染直接失败。所以 matte 一出厂就跟前景对齐，不允许两条链各算一遍尺寸。
+    """
+    w, h = max(2, int(w)), max(2, int(h))
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", str(path)],
+            capture_output=True, text=True, timeout=60)
+        lines = [x for x in (proc.stdout or "").strip().splitlines() if x]
+        cw, ch = (int(v) for v in lines[0].split("x")[:2])
+    except Exception:
+        return path
+    if (cw, ch) == (w, h):
+        return path
+    tmp = Path(path).with_name(Path(path).stem + ".norm" + Path(path).suffix)
+    run_ffmpeg([ffmpeg_bin, "-y", "-i", str(path),
+                "-vf", f"scale={w}:{h}:flags=bicubic,setsar=1",
+                "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "10",
+                "-pix_fmt", "yuv420p", str(tmp)], timeout=600)
+    tmp.replace(path)
+    return path
+
+
 _START_TIME_CACHE: dict = {}
 
 
@@ -372,6 +470,39 @@ def cover_crop_vf(w: int, h: int) -> str:
         f"scale={w}:{h}:force_original_aspect_ratio=increase:flags=bicubic,"
         f"crop={w}:{h}"
     )
+
+
+def masked_main_cmd(ffmpeg_bin: str, src, s_in: float, dur: float, png, out,
+                    w: int, h: int, fps: int, nfr: int) -> list:
+    """主轨遮罩烘焙命令：前景 cover-crop 成 w×h 方形像素整帧 → alphamerge 蒙版 → 叠黑底。
+
+    复合片段与普通视频段在这里走**同一条**尺寸口径（先出统一尺寸的整帧中间片，再做 mask），
+    前景与蒙版不再各算一遍尺寸。
+
+    「三个输入全部有界」是本函数的不变量，回归单测盯着它：
+      · 蒙版是 `-loop 1`，不给 `-t` 就是无限流；
+      · 前景一旦提前 EOF（入点落在素材末帧之后、或段比素材长），framesync 会一直等一帧
+        永远不来的帧 —— 整条 ffmpeg 空转到超时（实测 710% CPU 数十分钟不结束，
+        输出端一帧都没收到时 `-frames:v` 也救不回来）。
+    所以 `-loop 1 -t` / `tpad=clone` / `alphamerge=shortest=1` / 输出 `-frames:v` + `-t`
+    一个都不省。
+    """
+    dur = max(0.05, float(dur))
+    return [
+        ffmpeg_bin, "-y",
+        "-f", "lavfi", "-i", f"color=c=black:s={int(w)}x{int(h)}:r={int(fps)}:d={dur:.4f}",
+        "-ss", f"{float(s_in):.4f}", "-t", f"{dur:.4f}", "-i", str(src),
+        "-loop", "1", "-t", f"{dur:.4f}", "-i", str(png),
+        "-filter_complex",
+        f"[1:v]fps={int(fps)},setpts=PTS-STARTPTS,{cover_crop_vf(int(w), int(h))},setsar=1,format=rgba[fg0];"
+        f"[fg0]tpad=stop_mode=clone:stop_duration={dur:.4f}[fg];"
+        f"[2:v]fps={int(fps)},setpts=PTS-STARTPTS,setsar=1,format=gray[mask];"
+        f"[fg][mask]alphamerge=shortest=1[ma];"
+        f"[0:v]setpts=PTS-STARTPTS[bg];"
+        f"[bg][ma]overlay=0:0:shortest=1:eof_action=repeat:format=auto,format=yuv420p[v]",
+        "-map", "[v]", "-frames:v", str(max(1, int(nfr))), "-t", f"{dur:.4f}", "-an",
+        "-c:v", "libx264", "-preset", "medium", "-crf", "12", str(out),
+    ]
 
 
 # ---------- 叠加图层的几何真值 ----------
@@ -1603,29 +1734,35 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             MS.save_alpha_png(MS.mask_alpha(mw, mh, cfg), png)
         return png
 
-    def masked_media(src: str, s_in: float, dur: float, cfg: dict) -> Path:
+    def masked_media(src: str, s_in: float, dur: float, cfg: dict,
+                     t_start: float | None = None) -> Path:
         """主轨口径：遮罩区内显示画面、区外纯黑，**整帧不透明**（烘成因×alpha 叠在黑底上）。
 
         遮罩作用于图层（源画面）自身的 uv 空间，因此必须在 scale/位移/缩窗之前烘进画面。
+
+        复合片段与普通视频段走**同一条**尺寸口径：先 cover-crop 成 W×H、方形像素（setsar=1）
+        的整帧中间片，再用同尺寸 alpha 场做 alphamerge。前景与蒙版各算一遍尺寸的旧口径在
+        素材带非方形像素时必然差 2px，alphamerge 直接以尺寸不符退出。
         """
         dur = max(0.05, float(dur))
         nfr = max(1, int(round(dur * fps)))
-        out = media_dir / ("masked_" + _cache_tag("mask_main", s_in, dur, json.dumps(cfg, sort_keys=True)) + ".mp4")
+        s_in, _clamped = clamp_source_in(src, s_in, dur, t_start)
+        if _clamped and depth == 0:
+            report["unrealized"]["main_mask_seek_clamped"] = \
+                report["unrealized"].get("main_mask_seek_clamped", 0) + 1
+        # 指纹必须含源路径：同一段时长/遮罩参数在不同素材（或不同复合片段）上会撞名，
+        # 旧实现只哈希 (入点,时长,遮罩)，第二个素材会静默复用第一个烘出来的画面。
+        out = media_dir / ("masked_" + _cache_tag("mask_main", str(src), s_in, dur,
+                                                  json.dumps(cfg, sort_keys=True)) + ".mp4")
         if not out.is_file():
             png = mask_alpha_png(cfg)
+            # 三条输入全部**有界**：蒙版这一路是 `-loop 1`，不给 `-t` 就是无限流——前景一旦
+            # 提前 EOF，framesync 会一直等一帧永远不来的帧，整条 ffmpeg 空转不返回。
+            # tpad=clone 把「素材比段短」的尾巴补成末帧；输出再给一次 -t/-frames 双保险。
             # setpts + shortest=1：不给两条输入对齐 pts 的话，overlay 的 framesync 在 t=0 取不到 mask 帧，
             # 会把首帧输出成纯黑（实测每个遮罩子段开头黑 1 帧）。
-            run_ffmpeg([ffmpeg_bin, "-y",
-                        "-f", "lavfi", "-i", f"color=c=black:s={W}x{H}:r={fps}:d={dur:.4f}",
-                        "-ss", f"{s_in:.4f}", "-t", f"{dur:.4f}", "-i", src,
-                        "-loop", "1", "-i", str(png),
-                        "-filter_complex",
-                        f"[1:v]fps={fps},setpts=PTS-STARTPTS,{cover_crop_vf(W, H)},format=rgba[fg];"
-                        f"[2:v]fps={fps},setpts=PTS-STARTPTS,format=gray[mask];[fg][mask]alphamerge[ma];"
-                        f"[0:v]setpts=PTS-STARTPTS[bg];"
-                        f"[bg][ma]overlay=0:0:shortest=1:eof_action=repeat:format=auto,format=yuv420p[v]",
-                        "-map", "[v]", "-frames:v", str(nfr), "-an",
-                        "-c:v", "libx264", "-preset", "medium", "-crf", "12", str(out)], timeout=600)
+            run_ffmpeg(masked_main_cmd(ffmpeg_bin, src, s_in, dur, png, out, W, H, fps, nfr),
+                       timeout=600)
         return out
 
     def resolve_compound(seg: dict) -> dict | None:
@@ -1825,6 +1962,16 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
         src = str(src)
         if not Path(src).is_file():
             raise RuntimeError(f"主轨素材不存在: {src}")
+        # 源入点先夹进素材真实时长（复合片段额外按「父轨时间 → 片段内部时间」重基）：
+        # 越过末帧的 -ss 会得到 0 帧输入，下游遮罩合成那条是无限输入，会一直等下去。
+        _s_in_fix, _s_clamped = clamp_source_in(src, s_in, t_dur * max(1e-6, speed),
+                                                t_start if ckey else None)
+        if _s_clamped:
+            s_in = _s_in_fix
+            s_out = s_in + t_dur * speed
+            if depth == 0:
+                report["unrealized"]["main_seek_clamped"] = \
+                    report["unrealized"].get("main_seek_clamped", 0) + 1
         clip = {
             "clip_id": f"m{k:03d}",
             "track_role": "a_roll",
@@ -1996,7 +2143,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             _piece_src = src
             if _mcfg is not None:
                 # 遮罩在图层空间：先烘成「画面×alpha 叠黑底」的不透明整帧，再走 scale/缩窗几何
-                _piece_src = str(masked_media(src, _s_in_p, _s_out_p - _s_in_p, _mcfg))
+                _piece_src = str(masked_media(src, _s_in_p, _s_out_p - _s_in_p, _mcfg, t_start))
                 _s_in_p, _s_out_p = 0.0, _s_out_p - _s_in_p
                 if depth == 0:
                     report["masked_main_segments"] = report.get("masked_main_segments", 0) + 1
@@ -2207,6 +2354,14 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             # 图层几何：material.crop → contain(画布) → ×clip.scale（非 canvas×scale，见 layer_geometry）
             geom = layer_geometry(mat, src, W, H, sc)
             lw, lh = geom["lw"], geom["lh"]
+            # 抽段入点先夹进素材真实时长（复合片段按片段内部时间重基）：越过末帧时
+            # `-ss/-t` 抽出的是 0 帧中间片，抠像/matte/遮罩合成会以「尺寸不符」失败，
+            # 遮罩那一路（无限蒙版输入）还会一直等帧。
+            s_in, _s_clamped = clamp_source_in(src, s_in, max(0.05, s_dur),
+                                               t_start if ckey else None)
+            if _s_clamped and depth == 0:
+                report["unrealized"]["overlay_seek_clamped"] = \
+                    report["unrealized"].get("overlay_seek_clamped", 0) + 1
             # 入场/出场动画（material_animations）：纯透明度交给 ffmpeg 的 fade 链，
             # 带位移/缩放/模糊的必须 PIL 逐帧（scale 滤镜的输出尺寸不能逐帧变）。
             _specs = parse_animations(s, anim_by_id)
@@ -2300,30 +2455,36 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 if _baked:
                     pass    # 已在 _bake_blurred_segment 里出片（含 crop/翻转/缩放）
                 elif ov_mask:
-                    # 遮罩作用于图层（裁切+缩放后）自身的 uv 空间：先裁/缩到图层尺寸，再按图层宽高比 alphamerge
+                    # 遮罩作用于图层（裁切+缩放后）自身的 uv 空间：先裁/缩到图层尺寸，再按图层宽高比 alphamerge。
+                    # 前景与蒙版同为「图层像素 + 方形像素」：setsar=1 必须在 scale 之后，
+                    # 否则非方形像素素材的显示宽度与蒙版宽度差 2px，alphamerge 尺寸不符退出。
                     _png = mask_alpha_png(ov_mask, lw, lh)
-                    _nfr = max(1, int(round(max(0.05, s_dur) * fps)))
-                    _in0 = (["-loop", "1", "-i", src] if (mat.get("type") or "") == "photo"
-                            else ["-ss", f"{s_in:.4f}", "-t", f"{max(0.05, s_dur):.4f}", "-i", src])
-                    run_ffmpeg([ffmpeg_bin, "-y", *_in0, "-loop", "1", "-i", str(_png),
+                    _dur0 = max(0.05, float(s_dur))
+                    _nfr = max(1, int(round(_dur0 * fps)))
+                    _in0 = (["-loop", "1", "-t", f"{_dur0:.4f}", "-i", str(src)] if (mat.get("type") or "") == "photo"
+                            else ["-ss", f"{s_in:.4f}", "-t", f"{_dur0:.4f}", "-i", str(src)])
+                    run_ffmpeg([ffmpeg_bin, "-y", *_in0, "-loop", "1", "-t", f"{_dur0:.4f}", "-i", str(_png),
                                 "-filter_complex",
-                                f"[0:v]fps={fps},setpts=PTS-STARTPTS,format=rgba{_pre}[fg];"
-                                f"[1:v]fps={fps},setpts=PTS-STARTPTS,format=gray[mask];[fg][mask]alphamerge[v]",
-                                "-map", "[v]", "-frames:v", str(_nfr), "-an",
+                                f"[0:v]fps={fps},setpts=PTS-STARTPTS,format=rgba{_pre},setsar=1[fg0];"
+                                f"[fg0]tpad=stop_mode=clone:stop_duration={_dur0:.4f}[fg];"
+                                f"[1:v]fps={fps},setpts=PTS-STARTPTS,setsar=1,format=gray[mask];"
+                                f"[fg][mask]alphamerge=shortest=1[v]",
+                                "-map", "[v]", "-frames:v", str(_nfr), "-t", f"{_dur0:.4f}", "-an",
                                 "-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le",
                                 str(seg_p)], timeout=600)
                     if depth == 0:
                         report["masked_overlay_segments"] = report.get("masked_overlay_segments", 0) + 1
                 elif alpha_src:
-                    # 复合片段输出是 ProRes4444 带 alpha：抽段必须保 alpha
-                    run_ffmpeg([ffmpeg_bin, "-y", "-ss", f"{s_in:.4f}", "-t", f"{max(0.05, s_dur):.4f}", "-i", src,
-                                "-vf", f"fps={fps},setpts=PTS-STARTPTS,format=rgba{_pre}",
+                    # 复合片段输出是 ProRes4444 带 alpha：抽段必须保 alpha。
+                    # setsar=1 与普通视频段同一口径：下游 matte/合成只认「图层像素」。
+                    run_ffmpeg([ffmpeg_bin, "-y", "-ss", f"{s_in:.4f}", "-t", f"{max(0.05, s_dur):.4f}", "-i", str(src),
+                                "-vf", f"fps={fps},setpts=PTS-STARTPTS,format=rgba{_pre},setsar=1",
                                 "-an", "-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le", str(seg_p)], timeout=600)
                 else:
                     if (mat.get("type") or "") == "photo":
                         # 静图：-t 放在 -i 前会限制输入读取（单帧图只能得 ~2 帧），必须 -loop 1 + 输出侧 -t
-                        run_ffmpeg([ffmpeg_bin, "-y", "-loop", "1", "-i", src,
-                                    "-vf", f"fps={fps}{_pre}",
+                        run_ffmpeg([ffmpeg_bin, "-y", "-loop", "1", "-i", str(src),
+                                    "-vf", f"fps={fps}{_pre},setsar=1",
                                     "-t", f"{max(0.05, s_dur):.4f}",
                                     "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "14",
                                     "-pix_fmt", "yuv420p", str(seg_p)])
@@ -2340,8 +2501,8 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                         # 覆盖率正常（84.7/84.8，之前是 0.0/84.7 且多一帧）。
                         # 注意：改完后必须让 _cache_tag 失效重烘——上一轮就是复用了修复前的
                         # 旧抽段（hash 未含本脚本源码前生成），才看到「setpts 加了 start_time 没变」。
-                        run_ffmpeg([ffmpeg_bin, "-y", "-ss", f"{s_in:.4f}", "-t", f"{max(0.05, s_dur):.4f}", "-i", src,
-                                    "-vf", f"fps={fps},setpts=PTS-STARTPTS{_pre}",
+                        run_ffmpeg([ffmpeg_bin, "-y", "-ss", f"{s_in:.4f}", "-t", f"{max(0.05, s_dur):.4f}", "-i", str(src),
+                                    "-vf", f"fps={fps},setpts=PTS-STARTPTS{_pre},setsar=1",
                                     "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "14",
                                     "-pix_fmt", "yuv420p", str(seg_p)])
             matte_p = None
@@ -2353,11 +2514,18 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 if not _compound_has_personable_video(sub_ref):
                     want_matte = False
             if want_matte:
-                matte_p = matte_dir / f"ov_{t_idx:02d}_{o:02d}_{_cache_tag('matte', s_in, s_dur, fps, sc)}_matte.mp4"
+                # 指纹必须含图层尺寸：几何一变（裁切/缩放/关键帧）旧的 matte 尺寸就对不上前景，
+                # 旧实现只哈希 (入点,时长,fps,scale)，改了 geom 会静默复用尺寸不符的 matte。
+                matte_p = matte_dir / (
+                    f"ov_{t_idx:02d}_{o:02d}_"
+                    f"{_cache_tag('matte', s_in, s_dur, fps, sc, lw, lh)}_matte.mp4")
                 if not matte_p.is_file():
                     meta = generate_person_matte_video(seg_p, matte_p, quality="balanced", fps=fps)
                     if not meta or not meta.get("has_person") or not matte_p.is_file():
                         matte_p = None
+                if matte_p is not None:
+                    # matte 与前景必须逐像素同尺寸（描边逐帧读取也按这个尺寸 reshape）
+                    matte_p = normalize_layer_size(matte_p, lw, lh, fps, ffmpeg_bin)
             if want_matte and matte_p is None:
                 report["matte_failed"] += 1
                 report["unrealized"]["overlay_matte_failed"] = report["unrealized"].get("overlay_matte_failed", 0) + 1
@@ -2617,9 +2785,13 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                     t0_u = _ov_t0(u["t_start"], fps)
                     # 前景与 matte 强制同 fps 同长（Vision 抠像输出帧率会漂，不拉齐就是逐帧错位的鬼影）；
                     # 流必须平移到 t_start：enable 只管显隐，叠层流从 0 开始消费会让内容时间戳全错
+                    # 前景与 matte 严格同尺寸同像素形状：matte 显式缩到该图层的 (lw,lh)，
+                    # 两边都 setsar=1。尺寸口径只留一套，不给「差 2px→alphamerge 退出」留缝。
+                    _mgw, _mgh = int(u.get("lw") or 0), int(u.get("lh") or 0)
+                    _mscale = f",scale={_mgw}:{_mgh}:flags=bicubic" if (_mgw and _mgh) else ""
                     fc_parts.append(
-                        f"[{seg_i}:v]fps={fps},setpts=PTS-STARTPTS,trim=duration={dur_u:.4f},setpts=PTS+{t0_u:.6f}/TB{_lag},format=rgba[fg{n}];"
-                        f"[{matte_i}:v]fps={fps},setpts=PTS-STARTPTS,trim=duration={dur_u:.4f},setpts=PTS+{t0_u:.6f}/TB{_lag},format=gray[mm{n}];"
+                        f"[{seg_i}:v]fps={fps},setpts=PTS-STARTPTS,trim=duration={dur_u:.4f},setpts=PTS+{t0_u:.6f}/TB{_lag},format=rgba,setsar=1[fg{n}];"
+                        f"[{matte_i}:v]fps={fps},setpts=PTS-STARTPTS,trim=duration={dur_u:.4f},setpts=PTS+{t0_u:.6f}/TB{_lag}{_mscale},setsar=1,format=gray[mm{n}];"
                         f"[fg{n}][mm{n}]alphamerge[cut{n}]"
                     )
                 else:
@@ -2673,11 +2845,11 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                     _tbe = min(_tb, total_sec)
                     fc_parts.append(
                         f"[kf{n}_{k}]trim=start_frame={_fa}:end_frame={_fb},"
-                        f"scale={_kw}:{_kh}:flags=lanczos[kfg{n}_{k}]")
+                        f"scale={_kw}:{_kh}:flags=lanczos,setsar=1[kfg{n}_{k}]")
                     if u["matte"]:
                         fc_parts.append(
                             f"[km{n}_{k}]trim=start_frame={_fa}:end_frame={_fb},"
-                            f"scale={_kw}:{_kh}:flags=bicubic[kmg{n}_{k}]")
+                            f"scale={_kw}:{_kh}:flags=bicubic,setsar=1[kmg{n}_{k}]")
                         fc_parts.append(f"[kfg{n}_{k}][kmg{n}_{k}]alphamerge[kfa{n}_{k}]")
                     _lbl = f"[kfa{n}_{k}]" if u["matte"] else f"[kfg{n}_{k}]"
                     _en = f"enable='between(t,{_ta - _EPS:.4f},{_tbe - _EPS:.4f})'"

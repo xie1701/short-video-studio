@@ -4225,5 +4225,146 @@ class EditGrammarTests(unittest.TestCase):
         self.assertIsNone(edl["edit_grammar"]["target"])
 
 
+class ReplicaRenderSizingTests(unittest.TestCase):
+    """D2：复合片段进「遮罩 / 抠像合成」时的两条缺陷（卡死、尺寸不符）的回归。
+
+    缺陷（修前实测）：
+      1. 取段入点落在素材末帧之后（复合片段的源时间被写成父轨时间口径、或段比素材长）→
+         前景输入 0 帧；而蒙版那一路是 `-loop 1` 的无限流，framesync 一直等一帧永远不来的
+         前景帧 —— ffmpeg 710% CPU 空转数十分钟不返回，`-frames:v` 也救不回来。
+      2. 前景按素材像素尺寸、蒙版按画布/显示尺寸各算一遍 → 1340x2380 vs 1338x2380，
+         `alphamerge` 以 "Input frame sizes do not match" 退出，成片 0 字节。
+    断言方向：入点必须夹进素材时长（不越末帧）、遮罩图必须**必然收口**、前景与蒙版必须
+    同尺寸同像素形状。阈值一个都不放宽。
+    """
+
+    SRC_W, SRC_H = 108, 192
+    OUT_W, OUT_H = 64, 96
+
+    @classmethod
+    def setUpClass(cls):
+        dev = str(ROOT / "dev_tools")
+        if dev not in sys.path:
+            sys.path.insert(0, dev)
+        cls.temp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.temp.name).resolve()
+        cls.ffmpeg = shutil.which("ffmpeg") or "/usr/bin/false"
+        cls.ffprobe = shutil.which("ffprobe") or "/usr/bin/false"
+        # 1.0s 素材，带非方形像素（SAR 1071:1072）——就是实测里那 2px 的来源
+        cls.src = cls.root / "src.mov"
+        cls._run([cls.ffmpeg, "-y", "-v", "error",
+                  "-f", "lavfi", "-i", f"testsrc2=s={cls.SRC_W}x{cls.SRC_H}:r=30:d=1.0",
+                  "-vf", "setsar=1071/1072", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                  str(cls.src)])
+        cls.png = cls.root / "mask.png"
+        cls._run([cls.ffmpeg, "-y", "-v", "error", "-f", "lavfi",
+                  "-i", f"color=c=white:s={cls.OUT_W}x{cls.OUT_H}:d=1", "-frames:v", "1",
+                  str(cls.png)])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.temp.cleanup()
+
+    @staticmethod
+    def _run(cmd, timeout=120):
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if proc.returncode != 0:
+            raise AssertionError(f"命令失败: {' '.join(cmd)}\n{proc.stderr[-800:]}")
+        return proc
+
+    @classmethod
+    def _probe(cls, path):
+        out = cls._run([cls.ffprobe, "-v", "error", "-select_streams", "v:0",
+                        "-show_entries", "stream=width,height,sample_aspect_ratio",
+                        "-show_entries", "format=duration", "-of", "json", str(path)]).stdout
+        js = json.loads(out)
+        st = js["streams"][0]
+        return (int(st["width"]), int(st["height"]),
+                st.get("sample_aspect_ratio") or "N/A",
+                float(js["format"]["duration"]))
+
+    # ---------- 入点夹取 ----------
+    def test_clamp_keeps_valid_seek(self):
+        from render_replica_from_draft import clamp_source_in
+        s_in, changed = clamp_source_in(str(self.src), 0.4, 0.05)
+        self.assertEqual(s_in, 0.4)
+        self.assertFalse(changed, "合法入点不许被改")
+
+    def test_clamp_rebases_parent_timeline_seek_for_compound(self):
+        """复合片段把父轨时间写进源时间（0.1 + 段起点 5.0）→ 重基成片段内部时间 0.1。"""
+        from render_replica_from_draft import clamp_source_in
+        s_in, changed = clamp_source_in(str(self.src), 5.1, 0.05, 5.0)
+        self.assertTrue(changed)
+        self.assertAlmostEqual(s_in, 0.1, places=4)
+
+    def test_clamp_pulls_back_when_seek_is_past_eof(self):
+        """入点越过末帧且无法重基 → 夹到「末段窗口」，保证前景至少出一帧（不越末帧）。"""
+        from render_replica_from_draft import clamp_source_in, media_duration_sec
+        md = media_duration_sec(str(self.src))
+        self.assertGreater(md, 0.5)
+        s_in, changed = clamp_source_in(str(self.src), 30.0, 0.2)
+        self.assertTrue(changed)
+        self.assertLess(s_in, md, "夹完必须仍在素材时长内，否则前景仍是 0 帧")
+        self.assertGreaterEqual(s_in, 0.0)
+
+    # ---------- matte 尺寸归一 ----------
+    def test_normalize_layer_size_matches_foreground(self):
+        """matte 与前景差 2px（测量口径不同）时必须被拉回前景尺寸，且像素形状为方形。"""
+        from render_replica_from_draft import normalize_layer_size
+        matte = self.root / "matte_off.mp4"
+        self._run([self.ffmpeg, "-y", "-v", "error", "-f", "lavfi",
+                   "-i", f"color=c=gray:s={self.OUT_W - 2}x{self.OUT_H}:r=30:d=0.5",
+                   "-c:v", "libx264", "-pix_fmt", "yuv420p", str(matte)])
+        self.assertEqual(self._probe(matte)[:2], (self.OUT_W - 2, self.OUT_H))
+        out = normalize_layer_size(matte, self.OUT_W, self.OUT_H, 30, self.ffmpeg)
+        w, h, sar, dur = self._probe(out)
+        self.assertEqual((w, h), (self.OUT_W, self.OUT_H))
+        self.assertEqual(sar, "1:1", "归一后必须是方形像素")
+        self.assertAlmostEqual(dur, 0.5, delta=0.15, msg="归一不许改变时长")
+
+    def test_normalize_layer_size_is_noop_when_already_matching(self):
+        from render_replica_from_draft import normalize_layer_size
+        before = self.src.stat().st_mtime_ns
+        out = normalize_layer_size(self.src, self.SRC_W, self.SRC_H, 30, self.ffmpeg)
+        self.assertEqual(Path(out), self.src)
+        self.assertEqual(self.src.stat().st_mtime_ns, before, "尺寸已对就不许重编码")
+
+    # ---------- 遮罩烘焙图必须收口 ----------
+    def test_masked_main_cmd_terminates_when_foreground_is_past_eof(self):
+        """修前的卡死点：前景 0 帧 + `-loop 1` 无限蒙版 → 永不返回。
+
+        这里直接跑真实命令（入点 30s，素材 1s = 前景一帧都没有），要求它在几秒内收口
+        并写出非空文件；同时断言三条有界约束都在命令里（蒙版 -t、tpad、shortest=1）。
+        """
+        import time as _time
+        from render_replica_from_draft import masked_main_cmd, normalize_layer_size  # noqa: F401
+        from render_replica_from_draft import run_ffmpeg
+        out = self.root / "masked_past_eof.mp4"
+        cmd = masked_main_cmd(self.ffmpeg, self.src, 30.0, 0.05, self.png, out,
+                              self.OUT_W, self.OUT_H, 30, 2)
+        self.assertIn("-loop", cmd)
+        self.assertIn("-t", cmd)
+        joined = " ".join(str(c) for c in cmd)
+        self.assertIn("tpad=stop_mode=clone", joined)
+        self.assertIn("alphamerge=shortest=1", joined)
+        self.assertIn("setsar=1", joined)
+        t0 = _time.time()
+        run_ffmpeg(cmd, timeout=90)          # 修前这里会挂到超时才抛
+        elapsed = _time.time() - t0
+        self.assertLess(elapsed, 45.0, f"遮罩烘焙图没有收口：{elapsed:.1f}s")
+        self.assertTrue(out.is_file() and out.stat().st_size > 0)
+
+    def test_masked_main_cmd_output_is_canvas_sized_square_pixels(self):
+        """复合片段（带非方形像素的 alpha 片）进遮罩：出片必须是 w×h、SAR 1:1，与蒙版同口径。"""
+        from render_replica_from_draft import masked_main_cmd, run_ffmpeg
+        out = self.root / "masked_ok.mp4"
+        run_ffmpeg(masked_main_cmd(self.ffmpeg, self.src, 0.0, 0.2, self.png, out,
+                                   self.OUT_W, self.OUT_H, 30, 6), timeout=120)
+        w, h, sar, dur = self._probe(out)
+        self.assertEqual((w, h), (self.OUT_W, self.OUT_H))
+        self.assertEqual(sar, "1:1", "前景必须是方形像素，否则蒙版/合成双口径又会出现")
+        self.assertAlmostEqual(dur, 0.2, delta=0.1)
+
+
 if __name__ == "__main__":
     unittest.main()
