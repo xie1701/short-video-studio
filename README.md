@@ -199,6 +199,38 @@ python3 scripts/style_lock.py --pipeline-dir ./output/<项目目录>/pipeline \
   `--allow-style-deviation`，并在交付说明里写清改了哪几项。
 - 成片质检多了 `style_lock_intact`，每轮的进度卡上有一行「🎨 画面样式」，红了你就能看见。
 
+## 五之四、 字幕是阴影，不是描边（v4.1 纠正）
+
+一套字幕的「样子」在剪映里由两个东西决定：描边（`styles[].strokes`）和阴影（`styles[].shadows`）。
+这两个在草稿里是分开的数组，我们以前把「阴影距离 5」读成了「描边宽度 5」，于是 24 套全被画成白字描黑边。
+
+真草稿量出来的事实：
+
+| 项目 | 数字 |
+| :--- | :--- |
+| 24 套字幕文字样式 | 2945 个 |
+| 真有描边的 | 164 个（5.6%） |
+| 有阴影的 | 75.7% |
+| 24 套字幕里有描边的 | **0 套** |
+| 24 套花字样式 | 1636 个，真描边 **0 个** |
+
+绝大多数样式是「白色/彩色字 + 向右下偏移 14–20px、透明度 0.35–0.9 的半透明黑影」，`style_08` 连阴影都没有。
+现在 `subtitle_spec` / `flower_text_spec` 的 `stroke_mode`、`stroke_width`、`shadow_offset`、`shadow_blur_px`
+全部来自 `forensic/text_style_truth.json`，`verify_style_parity.py` 有 142 项逐套比对，改错就红。
+
+```bash
+# 重新量（只读解密草稿，不需要联网）
+JY_DRAFT_ROOT=<剪映草稿目录> python3 dev_tools/measure_text_style_truth.py
+```
+
+## 五之五、 过程文件不许撒进你的素材目录（v4.1 纠正）
+
+- 默认写到 `~/.short-video-studio/workspaces`（可用 `--workspace-root` 或 `SVS_WORKSPACE_ROOT` 改）。
+- 那个目录写不进去时（例如沙箱只允许写当前工作目录），自动回落到 `<素材目录>/_SVS工作区/`，
+  `pipeline/ state/ out/` 全在这一个目录下面。
+- 素材目录根上不会多出任何文件；连「素材说明」填空骨架也写进 `_SVS工作区/素材说明_待填写.txt`，
+  想贴着素材放就用 `--notes-out <路径>` 自己指定。
+
 ## 六、 可商用内置资产与风格谱复刻库
 
 详尽授权溯源见 [assets-attribution.md](short-video-studio/references/assets-attribution.md)：

@@ -43,6 +43,7 @@ from common import (
     get_cached_font,
     hex_to_rgba,
     maybe_reexec_in_venv,
+    read_json,
 )
 
 if __name__ == "__main__" or str(sys.argv[0]).endswith(".py"):
@@ -69,6 +70,68 @@ def load_template_blueprints() -> Dict[str, Any]:
     if BLUEPRINTS_PATH.is_file():
         return json.loads(BLUEPRINTS_PATH.read_text(encoding="utf-8")).get("blueprints", {})
     return {}
+
+
+_PAINT = {"style_id": "", "stroke_px": 0, "shadow_rgba": (0, 0, 0, 0), "shadow_dx": 0, "shadow_dy": 0,
+          "shadow_blur": 0.0}
+
+
+def _load_paint(style_id: str) -> Dict[str, Any]:
+    """读该风格「花字」的描边/阴影实测值（与字幕同源：解密草稿 styles[].strokes/shadows）。
+
+    v4.0 及以前这里每条花字分支都写死 stroke_width=_sw(7)~11 的黑描边，加上 shadow_dy=3 的假阴影；
+    真草稿 24/24 套花字**一条描边都没有**，全是右下偏移的半透明阴影。写死的描边让复刻看起来
+    又脏又土，也是用户实测「变成描黑边」的另一半来源。
+    """
+    try:
+        lib = read_json(ASSETS_DIR / "style_spectrum" / "style_spectrum_library.json")
+        entry = next((x for x in lib.get("styles", []) if x.get("style_id") == style_id), None)
+        spec = (entry or {}).get("flower_text_spec") or {}
+    except Exception:
+        spec = {}
+    # flower_text_spec 里 shadow 是 bool + 平铺的 shadow_color/offset/blur 字段
+    sh = {
+        "enabled": bool(spec.get("shadow")),
+        "color": spec.get("shadow_color") or "#00000000",
+        "alpha": spec.get("shadow_alpha") if spec.get("shadow_alpha") is not None else 0.0,
+        "offset_px": spec.get("shadow_offset") or [0, 0],
+        "blur_px": spec.get("shadow_blur_px") or 0.0,
+    }
+    if spec.get("stroke_mode") == "stroke":
+        stroke_px = int(round(float(spec.get("stroke_width") or 0)))
+    else:
+        stroke_px = 0
+    if sh.get("enabled"):
+        col = str(sh.get("color") or "#000000").lstrip("#")
+        alpha = int(round(max(0.0, min(1.0, float(sh.get("alpha") or 0.0))) * 255))
+        off = list(sh.get("offset_px") or [0, 0])
+        sh_rgba = (int(col[0:2], 16), int(col[2:4], 16), int(col[4:6], 16), alpha) if len(col) == 6 else (0, 0, 0, alpha)
+        dx, dy = int(off[0]), int(off[1])
+        blur = float(sh.get("blur_px") or 0.0)
+    else:
+        sh_rgba, dx, dy, blur = (0, 0, 0, 0), 0, 0, 0.0
+    return {"style_id": style_id, "stroke_px": stroke_px, "shadow_rgba": sh_rgba,
+            "shadow_dx": dx, "shadow_dy": dy, "shadow_blur": blur}
+
+
+def _sw(legacy: int) -> int:
+    """描边宽度：该风格实测有描边才画，否则一律 0（以前每个分支写死 7~11px 黑边）。
+
+    真草稿里 24 套花字 1636 个文字样式**一条真描边都没有**，只有右下偏移的半透明阴影；
+    写死描边会让复刻出来的花字又脏又土，也是用户实测「变成描黑边」的另一半来源。
+    """
+    if not _PAINT.get("style_id"):
+        return int(legacy)
+    if int(_PAINT.get("stroke_px") or 0) <= 0:
+        return 0
+    return max(1, int(round(int(legacy) * min(1.0, int(_PAINT["stroke_px"]) / 8.0))))
+
+
+def flower_paint(style_id: str) -> Dict[str, Any]:
+    """当前花字的实测画法（描边 px / 阴影色 / 偏移 / 虚化）。"""
+    if _PAINT.get("style_id") != style_id:
+        _PAINT.update(_load_paint(style_id))
+    return _PAINT
 
 
 def get_style_blueprint(style_id: str) -> Dict[str, Any]:
@@ -207,16 +270,16 @@ def _draw_gradient_3d_text(
 
     shadow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     sd = ImageDraw.Draw(shadow)
-    sd.text((ox + depth_px + 4, oy + depth_px + 6), fitted, font=fnt, fill=(0, 0, 0, 185), stroke_width=10, stroke_fill=(0, 0, 0, 185))
+    sd.text((ox + depth_px + 4, oy + depth_px + 6), fitted, font=fnt, fill=(0, 0, 0, 185), stroke_width=_sw(10), stroke_fill=(0, 0, 0, 185))
     shadow = shadow.filter(ImageFilter.GaussianBlur(radius=6))
     out.alpha_composite(shadow)
 
     for d in range(depth_px, 0, -1):
         shade = 0.65 + 0.35 * (1.0 - d / max(1, depth_px))
         ec = (int(extrude_rgb[0] * shade), int(extrude_rgb[1] * shade), int(extrude_rgb[2] * shade), 255)
-        draw.text((ox + int(d * 0.45), oy + d), fitted, font=fnt, fill=ec, stroke_width=8, stroke_fill=ec)
+        draw.text((ox + int(d * 0.45), oy + d), fitted, font=fnt, fill=ec, stroke_width=_sw(8), stroke_fill=ec)
 
-    draw.text((ox, oy), fitted, font=fnt, fill=(*stroke_rgb, 255), stroke_width=8, stroke_fill=(*stroke_rgb, 255))
+    draw.text((ox, oy), fitted, font=fnt, fill=(*stroke_rgb, 255), stroke_width=_sw(8), stroke_fill=(*stroke_rgb, 255))
 
     mask = Image.new("L", (w, h), 0)
     md = ImageDraw.Draw(mask)
@@ -261,6 +324,7 @@ def _draw_tilted_stroked_text(
     stroke_w: int = 8,
     tilt_deg: float = -5.0,
 ) -> Image.Image:
+    stroke_w = _sw(stroke_w)
     probe = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
     pd = ImageDraw.Draw(probe)
     fnt, fitted, _ = _fit_text(pd, text, font_path, max_w - 40, font_size, 34, stroke_w=stroke_w)
@@ -299,7 +363,18 @@ def _text_sprite(
     t = str(text or "").strip()
     if not t:
         return None
-    sw = max(0, int(stroke_w))
+    # 描边/阴影只认该风格的实测值（花字 24/24 套真草稿都没有描边）
+    pt = _PAINT
+    if pt.get("style_id"):
+        sw = max(0, int(pt.get("stroke_px") or 0))
+        if pt.get("shadow_rgba", (0, 0, 0, 0))[3] > 0:
+            shadow_rgba = tuple(pt["shadow_rgba"])
+            shadow_dy = int(pt.get("shadow_dy") or 0)
+            shadow_blur = float(pt.get("shadow_blur") or 0.0)
+        else:
+            shadow_rgba = None
+    else:
+        sw = max(0, int(stroke_w))
     limit = max(48, int(max_w) - sw * 2)
     probe = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
     pd = ImageDraw.Draw(probe)
@@ -428,7 +503,7 @@ def _build_style01_layers(
         bh = (bb[3] - bb[1]) + 24
         bx0 = (440 - bw) // 2
         bd.rounded_rectangle([(bx0, 8), (bx0 + bw, 8 + bh)], radius=10, fill=(226, 32, 32, 248), outline=(255, 255, 255, 240), width=3)
-        bd.text((220, 8 + bh // 2), bt, font=bf, fill=(255, 255, 255, 255), anchor="mm", stroke_width=2, stroke_fill=(90, 8, 8, 255))
+        bd.text((220, 8 + bh // 2), bt, font=bf, fill=(255, 255, 255, 255), anchor="mm", stroke_width=_sw(2), stroke_fill=(90, 8, 8, 255))
         b_rot = b_img.rotate(5, resample=Image.Resampling.BICUBIC, expand=True)
         b_ink = b_rot.getbbox()
         if b_ink:
@@ -492,11 +567,11 @@ def render_style05_giant_back_png(
     # 柔和深阴影增强立体层级
     shadow = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
     sd = ImageDraw.Draw(shadow)
-    sd.text((CANVAS_WIDTH // 2 + 8, cy + 12), fitted, font=fnt, fill=(0, 0, 0, 175), anchor="mm", stroke_width=8, stroke_fill=(0, 0, 0, 175))
+    sd.text((CANVAS_WIDTH // 2 + 8, cy + 12), fitted, font=fnt, fill=(0, 0, 0, 175), anchor="mm", stroke_width=_sw(8), stroke_fill=(0, 0, 0, 175))
     shadow = shadow.filter(ImageFilter.GaussianBlur(radius=10))
     canvas.alpha_composite(shadow)
 
-    d.text((CANVAS_WIDTH // 2, cy), fitted, font=fnt, fill=fg_rgba, anchor="mm", stroke_width=6, stroke_fill=(38, 26, 4, 210))
+    d.text((CANVAS_WIDTH // 2, cy), fitted, font=fnt, fill=fg_rgba, anchor="mm", stroke_width=_sw(6), stroke_fill=(38, 26, 4, 210))
     canvas.save(out_png)
     return out_png
 
@@ -520,6 +595,7 @@ def render_template_packaging_png(
     依据 24 套剪映模板蓝图渲染高还原度透明叠层：
     返回 RGBA Image（若无需特化则回退给 render_mp4 默认渲染）。
     """
+    flower_paint(style_id)  # 先按该风格实测值设定本次花字的描边/阴影画法
     bp = get_style_blueprint(style_id)
     family = str(bp.get("template_family") or "")
     ov_style = bp.get("overlay_style") or {}
@@ -565,10 +641,10 @@ def render_template_packaging_png(
         f1, t1, _ = _fit_text(d, l1, oblique_font, w - 56, 56, 30, stroke_w=3)
         if l2:
             f2, t2, _ = _fit_text(d, l2, oblique_font, w - 56, 60, 32, stroke_w=3)
-            d.text((w // 2, 54), t1, font=f1, fill=(255, 255, 255, 255), anchor="mm", stroke_width=3, stroke_fill=(0, 0, 0, 240))
-            d.text((w // 2, 124), t2, font=f2, fill=(188, 255, 0, 255), anchor="mm", stroke_width=3, stroke_fill=(0, 0, 0, 240))
+            d.text((w // 2, 54), t1, font=f1, fill=(255, 255, 255, 255), anchor="mm", stroke_width=_sw(3), stroke_fill=(0, 0, 0, 240))
+            d.text((w // 2, 124), t2, font=f2, fill=(188, 255, 0, 255), anchor="mm", stroke_width=_sw(3), stroke_fill=(0, 0, 0, 240))
         else:
-            d.text((w // 2, h // 2), t1, font=f1, fill=(188, 255, 0, 255), anchor="mm", stroke_width=3, stroke_fill=(0, 0, 0, 240))
+            d.text((w // 2, h // 2), t1, font=f1, fill=(188, 255, 0, 255), anchor="mm", stroke_width=_sw(3), stroke_fill=(0, 0, 0, 240))
         return img
 
     # 3. style_03：暗调深度深红实心底条双行大字
@@ -581,10 +657,10 @@ def render_template_packaging_png(
         f1, t1, _ = _fit_text(d, l1, sans_font, w - 48, 56, 30, stroke_w=2)
         if l2:
             f2, t2, _ = _fit_text(d, l2, sans_font, w - 48, 56, 30, stroke_w=2)
-            d.text((w // 2, 52), t1, font=f1, fill=(255, 255, 255, 255), anchor="mm", stroke_width=2, stroke_fill=(40, 4, 4, 240))
-            d.text((w // 2, 122), t2, font=f2, fill=(255, 244, 150, 255), anchor="mm", stroke_width=2, stroke_fill=(40, 4, 4, 240))
+            d.text((w // 2, 52), t1, font=f1, fill=(255, 255, 255, 255), anchor="mm", stroke_width=_sw(2), stroke_fill=(40, 4, 4, 240))
+            d.text((w // 2, 122), t2, font=f2, fill=(255, 244, 150, 255), anchor="mm", stroke_width=_sw(2), stroke_fill=(40, 4, 4, 240))
         else:
-            d.text((w // 2, h // 2), t1, font=f1, fill=(255, 255, 255, 255), anchor="mm", stroke_width=2, stroke_fill=(40, 4, 4, 240))
+            d.text((w // 2, h // 2), t1, font=f1, fill=(255, 255, 255, 255), anchor="mm", stroke_width=_sw(2), stroke_fill=(40, 4, 4, 240))
         return img
 
     # 4. style_05：人像前景压巨字 · 胸前高对比白字提问层（第 4 层）
@@ -596,13 +672,13 @@ def render_template_packaging_png(
         f1, t1, _ = _fit_text(d, l1, sans_font, w - 48, 66, 34, stroke_w=7)
         if l2:
             f2, t2, _ = _fit_text(d, l2, sans_font, w - 48, 66, 34, stroke_w=7)
-            d.text((w // 2 + 3, 52 + 4), t1, font=f1, fill=(0, 0, 0, 200), anchor="mm", stroke_width=7, stroke_fill=(0, 0, 0, 200))
-            d.text((w // 2, 52), t1, font=f1, fill=(255, 255, 255, 255), anchor="mm", stroke_width=7, stroke_fill=(10, 10, 14, 255))
-            d.text((w // 2 + 3, 124 + 4), t2, font=f2, fill=(0, 0, 0, 200), anchor="mm", stroke_width=7, stroke_fill=(0, 0, 0, 200))
-            d.text((w // 2, 124), t2, font=f2, fill=(255, 212, 38, 255), anchor="mm", stroke_width=7, stroke_fill=(10, 10, 14, 255))
+            d.text((w // 2 + 3, 52 + 4), t1, font=f1, fill=(0, 0, 0, 200), anchor="mm", stroke_width=_sw(7), stroke_fill=(0, 0, 0, 200))
+            d.text((w // 2, 52), t1, font=f1, fill=(255, 255, 255, 255), anchor="mm", stroke_width=_sw(7), stroke_fill=(10, 10, 14, 255))
+            d.text((w // 2 + 3, 124 + 4), t2, font=f2, fill=(0, 0, 0, 200), anchor="mm", stroke_width=_sw(7), stroke_fill=(0, 0, 0, 200))
+            d.text((w // 2, 124), t2, font=f2, fill=(255, 212, 38, 255), anchor="mm", stroke_width=_sw(7), stroke_fill=(10, 10, 14, 255))
         else:
-            d.text((w // 2 + 3, h // 2 + 4), t1, font=f1, fill=(0, 0, 0, 200), anchor="mm", stroke_width=7, stroke_fill=(0, 0, 0, 200))
-            d.text((w // 2, h // 2), t1, font=f1, fill=(255, 255, 255, 255), anchor="mm", stroke_width=7, stroke_fill=(10, 10, 14, 255))
+            d.text((w // 2 + 3, h // 2 + 4), t1, font=f1, fill=(0, 0, 0, 200), anchor="mm", stroke_width=_sw(7), stroke_fill=(0, 0, 0, 200))
+            d.text((w // 2, h // 2), t1, font=f1, fill=(255, 255, 255, 255), anchor="mm", stroke_width=_sw(7), stroke_fill=(10, 10, 14, 255))
         ink = img.getbbox()
         return img.crop(ink) if ink else img
 
@@ -625,8 +701,8 @@ def render_template_packaging_png(
         d = ImageDraw.Draw(img)
         f1, t1, _ = _fit_text(d, top_line, sans_font, w - 30, 48, 28, stroke_w=5)
         f2, t2, _ = _fit_text(d, bot_line, sans_font, w - 30, 64, 34, stroke_w=7)
-        d.text((22, 36), t1, font=f1, fill=(255, 255, 255, 255), anchor="lm", stroke_width=5, stroke_fill=(15, 23, 42, 245))
-        d.text((22, 114), t2, font=f2, fill=(255, 228, 72, 255), anchor="lm", stroke_width=7, stroke_fill=(15, 23, 42, 255))
+        d.text((22, 36), t1, font=f1, fill=(255, 255, 255, 255), anchor="lm", stroke_width=_sw(5), stroke_fill=(15, 23, 42, 245))
+        d.text((22, 114), t2, font=f2, fill=(255, 228, 72, 255), anchor="lm", stroke_width=_sw(7), stroke_fill=(15, 23, 42, 255))
         ink = img.getbbox()
         return img.crop(ink) if ink else img
 
@@ -657,13 +733,13 @@ def render_template_packaging_png(
         f1, t1, _ = _fit_text(d, l1, sans_font, w - 48, 68, 36, stroke_w=7)
         if l2:
             f2, t2, _ = _fit_text(d, l2, sans_font, w - 48, 74, 38, stroke_w=7)
-            d.text((w // 2 + 3, 56 + 4), t1, font=f1, fill=(0, 0, 0, 210), anchor="mm", stroke_width=7, stroke_fill=(0, 0, 0, 210))
-            d.text((w // 2, 56), t1, font=f1, fill=(255, 255, 255, 255), anchor="mm", stroke_width=7, stroke_fill=(12, 12, 14, 255))
-            d.text((w // 2 + 3, 138 + 4), t2, font=f2, fill=(0, 0, 0, 210), anchor="mm", stroke_width=7, stroke_fill=(0, 0, 0, 210))
-            d.text((w // 2, 138), t2, font=f2, fill=(198, 255, 0, 255), anchor="mm", stroke_width=7, stroke_fill=(12, 12, 14, 255))
+            d.text((w // 2 + 3, 56 + 4), t1, font=f1, fill=(0, 0, 0, 210), anchor="mm", stroke_width=_sw(7), stroke_fill=(0, 0, 0, 210))
+            d.text((w // 2, 56), t1, font=f1, fill=(255, 255, 255, 255), anchor="mm", stroke_width=_sw(7), stroke_fill=(12, 12, 14, 255))
+            d.text((w // 2 + 3, 138 + 4), t2, font=f2, fill=(0, 0, 0, 210), anchor="mm", stroke_width=_sw(7), stroke_fill=(0, 0, 0, 210))
+            d.text((w // 2, 138), t2, font=f2, fill=(198, 255, 0, 255), anchor="mm", stroke_width=_sw(7), stroke_fill=(12, 12, 14, 255))
         else:
-            d.text((w // 2 + 3, h // 2 + 4), t1, font=f1, fill=(0, 0, 0, 210), anchor="mm", stroke_width=7, stroke_fill=(0, 0, 0, 210))
-            d.text((w // 2, h // 2), t1, font=f1, fill=(198, 255, 0, 255), anchor="mm", stroke_width=7, stroke_fill=(12, 12, 14, 255))
+            d.text((w // 2 + 3, h // 2 + 4), t1, font=f1, fill=(0, 0, 0, 210), anchor="mm", stroke_width=_sw(7), stroke_fill=(0, 0, 0, 210))
+            d.text((w // 2, h // 2), t1, font=f1, fill=(198, 255, 0, 255), anchor="mm", stroke_width=_sw(7), stroke_fill=(12, 12, 14, 255))
         ink = img.getbbox()
         return img.crop(ink) if ink else img
 
@@ -712,8 +788,8 @@ def render_template_packaging_png(
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
         f1, t1, _ = _fit_text(d, main_text[:12], serif_font, w - 40, 54, 30, stroke_w=2)
-        d.text((w // 2 + 2, h // 2 + 3), t1, font=f1, fill=(0, 0, 0, 160), anchor="mm", stroke_width=2, stroke_fill=(0, 0, 0, 160))
-        d.text((w // 2, h // 2), t1, font=f1, fill=(255, 252, 245, 255), anchor="mm", stroke_width=2, stroke_fill=(32, 28, 24, 210))
+        d.text((w // 2 + 2, h // 2 + 3), t1, font=f1, fill=(0, 0, 0, 160), anchor="mm", stroke_width=_sw(2), stroke_fill=(0, 0, 0, 160))
+        d.text((w // 2, h // 2), t1, font=f1, fill=(255, 252, 245, 255), anchor="mm", stroke_width=_sw(2), stroke_fill=(32, 28, 24, 210))
         ink = img.getbbox()
         return img.crop(ink) if ink else img
 

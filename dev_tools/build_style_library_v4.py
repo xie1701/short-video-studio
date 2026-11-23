@@ -19,6 +19,7 @@ import hashlib
 import json
 import pathlib
 import statistics
+import sys
 from datetime import datetime, timezone, timedelta
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -27,6 +28,9 @@ DEC = ROOT / "forensic/decrypted"
 LIB = ROOT / "short-video-studio/assets/style_spectrum/style_spectrum_library.json"
 MANIFEST = ROOT / "forensic/source_manifest.json"
 SUBTITLES = ROOT / "short-video-studio/assets/subtitle_templates/templates.json"
+# 字幕「描边 or 阴影」真值：由 dev_tools/measure_text_style_truth.py 从解密草稿量出。
+# 这里绝不再从 sub_stroke_ratio × 5 推一个描边宽度——那是凭空造的，会把 24 套全画成黑边。
+TEXT_TRUTH = ROOT / "forensic/text_style_truth.json"
 
 CST = timezone(timedelta(hours=8))
 NOW = datetime.now(CST).isoformat(timespec="seconds")
@@ -295,10 +299,32 @@ def dominant_fonts(gt_proj: dict, key: str = "all_fonts", drop=("zh-hans",)) -> 
     return fonts or (gt_proj["text"].get(key) or [])
 
 
+def _shadow_hex(sh: dict) -> str:
+    """阴影色 #RRGGBBAA：颜色来自草稿，透明度来自实测 alpha（剪映画布上就是半透明黑影）。"""
+    col = str(sh.get("color") or "#000000").lstrip("#")
+    if len(col) != 6:
+        col = "000000"
+    alpha = int(round(max(0.0, min(1.0, float(sh.get("alpha") or 0.0))) * 255))
+    return f"#{col.upper()}{alpha:02X}"
+
+
+def _load_text_truth() -> dict:
+    if not TEXT_TRUTH.is_file():
+        raise SystemExit(
+            "缺少 forensic/text_style_truth.json（字幕描边/阴影真值）。\n"
+            "先跑：python3 dev_tools/measure_text_style_truth.py"
+        )
+    return (json.loads(TEXT_TRUTH.read_text(encoding="utf-8")).get("projects") or {})
+
+
 def main() -> None:
     gt = load_gt()
     lib = json.loads(LIB.read_text(encoding="utf-8"))
     styles = {s["style_id"]: s for s in lib["styles"]}
+
+    # 字幕描边/阴影真值（逐套按解密草稿的 styles[].strokes / styles[].shadows 量）
+    global TEXT_TRUTH_MAP
+    TEXT_TRUTH_MAP = _load_text_truth()
 
     # 色彩分区实测（dev_tools/measure_color_zones.py 直接解码草稿原始素材得到）
     zones_path = ROOT / "forensic" / "color_zones.json"
@@ -476,6 +502,7 @@ def main() -> None:
         )
 
         sub = s["subtitle_spec"]
+        truth = TEXT_TRUTH_MAP.get(str(STYLE_SOURCES.get(sid) or ""), {})
         # 无基础字幕的风格（纯花字叙事）没有 sub_y/sub_max_chars：用最密文字轨的实测中位值兜底
         ts_all = t.get("track_summaries") or []
         densest = max(ts_all, key=lambda x: x.get("seg_count") or 0) if ts_all else {}
@@ -516,13 +543,47 @@ def main() -> None:
                 "bg_ratio_measured": bg["ratio"],
                 # 源草稿的 background_width/height 均为 0（底框随文字自适应），因此不存在通栏底条
                 "full_width_bar": False,
-                "stroke_width": round((t.get("sub_stroke_ratio") or 0) * 5, 1),
-                "stroke_ratio_measured": t.get("sub_stroke_ratio"),
-                "shadow_ratio_measured": t.get("sub_shadow_ratio"),
+                # ── 描边 / 阴影：只认真草稿量出来的值 ──
+                # styles[].strokes 才是剪映真正渲染的描边；素材级 border_width 是面板滑杆记忆值，
+                # 几乎每段文字都是 0.08，把它当描边会让 24 套全部被画上黑边（用户实测抓到的就是这个）。
+                "stroke_mode": truth.get("stroke_mode", "none"),
+                "stroke_width": int(truth.get("stroke_width_px") or 0),
+                "stroke_width_rel": truth.get("stroke_width_rel"),
+                "stroke_color": truth.get("stroke_color") or "#000000",
+                "stroke_ratio_measured": truth.get("stroke_ratio"),
+                "shadow_ratio_measured": truth.get("shadow_ratio"),
+                "shadow": bool((truth.get("shadow") or {}).get("enabled")),
+                "shadow_color": _shadow_hex(truth.get("shadow") or {}),
+                "shadow_offset": list((truth.get("shadow") or {}).get("offset_px") or [0, 0]),
+                "shadow_blur_px": float((truth.get("shadow") or {}).get("blur_px") or 0.0),
+                "shadow_alpha": float((truth.get("shadow") or {}).get("alpha") or 0.0),
+                "shadow_distance_units": (truth.get("shadow") or {}).get("distance_units"),
+                "shadow_source": (truth.get("shadow") or {}).get("source") or "none",
+                "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）",
                 "primary_color": (t["sub_colors"][0][0] if t.get("sub_colors") else "#FFFFFF"),
                 "keyword_color": (t["sub_colors"][1][0] if len(t.get("sub_colors") or []) > 1 else "#FFBF17"),
             }
         )
+        # ── 花字描边/阴影：与字幕同一套真值口径（实测花字也没有描边，只有右下阴影）──
+        ftruth = truth.get("flower") or {}
+        fsh = ftruth.get("shadow") or {}
+        s["flower_text_spec"] = {
+            "font_size_1080p_px": ftruth.get("font_size_1080p_px"),
+            "stroke_mode": ftruth.get("stroke_mode") or "none",
+            "stroke_width": int(ftruth.get("stroke_width_px") or 0),
+            "stroke_width_rel": ftruth.get("stroke_width_rel"),
+            "stroke_color": ftruth.get("stroke_color"),
+            "shadow": bool(fsh.get("enabled")),
+            "shadow_color": _shadow_hex(fsh),
+            "shadow_offset": list(fsh.get("offset_px") or [0, 0]),
+            "shadow_blur_px": float(fsh.get("blur_px") or 0.0),
+            "shadow_alpha": float(fsh.get("alpha") or 0.0),
+            "style_blocks_measured": ftruth.get("style_blocks"),
+            "stroke_ratio_measured": ftruth.get("stroke_ratio"),
+            "shadow_ratio_measured": ftruth.get("shadow_ratio"),
+            "text_paint_source": "forensic/text_style_truth.json（花字文字轨）",
+        }
+
         s["subtitle_symmetry_lock"]["max_chars_per_line"] = max_chars
 
         cal = s["color_and_lut"]
@@ -697,6 +758,11 @@ def main() -> None:
                 "keyword_color": sub.get("keyword_color") or "#FFBF17",
                 "stroke_color": sub.get("stroke_color") or "#000000",
                 "stroke_width": int(round(float(sub.get("stroke_width") or 0))),
+                "stroke_mode": sub.get("stroke_mode") or "none",
+                "shadow": bool(sub.get("shadow")),
+                "shadow_color": sub.get("shadow_color") or "#00000000",
+                "shadow_offset": list(sub.get("shadow_offset") or [0, 0]),
+                "shadow_blur_px": float(sub.get("shadow_blur_px") or 0.0),
                 "bg_box_color": sub.get("bg_box_color") or "#00000000",
                 "bg_radius": int(round(float(sub.get("bg_radius") or 0) * 100)),
                 "bg_shape": sub.get("bg_shape"),
@@ -711,7 +777,46 @@ def main() -> None:
             }
         )
 
-    lib["version"] = "4.0.0"
+    # ── 蓝图同步：template_blueprints.json 的 subtitle_override 同样由库派生 ──
+    # 以前只同步模板不同步蓝图，于是蓝图里还留着「每套一个不同的描边色」的旧值，
+    # 而真草稿 24/24 套都没有描边——两份数打架，谁都不许再手写。
+    BP = ROOT / "short-video-studio/assets/style_spectrum/template_blueprints.json"
+    if BP.is_file():
+        bp_doc = json.loads(BP.read_text(encoding="utf-8"))
+        bp_nodes = bp_doc.get("blueprints") or {}
+        for sid, s in styles.items():
+            node = bp_nodes.get(sid)
+            tpl = tpls.get(sid)
+            if not isinstance(node, dict) or not isinstance(tpl, dict):
+                continue
+            sub = s["subtitle_spec"]
+            node["subtitle_override"] = {
+                "name": tpl.get("name"),
+                "font_size": tpl.get("font_size"),
+                "keyword_scale": tpl.get("keyword_scale"),
+                "primary_color": tpl.get("primary_color"),
+                "keyword_color": tpl.get("keyword_color"),
+                "stroke_mode": sub.get("stroke_mode"),
+                "stroke_color": tpl.get("stroke_color"),
+                "stroke_width": tpl.get("stroke_width"),
+                "shadow": tpl.get("shadow"),
+                "shadow_color": tpl.get("shadow_color"),
+                "shadow_offset": tpl.get("shadow_offset"),
+                "shadow_blur_px": tpl.get("shadow_blur_px"),
+                "bg_box_color": tpl.get("bg_box_color"),
+                "bg_radius": tpl.get("bg_radius"),
+                "bg_shape": tpl.get("bg_shape"),
+                "safe_y_center": tpl.get("safe_y_center"),
+                "max_chars_per_line": tpl.get("max_chars_per_line"),
+                "full_width_bar": tpl.get("full_width_bar"),
+                "source_font_family": tpl.get("source_font_family"),
+                "synced_from": "subtitle_templates/templates.json（库派生）",
+            }
+        bp_doc["version"] = "4.1.0"
+        BP.write_text(json.dumps(bp_doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(f"blueprints: {len(bp_nodes)} 套 subtitle_override 已按库重写")
+
+    lib["version"] = "4.1.0"
     lib["generated_at"] = NOW
     lib["source_dir"] = "forensic/decrypted"
     lib["source_manifest"] = "forensic/source_manifest.json"
@@ -724,6 +829,16 @@ def main() -> None:
     LIB.write_text(json.dumps(lib, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     MANIFEST.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     SUBTITLES.write_text(json.dumps(tpl_doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    # ── 画中画几何：库重建会覆盖掉 apply_pip_truth.py 的成果，这里收尾时立刻重贴 ──
+    if (ROOT / "forensic/pip_usage.json").is_file():
+        try:
+            import subprocess
+            subprocess.run([sys.executable, str(ROOT / "dev_tools/apply_pip_truth.py")], check=True,
+                           capture_output=True, text=True)
+            print("pip truth: 已按 forensic/pip_usage.json 重新贴回库与蓝图")
+        except Exception as exc:
+            print(f"pip truth: [WARN] 重贴失败（{exc}），请手动跑 dev_tools/apply_pip_truth.py")
 
     print(f"library v{lib['version']}: {len(lib['styles'])} styles")
     print(f"manifest: {MANIFEST.relative_to(ROOT)} ({len(manifest['styles'])} styles)")

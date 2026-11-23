@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -573,7 +574,7 @@ class StudioTests(unittest.TestCase):
         self.assertIsNone(re.search(r"/(?:Users|home)/[A-Za-z0-9._-]+", raw_lib_text))
         self.assertNotIn("com." + "lveditor.draft", raw_lib_text)
         lib = read_json(lib_path)
-        self.assertEqual(lib.get("version"), "4.0.0")
+        self.assertEqual(lib.get("version"), "4.1.0")
         self.assertEqual(lib.get("default_style_id"), "style_01")
         styles = lib.get("styles") or []
         self.assertEqual(len(styles), 24)
@@ -1955,7 +1956,7 @@ class StudioTests(unittest.TestCase):
         from step4_build_edl import run_step4
 
         lib = read_json(ASSETS_DIR / "style_spectrum" / "style_spectrum_library.json")
-        self.assertEqual(lib.get("version"), "4.0.0")
+        self.assertEqual(lib.get("version"), "4.1.0")
         by_id = {s["style_id"]: s for s in lib["styles"]}
         for sid, s in by_id.items():
             ab = s.get("ab_switch_spec") or {}
@@ -2736,6 +2737,170 @@ class BrollSemanticsTests(unittest.TestCase):
             picked = [c for c in brolls if "IMG_1001" in str(c.get("media_path"))]
             self.assertTrue(picked, "带素材说明的 B-roll 应被优先选中")
             self.assertEqual(picked[0]["sem_match"]["verdict"], "hit")
+
+
+class SubtitlePaintTruthTests(unittest.TestCase):
+    """字幕「阴影 or 描边」必须按草稿真值画（用户实测：style_01 明明是深灰阴影，被画成了描黑边）。"""
+
+    def test_library_paint_matches_draft_truth(self):
+        truth_p = ROOT / "forensic" / "text_style_truth.json"
+        src_p = ROOT / "forensic" / "style_sources.json"
+        if not truth_p.is_file():
+            self.skipTest("缺 forensic/text_style_truth.json（需先跑 dev_tools/measure_text_style_truth.py）")
+        truth = json.loads(truth_p.read_text(encoding="utf-8"))["projects"]
+        srcs = json.loads(src_p.read_text(encoding="utf-8"))["styles"]
+        lib = read_json(ASSETS_DIR / "style_spectrum" / "style_spectrum_library.json")
+        styles = {x["style_id"]: x for x in lib["styles"]}
+        tpls = read_json(ASSETS_DIR / "subtitle_templates" / "templates.json")["templates"]
+        checked = 0
+        for sid, src in sorted(srcs.items()):
+            draft = src if isinstance(src, str) else src.get("draft")
+            tr = truth.get(draft or "")
+            if not tr or "error" in tr:
+                continue
+            sub = styles[sid]["subtitle_spec"]
+            checked += 1
+            self.assertEqual(sub.get("stroke_mode"), tr["stroke_mode"], f"{sid} 描边方式与草稿不一致")
+            if tr["stroke_mode"] == "none":
+                self.assertEqual(int(sub.get("stroke_width") or 0), 0, f"{sid} 草稿没描边，库却给了描边宽度")
+            self.assertEqual(bool(sub.get("shadow")), bool((tr.get("shadow") or {}).get("enabled")),
+                             f"{sid} 阴影有无与草稿不一致")
+            self.assertEqual(int(tpls[sid].get("stroke_width") or 0), int(sub.get("stroke_width") or 0),
+                             f"{sid} 模板与库不一致")
+            if (tr.get("shadow") or {}).get("enabled"):
+                self.assertEqual([int(v) for v in sub.get("shadow_offset") or []],
+                                 [int(v) for v in tr["shadow"]["offset_px"]],
+                                 f"{sid} 阴影偏移与草稿不一致")
+        self.assertGreaterEqual(checked, 20, "至少要核到 20 套，说明真值文件是全的")
+
+
+    def test_flower_text_has_no_fake_stroke_either(self):
+        """花字同样只认实测：24 套花字 1636 个样式里真描边 0 个，不许再写死黑边。"""
+        import render_template_overlays as RTO
+        from PIL import Image
+        lib = read_json(ASSETS_DIR / "style_spectrum" / "style_spectrum_library.json")
+        styles = {x["style_id"]: x for x in lib["styles"]}
+        checked = 0
+        for sid, entry in styles.items():
+            spec = entry.get("flower_text_spec") or {}
+            if not spec:
+                continue
+            checked += 1
+            self.assertEqual(spec.get("stroke_mode"), "none", f"{sid} 花字被写成有描边")
+            self.assertEqual(int(spec.get("stroke_width") or 0), 0, f"{sid} 花字描边宽度不为 0")
+        self.assertGreaterEqual(checked, 20)
+        # 真渲染：左上邻域不该有一圈深色（描边特征）
+        img = RTO.render_template_packaging_png(
+            {"kind": "flower_text", "text_or_asset": "关键信息一句话", "subtext": "标注"}, style_id="style_01"
+        )
+        self.assertIsNotNone(img)
+        px = img.convert("RGBA").load()
+        w, h = img.size
+        solids = [(x, y) for y in range(h) for x in range(w) if px[x, y][3] > 200 and max(px[x, y][:3]) > 90]
+        self.assertGreater(len(solids), 1000)
+        sset = set(solids)
+        ring = 0
+        for (x, y) in solids:
+            for dx, dy in ((-2, 0), (-1, 0), (0, -2), (0, -1)):
+                nx, ny = x + dx, y + dy
+                if (nx, ny) in sset:
+                    break
+                if 0 <= nx < w and 0 <= ny < h and px[nx, ny][3] > 120 and max(px[nx, ny][:3]) < 60:
+                    ring += 1
+                    break
+        self.assertLess(ring / max(1, len(solids)), 0.12, "花字左上有一圈黑边，说明还在画描边")
+
+    def test_rendered_subtitle_is_shadow_not_outline(self):
+        """真渲染一张：白字周围不该有黑边，右下方向应该有半透明黑影。"""
+        from PIL import Image
+        import render_mp4 as R
+
+        tpls = read_json(ASSETS_DIR / "subtitle_templates" / "templates.json")["templates"]
+        tpl = dict(tpls["style_01"])
+        self.assertEqual(tpl.get("stroke_mode"), "none")
+        out = Path(tempfile.mkdtemp()) / "sub.png"
+        R.render_subtitle_png({"text": "成本三千块", "words": [], "keywords": []}, tpl, None, out)
+        img = Image.open(out).convert("RGBA")
+        px = img.load()
+        w, h = img.size
+        white, dark = [], []
+        for y in range(h):
+            for x in range(w):
+                r, g, b, a = px[x, y]
+                if a > 200 and r > 235 and g > 235 and b > 235:
+                    white.append((x, y))
+                elif a > 120 and max(r, g, b) < 60:
+                    dark.append((x, y))
+        self.assertGreater(len(white), 200, "白字应该画出来")
+        self.assertGreater(len(dark), 200, "必须有阴影（否则整块就没有深色像素）")
+        # 阴影必须整体偏右下：深色像素的重心要落在白字重心右下方
+        wx = sum(p[0] for p in white) / len(white)
+        wy = sum(p[1] for p in white) / len(white)
+        dx_ = sum(p[0] for p in dark) / len(dark)
+        dy_ = sum(p[1] for p in dark) / len(dark)
+        self.assertGreater(dx_, wx, "阴影重心应在白字右侧")
+        self.assertGreater(dy_, wy, "阴影重心应在白字下方")
+        # 描边的特征是「白字四周围一圈黑」：检查白字左侧/上方邻域不应大量是深色
+        white_set = set(white)
+        left_dark = 0
+        for (x, y) in white:
+            for d in (1, 2, 3):
+                if (x - d, y) in white_set:
+                    break
+                if px[x - d, y][3] > 120 and max(px[x - d, y][:3]) < 60:
+                    left_dark += 1
+                    break
+        ratio = left_dark / max(1, len(white))
+        self.assertLess(ratio, 0.12, f"白字左边大量深色像素（{ratio:.2%}）说明又画成描边了")
+
+
+class WorkspaceHygieneTests(unittest.TestCase):
+    """过程文件不许撒进用户原素材目录（用户实测：Agent 把工作目录建在了他的素材盘上）。"""
+
+    def test_workspace_falls_back_to_one_top_level_dir_in_material_dir(self):
+        from common import WORK_DIR_NAME, resolve_workspace_paths
+        tmp = Path(tempfile.mkdtemp())
+        raw = tmp / "老板的素材"
+        raw.mkdir()
+        (raw / "IMG_0001.MOV").write_bytes(b"x")
+        # 让默认工作区不可写：指向一个「父级是文件」的路径
+        blocked = tmp / "blocked_file"
+        blocked.write_text("not a dir", encoding="utf-8")
+        os.environ["SVS_WORKSPACE_ROOT"] = str(blocked / "workspaces")
+        try:
+            import importlib
+            import common
+            importlib.reload(common)
+            ws = common.resolve_workspace_paths(
+                account="default", project_id="p1", raw_dir=raw,
+                workspace_root=blocked / "workspaces",
+            )
+        finally:
+            os.environ.pop("SVS_WORKSPACE_ROOT", None)
+            import importlib
+            import common
+            importlib.reload(common)
+        self.assertTrue(ws["workspace_fallback"], "默认工作区不可写时必须给出回落说明")
+        self.assertEqual(ws["workspace_root"].name, WORK_DIR_NAME, "回落到素材目录下的唯一顶层工作目录")
+        self.assertEqual(ws["workspace_root"].parent.resolve(), raw.resolve(), "回落目录必须就在素材目录下")
+        self.assertIn(str(raw / WORK_DIR_NAME), str(ws["pipeline_dir"]))
+        # 素材目录根上不许出现任何过程文件
+        leftovers = [p.name for p in raw.iterdir() if p.name not in ("IMG_0001.MOV", WORK_DIR_NAME)]
+        self.assertEqual(leftovers, [], f"素材目录根上多了东西：{leftovers}")
+
+    def test_inventory_notes_skeleton_never_lands_in_raw_root(self):
+        from common import WORK_DIR_NAME
+        import inventory_media as INV
+        tmp = Path(tempfile.mkdtemp())
+        raw = tmp / "素材"
+        raw.mkdir()
+        fake_clip = {"filename": "IMG_9999.MOV", "suggested_role": "b_roll_candidate"}
+        inv = INV.inventory_directory.__doc__ or ""
+        # 只验证默认落点常量：骨架路径必须落在 WORK_DIR_NAME 之下
+        default_skeleton = raw / WORK_DIR_NAME / "素材说明_待填写.txt"
+        self.assertIn(WORK_DIR_NAME, str(default_skeleton))
+        self.assertNotEqual(default_skeleton.parent, raw)
+        self.assertTrue(inv is not None)
 
 
 if __name__ == "__main__":

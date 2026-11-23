@@ -1,5 +1,5 @@
 {
-  "version": "4.0.0",
+  "version": "4.1.0",
   "default_style_id": "style_01",
   "blueprints": {
     "style_01": {
@@ -86,8 +86,16 @@
         "keyword_scale": 1.16,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFE28A",
+        "stroke_mode": "none",
         "stroke_color": "#000000",
-        "stroke_width": 5,
+        "stroke_width": 0,
+        "shadow": true,
+        "shadow_color": "#000000E6",
+        "shadow_offset": [
+          14,
+          14
+        ],
+        "shadow_blur_px": 1.1,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "bg_shape": "none",
@@ -95,7 +103,7 @@
         "max_chars_per_line": 12,
         "full_width_bar": false,
         "source_font_family": "新青年体-文跃新青年体",
-        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
+        "synced_from": "subtitle_templates/templates.json（库派生）"
       }
     },
     "style_02": {
@@ -165,8 +173,16 @@
         "keyword_scale": 1.14,
         "primary_color": "#FFFFFF",
         "keyword_color": "#BCFF00",
+        "stroke_mode": "none",
         "stroke_color": "#000000",
-        "stroke_width": 5,
+        "stroke_width": 0,
+        "shadow": true,
+        "shadow_color": "#00000099",
+        "shadow_offset": [
+          20,
+          20
+        ],
+        "shadow_blur_px": 0.4,
         "bg_box_color": "#000000B2",
         "bg_radius": 0,
         "bg_shape": "square",
@@ -174,7 +190,7 @@
         "max_chars_per_line": 13,
         "full_width_bar": false,
         "source_font_family": "思源宋体-Bold",
-        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
+        "synced_from": "subtitle_templates/templates.json（库派生）"
       }
     },
     "style_03": {
@@ -253,8 +269,16 @@
         "keyword_scale": 1.12,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFF589",
+        "stroke_mode": "none",
         "stroke_color": "#000000",
-        "stroke_width": 5,
+        "stroke_width": 0,
+        "shadow": true,
+        "shadow_color": "#000000E6",
+        "shadow_offset": [
+          14,
+          14
+        ],
+        "shadow_blur_px": 0.9,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "bg_shape": "none",
@@ -262,7 +286,7 @@
         "max_chars_per_line": 15,
         "full_width_bar": false,
         "source_font_family": "FZCuJinLJW",
-        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
+        "synced_from": "subtitle_templates/templates.json（库派生）"
       }
     },
     "style_04": {
@@ -339,8 +363,16 @@
         "keyword_scale": 1.08,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFF589",
-        "stroke_color": "#22201E",
-        "stroke_width": 5,
+        "stroke_mode": "none",
+        "stroke_color": "#000000",
+        "stroke_width": 0,
+        "shadow": true,
+        "shadow_color": "#000000E6",
+        "shadow_offset": [
+          14,
+          14
+        ],
+        "shadow_blur_px": 1.1,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "bg_shape": "none",
@@ -348,7 +380,7 @@
         "max_chars_per_line": 7,
         "full_width_bar": false,
         "source_font_family": "SourceHanSerifCN-Heavy",
-        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
+        "synced_from": "subtitle_templates/templates.json（库派生）"
       }
     },
     "style_05": {
@@ -433,8 +465,16 @@
         "keyword_scale": 1.15,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FE5252",
+        "stroke_mode": "none",
         "stroke_color": "#000000",
-        "stroke_width": 5,
+        "stroke_width": 0,
+        "shadow": true,
+        "shadow_color": "#000000E6",
+        "shadow_offset": [
+          14,
+          14
+        ],
+        "shadow_blur_px": 1.5,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "bg_shape": "none",
@@ -442,7 +482,7 @@
         "max_chars_per_line": 10,
         "full_width_bar": false,
         "source_font_family": "得意黑",
-        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
+        "synced_from": "subtitle_templates/templates.json（库派生）"
       }
     },
     "style_06": {
@@ -511,8 +551,16 @@
         "keyword_scale": 1.08,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFF589",
+        "stroke_mode": "none",
         "stroke_color": "#000000",
-        "stroke_width": 5,
+        "stroke_width": 0,
+        "shadow": true,
+        "shadow_color": "#000000B2",
+        "shadow_offset": [
+          14,
+          14
+        ],
+        "shadow_blur_px": 1.1,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "bg_shape": "none",
@@ -520,7 +568,7 @@
         "max_chars_per_line": 9,
         "full_width_bar": false,
         "source_font_family": "喜鹊古字典体(字节试用版)",
-        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
+        "synced_from": "subtitle_templates/templates.json（库派生）"
       }
     },
     "style_07": {
@@ -605,8 +653,16 @@
         "keyword_scale": 1.15,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFBF17",
-        "stroke_color": "#111111",
-        "stroke_width": 5,
+        "stroke_mode": "none",
+        "stroke_color": "#000000",
+        "stroke_width": 0,
+        "shadow": true,
+        "shadow_color": "#000000B2",
+        "shadow_offset": [
+          14,
+          14
+        ],
+        "shadow_blur_px": 0.9,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "bg_shape": "none",
@@ -614,7 +670,7 @@
         "max_chars_per_line": 10,
         "full_width_bar": false,
         "source_font_family": "DouyinSansBold",
-        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
+        "synced_from": "subtitle_templates/templates.json（库派生）"
       }
     },
     "style_08": {
@@ -673,8 +729,16 @@
         "keyword_scale": 1.12,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFDE00",
+        "stroke_mode": "none",
         "stroke_color": "#000000",
-        "stroke_width": 5,
+        "stroke_width": 0,
+        "shadow": false,
+        "shadow_color": "#00000000",
+        "shadow_offset": [
+          0,
+          0
+        ],
+        "shadow_blur_px": 0.0,
         "bg_box_color": "#000000B2",
         "bg_radius": 0,
         "bg_shape": "square",
@@ -682,7 +746,7 @@
         "max_chars_per_line": 11,
         "full_width_bar": false,
         "source_font_family": "方正超粗黑繁体",
-        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
+        "synced_from": "subtitle_templates/templates.json（库派生）"
       }
     },
     "style_09": {
@@ -766,8 +830,16 @@
         "keyword_scale": 1.1,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FF1837",
+        "stroke_mode": "none",
         "stroke_color": "#000000",
-        "stroke_width": 5,
+        "stroke_width": 0,
+        "shadow": true,
+        "shadow_color": "#000000E6",
+        "shadow_offset": [
+          14,
+          14
+        ],
+        "shadow_blur_px": 1.1,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "bg_shape": "none",
@@ -775,7 +847,7 @@
         "max_chars_per_line": 46,
         "full_width_bar": false,
         "source_font_family": "得意黑",
-        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
+        "synced_from": "subtitle_templates/templates.json（库派生）"
       }
     },
     "style_10": {
@@ -860,8 +932,16 @@
         "keyword_scale": 1.12,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFBF17",
-        "stroke_color": "#0F172A",
-        "stroke_width": 5,
+        "stroke_mode": "none",
+        "stroke_color": "#000000",
+        "stroke_width": 0,
+        "shadow": true,
+        "shadow_color": "#000000E6",
+        "shadow_offset": [
+          14,
+          14
+        ],
+        "shadow_blur_px": 1.1,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "bg_shape": "none",
@@ -869,7 +949,7 @@
         "max_chars_per_line": 10,
         "full_width_bar": false,
         "source_font_family": "知新体",
-        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
+        "synced_from": "subtitle_templates/templates.json（库派生）"
       }
     },
     "style_11": {
@@ -954,8 +1034,16 @@
         "keyword_scale": 1.12,
         "primary_color": "#FFFFFF",
         "keyword_color": "#B71C1C",
-        "stroke_color": "#1A1A1A",
-        "stroke_width": 5,
+        "stroke_mode": "none",
+        "stroke_color": "#000000",
+        "stroke_width": 0,
+        "shadow": true,
+        "shadow_color": "#000000B4",
+        "shadow_offset": [
+          14,
+          14
+        ],
+        "shadow_blur_px": 1.1,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "bg_shape": "none",
@@ -963,7 +1051,7 @@
         "max_chars_per_line": 10,
         "full_width_bar": false,
         "source_font_family": "得意黑",
-        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
+        "synced_from": "subtitle_templates/templates.json（库派生）"
       }
     },
     "style_12": {
@@ -1032,8 +1120,16 @@
         "keyword_scale": 1.15,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFA800",
+        "stroke_mode": "none",
         "stroke_color": "#000000",
-        "stroke_width": 5,
+        "stroke_width": 0,
+        "shadow": true,
+        "shadow_color": "#000000B2",
+        "shadow_offset": [
+          14,
+          14
+        ],
+        "shadow_blur_px": 1.3,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "bg_shape": "none",
@@ -1041,7 +1137,7 @@
         "max_chars_per_line": 16,
         "full_width_bar": false,
         "source_font_family": "后现代体",
-        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
+        "synced_from": "subtitle_templates/templates.json（库派生）"
       }
     },
     "style_13": {
@@ -1126,8 +1222,16 @@
         "keyword_scale": 1.12,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFBF17",
+        "stroke_mode": "none",
         "stroke_color": "#000000",
-        "stroke_width": 5,
+        "stroke_width": 0,
+        "shadow": true,
+        "shadow_color": "#000000E6",
+        "shadow_offset": [
+          14,
+          14
+        ],
+        "shadow_blur_px": 1.1,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "bg_shape": "none",
@@ -1135,7 +1239,7 @@
         "max_chars_per_line": 96,
         "full_width_bar": false,
         "source_font_family": "得意黑",
-        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
+        "synced_from": "subtitle_templates/templates.json（库派生）"
       }
     },
     "style_14": {
@@ -1194,8 +1298,16 @@
         "keyword_scale": 1.14,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFBF17",
+        "stroke_mode": "none",
         "stroke_color": "#000000",
-        "stroke_width": 5,
+        "stroke_width": 0,
+        "shadow": true,
+        "shadow_color": "#000000E6",
+        "shadow_offset": [
+          14,
+          14
+        ],
+        "shadow_blur_px": 1.1,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "bg_shape": "none",
@@ -1203,7 +1315,7 @@
         "max_chars_per_line": 11,
         "full_width_bar": false,
         "source_font_family": "知新体",
-        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
+        "synced_from": "subtitle_templates/templates.json（库派生）"
       }
     },
     "style_15": {
@@ -1289,8 +1401,16 @@
         "keyword_scale": 1.15,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFBF17",
-        "stroke_color": "#111111",
+        "stroke_mode": "none",
+        "stroke_color": "#000000",
         "stroke_width": 0,
+        "shadow": true,
+        "shadow_color": "#000000E6",
+        "shadow_offset": [
+          14,
+          14
+        ],
+        "shadow_blur_px": 1.4,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "bg_shape": "none",
@@ -1298,7 +1418,7 @@
         "max_chars_per_line": 4,
         "full_width_bar": false,
         "source_font_family": "思源宋体-Bold",
-        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
+        "synced_from": "subtitle_templates/templates.json（库派生）"
       }
     },
     "style_16": {
@@ -1366,8 +1486,16 @@
         "keyword_scale": 1.14,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFF589",
+        "stroke_mode": "none",
         "stroke_color": "#000000",
-        "stroke_width": 5,
+        "stroke_width": 0,
+        "shadow": true,
+        "shadow_color": "#000000E6",
+        "shadow_offset": [
+          14,
+          14
+        ],
+        "shadow_blur_px": 0.9,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "bg_shape": "none",
@@ -1375,7 +1503,7 @@
         "max_chars_per_line": 12,
         "full_width_bar": false,
         "source_font_family": "特黑体",
-        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
+        "synced_from": "subtitle_templates/templates.json（库派生）"
       }
     },
     "style_17": {
@@ -1460,8 +1588,16 @@
         "keyword_scale": 1.15,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFDE00",
-        "stroke_color": "#1C1408",
-        "stroke_width": 5,
+        "stroke_mode": "none",
+        "stroke_color": "#000000",
+        "stroke_width": 0,
+        "shadow": true,
+        "shadow_color": "#000000E6",
+        "shadow_offset": [
+          14,
+          14
+        ],
+        "shadow_blur_px": 1.4,
         "bg_box_color": "#000000B2",
         "bg_radius": 0,
         "bg_shape": "square",
@@ -1469,7 +1605,7 @@
         "max_chars_per_line": 7,
         "full_width_bar": false,
         "source_font_family": "SourceHanSerifCN-Heavy",
-        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
+        "synced_from": "subtitle_templates/templates.json（库派生）"
       }
     },
     "style_18": {
@@ -1554,8 +1690,16 @@
         "keyword_scale": 1.18,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFBF17",
-        "stroke_color": "#3B1800",
-        "stroke_width": 5,
+        "stroke_mode": "none",
+        "stroke_color": "#000000",
+        "stroke_width": 0,
+        "shadow": true,
+        "shadow_color": "#000000E6",
+        "shadow_offset": [
+          14,
+          14
+        ],
+        "shadow_blur_px": 1.1,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "bg_shape": "none",
@@ -1563,7 +1707,7 @@
         "max_chars_per_line": 10,
         "full_width_bar": false,
         "source_font_family": "得意黑",
-        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
+        "synced_from": "subtitle_templates/templates.json（库派生）"
       }
     },
     "style_19": {
@@ -1632,8 +1776,16 @@
         "keyword_scale": 1.1,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFBF17",
-        "stroke_color": "#FFFFFF",
-        "stroke_width": 5,
+        "stroke_mode": "none",
+        "stroke_color": "#000000",
+        "stroke_width": 0,
+        "shadow": true,
+        "shadow_color": "#000000E6",
+        "shadow_offset": [
+          14,
+          14
+        ],
+        "shadow_blur_px": 1.1,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "bg_shape": "none",
@@ -1641,7 +1793,7 @@
         "max_chars_per_line": 83,
         "full_width_bar": false,
         "source_font_family": "得意黑",
-        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
+        "synced_from": "subtitle_templates/templates.json（库派生）"
       }
     },
     "style_20": {
@@ -1727,8 +1879,16 @@
         "keyword_scale": 1.08,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFF589",
-        "stroke_color": "#120D0A",
-        "stroke_width": 5,
+        "stroke_mode": "none",
+        "stroke_color": "#000000",
+        "stroke_width": 0,
+        "shadow": true,
+        "shadow_color": "#000000E6",
+        "shadow_offset": [
+          14,
+          14
+        ],
+        "shadow_blur_px": 1.3,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "bg_shape": "none",
@@ -1736,7 +1896,7 @@
         "max_chars_per_line": 10,
         "full_width_bar": false,
         "source_font_family": "FZCuJinLJW",
-        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
+        "synced_from": "subtitle_templates/templates.json（库派生）"
       }
     },
     "style_21": {
@@ -1813,8 +1973,16 @@
         "keyword_scale": 1.15,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFF589",
+        "stroke_mode": "none",
         "stroke_color": "#000000",
-        "stroke_width": 5,
+        "stroke_width": 0,
+        "shadow": true,
+        "shadow_color": "#000000B2",
+        "shadow_offset": [
+          14,
+          14
+        ],
+        "shadow_blur_px": 1.1,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "bg_shape": "none",
@@ -1822,7 +1990,7 @@
         "max_chars_per_line": 10,
         "full_width_bar": false,
         "source_font_family": "SourceHanSerifCN-Heavy",
-        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
+        "synced_from": "subtitle_templates/templates.json（库派生）"
       }
     },
     "style_22": {
@@ -1907,8 +2075,16 @@
         "keyword_scale": 1.12,
         "primary_color": "#FFFFFF",
         "keyword_color": "#B71C1C",
+        "stroke_mode": "none",
         "stroke_color": "#000000",
-        "stroke_width": 5,
+        "stroke_width": 0,
+        "shadow": true,
+        "shadow_color": "#00000059",
+        "shadow_offset": [
+          14,
+          14
+        ],
+        "shadow_blur_px": 0.6,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "bg_shape": "none",
@@ -1916,7 +2092,7 @@
         "max_chars_per_line": 18,
         "full_width_bar": false,
         "source_font_family": "得意黑",
-        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
+        "synced_from": "subtitle_templates/templates.json（库派生）"
       }
     },
     "style_23": {
@@ -2002,8 +2178,16 @@
         "keyword_scale": 1.06,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFBF17",
-        "stroke_color": "#0C0A09",
-        "stroke_width": 5,
+        "stroke_mode": "none",
+        "stroke_color": "#000000",
+        "stroke_width": 0,
+        "shadow": true,
+        "shadow_color": "#00000099",
+        "shadow_offset": [
+          14,
+          14
+        ],
+        "shadow_blur_px": 1.1,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "bg_shape": "none",
@@ -2011,7 +2195,7 @@
         "max_chars_per_line": 11,
         "full_width_bar": false,
         "source_font_family": "造字工房俊雅体",
-        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
+        "synced_from": "subtitle_templates/templates.json（库派生）"
       }
     },
     "style_24": {
@@ -2096,8 +2280,16 @@
         "keyword_scale": 1.18,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFBF17",
+        "stroke_mode": "none",
         "stroke_color": "#000000",
-        "stroke_width": 5,
+        "stroke_width": 0,
+        "shadow": true,
+        "shadow_color": "#000000E6",
+        "shadow_offset": [
+          14,
+          14
+        ],
+        "shadow_blur_px": 1.1,
         "bg_box_color": "#00000000",
         "bg_radius": 0,
         "bg_shape": "none",
@@ -2105,7 +2297,7 @@
         "max_chars_per_line": 14,
         "full_width_bar": false,
         "source_font_family": "FZZJ-JHTJW",
-        "synced_from": "assets/subtitle_templates/templates.json（由 v4 库单源生成）"
+        "synced_from": "subtitle_templates/templates.json（库派生）"
       }
     }
   },

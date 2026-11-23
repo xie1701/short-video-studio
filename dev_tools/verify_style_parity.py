@@ -245,9 +245,56 @@ def main() -> int:
             for key in ("keyword_color", "primary_color", "stroke_color", "bg_box_color",
                         "bg_radius", "font_size", "safe_y_center", "max_chars_per_line"):
                 bp_checks += 1
+
+
                 if key in tpl and sub_ov.get(key) != tpl.get(key):
                     failures.append(f"{sid}.subtitle_override.{key} 蓝图={sub_ov.get(key)} 模板={tpl.get(key)}")
         print(f"blueprint overlay: {bp_checks} checks")
+
+    # ── 字幕描边 / 阴影 vs 草稿真值：不许把阴影画成描边，也不许凭空加描边 ──
+    tt_path = ROOT / "forensic/text_style_truth.json"
+    src_path = ROOT / "forensic/style_sources.json"
+    if tt_path.is_file() and src_path.is_file():
+        truth = json.loads(tt_path.read_text(encoding="utf-8"))["projects"]
+        srcs = json.loads(src_path.read_text(encoding="utf-8"))["styles"]
+        paint_checks = 0
+        lib_doc = json.loads((ROOT / "short-video-studio/assets/style_spectrum/style_spectrum_library.json").read_text(encoding="utf-8"))
+        lib_styles = {x["style_id"]: x for x in lib_doc["styles"]}
+        tpl_doc2 = json.loads((ROOT / "short-video-studio/assets/subtitle_templates/templates.json").read_text(encoding="utf-8"))["templates"]
+        for sid, src in sorted(srcs.items()):
+            draft = src if isinstance(src, str) else src.get("draft")
+            tr = truth.get(draft or "")
+            if not tr or "error" in tr:
+                continue
+            sub = (lib_styles.get(sid) or {}).get("subtitle_spec") or {}
+            want_mode = tr.get("stroke_mode") or "none"
+            got_mode = sub.get("stroke_mode") or ("stroke" if float(sub.get("stroke_width") or 0) > 0 else "none")
+            paint_checks += 1
+            if got_mode != want_mode:
+                failures.append(f"{sid}.stroke_mode 库={got_mode} 草稿真值={want_mode}")
+            paint_checks += 1
+            want_px = int(tr.get("stroke_width_px") or 0)
+            got_px = int(round(float(sub.get("stroke_width") or 0)))
+            if abs(got_px - want_px) > max(1, want_px * 0.34):
+                failures.append(f"{sid}.stroke_width 库={got_px}px 草稿真值={want_px}px")
+            want_sh = tr.get("shadow") or {}
+            paint_checks += 1
+            if bool(sub.get("shadow")) != bool(want_sh.get("enabled")):
+                failures.append(f"{sid}.shadow 库={sub.get('shadow')} 草稿真值={want_sh.get('enabled')}")
+            if want_sh.get("enabled"):
+                paint_checks += 1
+                want_off = [int(v) for v in (want_sh.get("offset_px") or [0, 0])]
+                got_off = [int(v) for v in (sub.get("shadow_offset") or [0, 0])]
+                if got_off != want_off:
+                    failures.append(f"{sid}.shadow_offset 库={got_off} 草稿真值={want_off}")
+                paint_checks += 1
+                if abs(float(sub.get("shadow_alpha") or 0) - float(want_sh.get("alpha") or 0)) > 0.06:
+                    failures.append(f"{sid}.shadow_alpha 库={sub.get('shadow_alpha')} 草稿真值={want_sh.get('alpha')}")
+            tpl = tpl_doc2.get(sid) or {}
+            paint_checks += 1
+            if int(round(float(tpl.get("stroke_width") or 0))) != int(round(float(sub.get("stroke_width") or 0))):
+                failures.append(f"{sid}.templates.stroke_width 与库不一致（{tpl.get('stroke_width')} vs {sub.get('stroke_width')}）")
+        print(f"subtitle paint vs draft truth: {paint_checks} checks")
 
     # ── 画面特效 vs 源草稿 effect 轨：不许凭空加特效，也不许漏掉源里真有的 ──
     usage_path = ROOT / "forensic/effect_usage.json"

@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "short-video-studio" / "scripts"))
 
 from common import ASSETS_DIR, CANVAS_HEIGHT, CANVAS_WIDTH, find_commercial_font, read_json  # noqa: E402
+from render_mp4 import parse_hex_rgba  # noqa: E402
 from render_template_overlays import render_template_packaging_png  # noqa: E402
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont  # noqa: E402
@@ -120,8 +121,13 @@ def _draw_subtitle(img: Image.Image, text: str, entry: Dict[str, Any], tpl: Dict
     px = int(sub.get("font_size_1080p_px") or 58)
     y = int(float(sub.get("safe_y_ratio") or 0.76) * CANVAS_HEIGHT)
     font = _font(find_commercial_font([(sub.get("font_substitution") or {}).get("delivered_file") or "AlimamaShuHeiTi-Bold.otf"]), px)
-    stroke_w = max(0, int(round(int(sub.get("stroke_width") or 0) * 0.5)))
+    # 描边只有草稿真有的才画（24/24 套实测都没有描边，全部是右下偏移的半透明阴影）
+    stroke_w = 0 if str(sub.get("stroke_mode") or "none") == "none" else max(1, int(round(int(sub.get("stroke_width") or 0) * 0.5)))
     stroke = str(sub.get("stroke_color") or "#000000")
+    sh_on = bool(sub.get("shadow"))
+    sh_off = [int(v) for v in (sub.get("shadow_offset") or [0, 0])][:2] or [0, 0]
+    sh_blur = float(sub.get("shadow_blur_px") or 0.0)
+    sh_rgba = parse_hex_rgba(sub.get("shadow_color") or "#000000C8", 200) if sh_on else (0, 0, 0, 0)
     pri = str(tpl.get("primary_color") or "#FFFFFF")
     kw = str(tpl.get("keyword_color") or "#FFBF17")
     bg_ratio = float(sub.get("bg_ratio_measured") or 0.0)
@@ -139,9 +145,18 @@ def _draw_subtitle(img: Image.Image, text: str, entry: Dict[str, Any], tpl: Dict
              (CANVAS_WIDTH + tw) // 2 + pad_x, y + th // 2 + pad_y],
             radius=radius, fill=bg_color, outline=None,
         )
-    # 单次绘制：底图只用于看字号/字重/描边/底框，不做关键词二次叠字（避免描边重影）
-    d.text(((CANVAS_WIDTH - tw) // 2 - bbox[0], y - th // 2 - bbox[1]),
-           text, font=font, fill=pri, stroke_width=stroke_w, stroke_fill=stroke)
+    # 阴影先画（与真草稿同参数：偏移 / 半透明 / 虚化），正文后画在上面
+    tx = (CANVAS_WIDTH - tw) // 2 - bbox[0]
+    ty = y - th // 2 - bbox[1]
+    if sh_on and (sh_off[0] or sh_off[1] or sh_blur > 0.2):
+        sh_layer = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
+        ImageDraw.Draw(sh_layer).text((tx + sh_off[0], ty + sh_off[1]), text, font=font, fill=sh_rgba)
+        if sh_blur > 0.2:
+            sh_layer = sh_layer.filter(ImageFilter.GaussianBlur(radius=sh_blur))
+        layer.alpha_composite(sh_layer)
+        d = ImageDraw.Draw(layer)
+    # 单次绘制：底图只用于看字号/字重/描边/阴影/底框，不做关键词二次叠字（避免描边重影）
+    d.text((tx, ty), text, font=font, fill=pri, stroke_width=stroke_w, stroke_fill=stroke if stroke_w > 0 else None)
     if img.mode == "RGBA":
         img.alpha_composite(layer)
     else:

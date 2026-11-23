@@ -26,6 +26,7 @@ if str(SCRIPTS_ROOT) not in sys.path:
 
 from common import (
     MEDIA_EXTS,
+    WORK_DIR_NAME,
     compute_bt709_luma,
     detect_vfr_hdr,
     estimate_task_eta,
@@ -786,6 +787,7 @@ def inventory_directory(
     contact_sheet_path: Optional[Path] = None,
     visual_index_path: Optional[Path] = None,
     shared_cache_dir: Optional[Path] = None,
+    notes_out: Optional[Path] = None,
 ) -> Dict[str, Any]:
     files = _collect_media_files_recursive(input_dir)
     inv_cache_dir = (shared_cache_dir / "inventory_cache") if shared_cache_dir else None
@@ -1027,15 +1029,23 @@ def inventory_directory(
         topic = [k for k in concepts_of(describe_clip(c)) if k not in ("环境空镜", "人物出镜")]
         if not topic:
             untagged.append(str(c.get("filename") or ""))
+    # 骨架**不写在素材目录根上**（用户实测：Agent 把过程文件撒进他的素材目录）。
+    # 素材目录下只允许出现一个顶层工作目录 WORK_DIR_NAME，骨架放它里面；
+    # 想贴着素材放，用 --notes-out 自己指定（那是你自己知道在哪的路径）。
+    skeleton_written = ""
     if untagged and not notes:
-        skeleton = input_dir / "素材说明.txt"
+        skeleton = notes_out or (input_dir / WORK_DIR_NAME / "素材说明_待填写.txt")
         if not skeleton.is_file():
             lines = ["# 一行一条：文件名 + 一句画面内容（这句话会用来跟口播文案对齐，越具体越准）"]
             lines += [f"{name} " for name in untagged]
             try:
+                skeleton.parent.mkdir(parents=True, exist_ok=True)
                 skeleton.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            except Exception:
-                pass
+                skeleton_written = str(skeleton)
+            except Exception as exc:
+                print(f"[inventory] [WARN] 素材说明骨架写不出来（{exc}），不影响盘点")
+        else:
+            skeleton_written = str(skeleton)
 
     recommendation = recommend_angle(clips, track, raw_intel=raw_intel)
     return {
@@ -1043,6 +1053,7 @@ def inventory_directory(
         "clip_count": len(clips),
         "clips": clips,
         "untagged_broll": untagged,
+        "notes_skeleton": skeleton_written,
         "media_notes_used": bool(notes),
         "contact_sheet": str(contact_sheet_path.resolve()) if contact_sheet_path and contact_sheet_path.exists() else None,
         "visual_index_used": bool(v_index),
@@ -1061,7 +1072,8 @@ def render_markdown_summary(data: Dict[str, Any]) -> str:
         f"- **建议怎么拍的类型**：{rec.get('recommended_script_type', '晒干活过程 / 聊行业看法')}",
         f"- **建议靠什么吸引人**：{rec.get('recommended_viral_element', '算钱对比 / 前后反差')}",
         "- **需要你顺手补一句的素材**：" + (
-            f"{len(data.get('untagged_broll') or [])} 条（文件名和画面都读不出内容，已生成 素材说明.txt 骨架，一行填一句就行；"
+            f"{len(data.get('untagged_broll') or [])} 条（文件名和画面都读不出内容，已生成填空骨架："
+            f"{data.get('notes_skeleton') or '（写不出，见上面的警告）'}，一行填一句就行；"
             "不填的话剪辑时这些画面跟口播对不上，系统会照实标出来，不会瞎配）"
             if data.get("untagged_broll") else "无，素材侧都有可读的内容线索"
         ),
@@ -1098,6 +1110,11 @@ def main() -> None:
     parser.add_argument("--track", choices=["store", "creator"], default="store", help="门店轨或博主轨")
     parser.add_argument("--raw-intel", help="可选：00_raw_intel.json 路径")
     parser.add_argument("--visual-index", help="可选：00_visual_index.json 路径（多模态看图真实语义/禁忌标注）")
+    parser.add_argument(
+        "--notes-out",
+        help=f"素材说明填空骨架写到哪里（默认写到素材目录下的 {WORK_DIR_NAME}/素材说明_待填写.txt；"
+             "素材目录根上不落任何文件）",
+    )
     args = parser.parse_args()
 
     out_json = Path(args.output)
@@ -1107,6 +1124,7 @@ def main() -> None:
         raw_intel = read_json(intel_path)
 
     vis_idx_path = Path(args.visual_index) if args.visual_index else (out_json.parent / "00_visual_index.json")
+    notes_out = Path(args.notes_out) if getattr(args, "notes_out", None) else None
     contact_sheet = out_json.parent / "00_contact_sheet.jpg"
     inv = inventory_directory(
         Path(args.input_dir),
@@ -1114,6 +1132,7 @@ def main() -> None:
         raw_intel=raw_intel,
         contact_sheet_path=contact_sheet,
         visual_index_path=vis_idx_path if vis_idx_path.exists() else None,
+        notes_out=notes_out,
     )
     write_json(out_json, inv)
 

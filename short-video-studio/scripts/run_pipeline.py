@@ -1152,6 +1152,9 @@ def main() -> None:
     previous_delivery = read_json(previous_qa) if previous_qa.is_file() else {}
     if args.exports is None:
         args.exports = previous_delivery.get("export_mode", "auto")
+    if ws.get("workspace_fallback"):
+        print(f"[workspace] {ws['workspace_fallback']}")
+        print(f"[workspace] 所有过程文件都在这一个目录下 -> {project_dir.parent if project_dir.parent.name else project_dir}")
     if ws["redirected_from_raw"]:
         print(f"[workspace] 检测到加工目录与原素材目录重叠，已强制隔离至专属工作区 -> {project_dir}")
     else:

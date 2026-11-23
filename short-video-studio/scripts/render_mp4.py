@@ -275,36 +275,45 @@ def render_subtitle_png(
         lines[-1].append((ch, fnt, rgba, adv_w, ch_sz, int(ascent)))
         line_max_ascents[-1] = max(line_max_ascents[-1], int(ascent))
 
-    use_shadow = bool(tpl.get("shadow", True))
-    sh_off = tpl.get("shadow_offset") or [2, 3]
-    sh_dx = int(sh_off[0]) if len(sh_off) >= 1 else 2
-    sh_dy = int(sh_off[1]) if len(sh_off) >= 2 else 3
+    # ── 阴影：按真草稿量出来的值画（偏移 px / 透明度 / 虚化 px）──
+    # 老实现把阴影画成「和正文同宽描边的一个黑影」，只要 stroke_width > 0 就变成双层黑边；
+    # 而真草稿里 24/24 套字幕根本没有描边，只有阴影（见 forensic/text_style_truth.json）。
+    sh_off = tpl.get("shadow_offset") or [0, 0]
+    try:
+        sh_dx_raw, sh_dy_raw = int(sh_off[0]), int(sh_off[1])
+    except (TypeError, ValueError, IndexError):
+        sh_dx_raw, sh_dy_raw = 0, 0
+    sh_blur_raw = float(tpl.get("shadow_blur_px") or 0.0)
+    use_shadow = bool(tpl.get("shadow", False)) and shadow_rgba[3] > 0 and (sh_dx_raw or sh_dy_raw or sh_blur_raw)
+    sz_scale = max(0.4, base_sz / float(orig_fs))
+    sh_dx = int(round(sh_dx_raw * sz_scale))
+    sh_dy = int(round(sh_dy_raw * sz_scale))
+    sh_blur = float(sh_blur_raw * sz_scale)
 
     # 先将每行单独渲染至临时透明层并精确裁出真实墨迹包围盒，消除字形左轴承/末字尾距造成的不对称偏移
     rendered_lines: List[Image.Image] = []
+    line_ink_offsets: List[Tuple[float, float]] = []  # 墨迹中心在整行图里的相对位置（用于「按墨迹居中」而非按含阴影的外框居中）
     for ln_idx, ln in enumerate(lines):
         if not ln:
             rendered_lines.append(Image.new("RGBA", (40, max(36, base_sz)), (0, 0, 0, 0)))
+            line_ink_offsets.append((20.0, 0.0))
             continue
         est_ln_w = sum(item[3] for item in ln) + max(80, stroke_w * 4 + abs(sh_dx) * 4 + base_sz * 2)
         max_asc = max(base_sz // 2, line_max_ascents[ln_idx])
         est_ln_h = int(max_asc * 2.2) + stroke_w * 4 + abs(sh_dy) * 4 + 40
-        tmp_ln = Image.new("RGBA", (est_ln_w, est_ln_h), (0, 0, 0, 0))
-        tdraw = ImageDraw.Draw(tmp_ln)
-        cur_x = 40 + stroke_w * 2
-        base_top = 24 + stroke_w * 2
+        pad0 = 40 + stroke_w * 2 + max(0, sh_dx)
+        base_top = 24 + stroke_w * 2 + max(0, sh_dy)
+        ink = Image.new("RGBA", (est_ln_w, est_ln_h), (0, 0, 0, 0))
+        ink_draw = ImageDraw.Draw(ink)
+        sh_layer = Image.new("RGBA", (est_ln_w, est_ln_h), (0, 0, 0, 0)) if use_shadow else None
+        sh_draw = ImageDraw.Draw(sh_layer) if sh_layer is not None else None
+        cur_x = pad0
         for ch, fnt, rgba, adv_w, _ch_sz, asc in ln:
             y_off = base_top + max(0, max_asc - asc)
-            if use_shadow:
-                tdraw.text(
-                    (cur_x + sh_dx, y_off + sh_dy),
-                    ch,
-                    font=fnt,
-                    fill=shadow_rgba,
-                    stroke_width=stroke_w,
-                    stroke_fill=shadow_rgba if stroke_w > 0 else None,
-                )
-            tdraw.text(
+            if sh_draw is not None:
+                # 阴影是「位移+半透明+虚化」的第二个字形，不跟着描边一起长胖
+                sh_draw.text((cur_x + sh_dx, y_off + sh_dy), ch, font=fnt, fill=shadow_rgba)
+            ink_draw.text(
                 (cur_x, y_off),
                 ch,
                 font=fnt,
@@ -313,18 +322,34 @@ def render_subtitle_png(
                 stroke_fill=stroke_rgba if stroke_w > 0 else None,
             )
             cur_x += adv_w
-        ink_bb = tmp_ln.getbbox()
-        if ink_bb is not None:
-            cropped = tmp_ln.crop(ink_bb)
+        if sh_layer is not None and sh_blur > 0.2:
+            sh_layer = sh_layer.filter(ImageFilter.GaussianBlur(radius=sh_blur))
+        merged = Image.new("RGBA", (est_ln_w, est_ln_h), (0, 0, 0, 0))
+        if sh_layer is not None:
+            merged.alpha_composite(sh_layer)
+        merged.alpha_composite(ink)
+        union_bb = merged.getbbox()
+        ink_bb = ink.getbbox()
+        if union_bb is not None:
+            cropped = merged.crop(union_bb)
+            if ink_bb is not None:
+                ink_cx = (ink_bb[0] + ink_bb[2]) / 2.0 - union_bb[0]
+                ink_cy = (ink_bb[1] + ink_bb[3]) / 2.0 - union_bb[1]
+            else:
+                ink_cx, ink_cy = cropped.width / 2.0, cropped.height / 2.0
         else:
             cropped = Image.new("RGBA", (40, max(36, base_sz)), (0, 0, 0, 0))
+            ink_cx, ink_cy = 20.0, 0.0
         if cropped.width > max_line_w:
             ratio = max_line_w / float(cropped.width)
             cropped = cropped.resize(
                 (max_line_w, max(24, int(round(cropped.height * ratio)))),
                 Image.Resampling.LANCZOS,
             )
+            ink_cx *= ratio
+            ink_cy *= ratio
         rendered_lines.append(cropped)
+        line_ink_offsets.append((ink_cx, ink_cy))
 
     line_gap = 10 if len(rendered_lines) > 1 else 0
     max_ink_w = max((im.width for im in rendered_lines), default=60)
@@ -354,8 +379,11 @@ def render_subtitle_png(
             draw.rounded_rectangle([(0, 0), (total_w - 1, total_h - 1)], radius=bg_radius, fill=bg_rgba)
 
     cur_y = pad_y_eff
-    for im_ln in rendered_lines:
-        paste_x = (total_w - im_ln.width) // 2
+    for ln_i, im_ln in enumerate(rendered_lines):
+        # 居中按「墨迹中心」，不按含阴影的外框——否则阴影会把正文整体往反方向挤偏半条阴影的距离
+        ink_cx = line_ink_offsets[ln_i][0] if ln_i < len(line_ink_offsets) else im_ln.width / 2.0
+        paste_x = int(round(total_w / 2.0 - ink_cx))
+        paste_x = max(pad_x // 2 - int(ink_cx), min(paste_x, total_w - im_ln.width - (pad_x // 2)))
         canvas.alpha_composite(im_ln, dest=(paste_x, cur_y))
         cur_y += im_ln.height + line_gap
 

@@ -86,6 +86,26 @@ def list_non_system_drives_windows() -> List[Dict[str, Any]]:
     return drives
 
 
+# 素材目录里唯一允许出现的顶层工作目录名。
+# 用户实测（2026-11-23）：Agent 跑完把中间产物撒在原素材目录里，把他的素材目录搞乱了。
+# 硬约定：要么写进工作区（~/.short-video-studio/workspaces 或 --workspace-root），
+# 要么在素材目录下只建这一个目录，所有过程文件（pipeline/out/state/缓存）全在它下面。
+WORK_DIR_NAME = "_SVS工作区"
+
+
+def dir_writable(path: Path) -> bool:
+    """能不能真的写进去：先建目录再试写一个临时文件（沙箱里 os.access 会说谎）。"""
+    try:
+        path = Path(path).expanduser()
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / f".svs_write_probe_{os.getpid()}"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        return True
+    except Exception:
+        return False
+
+
 def resolve_default_workspace_root() -> Path:
     """解析默认工作区根目录：环境变量 > config.json > 系统默认路径（Win 非 C 盘优先提示）。"""
     env_ws = os.environ.get("SVS_WORKSPACE_ROOT")
@@ -1505,12 +1525,24 @@ def resolve_workspace_paths(
     目录结构：<workspace_root>/accounts/<account_slug>/{content-log/account_profile.json,compliance_whitelist.json,projects/<project_id>}
     """
     ws_root = (workspace_root or resolve_default_workspace_root()).expanduser().resolve()
+    raw_res = raw_dir.expanduser().resolve() if raw_dir else None
+    # 工作区写不进去（常见于只允许写工作目录的沙箱 Agent）时，回落到素材目录下唯一顶层工作目录，
+    # 绝不把 pipeline/out/临时帧撒在素材目录根上。
+    ws_fallback = ""
+    if not dir_writable(ws_root):
+        if raw_res is not None and dir_writable(raw_res):
+            ws_root = raw_res / WORK_DIR_NAME
+            ws_fallback = f"默认工作区 {resolve_default_workspace_root()} 不可写，已回落到素材目录下的 {WORK_DIR_NAME}"
+        else:
+            raise RuntimeError(
+                f"工作区不可写且没有可用的素材目录可回落：{ws_root}。"
+                f"请用 --workspace-root 指定一个可写目录，或用 SVS_WORKSPACE_ROOT 环境变量。"
+            )
     acc_slug = sanitize_slug(account, default="default")
     account_dir = ws_root / "accounts" / acc_slug
     content_log_dir = account_dir / "content-log"
     shared_cache_dir = account_dir / "shared_cache"
 
-    raw_res = raw_dir.expanduser().resolve() if raw_dir else None
     if project_id:
         proj_slug = sanitize_slug(project_id, default="project")
     elif project_dir:
@@ -1541,10 +1573,19 @@ def resolve_workspace_paths(
     out_dir = eff_proj_dir / "out"
     if raw_res is not None:
         write_dirs = (pipeline_dir, out_dir, eff_proj_dir / "_demo_raw_media")
+        sanctioned = (raw_res / WORK_DIR_NAME).resolve()
         for write_dir in write_dirs:
             resolved_dir = write_dir.resolve()
+            # 素材目录里只允许出现唯一顶层工作目录 WORK_DIR_NAME；
+            # 落在这个目录下算合规（沙箱里默认工作区写不进去时的回落路径），
+            # 直接落在素材目录根上、或反向把素材目录套进加工目录，一律拒绝。
+            if resolved_dir.is_relative_to(sanctioned):
+                continue
             if resolved_dir.is_relative_to(raw_res) or raw_res.is_relative_to(resolved_dir):
-                raise ValueError(f"加工目录与原素材目录重叠：{resolved_dir}。请指定独立的加工目录。")
+                raise ValueError(
+                    f"加工目录与原素材目录重叠：{resolved_dir}。"
+                    f"请指定独立的加工目录，或让它落在素材目录下的 {WORK_DIR_NAME}/ 里。"
+                )
 
     account_profile_path = content_log_dir / "account_profile.json"
     legacy_prof = eff_proj_dir / "content-log" / "account_profile.json"
@@ -1565,6 +1606,7 @@ def resolve_workspace_paths(
         "out_dir": out_dir,
         "raw_dir": eff_raw_dir,
         "redirected_from_raw": redirected,
+        "workspace_fallback": ws_fallback,
     }
 
 
