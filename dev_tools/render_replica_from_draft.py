@@ -255,12 +255,17 @@ def ffprobe_has_audio(path: str) -> bool:
 
 
 def media_start_time(path: str) -> float:
-    """素材容器的 `start_time`（秒）。
+    """素材**视频流**的 `start_time`（秒），即首帧 PTS。草稿源时间要减掉它才是 ffmpeg 的 `-ss`。
 
-    剪映草稿的 `source_timerange.start` 是相对**素材容器时间轴**的，而 mp4 容器可能自带
-    非零 start_time（实测 `二手车.mp4` = 0.033008s ≈ 一帧@30fps）。不补这个偏移，整段画面
-    就比原版晚一帧（style_17 逐点验证：原版最优偏移 k=-1、复刻 k=0，13.5/14.0/15.0 三点一致）。
-    另一套草稿的素材容器 start_time 是 0，所以对 style_21 无影响。
+    证据链（style_17）：
+      - `二手车.mp4` / `美业.mp4` 的 `format.start_time` = 0.000，但**视频流** start_time = 0.033008
+        （= 首帧 PTS，30fps 一帧；旧实现读 format 所以永远得 0，等于没做补偿）；
+      - ffmpeg 的输入 `-ss` 是**从首帧**开始计的（实测 `-ss 0` 与不加 -ss 取到同一帧，
+        `-ss 0.0334` 才是第 2 帧）；
+      - 剪映的 `source_timerange.start` 是**容器 PTS**口径：src=1.4667 在原版对应 PTS 1.4667 那一帧
+        （首帧 0.033 + 43×0.0333），对应 `-ss 1.4334`；我们直接 `-ss 1.4667` 就晚了一帧。
+    所以：s_pass = draft_src - stream_start（不是 +）。整片逐点复核：改前最优偏移 k=+1 帧
+    （-1/0/+1 平均 9.08/8.05/7.28），改后 k=0。
     """
     if os.environ.get("SVS_IGNORE_START_TIME") == "1":
         return 0.0
@@ -270,7 +275,8 @@ def media_start_time(path: str) -> float:
     val = 0.0
     try:
         proc = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=start_time", "-of", "csv=p=0", str(path)],
+            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=start_time",
+             "-of", "csv=p=0", str(path)],
             capture_output=True, text=True, timeout=60)
         raw = [ln for ln in (proc.stdout or "").strip().splitlines() if ln and ln != "N/A"]
         if raw:
@@ -279,6 +285,11 @@ def media_start_time(path: str) -> float:
         val = 0.0
     _START_TIME_CACHE[key] = val
     return val
+
+
+def src_seek_time(draft_src: float, src_path: str) -> float:
+    """草稿源时间（容器 PTS 口径）→ ffmpeg `-ss` 值（减掉首帧 PTS，且不为负）。"""
+    return max(0.0, float(draft_src) - media_start_time(src_path))
 
 
 _START_TIME_CACHE: dict = {}
@@ -515,6 +526,11 @@ def parse_text_material(mat: dict) -> dict:
                 max(0, min(255, round(v * 255))) if v <= 1.0 else int(v) for v in vals
             )
     out["line_spacing"] = float(mat.get("line_spacing") or 0.0)
+    # 素材级不透明度：mat.global_alpha（style_17 的「千万/如果」= 0.3：原版黑底上笔画实测
+    # 77/255 ≈ 0.30，我们渲成纯白 255 → 字幕带边缘密度差 61% 的主因）。
+    # style_21 有两段 global_alpha=0.0（水印字）——原版根本不显示，不乘就会凭空多出两行大字。
+    ga = mat.get("global_alpha")
+    out["alpha"] = 1.0 if ga is None else max(0.0, min(1.0, float(ga)))
     # 字幕「背景」样式：草稿 material.background_style/background_color/background_alpha
     # （style_17 10.27/12.93/13.77/14.47/15.10 五段识别字幕都是 style=1、#000000、alpha=0.7；
     #   手打文本段这些字段为空 → 本来就没底框，不能硬加）
@@ -558,16 +574,23 @@ def render_text_png(spec: dict, scale: float, out_png: Path, fail_log: list | No
     tmp_img = Image.new("RGBA", (8, 8))
     tmp_draw = ImageDraw.Draw(tmp_img)
     widths = []
-    for ln in lines:
+    ink_tops, ink_bots = [], []
+    for i, ln in enumerate(lines):
         bbox = tmp_draw.textbbox((0, 0), ln, font=font)
         widths.append(int(bbox[2] - bbox[0]))
+        ink_tops.append(bbox[1] + i * line_h)
+        ink_bots.append(bbox[3] + i * line_h)
     w = max(8, max(widths) + pad * 2)
     h = max(8, line_h * len(lines) + pad * 2)
+    # 垂直定位＝**墨迹包围盒居中**，不是行盒居中：剪映把文字块的中心钉在锚点上，而 PIL 的行盒
+    # 上下留白按字体 ascent/descent 走，不同字体偏得还不一样（思源粗宋 36 号实测偏低 32px、
+    # 抖音黑体 12 号偏高 8.5px）；不按墨迹居中，字幕带边缘密度差会一路涨到 61%。
+    y_first = h / 2.0 - (min(ink_tops) + max(ink_bots)) / 2.0
     img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
     def _paint(layer_draw, dx: float, dy: float, color, alpha=255):
-        y_off = pad
+        y_off = y_first
         for ln in lines:
             layer_draw.text((pad + dx, y_off + dy), ln, font=font, fill=(*color, int(alpha)))
             y_off += line_h
@@ -582,7 +605,7 @@ def render_text_png(spec: dict, scale: float, out_png: Path, fail_log: list | No
         img = Image.alpha_composite(img, sh_layer)
         draw = ImageDraw.Draw(img)
     stroke = spec.get("stroke")
-    y_off = pad
+    y_off = y_first
     for ln in lines:
         if stroke:
             draw.text((pad, y_off), ln, font=font, fill=(*spec["color"], 255),
@@ -603,6 +626,10 @@ def render_text_png(spec: dict, scale: float, out_png: Path, fail_log: list | No
             img = layer
             w, h = img.size
     out_png.parent.mkdir(parents=True, exist_ok=True)
+    _ga = float(spec.get("alpha") if spec.get("alpha") is not None else 1.0)
+    if _ga < 0.999:
+        # 素材级不透明度：叠底框前把整张字迹（含阴影）的 alpha 统一乘下去
+        img.putalpha(img.split()[3].point(lambda v: int(round(v * _ga))))
     img.save(out_png)
     # 自证：墨迹宽度与预期差太多 = 字体回退了，留痕不假装
     try:
@@ -781,6 +808,83 @@ def _compound_has_personable_video(sub_draft: dict) -> bool:
     return any(v.get("type") == "video" and (v.get("path") or "") for v in vids)
 
 
+# 剪映「模糊」特效（effect 634025）的 effects_adjust_blur 值 → gblur sigma 的标定系数。
+# style_21 背景视频层挂 value=0.5：原版 5.5–9.0s 整帧边缘能量是复刻的 0.66 倍（
+# 原版 1.83/1.99/1.42 vs 复刻 2.77/2.79/1.76），逐值重煰比对后定标（见交付报告）。
+SEG_BLUR_GAIN = float(os.environ.get("REPLICA_BLUR_GAIN") or 10.0)
+
+
+def _animbake_media(src: str, s_in: float, dur: float, specs: list, seg_dur: float,
+                    fps: int, out_dir: Path, zoom_amp_fn, flash_fn) -> Path:
+    """主轨段级「横向模糊」入场：径向变焦模糊 + 白光过曝，逐帧用 PIL 烘成同尺寸底片。
+
+    为什么不用 ffmpeg：径向/变焦模糊没有任何单链滤镜能表达（`-vf` 只吃一条链，`split`+`blend`
+    要 filter_complex，而主轨段的几何/缩放由 render_mp4 的 `-vf` 链路负责，插不进去）。
+    烘出来的底片仍是源尺寸，后续 scale/pad/pip 几何照旧由 EDL 驱动。
+    """
+    from PIL import Image, ImageFilter  # noqa: F401
+    import numpy as np
+    n = max(1, int(round(dur * fps)))
+    seq = out_dir / ("animbake_" + _cache_tag("zbake", src, round(s_in, 4), round(dur, 4), fps,
+                                              [round(zoom_amp_fn(i / fps, n), 5) for i in range(n)],
+                                              [round(flash_fn(i / fps, n), 4) for i in range(n)]))
+    out = seq.with_suffix(".mp4")
+    if out.is_file():
+        return out
+    seq.mkdir(parents=True, exist_ok=True)
+    for old in seq.glob("*.png"):
+        old.unlink()
+    run_ffmpeg(["ffmpeg", "-y", "-v", "error", "-ss", f"{s_in:.4f}", "-t", f"{dur + 0.2:.4f}", "-i", src,
+                "-vf", f"fps={fps}", "-frames:v", str(n), str(seq / "s%05d.png")], timeout=900)
+    paths = sorted(seq.glob("s*.png"))
+    if not paths:
+        raise RuntimeError(f"主轨动画烘焙取帧失败: {src}")
+    for i, pp in enumerate(paths):
+        amp = zoom_amp_fn(i / fps, n)
+        flash = flash_fn(i / fps, n)
+        if amp <= 1e-4 and flash <= 1e-4:
+            continue
+        with Image.open(pp) as im0:
+            im = im0.convert("RGB")
+        W0, H0 = im.size
+        if amp > 1e-4:
+            acc = np.zeros((H0, W0, 3), dtype=np.float64)
+            taps = 9
+            for j in range(taps):
+                k = 1.0 + amp * ((j / (taps - 1)) - 0.5) * 2.0
+                w2 = max(2, int(round(W0 * k / 2)) * 2)
+                h2 = max(2, int(round(H0 * k / 2)) * 2)
+                t = im.resize((w2, h2), Image.BICUBIC)
+                l = (w2 - W0) // 2
+                tp = (h2 - H0) // 2
+                acc += np.asarray(t.crop((l, tp, l + W0, tp + H0))).astype(np.float64)
+            acc /= taps
+            im = Image.fromarray(np.clip(acc, 0, 255).astype(np.uint8))
+        if flash > 1e-4:
+            a = np.asarray(im).astype(np.float64)
+            im = Image.fromarray(np.clip(a * (1.0 - flash) + 255.0 * flash, 0, 255).astype(np.uint8))
+        im.save(pp)
+    run_ffmpeg(["ffmpeg", "-y", "-v", "error", "-framerate", f"{fps}", "-i", str(seq / "s%05d.png"),
+                "-t", f"{dur:.4f}", "-c:v", "libx264", "-preset", "fast", "-crf", "12",
+                "-pix_fmt", "yuv420p", str(out)], timeout=1800)
+    return out
+
+
+def _seg_blur_sigma_of(seg: dict, vfx: dict):
+    """段级画面特效真值：extra_material_refs 里的 video_effects（如「模糊」）。"""
+    for _ref in seg.get("extra_material_refs") or []:
+        _e = vfx.get(_ref)
+        if not _e or "模糊" not in str(_e.get("name") or ""):
+            continue
+        _val = 0.5
+        for _p in _e.get("adjust_params") or []:
+            if _p.get("name") == "effects_adjust_blur":
+                _v = _p.get("value")
+                _val = float(_v if _v is not None else (_p.get("default_value") or 0.5))
+        return max(1.0, SEG_BLUR_GAIN * _val)
+    return None
+
+
 def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_default: int,
                     preview: bool, report: dict, depth: int = 0, audio_only: bool = False,
                     alpha_out: bool = False) -> Path:
@@ -792,7 +896,8 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
     from step7_color_grade import run_step7  # noqa: E402
     from person_matting import generate_person_matte_video  # noqa: E402
     from animations import (parse_animations, anim_state, alpha_ramp, fallback_names,  # noqa: E402
-                            summarize, AnimState)
+                            summarize, AnimState, blur_sigmas, blur_window, family_of,
+                            zoom_amp, flash_alpha)
     from anim_render import render_animated_layer  # noqa: E402
 
     ffmpeg_bin = find_bin("ffmpeg")
@@ -832,19 +937,9 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
     vfx_by_id = {e.get("id"): e for e in mats.get("video_effects") or []}
 
     def _seg_blur_sigma(seg: dict):
-        """段级画面特效真值：extra_material_refs 里的 video_effects（如「模糊」）。
-        实测剪映的 effects_adjust_blur 值 ×10 左右才对得上原版的模糊量。"""
-        for _ref in seg.get("extra_material_refs") or []:
-            _e = vfx_by_id.get(_ref)
-            if not _e or "模糊" not in str(_e.get("name") or ""):
-                continue
-            _val = 0.5
-            for _p in _e.get("adjust_params") or []:
-                if _p.get("name") == "effects_adjust_blur":
-                    _v = _p.get("value")
-                    _val = float(_v if _v is not None else (_p.get("default_value") or 0.5))
-            return max(1.0, 10.0 * _val)
-        return None
+        """段级画面特效真值：extra_material_refs 里的 video_effects（如「模糊」）。"""
+        return _seg_blur_sigma_of(seg, vfx_by_id)
+
     txt_by_id = {t["id"]: t for t in mats.get("texts") or []}
     stk_by_id = {s["id"]: s for s in mats.get("stickers") or []}
     mask_by_id = {m["id"]: m for m in mats.get("common_mask") or []}
@@ -1071,14 +1166,14 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                     break
         if ckey:
             src = compound_media[ckey]
-            s_in = float(srcr.get("start") or 0) / US + media_start_time(src)
+            s_in = src_seek_time(float(srcr.get("start") or 0) / US, src)
             s_out = s_in + t_dur * speed
         elif mtype == "photo":
             src = materialize_photo(mat, max(t_dur, 0.5), media_dir / f"photo_{mat['id'][:8]}")
             s_in, s_out = 0.0, t_dur
         else:
             src = _subst(mat.get("path") or "", base_dir)
-            s_in = float(srcr.get("start") or 0) / US + media_start_time(src)
+            s_in = src_seek_time(float(srcr.get("start") or 0) / US, src)
             s_out = s_in + t_dur * speed
         if not Path(src).is_file():
             raise RuntimeError(f"主轨素材不存在: {src}")
@@ -1162,7 +1257,56 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             pieces = split_pieces_by_mask(pieces, _sched, t_start)
         else:
             pieces = [tuple(p[:5]) + (None,) for p in pieces]
-        for _pi, (_ta, _tb, _sc_p, _ptx, _pty, _mcfg) in enumerate(pieces):
+        # 主轨段级入场/出场动画（material_animations）：
+        #   模糊族（横向模糊）＝径向变焦模糊 + 白光过曝 → 逐帧 PIL 烘成底片（无单链滤镜可表达）；
+        #   位移/缩放族在主轨没有逐帧几何通路，如实计入 unrealized（不假装做了）。
+        _m_specs = parse_animations(s, anim_by_id)
+        _m_bw = blur_window(_m_specs, t_dur) if _m_specs else None
+        _anim_media = None
+        if _m_specs:
+            _unsup = [sp for sp in _m_specs if family_of(sp.name) != "blur"]
+            for _sp in _unsup:
+                key = f"main_anim_unsupported:{_sp.name}"
+                report["unrealized"][key] = report["unrealized"].get(key, 0) + 1
+            if len(_unsup) < len(_m_specs) and _mask_cfg is None and len(_kfs) <= 2:
+                _anim_media = _animbake_media(
+                    src, s_in, t_dur, _m_specs, t_dur, fps, media_dir,
+                    lambda tl, _n: zoom_amp(_m_specs, tl, t_dur),
+                    lambda tl, _n: flash_alpha(_m_specs, tl, t_dur))
+                src = str(_anim_media)
+                s_in = 0.0
+                pieces = [(t_start, _t_end, sc0, tx, ty, None, None, None)]
+                report.setdefault("notes", []).append(
+                    f"主轨 {k}: 段级「横向模糊」逐帧烘（变焦模糊+白场）")
+                if depth == 0:
+                    report["main_anim_baked"] = report.get("main_anim_baked", 0) + 1
+        if _m_bw and _anim_media is None:
+            # 只把动画窗内的 part 拆到帧，窗内每帧一个子段（各自的 sigma 由曲线给出）
+            _wa, _wb = t_start + _m_bw[0], t_start + _m_bw[1]
+            _cut = []
+            for _p in pieces:
+                _pa, _pb = _p[0], _p[1]
+                _tail8 = (_p[2], _p[3], _p[4], _p[5])
+                if _pb <= _wa + 1e-6 or _pa >= _wb - 1e-6:
+                    _cut.append((_pa, _pb) + _tail8 + (None, None))
+                    continue
+                _lo, _hi = max(_pa, _wa), min(_pb, _wb)
+                if _pa < _lo - 1e-6:
+                    _cut.append((_pa, _lo) + _tail8 + (None, None))
+                _f0 = int(round(_lo * fps))
+                _f1 = max(_f0 + 1, int(round(_hi * fps)))
+                for _f in range(_f0, _f1):
+                    _sx, _sy = blur_sigmas(_m_specs, (_f + 0.5) / fps - t_start, t_dur)
+                    _cut.append((_f / fps, (_f + 1) / fps) + _tail8 + (_sx, _sy))
+                if _pb > _hi + 1e-6:
+                    _cut.append((_hi, _pb) + _tail8 + (None, None))
+            pieces = _cut
+            report.setdefault("notes", []).append(
+                f"主轨 {k}: 段级模糊动画逐帧烘（{len(_cut)} 片）")
+            if depth == 0:
+                report["main_anim_blur_pieces"] = report.get("main_anim_blur_pieces", 0) + len(_cut)
+        for _pi, (_ta, _tb, _sc_p, _ptx, _pty, _mcfg, _bsx, _bsy) in enumerate(
+                [tuple(_p) if len(_p) == 8 else tuple(_p) + (None, None) for _p in pieces]):
             if _tb - _ta <= 1e-4:
                 continue
             _f_in = int(round(_ta * fps))
@@ -1174,6 +1318,9 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             if _f_out <= _f_in:
                 _f_out = _f_in + 1
             _s_in_p = s_in + (_f_in / fps - t_start) * speed
+            if _anim_media is not None:
+                # 烘焙底片的时间轴已归零（第 0 帧 = 段首）
+                _s_in_p = max(0.0, (_f_in / fps - t_start) * speed)
             _s_out_p = _s_in_p + ((_f_out - _f_in) / fps) * speed
             _piece_src = src
             if _mcfg is not None:
@@ -1198,6 +1345,9 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             if _seg_blur:
                 # 段级特效（模糊）要在缩放/缩窗前作用于源画面
                 _vf_extra.append(f"gblur=sigma={_seg_blur:.2f}")
+            if _bsx and _bsx > 0.2:
+                # 段级「横向模糊」入场：椭圆高斯（x 重 y 轻），逐帧 sigma 由 animations.blur_sigmas 反解
+                _vf_extra.append(f"gblur=sigma={_bsx:.2f}:sigmaV={_bsy:.2f}")
             if _sc_p < 0.999:
                 # 缩窗：草稿真值是黑底居中缩窗（原版四角纯黑），不是渲染器默认的自身模糊铺底
                 _clip["pip_layout"] = None
@@ -1315,7 +1465,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             if not src or not Path(src).is_file():
                 report["unrealized"]["overlay_missing_source"] = report["unrealized"].get("overlay_missing_source", 0) + 1
                 continue
-            s_in += media_start_time(src)
+            s_in = src_seek_time(s_in, src)
             cl = s.get("clip") or {}
             sc = float((cl.get("scale") or {}).get("x") or 1.0)
             tx = float((cl.get("transform") or {}).get("x") or 0.0)
@@ -1404,7 +1554,8 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                         report["unrealized"][_nm] = report["unrealized"].get(_nm, 0) + 1
                 continue
             seg_ext = ".mov" if (alpha_src or ov_mask) else ".mp4"
-            seg_p = media_dir / (f"ov_{t_idx:02d}_{o:02d}_{_cache_tag('ov', s_in, s_dur, sc, tx, ty, alpha, fps, flip, json.dumps(geom, sort_keys=True), json.dumps(ov_mask, sort_keys=True) if ov_mask else '')}" + seg_ext)
+            # 缓存指纹必须含模糊 sigma：否则改了标定系数旧段会被永久复用（“改了不生效”陷阱）
+            seg_p = media_dir / (f"ov_{t_idx:02d}_{o:02d}_{_cache_tag('ov', s_in, s_dur, sc, tx, ty, alpha, fps, flip, json.dumps(geom, sort_keys=True), json.dumps(ov_mask, sort_keys=True) if ov_mask else '', _seg_blur_sigma(s))}" + seg_ext)
             if not seg_p.is_file():
                 fl = "hflip," if flip.get("h") else ("vflip," if flip.get("v") else "")
                 _ov_blur = _seg_blur_sigma(s)
@@ -1490,6 +1641,12 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 continue
             if not spec["text"].strip():
                 continue
+            if float(spec.get("alpha", 1.0)) <= 0.005:
+                # 素材级 global_alpha=0：剪映里这行字根本不显示（style_21 的「创」「原」两段水印字），
+                # 不是未实现，也不该偷画。逐帧图层路径会因「全透明空壳」直接报错，必须在这里先掉。
+                report.setdefault("notes", []).append(
+                    f"文本 {spec['text'][:6]!r}: global_alpha=0，按原版不显示")
+                continue
             tgt = s.get("target_timerange") or {}
             t_start = float(tgt.get("start") or 0) / US
             t_dur = float(tgt.get("duration") or 0) / US
@@ -1516,7 +1673,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             if _specs or _kf_driven:
                 # 逐帧图层：文字 PNG 作为模板，缩放/位移/透明度全部按动画曲线施加
                 _png, _pw, _ph = render_text_png(spec, _sc_base,
-                                                 text_dir / f"tx_{t_idx:02d}_{o:02d}_{_sc_base:.3f}.png",
+                                                 text_dir / f"tx_{t_idx:02d}_{o:02d}_{_sc_base:.3f}_a{spec.get('alpha', 1.0):.2f}.png",
                                                  fail_log=report.setdefault("font_failures", []), pxu=pxu)
                 _bcx = W / 2.0 + tx * W / 2.0
                 _bcy = H / 2.0 - ty * H / 2.0
@@ -1561,7 +1718,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                     for _nm in fallback_names(_specs):
                         report["unrealized"][_nm] = report["unrealized"].get(_nm, 0) + 1
                 continue
-            png, pw, ph = render_text_png(spec, sc, text_dir / f"tx_{t_idx:02d}_{o:02d}.png",
+            png, pw, ph = render_text_png(spec, sc, text_dir / f"tx_{t_idx:02d}_{o:02d}_a{spec.get('alpha', 1.0):.2f}.png",
                                            fail_log=report.setdefault("font_failures", []), pxu=pxu)
             units.append((t_idx, o, {
                 "kind": "text", "png": png, "pw": pw, "ph": ph, "t_start": t_start, "t_dur": t_dur,
@@ -1701,7 +1858,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 for _p in _e.get("adjust_params") or []:
                     if _p.get("name") == "effects_adjust_blur":
                         _bv = float(_p.get("value") if _p.get("value") is not None else (_p.get("default_value") or 0.5))
-                tail += f",gblur=sigma={max(1.0, 10.0 * _bv):.2f}:enable='between(t,{_st:.3f},{_en:.3f})'"
+                tail += f",gblur=sigma={max(1.0, SEG_BLUR_GAIN * _bv):.2f}:enable='between(t,{_st:.3f},{_en:.3f})'"
             else:
                 report["unrealized"]["effect_not_implemented"] = report["unrealized"].get("effect_not_implemented", 0) + 1
     fc_parts.append(tail + "[vout]")

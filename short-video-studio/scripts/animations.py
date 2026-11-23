@@ -113,6 +113,19 @@ CTX_CALIBRATION: Dict[str, Dict[str, dict]] = {
         # -212px → 0，同时宽度 727→918）；原动画带阻尼抖动，这里只复刻主位移。
         "抖动下降": {"scale0": 0.78, "drop": 0.115, "ease": 2.4},
     },
+    # 主轨段级动画（material_animations 挂在视频段上）。目前只做模糊族——
+    # 主轨要逐帧几何得拆段重渲，模糊族可以只叠一条 gblur。
+    "main": {
+        # 「横向模糊」入场（style_21 主轨 4.833s 段，0.2667s）实为**径向/变焦模糊 + 白光过曝**：
+        # 原版 4.90s 帧用视觉复核是「以画面中心为原点向外放射」，不是横向拖影；
+        # 各向同性/椭圆 gblur 试过（sigmaX 30–55），逐帧差 51–57 下不来。
+        # 该动效实为「径向/变焦模糊 + 白光过曝」：原版 4.85/4.90/4.95/5.00/5.05 帧整帧亮度
+        # 219.9/187.1/?? /187.1... 依次衰减到 164（无动效基准），按 out=(1-a)·in+255·a 反解
+        # a = 0.6/0.5/0.4/0.2/0.1 → 线性 a = 0.65·(1-p)（p 为动画进度，残差 ≤0.04）。
+        # 变焦模糊（径向）用 PIL 逐帧烘（见 render_replica 的 _zmanim_media），这里只给白场：
+        # blur_x0=0 显式关掉各向同性/椭圆 gblur，否则会叠一条与径向模糊无关的糊边。
+        "横向模糊": {"flash0": 0.65, "ease": 1.0, "in_dur_scale": 1.0, "blur_x0": 0.0},
+    },
 }
 
 # 全库 113 套草稿里共 150 个动画名、2332 条。按行为归族比逐个硬编码可维护：
@@ -363,6 +376,102 @@ def anim_state(specs: List[AnimSpec], t_local: float, seg_dur: float,
     return st
 
 
+def _blur_span(sp: AnimSpec, seg_dur: float, cfg: dict) -> Tuple[float, float]:
+    """模糊族动画在段内的时间窗 [t0, t1]（秒，段内本地时间）。和 anim_state 同一套计时。"""
+    if sp.kind == "in":
+        dur_i = sp.duration * float(cfg.get("in_dur_scale") or 1.0)
+        t0 = (sp.start or 0.0) + float(cfg.get("in_start_shift") or 0.0)
+        return t0, t0 + dur_i
+    dur_o = sp.duration * float(cfg.get("out_dur_scale") or 1.0)
+    if sp.start is not None:
+        t1 = min(sp.start + dur_o, seg_dur)
+    else:
+        t1 = seg_dur - float(cfg.get("out_start_slack") or 0.0)
+    return t1 - dur_o, t1
+
+
+def blur_window(specs: List[AnimSpec], seg_dur: float,
+                ctx: str | None = "main") -> Optional[Tuple[float, float]]:
+    """模糊族动画的合并时间窗（段内本地秒）；没有模糊族动画返回 None。"""
+    wins = [_blur_span(sp, seg_dur, _cfg(sp.name, ctx)) for sp in specs
+            if family_of(sp.name) == "blur"]
+    if not wins:
+        return None
+    return min(w[0] for w in wins), max(w[1] for w in wins)
+
+
+def blur_sigmas(specs: List[AnimSpec], t_local: float, seg_dur: float,
+                ctx: str | None = "main") -> Tuple[float, float]:
+    """模糊族动画 → (sigmaX, sigmaY) 像素值，供主轨段用 gblur=sigma:sigmaV 逐帧烘。
+
+    「横向模糊」是椭圆高斯（x 重 y 轻；ratio 由原版帧两向梯度反解），不是各向同性 gblur。
+    """
+    sx = sy = 0.0
+    for sp in specs:
+        if family_of(sp.name) != "blur":
+            continue
+        cfg = _cfg(sp.name, ctx)
+        t0, t1 = _blur_span(sp, seg_dur, cfg)
+        p_raw = (t_local - t0) / max(1e-6, t1 - t0)
+        p = 0.0 if p_raw < 0 else (1.0 if p_raw > 1 else p_raw)
+        w = (1.0 - p) if sp.kind == "in" else p
+        w = w ** float(cfg.get("ease") or 1.0)
+        if w <= 0:
+            continue
+        bx = float(cfg["blur_x0"] if cfg.get("blur_x0") is not None
+                   else (cfg.get("blur0") or 0.0))
+        ratio = float(cfg["blur_y_ratio"] if cfg.get("blur_y_ratio") is not None else 1.0)
+        sx = max(sx, bx * w)
+        sy = max(sy, bx * w * ratio)
+    return sx, sy
+
+
+def flash_alpha(specs: List[AnimSpec], t_local: float, seg_dur: float,
+                ctx: str | None = "main") -> float:
+    """模糊族里的「过曝光」曲线 → 0..1 的白场叠加量（out = (1-a)·in + 255·a）。
+
+    剪映的「横向模糊」入场不只是模糊，还带一层白光：原版 style_21 4.85s 整帧均值 219.9，
+    衰减到 5.15s 的 164（无动效基准 162.5），逐帧反解出 a 线性衰减。
+    """
+    a = 0.0
+    for sp in specs:
+        if family_of(sp.name) != "blur":
+            continue
+        cfg = _cfg(sp.name, ctx)
+        f0 = float(cfg.get("flash0") or 0.0)
+        if f0 <= 0:
+            continue
+        t0, t1 = _blur_span(sp, seg_dur, cfg)
+        p_raw = (t_local - t0) / max(1e-6, t1 - t0)
+        p = 0.0 if p_raw < 0 else (1.0 if p_raw > 1 else p_raw)
+        w = (1.0 - p) if sp.kind == "in" else p
+        a = max(a, f0 * (w ** float(cfg.get("ease") or 1.0)))
+    return max(0.0, min(1.0, a))
+
+
+def zoom_amp(specs: List[AnimSpec], t_local: float, seg_dur: float,
+             ctx: str | None = "main") -> float:
+    """模糊族里的「变焦模糊」幅度（0..1，= 采样缩放半径占画幅的比例）。
+
+    径向模糊没有 ffmpeg 滤镜可表达（-vf 只吃单链），所以主轨走 PIL 逐帧烘焙；
+    幅度由原版帧反解（见 CTX_CALIBRATION["main"]["横向模糊"]["zoom0"]）。
+    """
+    amp = 0.0
+    for sp in specs:
+        if family_of(sp.name) != "blur":
+            continue
+        cfg = _cfg(sp.name, ctx)
+        z0 = float(cfg.get("zoom0") or 0.0)
+        if z0 <= 0:
+            continue
+        t0, t1 = _blur_span(sp, seg_dur, cfg)
+        p_raw = (t_local - t0) / max(1e-6, t1 - t0)
+        p = 0.0 if p_raw < 0 else (1.0 if p_raw > 1 else p_raw)
+        w = (1.0 - p) if sp.kind == "in" else p
+        amp = max(amp, z0 * (w ** float(cfg.get("ease") or 1.0)))
+    return max(0.0, min(0.5, amp))
+
+
 def alpha_ramp(specs: List[AnimSpec], seg_dur: float, ctx: str | None = None):
     """纯透明度动画 → ("in"/"out", 段内起点秒, 时长)；不是纯淡入淡出返回 None。
 
@@ -455,6 +564,14 @@ def _self_test() -> None:
     # 8) 向左滑动入场起点必须整张推出画布外（否则「叠了个寂寞」的反面：没滑）
     s = anim_state([AnimSpec("in", "向左滑动", 0.333)], 0.0, 1.0, W, H, ctx="layer")
     assert s.dx >= W * 1.1, s
+    # 8b) 主轨「横向模糊」入场：白场从 0.65 线性衰减到 0，窗后为 0
+    _sp = [AnimSpec("in", "横向模糊", 0.2667)]
+    assert abs(flash_alpha(_sp, 0.0, 1.0) - 0.65) < 1e-6
+    assert abs(flash_alpha(_sp, 0.2667 / 2, 1.0) - 0.325) < 0.01
+    assert flash_alpha(_sp, 0.4, 1.0) == 0.0
+    assert blur_window(_sp, 1.0) == (0.0, 0.2667)
+    # 8c) 各向同性/椭圆 gblur 要显式关掉，否则会多糊一层
+    assert blur_sigmas(_sp, 0.0, 1.0) == (0.0, 0.0)
     # 5) 无动画 = 恒等
     assert anim_state([], 0.3, 1.0, W, H).is_identity()
     print("animations.py self-test OK")
