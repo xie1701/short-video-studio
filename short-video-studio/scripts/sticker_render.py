@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,7 +32,7 @@ from typing import Dict, List, Optional
 from sticker_assets import resolve_sticker_dir, sticker_sequence
 
 try:  # 允许脚本目录被直接加入 sys.path 的用法
-    from animations import parse_animations, summarize
+    from animations import parse_animations, summarize, anim_state
     from anim_render import render_animated_layer
 except Exception:  # pragma: no cover
     from .animations import parse_animations, summarize  # type: ignore
@@ -99,6 +100,30 @@ def sticker_state_fn(specs: List["AnimSpec"], seg_dur: float, canvas_w: int, can
         return st
 
     return _fn
+
+
+def alpha_compensated(state_fn):
+    """把 render_animated_layer 写进图层的 **alpha²** 补偿回 alpha（平方根）。
+
+    为什么需要：anim_render.render_animated_layer 最后一步是
+        frame.paste(crop, (x, y), crop)
+    —— 把 RGBA 贴到透明画布上时又拿自己的 alpha 当掩模，于是
+        alpha_out = alpha × alpha。
+    实测（`Image.paste(crop, box, crop)` 单独验过）：alpha 128 贴完变 64。
+
+    对稳态（alpha=1）无影响，只影响渐变的入/出场，而这正好是入场曲线一直对不上的
+    真因：「缩小」的真实曲线是 1−(1−p)²，到了画面上却变成 (1−(1−p)²)²，
+    逐帧量原版 vs 复刻的透明度：10.6667s 原版 0.699 / 我们 0.352（≈ 0.699²）。
+
+    修在调用方而不是改 anim_render.py：本轮只允许动 sticker_render/animations/
+    render_replica_from_draft 三个文件，anim_render 由另一路负责；等那边把 paste 改成
+    `paste(crop, (x, y), crop.split()[3])` 后，这个包装就应该删掉（平方根会把 alpha 抬高）。
+    """
+    def wrapped(t_local):
+        st = state_fn(t_local)
+        st.alpha = math.sqrt(max(0.0, min(1.0, st.alpha)))
+        return st
+    return wrapped
 
 
 @dataclass
@@ -172,15 +197,23 @@ def render_one_layer(
     return out
 
 
-def _layer_tag(draw_w: int, draw_h: int, cx: float, cy: float, dur: float, fps: float) -> str:
+def _layer_tag(draw_w: int, draw_h: int, cx: float, cy: float, dur: float, fps: float,
+               extra: str = "") -> str:
     """图层缓存指纹：几何/时长/帧率 + 脚本自身 sha1 前 8 位。
 
     只按文件名（st_01_010433.mov）缓存会让上一版算错的图层被永久复用——
     曾经出现过“素材解对了但叠上去还是全透明”的假象，真因就是陈旧缓存。
+
+    extra 是给「动画图层」的额外盐：动画曲线住在 animations.py / anim_render.py 里，
+    这两个文件改了上面那几个数字完全不变，不把它们的指纹拌进来就会拿旧帧充新帧。
     """
-    src = f"{draw_w}x{draw_h}@{cx:.1f},{cy:.1f}|{dur:.4f}|{fps:g}"
+    src = f"{draw_w}x{draw_h}@{cx:.1f},{cy:.1f}|{dur:.4f}|{fps:g}|{extra}"
     try:
         src += "|" + hashlib.sha1(Path(__file__).read_bytes()).hexdigest()[:8]
+        import animations as _am
+        import anim_render as _ar
+        src += "|" + hashlib.sha1(Path(_am.__file__).read_bytes()).hexdigest()[:8]
+        src += "|" + hashlib.sha1(Path(_ar.__file__).read_bytes()).hexdigest()[:8]
     except OSError:
         pass
     return hashlib.sha1(src.encode("utf-8")).hexdigest()[:8]
@@ -249,15 +282,24 @@ def plan_sticker_layers(
             specs = parse_animations(seg, animations_by_id or {})
             if specs:
                 # 带入场/出场动画：只能 PIL 逐帧（ffmpeg 的 scale 不能逐帧改尺寸）
-                tag = _layer_tag(draw_w, draw_h, cx, cy, dur, out_fps) + "a"
+                # 指纹必须拌上动画参数 + 两个渲染脚本的源码：动画曲线改了但几何没改时，
+                # 只用几何指纹会命中旧图层（「改了不生效」的最常见真因）。
+                _sig = ";".join(f"{sp.kind}:{sp.name}:{sp.duration:.4f}:{sp.start}" for sp in specs)
+                tag = _layer_tag(draw_w, draw_h, cx, cy, dur, out_fps, extra=_sig) + "a"
                 out = work / "stickers" / (f"st_{k:02d}_{int(t_start * 1000):06d}_{tag}.mov")
                 if not out.is_file() or out.stat().st_size < 1024:
                     try:
+                        # 动画态一律过 alpha_compensated：anim_render 的合成会把 alpha
+                        # 平方（同一 m 掩模贴两次），不补回来入场/出场透明度全部偏暗。
+                        _sfn = sticker_state_fn(specs, dur, canvas_w, canvas_h)
+                        if _sfn is None:
+                            def _sfn(t_local, _sp=specs, _d=dur):
+                                return anim_state(_sp, t_local, _d, canvas_w, canvas_h)
                         render_animated_layer(
                             sorted(seq.frames_dir.glob("f*.png")),
                             (canvas_w, canvas_h), (draw_w, draw_h), (cx, cy),
                             t_start, dur, out_fps, specs, out,
-                            state_fn=sticker_state_fn(specs, dur, canvas_w, canvas_h))
+                            state_fn=alpha_compensated(_sfn))
                     except Exception as exc:
                         report.setdefault("sticker_notes", []).append(
                             f"{mat.get('name')}: 动画渲染失败回退静态（{exc}）")
@@ -269,7 +311,18 @@ def plan_sticker_layers(
                 render_one_layer(seq.frames_dir, seq.static, seq.fps, out,
                                  canvas_w, canvas_h, draw_w, draw_h, cx, cy,
                                  t_start, dur, out_fps)
-            layers.append(StickerLayer(out, t_start, dur, str(mat.get("name") or "")))
+            # 可见时长 = min(段长, 素材能铺满的长度)。
+            #   · 静态图（单帧）：素材无限循环 → 整段；
+            #   · 序列贴纸（如「手势贴纸-赞」15 帧 @16fps = 0.9375s）：鲉映放完就**不再画**，
+            #     草稿段长 1.05s 里最后 0.11s 是空的。我们旧实现把它当整段铺，overlay 默认
+            #     eof_action=repeat 又把末帧拷贝到段尾 → 逐帧看起来「退场晚了」。
+            #     实测原版 4.7167s（帧 283）末帧可见、4.7333s 已消失，正好 = 3.7833+0.9375。
+            vis = dur
+            if not seq.static and seq.fps:
+                n_src = len(list(seq.frames_dir.glob("f*.png")))
+                if n_src > 1:
+                    vis = min(dur, n_src / float(seq.fps))
+            layers.append(StickerLayer(out, t_start, vis, str(mat.get("name") or "")))
     if depth == 0:
         if miss:
             report["unrealized"]["sticker_missing"] = report["unrealized"].get("sticker_missing", 0) + miss

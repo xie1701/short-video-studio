@@ -36,6 +36,17 @@ if str(SCRIPTS) not in sys.path:
 
 PH_RE = re.compile(r"##_draftpath_placeholder_[0-9A-Fa-f\-]+_##")
 US = 1_000_000
+
+# overlay 叠层流的固定时移（单位：帧）。原因不是「时序写错了」，是 ffmpeg framesync 的口径：
+#   overlay 给主帧 t 选副输入时取的是「PTS ≥ t 的第一帧」（向后取整），而叠层流第 k 帧的
+#   PTS 恰好是 t_start + k/fps —— 于是图层第 k 帧落在主帧 k+1 上，整条叠层**领先一帧**。
+# 实测（style_21 手机边框出场滑动 12.40–12.53s，用模板竖直位移 dy 逐帧量原版与复刻）：
+#   原版 dy = 0/2/10/23/42/65/94/128/167（帧 744…752），复刻 dy = 3/10/23/42/65/94/128/168/212
+#   → 复刻第 n 帧正是原版第 n+1 帧，整体领先 1 帧（不是曲线错，起点/斜率都对）。
+# 黑底单叠实测：setpts 补 +1/(fps*TB) 后 dy 逐帧回到 0/3(≈2)/10/23/42/65/94。
+# 只对「走 overlay 的贴纸/叠加层」生效（unit 上的 pts_lag 字段）；主轨与文字层不经过
+# 这条 setpts（文字层另有自己的烘焙链），所以不受影响。
+PTS_LAG_FRAMES = 1
 _CODE_SIG = ""
 
 
@@ -2186,6 +2197,8 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 "t_start": _lay.t_start, "t_dur": _lay.dur,
                 "scale": 1.0, "lw": W, "lh": H, "tx": 0.0, "ty": 0.0,
                 "alpha": 1.0, "fade": None, "pos_kf": None, "anim": True,
+                # pts_lag_frames：见 PTS_LAG_FRAMES 注释（overlay 的 framesync 向后取整）。
+                "pts_lag": PTS_LAG_FRAMES,
             }))
             if depth == 0:
                 report["sticker_segments"] += 1
@@ -2243,6 +2256,15 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 cur = f"[veff{_k}]"
             _video_done = True
         en = f"enable='between(t,{u['t_start']:.4f},{min(u['t_start'] + u['t_dur'], total_sec):.4f})'"
+        # pts_lag：overlay 的第二路输入按「PTS ≥ 主帧 t」取帧（向后取整），所以图层第 k 帧
+        # 会落在主帧 k+1 上——贴纸出场滑动实测逐帧比原版快一帧（12.40s 起，我们 dy=3 时原版 0，
+        # 整体领先 1 帧）。把叠层流往后挪 1/fps 就还原成「第 k 帧 ↔ 主帧 k」。
+        #
+        # 尾部的「退场晚」不是这里的时间窗写错：素材帧数比段短时（序列贴纸 15 帧@16fps = 0.9375s，
+        # 段长 1.05s），overlay 默认 eof_action=repeat 会把最后一帧拷贝到段尾。所以由
+        # sticker_render.plan_sticker_layers 直接把 dur 截到「素材能铺满的长度」，窗口自己到点就收
+        # —— 不加 eof_action=pass：实测 pass 会在最后一帧的整数时间边界上提前 EOF，吞掉帧 283。
+        _lag = f"+{int(u.get('pts_lag') or 0)}/({fps}*TB)" if u.get("pts_lag") else ""
         if u["kind"] == "video":
             seg_i = n_in
             inputs += ["-i", str(u["seg"])]
@@ -2259,12 +2281,12 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                     # 前景与 matte 强制同 fps 同长（Vision 抠像输出帧率会漂，不拉齐就是逐帧错位的鬼影）；
                     # 流必须平移到 t_start：enable 只管显隐，叠层流从 0 开始消费会让内容时间戳全错
                     fc_parts.append(
-                        f"[{seg_i}:v]fps={fps},setpts=PTS-STARTPTS,trim=duration={dur_u:.4f},setpts=PTS+{t0_u:.4f}/TB,format=rgba[fg{n}];"
-                        f"[{matte_i}:v]fps={fps},setpts=PTS-STARTPTS,trim=duration={dur_u:.4f},setpts=PTS+{t0_u:.4f}/TB,format=gray[mm{n}];"
+                        f"[{seg_i}:v]fps={fps},setpts=PTS-STARTPTS,trim=duration={dur_u:.4f},setpts=PTS+{t0_u:.4f}/TB{_lag},format=rgba[fg{n}];"
+                        f"[{matte_i}:v]fps={fps},setpts=PTS-STARTPTS,trim=duration={dur_u:.4f},setpts=PTS+{t0_u:.4f}/TB{_lag},format=gray[mm{n}];"
                         f"[fg{n}][mm{n}]alphamerge[cut{n}]"
                     )
                 else:
-                    fc_parts.append(f"[{seg_i}:v]fps={fps},setpts=PTS+{u['t_start']:.4f}/TB,format=rgba[cut{n}]")
+                    fc_parts.append(f"[{seg_i}:v]fps={fps},setpts=PTS+{u['t_start']:.4f}/TB{_lag},format=rgba[cut{n}]")
             if _skf:
                 # 缩放关键帧逐帧：一路输入 split 成 K 支，每支 trim 出自己那几帧、各自 scale 到
                 # 「该帧自己的图层像素尺寸」，再按它自己的时间窗 overlay。
@@ -2279,7 +2301,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 # ta=0.0833 → 4.998 → 4（早了整整一帧），于是首片之后就整体领先原版 1 帧
                 # （实测 0–1.67s 叠层内容错一帧，奇偶帧交替差 2.5–3.9）。一次性平移只有一个
                 # 全局截断（≤1/60 帧、所有帧一起），切片只靠 trim 选帧 + enable 管显隐。
-                _pre = f"fps={fps},setpts=PTS-STARTPTS+{_t0u:.6f}/TB,format=rgba"
+                _pre = f"fps={fps},setpts=PTS-STARTPTS+{_t0u:.6f}/TB{_lag},format=rgba"
                 if u.get("fade"):
                     _d0, _dd, _ds = u["fade"]
                     _pre += f",fade=t={_d0}:st={_t0u + _ds:.4f}:d={_dd:.4f}:alpha=1"
@@ -2289,7 +2311,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                                 + "".join(f"[kf{n}_{k}]" for k in range(_K)))
                 if u["matte"]:
                     fc_parts.append(
-                        f"[{matte_i}:v]fps={fps},setpts=PTS-STARTPTS+{_t0u:.6f}/TB,format=gray,split={_K}"
+                        f"[{matte_i}:v]fps={fps},setpts=PTS-STARTPTS+{_t0u:.6f}/TB{_lag},format=gray,split={_K}"
                         + "".join(f"[km{n}_{k}]" for k in range(_K)))
                 _dbg = []
                 # enable 窗口整体前移 2 ms（1/60 帧的 12%）：每个切片只覆盖「自己那几帧」。
