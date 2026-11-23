@@ -638,6 +638,13 @@ def inspect_video(
                 if (pipeline_dir / "06_packaging.json").is_file() else {}
             _ep = (_pk.get("ending_plan") or {})
             _verdict = str(_ep.get("verdict") or "unknown")
+            if not _ep:
+                checks.append(_mk_check(
+                    "ending_complete", "片尾收住了，观众知道下一步做什么", "WARN",
+                    "这一版包装里没有片尾体检（旧流程跑出来的），重跑 step6 就有了",
+                    "末句收住或已挂收尾卡",
+                ))
+                raise StopIteration
             _card = any(str(e.get("kind")) == "end_card_cta" for e in (_pk.get("visual_elements") or []))
             _fm = _ep.get("framework_map") or {}
             if _verdict == "closed" or _card:
@@ -658,6 +665,8 @@ def inspect_video(
                 _detail,
                 "末句是转化指令 / 互动提问 / 金句或人设收尾，或已在片尾挂上收尾卡",
             ))
+        except StopIteration:
+            pass
         except Exception as exc:
             checks.append(_mk_check(
                 "ending_complete", "片尾收住了，观众知道下一步做什么", "FAIL",
