@@ -1818,6 +1818,11 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             src = _subst(mat.get("path") or "", base_dir)
             s_in = src_seek_time(float(srcr.get("start") or 0) / US, src)
             s_out = s_in + t_dur * speed
+        # materialize_photo() / compound_media() 返回的是 Path：这里统一收敛成 str。
+        # 否则写 04_edl.json 时 `json.dump` 直接抛 "Object of type PosixPath is not
+        # JSON serializable"，整条主轨有照片段或复合片段就渲不出来（命中 7 套风格，
+        # 直到驱动轨复合片段被放行才第一次被跑到）。
+        src = str(src)
         if not Path(src).is_file():
             raise RuntimeError(f"主轨素材不存在: {src}")
         clip = {
@@ -1999,7 +2004,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             _clip = {
                 "clip_id": cid,
                 "track_role": "a_roll",
-                "media_path": _piece_src,
+                "media_path": str(_piece_src),
                 "source_in_sec": round(_s_in_p, 4),
                 "source_out_sec": round(_s_out_p, 4),
                 "duration_sec": round((_f_out - _f_in) / fps, 4),
