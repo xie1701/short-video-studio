@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import platform
 import shutil
@@ -3400,6 +3401,128 @@ class StrokePaperTests(unittest.TestCase):
         self.assertGreater(ext[1.0], 0.0)
 
 
+class StrokeSolidTests(unittest.TestCase):
+    """单层描边（resource 7172457125392683528）：shader 1:1 移植 + 按资源派发，不许静默渲错。
+
+    这活儿的起因：bake_stroke_layer 原来**无条件**调 stroke_paper，只按 resource_id 去找包，
+    于是单层描边/折线描边会被撕纸的数学静默渲成另一个样子。这里锁三件事：
+      ①资源 → 实现的分派表；②未知资源绝不下落进撕纸分支；③像素口径随图层几何走。
+    """
+
+    @staticmethod
+    def _disc(h=180, w=180, r=30):
+        import numpy as np
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        alpha = (((yy - h / 2.0) ** 2 + (xx - w / 2.0) ** 2) < r ** 2).astype(np.float32)
+        return alpha, np.dstack([np.full((h, w), 0.25, np.float32)] * 3)
+
+    def test_dispatch_table_maps_each_resource(self):
+        sys.path.insert(0, str(ROOT / "dev_tools"))
+        import render_replica_from_draft as R
+
+        self.assertEqual(R.stroke_impl_for("7172457738302132773"), "paper")
+        self.assertEqual(R.stroke_impl_for("7172457125392683528"), "solid")
+        self.assertEqual(R.STROKE_IMPLS, {"7172457738302132773": "paper",
+                                          "7172457125392683528": "solid"})
+        # 拿不到 resource_id 才用兜底常量（= 撕纸，老素材的默认档）
+        self.assertEqual(R.stroke_impl_for(None), "paper")
+        self.assertEqual(R.stroke_impl_for(""), "paper")
+        self.assertEqual(R.STROKE_RESOURCE_ID, "7172457738302132773")
+        self.assertEqual(R.STROKE_RESOURCE_SOLID, "7172457125392683528")
+        # 两个实现必须是两个模块：拿错模块 = 静默渲错
+        self.assertIs(R._stroke_mod("paper"), R._stroke_paper_mod())
+        from stroke_solid import render_solid_layer  # noqa: F401  可导入且函数在
+        self.assertIsNot(R._stroke_mod("solid"), R._stroke_paper_mod())
+
+    def test_unknown_resource_never_falls_into_paper(self):
+        sys.path.insert(0, str(ROOT / "dev_tools"))
+        import render_replica_from_draft as R
+
+        # 折线描边 7172458277844816391 没实现（形状来自端上算法图，包内推不出）
+        for rid in ("7172458277844816391", "0", "9999999999999999999"):
+            with self.assertRaises(R.UnsupportedStrokeResource) as ctx:
+                R.stroke_impl_for(rid)
+            self.assertIn(rid, str(ctx.exception))
+        # bake 入口就炸：绝不能走到 stroke_paper 去渲一个假描边
+        with unittest.mock.patch.object(R, "_stroke_paper_mod",
+                                        side_effect=AssertionError("未知资源不该落到撕纸实现")):
+            with self.assertRaises(R.UnsupportedStrokeResource):
+                R.bake_stroke_layer(Path("seg.mp4"), Path("matte.mp4"), Path("out.mov"),
+                                    {"resource_id": "7172458277844816391"}, (64, 64), 25)
+
+    def test_line_px_follows_layer_geometry(self):
+        import numpy as np
+        from stroke_solid import line_px_for, render_solid_layer
+
+        # 同一条 shader 推导：1 单位 = min(w,h)/720 像素
+        self.assertAlmostEqual(line_px_for(1620, 2880), 2.25)
+        self.assertAlmostEqual(line_px_for(1080, 1920), 1.5)
+        self.assertAlmostEqual(line_px_for(720, 1280), 1.0)
+        self.assertAlmostEqual(line_px_for(1920, 1080), 1.5)
+        alpha, fg = self._disc()
+        ext = {}
+        for lp in (1.0, 2.25):
+            out = render_solid_layer(fg, alpha, size=0.35, alpha_gain=1.0,
+                                     color_rgb=(1.0, 1.0, 1.0), line_px=lp)
+            outside = out[:, :, 3].copy()
+            outside[alpha > 0.5] = 0.0
+            ext[lp] = float(outside.sum())
+        self.assertGreater(ext[2.25], ext[1.0] * 1.5)   # 环宽随 line_px 线性变宽
+        self.assertGreater(ext[1.0], 0.0)
+
+    def test_size_slider_has_base_width_and_paints_edge_color(self):
+        import numpy as np
+        from stroke_solid import line_size_for, render_solid_layer
+
+        # lua: remap(size, 0.3, 7.5) —— 0.3 是底宽，size→0 环不消失
+        self.assertAlmostEqual(line_size_for(0.0), 0.3)
+        self.assertAlmostEqual(line_size_for(1.0), 7.5)
+        self.assertAlmostEqual(line_size_for(0.35), 2.82)
+
+        alpha, fg = self._disc()
+        zero = render_solid_layer(fg, alpha, size=0.0, alpha_gain=1.0, line_px=1.0)
+        outside = zero[:, :, 3].copy()
+        outside[alpha > 0.5] = 0.0
+        self.assertGreater(float(outside.sum()), 0.0)     # 有 0.3 底宽 → 环还在
+
+        red = render_solid_layer(fg, alpha, size=0.35, alpha_gain=1.0,
+                                 color_rgb=(1.0, 0.0, 0.0), line_px=1.0)
+        # 人物内部保留原画（Pass2 里 mix(..., orimatting)），环带是边色
+        self.assertAlmostEqual(float(red[90, 90, 0]), 0.25, places=2)
+        self.assertAlmostEqual(float(red[90, 90, 1]), 0.25, places=2)
+        self.assertEqual(float(red[90, 130, 0]), 1.0)      # 圆外 40 px 处的环
+        self.assertEqual(float(red[90, 130, 1]), 0.0)
+        self.assertGreater(float(red[90, 130, 3]), 0.0)
+
+    def test_alpha_gain_scales_ring_only(self):
+        """effects_adjust_alpha → Pass2.alpha：只调环，不碰内部（内部 up-minValue 约为 0）。"""
+        import numpy as np
+        from stroke_solid import render_solid_layer
+
+        h = w = 64
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        alpha = (((yy - 32) ** 2 + (xx - 32) ** 2) < 15 ** 2).astype(np.float32)
+        fg = np.full((h, w, 3), 0.4, np.float32)
+        sums = {}
+        for g in (0.0, 0.5, 1.0):
+            out = render_solid_layer(fg, alpha, size=0.5, alpha_gain=g, line_px=2.0)
+            outside = out[:, :, 3].copy()
+            outside[alpha > 0.5] = 0.0
+            sums[g] = float(outside.sum())
+            self.assertAlmostEqual(float(out[32, 32, 3]), 1.0, places=2)   # 人像不被吃掉
+        self.assertEqual(sums[0.0], 0.0)
+        self.assertAlmostEqual(sums[1.0], 2.0 * sums[0.5], delta=0.02 * sums[1.0])
+        # 全满掩膜 → 原画原样输出（不凭空画环、不改色）；空掩膜 → 全透明（抠像失败不造假白圈）
+        full = render_solid_layer(fg, np.ones((h, w), np.float32), size=0.35, alpha_gain=1.0,
+                                 line_px=1.0)
+        self.assertEqual(float(full[:, :, 3].min()), 1.0)
+        self.assertAlmostEqual(float(full[0, 0, 0]), 0.4, places=3)
+        empty = render_solid_layer(fg, np.zeros((h, w), np.float32), size=0.35, alpha_gain=1.0,
+                                   line_px=1.0)
+        self.assertEqual(float(empty[:, :, 3].max()), 0.0)
+        self.assertEqual(float(empty[:, :, :3].max()), 0.0)
+
+
 class ReplicaTemplateTests(unittest.TestCase):
     """复刻模版：提取（与素材无关）→ 套用（时间轴锚点重映射）→ 可编辑原生草稿。
 
@@ -3643,6 +3766,202 @@ class ReplicaTemplateTests(unittest.TestCase):
         self.assertEqual(bool(back["shadow"]), bool(style["shadow"]))
         self.assertAlmostEqual(back["shadow"]["alpha"], style["shadow"]["alpha"], places=3)
         self.assertAlmostEqual(back["line_spacing"], style["line_spacing"], places=4)
+
+
+class EditGrammarTests(unittest.TestCase):
+    """24 套风格的「刀法」必须真进剪辑方案：镜头数/单镜时长带/快切配额/开场刀数/A-B 游程。
+
+    这活儿的起因：风格只决定了调色/字幕/花字/B-roll 占比的大方向，切多少刀、每刀多长、
+    开场几刀、快切占几成、A/B 怎么交替从来没接进 EDL，也没有门禁验它。这里锁的是：
+      ①真值装载与降级要说清来源；②预算夹在实测分位带里；③挑切点满足数量/时长带/开场刀数；
+      ④门禁对不达标的 EDL 必须 fail 而不是放行；⑤step4 裁决开场刀数冲突并记进 EDL。
+    """
+
+    @staticmethod
+    def _pipeline(root: Path, sentences: int = 4, span: float = 3.0) -> Path:
+        """最小 pipeline：一段合成口播 + 两段合成插入，句长可调（默认 3s/句）。"""
+        root.mkdir(parents=True, exist_ok=True)
+        ar = root / "aroll.mp4"
+        br1 = root / "IMG_1001.MOV"
+        br2 = root / "IMG_1002.MOV"
+        for path, color in ((ar, "gray"), (br1, "navy"), (br2, "teal")):
+            if not path.is_file():
+                subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+                                f"color=c={color}:s=540x960:r=30:d={span * sentences + 2}",
+                                "-c:v", "libx264", "-pix_fmt", "yuv420p", str(path)], check=True)
+        sents, evts, t = [], [], 0.0
+        for i in range(1, sentences + 1):
+            sents.append({"id": f"s{i}", "text": f"第{i}句讲工序和细节", "keywords": ["工序"],
+                          "start_sec": round(t, 3), "end_sec": round(t + span, 3),
+                          "source_media": str(ar), "source_in_sec": round(t, 3),
+                          "source_out_sec": round(t + span, 3),
+                          "start_frame": int(round(t * 30)), "end_frame": int(round((t + span) * 30))})
+            evts.append({"id": f"e{i}", "type": "sentence_start", "sentence_id": f"s{i}",
+                         "time_sec": round(t, 3), "frame": int(round(t * 30))})
+            t += span
+        items = [
+            {"id": "ar1", "role": "a_roll", "normalized_mp4": str(ar), "duration_sec": span * sentences,
+             "video_grade": "usable", "sharpness_score": 45.0, "stability_score": 0.9},
+            {"id": "b1", "role": "b_roll", "normalized_mp4": str(br1), "duration_sec": 9.0,
+             "video_grade": "usable", "semantic_tags": ["工序"], "description": "工序特写",
+             "sharpness_score": 47.0, "stability_score": 0.9, "best_in_sec": 0.3},
+            {"id": "b2", "role": "b_roll", "normalized_mp4": str(br2), "duration_sec": 9.0,
+             "video_grade": "usable", "semantic_tags": ["细节"], "description": "细节特写",
+             "sharpness_score": 47.0, "stability_score": 0.9, "best_in_sec": 0.3},
+        ]
+        pipe = root / "p"
+        pipe.mkdir(parents=True, exist_ok=True)
+        write_json(pipe / "01_manifest.json", {"items": items})
+        write_json(pipe / "03_audio_events.json", {
+            "locked_duration_sec": round(span * sentences, 3),
+            "locked_duration_frames": int(round(span * sentences * 30)),
+            "sentences": sents, "events": evts,
+        })
+        return pipe
+
+    def test_load_grammar_returns_draft_measured_truth(self):
+        from edit_grammar import load_grammar
+
+        g = load_grammar("style_17")
+        truth = json.loads((ROOT / "forensic" / "style_edit_grammar.json").read_text(encoding="utf-8"))
+        entry = truth["styles"]["style_17"]
+        self.assertEqual(g["degraded"], [])
+        # 分位数是从草稿主轨段直接量的，不是风格库里的单个中位数
+        self.assertAlmostEqual(g["shot"]["p50"], entry["shot_distribution"]["p50"], places=3)
+        self.assertAlmostEqual(g["shot"]["p10"], entry["shot_distribution"]["p10"], places=3)
+        self.assertFalse(g["shot"]["bounds_synthetic"])
+        # 开场刀数以草稿切点为准：镜头数 - 1
+        self.assertEqual(g["opening"]["cuts_in_first_3s"],
+                         entry["opening"]["shots_in_first_3s"] - 1)
+        self.assertEqual(g["opening"]["source"], "grammar.opening.cuts_in_first_3s")
+        self.assertIsNotNone(g["ab"]["sequence"])
+
+    def test_missing_grammar_degrades_to_library_scalars_and_says_why(self):
+        from edit_grammar import load_grammar
+
+        with tempfile.TemporaryDirectory() as td:
+            g = load_grammar("style_17", grammar_path=Path(td) / "nope.json")
+        self.assertTrue(g["degraded"], "降级必须留下原因，不许静默降级")
+        lib = read_json(ASSETS_DIR / "style_spectrum" / "style_spectrum_library.json")
+        entry = next(s for s in lib["styles"] if s["style_id"] == "style_17")
+        self.assertEqual(g["shot"]["p50"], entry["shot_distribution"]["median_sec"])
+        self.assertTrue(g["shot"]["bounds_synthetic"], "库只有中位数，分位带必须标成撑开的")
+        self.assertEqual(g["opening"]["source"], "library.opening_structure.first_3s_cuts_count - 1")
+
+    def test_plan_shot_budget_stays_inside_measured_band(self):
+        from edit_grammar import load_grammar, plan_shot_budget
+
+        g = load_grammar("style_17")
+        for total in (12.0, 24.0, 90.0):
+            b = plan_shot_budget(total, g)
+            p10, p90 = g["shot"]["p10"], g["shot"]["p90"]
+            self.assertLessEqual(b["target_shots"], int(total / p10) + 1, b)
+            self.assertGreaterEqual(b["target_shots"], int(math.ceil(total / p90)) - 1, b)
+            # 平均镜长必须落在真实分位带里
+            self.assertGreaterEqual(total / b["target_shots"], p10 * 0.95, b)
+            self.assertLessEqual(total / b["target_shots"], p90 * 1.05, b)
+        b = plan_shot_budget(24.0, g)
+        self.assertEqual(b["fast_quota"], round(g["shot"]["fast_ratio"] * b["target_shots"]))
+        self.assertEqual(b["opening_cuts"], g["opening"]["cuts_in_first_3s"])
+
+    def test_select_cuts_hits_count_band_and_opening(self):
+        from edit_grammar import load_grammar, plan_shot_budget, select_cuts
+
+        g = load_grammar("style_17")
+        budget = plan_shot_budget(24.0, g)
+        cands = [{"time_sec": round(0.9 + 0.37 * i, 3)} for i in range(60)]
+        res = select_cuts(cands, budget, g)
+        stats = res["stats"]
+        self.assertEqual(stats["n_shots"], budget["target_shots"], stats)
+        self.assertLessEqual(stats["opening_cuts"], budget["opening_cuts"])
+        self.assertEqual(stats["opening_cuts"], budget["opening_cuts"], "开场刀数必须排满真值")
+        self.assertEqual(stats["out_of_band_shots"], 0, stats)
+        self.assertLessEqual(abs(stats["fast_ratio"] - budget["fast_ratio_target"]), 0.15, stats)
+        self.assertLessEqual(abs(stats["b_ratio"] - budget["b_ratio_target"]), 0.10, stats)
+
+    def test_select_cuts_is_pure_and_deterministic(self):
+        from edit_grammar import load_grammar, plan_shot_budget, select_cuts
+
+        g = load_grammar("style_21")
+        budget = plan_shot_budget(24.0, g)
+        cands = [{"time_sec": round(0.8 + 0.41 * i, 3)} for i in range(55)]
+        snapshot = json.dumps(cands, sort_keys=True)
+        a = select_cuts(cands, budget, g)
+        b = select_cuts(cands, budget, g)
+        self.assertEqual(json.dumps(cands, sort_keys=True), snapshot, "不许改调用方的候选表")
+        self.assertEqual(a["stats"], b["stats"])
+        self.assertEqual([c["time_sec"] for c in a["cuts"]], [c["time_sec"] for c in b["cuts"]])
+
+    def test_check_edl_fails_metrics_that_miss_the_style(self):
+        from edit_grammar import check_edl, load_grammar
+
+        g = load_grammar("style_17")
+        # 全员 3s 一顿切、没有快切、开场 0 刀：离 style_17（中位 1.53s）明显偏
+        clips = [{"timeline_in_sec": round(i * 3.0, 2), "duration_sec": 3.0, "track_role": "b_roll"}
+                 for i in range(8)]
+        edl = {"style_id": "style_17", "total_duration_sec": 24.0, "clips": clips}
+        res = check_edl(edl, g)
+        self.assertFalse(res["pass"])
+        names = [c["name"] for c in res["checks"] if not c["pass"]]
+        self.assertIn("中位镜长 p50", names)
+        self.assertIn("快切占比(<1s)", names)
+        self.assertIn("开场 3s 切数", names)
+        # 反过来：按真值预算真排一遍切点，门禁必须放行（门禁不能永远 fail）
+        from edit_grammar import plan_shot_budget, select_cuts
+
+        budget = plan_shot_budget(24.0, g)
+        cands = [{"time_sec": round(0.9 + 0.37 * i, 3)} for i in range(60)]
+        plan = select_cuts(cands, budget, g)
+        cuts = [0.0] + [c["time_sec"] for c in plan["cuts"]] + [24.0]
+        roles = [c["ab_role"] for c in plan["cuts"]] + ["a_roll"]
+        good = [{"timeline_in_sec": round(a, 3), "duration_sec": round(b - a, 3),
+                 "track_role": roles[i] if i < len(roles) else "a_roll"}
+                for i, (a, b) in enumerate(zip(cuts, cuts[1:]))]
+        ok = check_edl({"style_id": "style_17", "total_duration_sec": 24.0, "clips": good}, g)
+        self.assertTrue(ok["pass"], ok["fail_reasons"])
+
+    def test_step4_adjudicates_opening_cuts_and_records_it(self):
+        from step4_build_edl import run_step4
+
+        with tempfile.TemporaryDirectory() as td:
+            pipe = self._pipeline(Path(td).resolve(), sentences=4, span=3.0)
+            edl = run_step4(pipe, track="store", style_id="style_01", edit_profile="documentary")
+        eg = edl["edit_grammar"]
+        self.assertEqual(eg["mode"], "style")
+        # style_01：opening_structure 实测 3 镜 → 2 刀；ab_switch_spec.opening_cuts 写的是 0
+        self.assertEqual(eg["target"]["opening_cuts"], 2)
+        self.assertTrue(any("ab_switch_spec.opening_cuts" in n and "降级" in n for n in eg["notes"]),
+                        eg["notes"])
+        self.assertIn("target", eg)
+        self.assertIn("actual", eg)
+
+    def test_account_profile_never_eats_style_timing(self):
+        from step4_build_edl import run_step4
+
+        profile = {"sample_sufficient": True, "target_median_shot_sec": 0.8,
+                   "micro_hook_max_sec": 1.2, "target_aroll_ratio": 0.5}
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            p1 = self._pipeline(root / "a", sentences=4, span=3.0)
+            p2 = self._pipeline(root / "b", sentences=4, span=3.0)
+            edl_plain = run_step4(p1, track="store", style_id="style_01", edit_profile="documentary")
+            edl_prof = run_step4(p2, track="store", style_id="style_01", edit_profile="documentary",
+                                 account_profile=profile)
+        self.assertEqual(edl_plain["edit_grammar"]["target"]["p50"],
+                         edl_prof["edit_grammar"]["target"]["p50"])
+        self.assertEqual(edl_plain["clip_count"], edl_prof["clip_count"],
+                         "有账号画像也不许把风格刀法换掉")
+        self.assertEqual(edl_plain["first_3s_visual_changes"], edl_prof["first_3s_visual_changes"])
+
+    def test_dynamic_mode_keeps_legacy_behaviour(self):
+        from step4_build_edl import run_step4
+
+        with tempfile.TemporaryDirectory() as td:
+            pipe = self._pipeline(Path(td).resolve(), sentences=4, span=3.0)
+            edl = run_step4(pipe, track="store", style_id="style_01", edit_profile="documentary",
+                            grammar="dynamic")
+        self.assertEqual(edl["edit_grammar"]["mode"], "dynamic")
+        self.assertIsNone(edl["edit_grammar"]["target"])
 
 
 if __name__ == "__main__":

@@ -67,7 +67,8 @@ def _cache_tag(*parts) -> str:
     if not _CODE_SIG:
         _CODE_SIG = _h.sha1(Path(__file__).read_bytes()).hexdigest()[:8]
     blob = ("|".join(str(p) for p in parts) + "|" + _CODE_SIG + "|" + _mask_code_sig()
-            + "|" + _anim_code_sig() + "|" + _matte_code_sig())
+            + "|" + _anim_code_sig() + "|" + _matte_code_sig()
+            + "|" + _stroke_code_sig())
     return _h.sha1(blob.encode()).hexdigest()[:8]
 
 
@@ -82,6 +83,23 @@ def _matte_code_sig() -> str:
         return _h.sha1((SCRIPTS / "person_matting.py").read_bytes()).hexdigest()[:8]
     except Exception:
         return "nomatte"
+
+
+def _stroke_code_sig() -> str:
+    """stroke_paper.py + stroke_solid.py 的指纹：描边实现的常数/算法一改，旧 *_stroke.mov 必须重烘。
+
+    原来只有本文件的源码哈希在指纹里，描边实现住在另外两个模块——只改它们时旧描边层
+    会被永久复用（「改了不生效」的同一类陷阱）。两种描边各占一个槽位，避免实现切换时
+    张冠李戴。
+    """
+    import hashlib as _h
+    sig = ""
+    for nm in ("stroke_paper.py", "stroke_solid.py"):
+        try:
+            sig += _h.sha1((SCRIPTS / nm).read_bytes()).hexdigest()[:8]
+        except Exception:
+            sig += "nostroke"
+    return sig
 
 
 def _anim_code_sig() -> str:
@@ -1280,10 +1298,42 @@ def _seg_blur_sigma_of(seg: dict, vfx: dict, layer_size: tuple | None = None):
 STROKE_MATTE_DILATE = float(os.environ.get("REPLICA_STROKE_DILATE") or 46.0)
 # 效果包 id：默认值就是草稿里「撕纸描边」的 resource_id；草稿没带时才用它兜底。
 STROKE_RESOURCE_ID = "7172457738302132773"
+# 单层描边（blur0..blur3 + Pass2，见 stroke_solid.py）。
+STROKE_RESOURCE_SOLID = "7172457125392683528"
+# resource_id → 实现名。**这里是唯一的派发真源**：三套描边是三个不同的 shader，
+# 拿错一套不会报错、只会静默渲成另一个样子，所以必须先查表再渲染。
+#   paper → stroke_paper.py  撕纸描边（本机草稿：style_07 / style_21）
+#   solid → stroke_solid.py  单层描边（本机草稿：style_01）
+# 折线描边 7172458277844816391 **故意不在表里**：它的形状来自端上算法图（包内 js/），
+# 包内 lua 只有配色/透明度两个滑杆，从资源包推不出来 → 没实现就不能假装画了。
+STROKE_IMPLS = {
+    STROKE_RESOURCE_ID: "paper",
+    STROKE_RESOURCE_SOLID: "solid",
+}
+STROKE_IMPL_LABEL = {"paper": "撕纸描边", "solid": "单层描边"}
+
+
+class UnsupportedStrokeResource(RuntimeError):
+    """草稿引用的描边资源包没有 shader 移植——**不许**降级成别的描边去渲。"""
+
+
+def stroke_impl_for(resource_id: str | None) -> str:
+    """resource_id → 实现名（"paper" / "solid"）；未知资源直接抛错，不回落撕纸。
+
+    resource_id 为空时才用兜底常量 STROKE_RESOURCE_ID（草稿没带字段的旧素材 = 撕纸描边）；
+    **有值但不在表里就是未知资源**，必须炸出来——降级渲错是这次要堵的洞。
+    """
+    rid = str(resource_id or STROKE_RESOURCE_ID)
+    impl = STROKE_IMPLS.get(rid)
+    if impl is None:
+        raise UnsupportedStrokeResource(
+            f"描边资源 {rid} 没有 shader 移植（已实现：{sorted(STROKE_IMPLS)}）；"
+            "不能拿别的描边顶替，见 dev_tools/render_replica_from_draft.py::STROKE_IMPLS")
+    return impl
 
 
 def matting_stroke_spec(mat: dict) -> dict | None:
-    """素材 matting → 撕纸描边 cfg；没启用描边返回 None。
+    """素材 matting → 描边 cfg；没启用描边返回 None。
 
     只有 matting.path 非空（原版真的抠了像）且 enable_matting_stroke=true 才成立。
     描边是**从 alpha 派生**的：抠像失败时 alpha 全黑，环宽自然归零，不会凭空画白圈。
@@ -1299,24 +1349,32 @@ def matting_stroke_spec(mat: dict) -> dict | None:
         vals[str(p.get("name"))] = float(v if v is not None else (p.get("default_value") or 0.0))
     col = list(st.get("color") or [1.0, 1.0, 1.0, 1.0]) + [1.0, 1.0, 1.0]
     rgb = tuple(max(0, min(255, int(round(float(c) * 255)))) for c in col[:3])
-    # color 留着是因为草稿里有这个字段，但这个效果包的 shader **根本不读它**：
-    # blurY 的环带颜色是 `sucai1 = image/zi1.png`（纸纹本身），没有 color uniform。
-    # 不要因为它没生效就去“补”一个染色——那会与原版偏色。
+    # color 的含义按**效果包**分两档，别统一当“环带颜色”看：
+    #  · 撕纸描边：草稿里有这个字段，但那个 shader **根本不读它**（环带颜色是
+    #    `sucai1 = image/zi1.png` 纸纹本身，没有 color uniform）。不要因为它没生效
+    #    就去“补”一个染色——那会与原版偏色。
+    #  · 单层描边（stroke_solid）：pass2.frag 真的读 `vec3(R, G, B)`（lua 里那几行被注释掉，
+    #    颜色由包内 ImageBusinessSlider.json 的 LV/color 组绑定 edgeColOffset），
+    #    草稿 color=[1,1,1,1] → 白色描边。所以这个字段必须继续往下传。
     # 三个滑杆的值**一律从草稿 adjust_params 读**（不许写死）：
-    #   size     → blur4/blur5.lineSize = 3*size、blurX/blurY.lineSize = 4*size
-    #   distance → blur0/blur1/blur2.lineSize = 7*distance、blur3.lineSize = 1*distance、
-    #              blur3.sizeFlag = 1*distance
-    #   texture  → blurY.sucai0Ins = 1*texture
-    # 映射表出处：AmazingFeature/lua/ImageBusinessSlider.lua::onEvent。
-    # 草稿里没写 value 的档位才回落到 effects 默认值（extra.json 的 0.35/0.25/0.6）。
+    #   size     → 撕纸：blur4/blur5.lineSize = 3*size、blurX/blurY.lineSize = 4*size
+    #              单层：blur0..blur3.lineSize = remap(size, 0.3, 7.5)、Pass2.sizeFlag = size
+    #   distance → 撕纸：blur0/blur1/blur2.lineSize = 7*distance、blur3.lineSize = 1*distance、
+    #              blur3.sizeFlag = 1*distance（单层没有这个滑杆）
+    #   texture  → 撕纸：blurY.sucai0Ins = 1*texture（单层没有这个滑杆）
+    #   alpha    → 单层：Pass2.alpha（描边强度；撕纸没有这个滑杆）
+    # 映射表出处：各效果包 AmazingFeature/lua/ImageBusinessSlider.lua::onEvent。
+    # 草稿里没写 value 的档位才回落到各效果的默认值（撕纸 extra.json 0.35/0.25/0.6；
+    # 单层 material/pass2.material 的 alpha=1.0）。
     # 效果包 id：草稿 stroke 里带着（resource_id），用它去缓存里定点——不写死。
-    # 本机草稿的「撕纸描边」是 7172457738302132773；不同版本草稿/素材可能不同，所以出草稿优先。
+    # 不同版本草稿/素材可能不同，所以出草稿优先；没有字段才回落兜底常量。
     rid = st.get("resource_id") or st.get("effect_id") or mt.get("stroke_resource_id") or STROKE_RESOURCE_ID
     return {
         "color": rgb,
         "size": vals.get("effects_adjust_size", 0.35),
         "distance": vals.get("effects_adjust_distance", 0.25),
         "texture": vals.get("effects_adjust_texture", 0.6),
+        "alpha": vals.get("effects_adjust_alpha", 1.0),
         "resource_id": str(rid),
     }
 
@@ -1329,22 +1387,38 @@ def _stroke_paper_mod():
     return stroke_paper
 
 
-def _stroke_effect_dir(resource_id: str | None = None) -> Path | None:
-    """缓存里的撕纸描边效果包目录（`<cache>/effect/<resource_id>/<hash>/AmazingFeature`）。
+def _stroke_mod(impl: str):
+    """实现名（"paper"/"solid"）→ 对应的 shader 移植模块。"""
+    if impl == "paper":
+        return _stroke_paper_mod()
+    if impl == "solid":
+        if str(SCRIPTS) not in sys.path:
+            sys.path.insert(0, str(SCRIPTS))
+        import stroke_solid  # noqa: E402
+        return stroke_solid
+    raise UnsupportedStrokeResource(f"未知描边实现 {impl!r}")
+
+
+def _stroke_effect_dir(resource_id: str | None = None, impl: str = "paper") -> Path | None:
+    """缓存里的效果包目录（`<cache>/effect/<resource_id>/<hash>/AmazingFeature`）。
 
     resource_id 从草稿的 stroke 里来（资源包 id）；缓存根走仓库既有的发现逻辑（JY_CACHE_ROOT）。
+    `impl` 决定用哪个模块的判据认包（撕纸看 `image/zi1.png`，单层看 `xshader/pass2.frag`）。
     找不到返回 None，由 bake_stroke_layer 显式报错，不静默降级——描边缺失应该是可见故障。
     """
-    return _stroke_paper_mod().find_effect_dir(JY_CACHE_ROOT, resource_id or STROKE_RESOURCE_ID)
+    return _stroke_mod(impl).find_effect_dir(JY_CACHE_ROOT, resource_id or STROKE_RESOURCE_ID)
 
 
 def bake_stroke_layer(seg_video: Path, matte_video: Path, out_mov: Path, spec: dict,
                       size: tuple, fps: int, ffmpeg_bin: str = "ffmpeg") -> Path:
-    """人像 RGBA + 撕纸描边 → 一条 ProRes4444 图层（描边压在人物**下方**）。
+    """人像 RGBA + 描边（按 resource_id 选实现）→ 一条 ProRes4444 图层（描边压在人物**下方**）。
 
-    纸边的画法**不再手搓**：调 `stroke_paper.render_stroke_layer()`，它是对剪映
-    这个效果包 shader 的 1:1 numpy 移植（getInPut → blur0..blur5 → noise → blurX/blurY），
-    输入抠像 alpha + 原画，输出内部=soft-light 纸纹后的原画 / 环带=zi1 纸纹 / 环外=黑色投影。
+    描边只负责“把 alpha + 原画变成 RGBA 层”，具体画法**全部在 shader 移植模块里**：
+      · `7172457738302132773` → `stroke_paper.render_stroke_layer()`（撕纸描边）
+      · `7172457125392683528` → `stroke_solid.render_solid_layer()`（单层描边）
+    两张都是对剪映效果包 shader 的 1:1 numpy 移植，参数映射见各自模块 docstring。
+    未知 resource_id **直接抛 UnsupportedStrokeResource**（不回落撕纸）：三套描边的 shader
+    互不相同，拿错一套不会报错、只会静默渲成另一个样子——那正是这个函数要堵的洞。
     本函数只负责三件不属于效果本身的事：①抠像「外扩余量」（剪映画笔抠像留的那圈原片）
     ②解码/编码 ③逐帧参数透传。
 
@@ -1356,15 +1430,38 @@ def bake_stroke_layer(seg_video: Path, matte_video: Path, out_mov: Path, spec: d
     from scipy import ndimage
 
     W, H = int(size[0]), int(size[1])
-    eff = _stroke_effect_dir(str(spec.get("resource_id") or ""))
+    rid = spec.get("resource_id")
+    impl = stroke_impl_for(rid)                   # 未知资源在这里抛错，不降级
+    label = STROKE_IMPL_LABEL[impl]
+    SP = _stroke_mod(impl)
+    eff = _stroke_effect_dir(str(rid or ""), impl)
     if eff is None:
-        raise RuntimeError("撕纸描边：缓存里找不到效果包（<cache>/effect/%s/*/AmazingFeature）"
-                           % (spec.get("resource_id") or STROKE_RESOURCE_ID))
-    SP = _stroke_paper_mod()
-    tex = SP.load_textures(eff)
-    # 抖动/噪声场是 uv 的纯函数（不随帧变）→ 整段只算一次
-    fields = SP.PaperFields(H, W, float(spec.get("distance") or 0.0),
-                            SP.BLUR3_JIT_GAIN, SP.NOISE_JIT_GAIN)
+        raise RuntimeError("%s：缓存里找不到效果包（<cache>/effect/%s/*/AmazingFeature）"
+                           % (label, rid or STROKE_RESOURCE_ID))
+    if impl == "paper":
+        tex = SP.load_textures(eff)
+        # 抖动/噪声场是 uv 的纯函数（不随帧变）→ 整段只算一次
+        fields = SP.PaperFields(H, W, float(spec.get("distance") or 0.0),
+                                SP.BLUR3_JIT_GAIN, SP.NOISE_JIT_GAIN)
+
+        def _render(fg, a):
+            return SP.render_stroke_layer(
+                fg, a,
+                size=float(spec.get("size") or 0.0),
+                distance=float(spec.get("distance") or 0.0),
+                texture=float(spec.get("texture") or 0.0),
+                ring_tex=tex["ring"], grain_tex=tex["grain"],
+                shadow_ins=SP.SHADOW_INS, line_px=SP.line_px_for(W, H),
+                jit3=SP.BLUR3_JIT_GAIN, jitn=SP.NOISE_JIT_GAIN, fields=fields)
+    else:                                         # solid：blur0..3 + Pass2
+        edge_rgb = tuple(float(c) / 255.0 for c in (spec.get("color") or (255, 255, 255))[:3])
+
+        def _render(fg, a):
+            return SP.render_solid_layer(
+                fg, a,
+                size=float(spec.get("size") or 0.0),
+                alpha_gain=float(spec.get("alpha") if spec.get("alpha") is not None else 1.0),
+                color_rgb=edge_rgb, line_px=SP.line_px_for(W, H))
 
     # 外扩量：**不乘 scale**。
     # 原来什么：`dilate = STROKE_MATTE_DILATE * scale`（scale = 图层宽/1080）。
@@ -1374,6 +1471,9 @@ def bake_stroke_layer(seg_video: Path, matte_video: Path, out_mov: Path, spec: d
     #   原尺寸叠回画布（kf 切片 `scale=1620:2880` + overlay x=-270 → 图层像素 = 画布像素），
     #   所以乘 1.5 等于把环往外推了 23 画布像素。实测（style_21 t=0.5s，左缘 y1160–1640 逐行
     #   取白环峰位）：原版峰位中位数 x=45、我们 x=23，差 22 px，与 46×0.5 完全对得上。
+    # 两种描边共用这一个值：它补的是**我们自己的 matte 相对剪映蒙版的系统偏差**，与具体
+    # 描边效果无关。但它只在撕纸画边上有像素标定；单层描边（style_01）本机没找到原版帧，
+    # 所以这个值对单层是未验证的（见本次任务汇报）。
     dilate = max(0.0, STROKE_MATTE_DILATE)
 
     out_mov.parent.mkdir(parents=True, exist_ok=True)
@@ -1402,14 +1502,7 @@ def bake_stroke_layer(seg_video: Path, matte_video: Path, out_mov: Path, spec: d
                 # （不是半透明白），纸边之后压在扩后的边界上。
                 d_out = ndimage.distance_transform_edt(~(a > 0.5))
                 a = np.maximum(a, np.clip(1.0 - (d_out - dilate) / 1.5, 0.0, 1.0))
-            layer = SP.render_stroke_layer(
-                fg, a,
-                size=float(spec.get("size") or 0.0),
-                distance=float(spec.get("distance") or 0.0),
-                texture=float(spec.get("texture") or 0.0),
-                ring_tex=tex["ring"], grain_tex=tex["grain"],
-                shadow_ins=SP.SHADOW_INS, line_px=SP.line_px_for(W, H),
-                jit3=SP.BLUR3_JIT_GAIN, jitn=SP.NOISE_JIT_GAIN, fields=fields)
+            layer = _render(fg, a)
             frame = np.concatenate([np.clip(layer[:, :, :3], 0.0, 1.0) * 255.0,
                                     (np.clip(layer[:, :, 3], 0.0, 1.0) * 255.0)[:, :, None]], axis=2)
             enc.stdin.write(frame.astype(np.uint8).tobytes())
@@ -1427,7 +1520,7 @@ def bake_stroke_layer(seg_video: Path, matte_video: Path, out_mov: Path, spec: d
             pass
         enc.wait()
     if n_done == 0 or not out_mov.is_file():
-        raise RuntimeError(f"撕纸描边烘焙失败（{seg_video} + {matte_video}）")
+        raise RuntimeError(f"{label}烘焙失败（{seg_video} + {matte_video}）")
     return out_mov
 
 
