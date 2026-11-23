@@ -3295,7 +3295,7 @@ class StickerRenderTests(unittest.TestCase):
 
     def test_paint_size_matches_original_frame(self):
         from sticker_render import paint_size
-        # 24-美业「手机屏幕边框」：原生 475×540、scale 2.18822、画布 1080
+        # 实测草稿「手机屏幕边框」：原生 475×540、scale 2.18822、画布 1080
         w, h = paint_size(475, 540, 2.18822212042551, 1080)
         self.assertEqual((w, h), (1560, 1772))
         # 上边界 = 中心 y 1104 − 高/2 = 218 → 画布 11.35%，原版量到 11.5%

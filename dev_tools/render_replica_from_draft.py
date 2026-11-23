@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -246,7 +247,144 @@ def cover_crop_vf(w: int, h: int) -> str:
     )
 
 
-JY_CACHE_ROOT = "/Users/jerry/Movies/JianyingPro/User Data/Cache"
+# ---------- 叠加图层的几何真值 ----------
+# 剪映里一个图层（照片/视频）的屏幕尺寸**不是** canvas×clip.scale：
+#   step1 material.crop 已经把素材按 crop_ratio 预裁（照片丢进画布时被自动裁成 16:9 等）；
+#   step2 裁后画面 contain 适配画布（scale=1 时整幅可见，9:16 画布放 16:9 横图不裁内容）；
+#   step3 再乘 clip.scale（1 个单位 = 画布宽/高的一半，即 1080 宽草稿里 0.85 → 918px）。
+# style_17 实测（原版 8.0-10.3s 五张车图）：飞度 16:9 裁后 667×376 → contain 1080×607 →
+# ×0.85017 = 918×516，落点 y=153..668，与草稿 transform.y=0.5722 推得的 cy=411 完全吻合；
+# 旧代码按「画布高×scale」算成 918×1632（cover-crop 到整帧再缩），横图被纵向拉满整帧。
+_MEDIA_SIZE_CACHE: dict = {}
+
+
+def media_pixel_size(path: str, mat: dict | None = None) -> tuple:
+    """素材真实像素尺寸：静图读文件、视频走 ffprobe（缓存），失败才退回草稿声明值。
+
+    草稿声明值常比真实文件少 1px（style_17 飞度声明 666×480、文件 667×480），
+    按声明值算 crop 会越界，故裁切必须用真实像素。
+    """
+    key = str(path)
+    if key in _MEDIA_SIZE_CACHE:
+        return _MEDIA_SIZE_CACHE[key]
+    size = None
+    if Path(key).is_file():
+        if (mat or {}).get("type") == "photo" or Path(key).suffix.lower() in (".png", ".jpg", ".jpeg", ".webp", ".bmp"):
+            try:
+                from PIL import Image as _Img
+                with _Img.open(key) as im:
+                    size = (int(im.size[0]), int(im.size[1]))
+            except Exception:
+                size = None
+        if size is None:
+            try:
+                proc = subprocess.run(
+                    ["ffprobe", "-v", "error", "-select_streams", "v:0",
+                     "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", key],
+                    capture_output=True, text=True, timeout=60)
+                w, h = (proc.stdout or "").strip().split("x")[:2]
+                size = (int(w), int(h))
+            except Exception:
+                size = None
+    if not size:
+        size = (int((mat or {}).get("width") or CANVAS_W), int((mat or {}).get("height") or CANVAS_H))
+    _MEDIA_SIZE_CACHE[key] = size
+    return size
+
+
+def material_crop_px(mat: dict, sw: int, sh: int):
+    """material.crop（uv 比例，缺省边 0/1）→ 源像素裁切框 (x, y, w, h)；无裁切返回 None。"""
+    c = mat.get("crop") or {}
+    if not c:
+        return None
+
+    def _v(key: str, default: float) -> float:
+        v = c.get(key)
+        return float(default if v is None else v)
+
+    x0 = _v("upper_left_x", 0.0)
+    x1 = _v("upper_right_x", 1.0)
+    y0 = _v("upper_left_y", 0.0)
+    y1 = _v("lower_left_y", 1.0)
+    x0, x1 = max(0.0, min(x0, x1)), min(1.0, max(x0, x1))
+    y0, y1 = max(0.0, min(y0, y1)), min(1.0, max(y0, y1))
+    cx, cy = int(round(x0 * sw)), int(round(y0 * sh))
+    cw, ch = int(round((x1 - x0) * sw)), int(round((y1 - y0) * sh))
+    cw, ch = min(cw, sw - cx), min(ch, sh - cy)
+    if cw < 4 or ch < 4:
+        return None
+    if (cx, cy, cw, ch) == (0, 0, sw, sh):
+        return None  # 名义上有 crop 但没裁掉任何像素
+    return (cx, cy, cw, ch)
+
+
+def layer_geometry(mat: dict, src_path: str, canvas_w: int, canvas_h: int, scale: float) -> dict:
+    """草稿图层 → 屏幕几何 {lw, lh, crop}：先裁 uv，再 contain 适配画布，最后 × clip.scale。"""
+    sw, sh = media_pixel_size(src_path, mat)
+    crop = material_crop_px(mat, sw, sh)
+    if crop:
+        cw, ch = crop[2], crop[3]
+    else:
+        cw, ch = sw, sh
+    scale = float(scale) if float(scale or 0) > 0 else 1.0
+    fit = min(canvas_w / float(cw), canvas_h / float(ch))
+    lw = cw * fit * scale
+    lh = ch * fit * scale
+    return {"lw": max(2, int(round(lw / 2)) * 2), "lh": max(2, int(round(lh / 2)) * 2), "crop": crop}
+
+
+def layer_vf(geom: dict, canvas_w: int, canvas_h: int) -> str:
+    """图层几何 → ffmpeg 滤镜串（crop → scale）；几何与整帧相同时返回空串（不白降画质）。"""
+    parts = []
+    crop = geom.get("crop")
+    if crop:
+        parts.append(f"crop={crop[2]}:{crop[3]}:{crop[0]}:{crop[1]}")
+    if not crop and (geom["lw"], geom["lh"]) == (canvas_w, canvas_h):
+        return ""
+    parts.append(f"scale={geom['lw']}:{geom['lh']}:flags=bicubic")
+    return ",".join(parts)
+
+
+def asset_time_offset(path: str) -> float:
+    """素材容器 start_time：剪映按「首帧=0」算素材时间，ffmpeg `-ss` 却按 PTS 算。
+
+    style_17 的 二手车.mp4 首帧 PTS=0.033008（一帧），实测原版成片比「草稿 src_start + 时间线偏移」
+    早 1 帧（13.5/14.0/15.0s 三处源帧匹配：原版最优偏移 k=-1，复刻 k=0）。
+    这里把 start_time 交还给调用方，seek 时加上，两端就落在同一帧上。
+    """
+    key = str(path)
+    if key in _MEDIA_SIZE_CACHE:
+        return 0.0
+    try:
+        proc = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=start_time",
+                               "-of", "csv=p=0", key], capture_output=True, text=True, timeout=60)
+        return max(0.0, float((proc.stdout or "0").strip() or 0.0))
+    except Exception:
+        return 0.0
+
+
+def _discover_root(kind: str) -> str:
+    """剪映（mac 版）缓存/草稿根：环境变量优先，否则在 ~/Movies 下按结构自动发现。
+
+    不写死路径也不写死应用名——仓库隐私门禁不许出现本机路径与应用名。
+    kind: "cache" -> .../User Data/Cache；"drafts" -> .../User Data/Projects/<库里那层>
+    """
+    env = {"cache": "JY_CACHE_ROOT", "drafts": "JY_DRAFT_ROOT"}[kind]
+    if os.environ.get(env):
+        return os.environ[env]
+    base = Path.home() / "Movies"
+    if kind == "cache":
+        for cand in sorted(base.glob("*/User Data/Cache")):
+            if (cand / "artistEffect").is_dir() or (cand / "effect").is_dir():
+                return str(cand)
+        return str(base / "User Data" / "Cache")
+    for cand in sorted(base.glob("*/User Data/Projects/*")):
+        if cand.is_dir() and any(c.is_dir() for c in cand.iterdir()):
+            return str(cand)
+    return str(base / "User Data" / "Projects" / "drafts")
+
+
+JY_CACHE_ROOT = _discover_root("cache")
 
 
 def _font_candidates(mat: dict) -> list:
@@ -572,13 +710,17 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
     drafts_entries = {dr["id"]: dr for dr in (mats.get("drafts") or []) if dr.get("draft")}
 
     # ---------- 1.5 剪映遮罩：alpha 场按 shader 数学算（mask_shapes），按 cfg+脚本指纹缓存 ----------
-    def mask_alpha_png(cfg: dict) -> Path:
+    def mask_alpha_png(cfg: dict, mw: int | None = None, mh: int | None = None) -> Path:
+        """遮罩 alpha 场 PNG。mw/mh = 图层（渲染纹理）尺寸：剪映 shader 的 u_aspect 取的就是
+        图层自身宽高比（圆角半径按短边归一），拿画布比算会把 16:9 卡片的圆角算错一倍。"""
         import hashlib as _hl
+        mw = int(mw or W)
+        mh = int(mh or H)
         key = _hl.sha1((json.dumps(cfg, sort_keys=True, ensure_ascii=False)
-                        + f"|{W}x{H}|{MS.FEATHER_GAIN}|{_mask_code_sig()}").encode()).hexdigest()[:12]
+                        + f"|{mw}x{mh}|{MS.FEATHER_GAIN}|{_mask_code_sig()}").encode()).hexdigest()[:12]
         png = media_dir / f"mask_alpha_{key}.png"
         if not png.is_file():
-            MS.save_alpha_png(MS.mask_alpha(W, H, cfg), png)
+            MS.save_alpha_png(MS.mask_alpha(mw, mh, cfg), png)
         return png
 
     def masked_media(src: str, s_in: float, dur: float, cfg: dict) -> Path:
@@ -1065,24 +1207,27 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             alpha_src = bool(ckey and _compound_is_visual(drafts_entries[ckey]["draft"]))
             # 叠加轨遮罩：遮罩区外必须**透明**（透出下层），所以走 alpha 路径（ProRes4444 + alphamerge）
             ov_mask = segment_mask_config(s, mask_by_id, report)
+            # 图层几何：material.crop → contain(画布) → ×clip.scale（非 canvas×scale，见 layer_geometry）
+            geom = layer_geometry(mat, src, W, H, sc)
+            lw, lh = geom["lw"], geom["lh"]
             seg_ext = ".mov" if (alpha_src or ov_mask) else ".mp4"
-            seg_p = media_dir / (f"ov_{t_idx:02d}_{o:02d}_{_cache_tag('ov', s_in, s_dur, sc, tx, ty, alpha, fps, flip, json.dumps(ov_mask, sort_keys=True) if ov_mask else '')}" + seg_ext)
+            seg_p = media_dir / (f"ov_{t_idx:02d}_{o:02d}_{_cache_tag('ov', s_in, s_dur, sc, tx, ty, alpha, fps, flip, json.dumps(geom, sort_keys=True), json.dumps(ov_mask, sort_keys=True) if ov_mask else '')}" + seg_ext)
             if not seg_p.is_file():
                 fl = "hflip," if flip.get("h") else ("vflip," if flip.get("v") else "")
                 _ov_blur = _seg_blur_sigma(s)
                 fl = (f"gblur=sigma={_ov_blur:.2f}," if _ov_blur else "") + fl
-                _ov_scale = (f",scale={int(round(W * sc / 2)) * 2}:{int(round(H * sc / 2)) * 2}:flags=bicubic"
-                             if abs(sc - 1.0) > 1e-3 else "")
+                _geom_vf = layer_vf(geom, W, H)
+                _geom_vf = ("," + _geom_vf) if _geom_vf else ""
                 if ov_mask:
-                    # 遮罩作用于图层（源画面）uv 空间：先 cover-crop 到整帧，再 alphamerge，最后才缩放
-                    _png = mask_alpha_png(ov_mask)
+                    # 遮罩作用于图层（裁切+缩放后）自身的 uv 空间：先裁/缩到图层尺寸，再按图层宽高比 alphamerge
+                    _png = mask_alpha_png(ov_mask, lw, lh)
                     _nfr = max(1, int(round(max(0.05, s_dur) * fps)))
                     _in0 = (["-loop", "1", "-i", src] if (mat.get("type") or "") == "photo"
                             else ["-ss", f"{s_in:.4f}", "-t", f"{max(0.05, s_dur):.4f}", "-i", src])
                     run_ffmpeg([ffmpeg_bin, "-y", *_in0, "-loop", "1", "-i", str(_png),
                                 "-filter_complex",
-                                f"[0:v]fps={fps},setpts=PTS-STARTPTS,format=rgba,{fl}" + cover_crop_vf(W, H) + "[fg];"
-                                f"[1:v]fps={fps},setpts=PTS-STARTPTS,format=gray[mask];[fg][mask]alphamerge" + _ov_scale + "[v]",
+                                f"[0:v]fps={fps},setpts=PTS-STARTPTS,format=rgba,{fl[:-1]}" + _geom_vf + "[fg];"
+                                f"[1:v]fps={fps},setpts=PTS-STARTPTS,format=gray[mask];[fg][mask]alphamerge[v]",
                                 "-map", "[v]", "-frames:v", str(_nfr), "-an",
                                 "-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le",
                                 str(seg_p)], timeout=600)
@@ -1091,22 +1236,19 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 elif alpha_src:
                     # 复合片段输出是 ProRes4444 带 alpha：抽段必须保 alpha
                     run_ffmpeg([ffmpeg_bin, "-y", "-ss", f"{s_in:.4f}", "-t", f"{max(0.05, s_dur):.4f}", "-i", src,
-                                "-vf", f"fps={fps},format=rgba,{fl}" + cover_crop_vf(W, H)
-                                + (f",scale={int(round(W * sc / 2)) * 2}:{int(round(H * sc / 2)) * 2}:flags=bicubic" if abs(sc - 1.0) > 1e-3 else ""),
+                                "-vf", f"fps={fps},format=rgba,{fl[:-1]}" + _geom_vf,
                                 "-an", "-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le", str(seg_p)], timeout=600)
                 else:
                     if (mat.get("type") or "") == "photo":
                         # 静图：-t 放在 -i 前会限制输入读取（单帧图只能得 ~2 帧），必须 -loop 1 + 输出侧 -t
                         run_ffmpeg([ffmpeg_bin, "-y", "-loop", "1", "-i", src,
-                                    "-vf", f"fps={fps},{fl}" + cover_crop_vf(W, H)
-                                    + (f",scale={int(round(W * sc / 2)) * 2}:{int(round(H * sc / 2)) * 2}:flags=bicubic" if abs(sc - 1.0) > 1e-3 else ""),
+                                    "-vf", f"fps={fps},{fl[:-1]}" + _geom_vf,
                                     "-t", f"{max(0.05, s_dur):.4f}",
                                     "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "14",
                                     "-pix_fmt", "yuv420p", str(seg_p)])
                     else:
                         run_ffmpeg([ffmpeg_bin, "-y", "-ss", f"{s_in:.4f}", "-t", f"{max(0.05, s_dur):.4f}", "-i", src,
-                                    "-vf", f"fps={fps},{fl}" + cover_crop_vf(W, H)
-                                    + (f",scale={int(round(W * sc / 2)) * 2}:{int(round(H * sc / 2)) * 2}:flags=bicubic" if abs(sc - 1.0) > 1e-3 else ""),
+                                    "-vf", f"fps={fps},{fl[:-1]}" + _geom_vf,
                                     "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "14",
                                     "-pix_fmt", "yuv420p", str(seg_p)])
             matte_p = None
@@ -1129,7 +1271,8 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 continue  # 抠像失败不下假前景
             units.append((t_idx, o, {
                 "kind": "video", "seg": seg_p, "matte": matte_p, "t_start": t_start, "t_dur": t_dur,
-                "scale": sc, "tx": tx, "ty": ty, "alpha": alpha, "fade": fade, "pos_kf": pos_kf,
+                "scale": sc, "lw": lw, "lh": lh, "tx": tx, "ty": ty, "alpha": alpha,
+                "fade": fade, "pos_kf": pos_kf,
             }))
             if depth == 0:
                 report["overlay_segments"] += 1
@@ -1242,8 +1385,8 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 src_lbl = f"[cutx{n}]"
             else:
                 src_lbl = _cut_lbl
-            ov_w = int(round(W * u["scale"])) if abs(u.get("scale", 1.0) - 1.0) > 1e-3 else W
-            ov_h = int(round(H * u["scale"])) if abs(u.get("scale", 1.0) - 1.0) > 1e-3 else H
+            ov_w = int(u.get("lw") or (int(round(W * u["scale"])) if abs(u.get("scale", 1.0) - 1.0) > 1e-3 else W))
+            ov_h = int(u.get("lh") or (int(round(H * u["scale"])) if abs(u.get("scale", 1.0) - 1.0) > 1e-3 else H))
             ox = int(round((W - ov_w) / 2 + u["tx"] * W / 2))
             oy = int(round((H - ov_h) / 2 - u["ty"] * H / 2))  # 剪映 y 正=向上
             if u.get("pos_kf"):
@@ -1384,7 +1527,7 @@ def main() -> int:
     ap.add_argument("--style-id")
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--out", default="/tmp/blind_review")
-    ap.add_argument("--draft-root", default="/Users/jerry/Movies/JianyingPro/User Data/Projects/com.lveditor.draft")
+    ap.add_argument("--draft-root", default=_discover_root("drafts"))
     ap.add_argument("--decrypted-root", default=str(ROOT / "forensic" / "decrypted"))
     ap.add_argument("--preview", action="store_true")
     args = ap.parse_args()
