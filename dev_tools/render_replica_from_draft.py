@@ -75,14 +75,18 @@ def _matte_code_sig() -> str:
 
 
 def _anim_code_sig() -> str:
-    """animations/anim_render 的指纹：动画曲线或幅度一改，逐帧动画层必须重烘。
+    """animations/anim_render/sticker_render 的指纹：动画曲线或幅度一改，逐帧动画层必须重烘。
 
-    这两个模块的标定（CTX_CALIBRATION）是逐帧反解出来的，改了不失效的话
+    这几个模块的标定（CTX_CALIBRATION）是逐帧反解出来的，改了不失效的话
     缓存里躺着的旧图层会一直盖在成片上，看着像「改了没生效」。
+
+    sticker_render.py 必须一起拌进来：贴纸图层（st_*.mov）与复合片段（compound_alpha.mov）
+    都按这个指纹缓存，只改贴纸几何/翻转/旋转而不改本文件时，旧图层会被永久复用
+    ——2026-11-24 加翻转/旋转支持时踩到的就是这个（复合片段里那条红箭头不重烘）。
     """
     import hashlib as _h
     sig = ""
-    for nm in ("animations.py", "anim_render.py"):
+    for nm in ("animations.py", "anim_render.py", "sticker_render.py"):
         try:
             sig += _h.sha1((SCRIPTS / nm).read_bytes()).hexdigest()[:8]
         except Exception:
@@ -813,6 +817,23 @@ def kf_scale_schedule(px: list, py: list, t_start: float, t_dur: float, fps: flo
     return out
 
 
+def _flip_hv(clip_flip: dict | None) -> dict:
+    """草稿 `clip.flip` → {"h": bool, "v": bool}。
+
+    原来什么：调用点直接写 `flip.get("h")` / `flip.get("v")`。
+    改成什么：统一经这里归一，两种键名都认（`h`/`v` 与剪映真字段 `horizontal`/`vertical`）。
+    为什么：剪映草稿的 clip.flip 字段名是 **horizontal/vertical**（本机模板导出器
+    export_jianying_native.py 生成的素材就是这对键），`get("h")` 永远是 None →
+    整条叠加轨的镜像翻转从来没生效过。style_21 13.367–15.617s 复合片段里那条红箭头
+    （sub sticker `clip.flip={"horizontal": true}`、rotation=-77.36°）因此指反，
+    15.03–15.18s 段内逐帧差 39–44 级（方向不同，不是亮度/模糊能解释的）。
+    """
+    f = clip_flip or {}
+    h = f.get("h", f.get("horizontal"))
+    v = f.get("v", f.get("vertical"))
+    return {"h": bool(h), "v": bool(v)}
+
+
 def _anim_base_png(src: str, mat: dict, geom: dict, out_png: Path, flip: dict | None = None) -> Path:
     """源素材 → geom 尺寸（crop→contain→×scale）的静态底图，作为逐帧动画层的模板。
 
@@ -954,10 +975,20 @@ def _bake_blurred_segment(src: str, s_in: float, dur: float, fps: int, out_p: Pa
 
     原来什么：`-vf gblur=sigma=σ`——在**gamma 编码空间**、**图层满分辨率**上做高斯。
     改成什么：按 GaussianBlur 的 .frag 逐步实现：
-        1. 先把图层缩到 RTRatio = 1−0.75v 的渲染纹理（v=0.5 → 0.625，双线性）；
+        1. 先把图层缩到 RTRatio = 1−0.75v 的渲染纹理（v=0.5 → 0.625）；
         2. 每个 tap 先 `pow(c, 2.2)` 再乘权重求和，最后一次 `pow(sum, 1/2.2)`
            ——即**线性光里做模糊**；
-        3. 再双线性拉回图层尺寸。
+        3. 再拉回图层尺寸。
+    采样核（2026-11-24 实测）：缩放两趟用 BICUBIC 而不是 BILINEAR。着色器里 RT
+    双线性只因为它便宜，实际两个方向都要重采样两次，bilinear 的box感在低频渐变上
+    会把结果整体压暗；用原版 5.5/6.5/7.5s 三个时刻的「页层可见区」逐像素比（可见区
+    由 final 与页层帧差值<6 的像素定义，占画面 54%）：
+        bilinear  MAE 4.38 / 6.50 / 7.54，亮度偏 -1.0 / -2.4 / -2.0 级
+        bicubic   MAE 4.29 / 6.48 / 7.53，亮度偏 -0.3 / -1.8 / -1.5 级
+    增益小但方向一致（三帧都降偏暗量），所以换 bicubic。同时测过两条反例：
+        pow(1/2.4) 落地  MAE 5.94 / 7.37 / 9.06，偏 +4.9 / +2.6 / +4.2（整体过亮 → 淘汰）；
+        不做 RT 降采样、直接在满分辨率做线性光模糊  MAE 4.41 / 6.55 / 7.63（与当前持平）
+    即**线性光是主因、RT 降采样不是**；旧 gamma 空间 gblur 是 MAE 26/25/26、偏 -25 级。
     σ 仍用 yes_blur_sigma 那套（σ 与 min(S)/720 成正比、tap 索引空间 4N/15），只是换算到
     渲染纹理像素：σ_rt = σ_layer · RTRatio = (4N/15)·min(S)/720·(1−0.75v)。
 
@@ -1014,11 +1045,11 @@ def _bake_blurred_segment(src: str, s_in: float, dur: float, fps: int, out_p: Pa
             if not buf or len(buf) != fsz:
                 break
             arr = _np.frombuffer(buf, dtype=_np.uint8).reshape(lh, lw, 3)
-            small = _np.asarray(_Im.fromarray(arr).resize((rt_w, rt_h), _Im.BILINEAR), dtype=_np.float32)
+            small = _np.asarray(_Im.fromarray(arr).resize((rt_w, rt_h), _Im.BICUBIC), dtype=_np.float32)
             lin = (small / 255.0) ** 2.2                       # shader: pow(sample, 2.2)
             lin = _nd.gaussian_filter(lin, sigma=(sig_rt, sig_rt, 0.0), mode="nearest")
             srgb = _np.clip(lin, 0.0, 1.0) ** (1.0 / 2.2) * 255.0   # shader: clamp(pow(sum,1/2.2))
-            out = _Im.fromarray(_np.clip(srgb, 0, 255).astype(_np.uint8)).resize((lw, lh), _Im.BILINEAR)
+            out = _Im.fromarray(_np.clip(srgb, 0, 255).astype(_np.uint8)).resize((lw, lh), _Im.BICUBIC)
             enc.stdin.write(out.tobytes())
             n += 1
     finally:
@@ -1949,7 +1980,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             tx = float((cl.get("transform") or {}).get("x") or 0.0)
             ty = float((cl.get("transform") or {}).get("y") or 0.0)
             alpha = float(cl.get("alpha") if cl.get("alpha") is not None else 1.0)
-            flip = cl.get("flip") or {}
+            flip = _flip_hv(cl.get("flip"))
             if sc < 0.05 and s.get("common_keyframes"):
                 # 打字机/缩放入场动画的起始态；终态按 1.0 铺开，动画本身计数不假装
                 sc = 1.0

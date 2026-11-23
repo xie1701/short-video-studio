@@ -62,6 +62,55 @@ STICKER_OUT_SLIDE = {
     "向下滑动": {"ux": 0.0, "uy": 1.0, "ease": 2.0, "gain": 1.229},
 }
 
+# ---------- 翻转 / 旋转：草稿字段与符号都是反解出来的 ----------
+# 原来什么：`clip.flip` / `clip.rotation` **完全没读**（旋转只记一笔「未实现」计数）。
+#   草稿里 flip 的键名是 `horizontal`/`vertical`（不是 h/v），rotation 是角度。
+# 真值反解（style_21 13.367–15.617s 复合片段里那条红箭头，sub sticker：
+#   素材 540×540、scale 0.333651、transform(0.115721, -0.031941)、
+#   flip.horizontal=true、rotation=-77.3588）：
+#   · 原版 15.1s 帧取红像素（R>140,G<90,B<90）掩模，质心 (557.7, 1003.8)；
+#   · 对本素材试 2×2 组合，按红掩模 IoU 对原版：
+#       flip=False, PIL rotate(+77.4) IoU 0.028；flip=False, -77.4 → 0.037；
+#       flip=True,  +77.4 → **0.926**（质心 555.7,1014.6）；flip=True, -77.4 → 0.067。
+# 所以：**先水平镜像，再按 `−rotation` 度逆时针旋转（PIL rotate 正=逆时针）**。
+# 宽度/顺序：**先缩放到显示尺寸（paint_size），再翻转、再旋转**（旋转只是把已经画好的
+# 贴纸转一下，不改变它的 scale），旋转用 expand 保留整个图像，中心不动。
+STICKER_ROT_EPS = 0.5      # 小于这个角度视为没旋转（抖动的零点几度不值得多两趟重采样）
+
+
+def _flip_hv(clip: dict) -> tuple:
+    """`clip.flip` → (h, v)。两种键名都认：剪映真字段是 horizontal/vertical。"""
+    f = (clip or {}).get("flip") or {}
+    return (bool(f.get("horizontal", f.get("h"))),
+            bool(f.get("vertical", f.get("v"))))
+
+
+def _transform_frames(frames, out_dir: Path, draw_w: int, draw_h: int,
+                      hflip: bool, vflip: bool, rot: float) -> list:
+    """把贴纸帧「缩放 → 翻转 → 旋转(expand)」预烘成一串 PNG，返回新帧列表。
+
+    为什么用 PIL 预烘而不是 ffmpeg 滤镜：旋转后要按新的包围盒裁到画布上，
+    ffmpeg 里得把 crop/pad 的坐标按 rotw()/roth() 重算一遍；PIL 的 rotate(expand=True)
+    直接把尺寸与中心摆好，后面的 crop/pad 逻辑一个字不用改（把新尺寸当 draw_w/h 传即可）。
+    逐帧成本可以接受：贴纸段通常只有一张静图，带序列的也很短（15 帧 @16fps）。
+    """
+    from PIL import Image
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = []
+    for i, p in enumerate(frames):
+        with Image.open(p) as im:
+            im = im.convert("RGBA").resize((max(1, draw_w), max(1, draw_h)), Image.LANCZOS)
+            if hflip:
+                im = im.transpose(Image.FLIP_LEFT_RIGHT)
+            if vflip:
+                im = im.transpose(Image.FLIP_TOP_BOTTOM)
+            if abs(rot) > STICKER_ROT_EPS:
+                im = im.rotate(-rot, expand=True, resample=Image.BICUBIC)
+            q = out_dir / ("f%05d.png" % i)
+            im.save(q)
+            out.append(q)
+    return out
+
 
 def sticker_state_fn(specs: List["AnimSpec"], seg_dur: float, canvas_w: int, canvas_h: int):
     """逐帧状态函数：出场滑动用草稿真值接管，其余动画原样走 animations.anim_state。
@@ -96,6 +145,17 @@ def sticker_state_fn(specs: List["AnimSpec"], seg_dur: float, canvas_w: int, can
             w = p ** float(k["ease"])
             st.dx += float(k["ux"]) * canvas_w * float(k["gain"]) * w
             st.dy += float(k["uy"]) * canvas_h * float(k["gain"]) * w
+            # 出场同时**淡出**，曲线与位移同一条（alpha = 1 − w）——这是逐帧量出来的，
+            # 不是「顺手加个淡出」：style_21 手机屏幕边框（10.4333+2.4667，出「向下滑动」
+            # 0.5s、无 start → 窗口 [12.4000, 12.9000]）用「原版 − 主轨底片」在贴纸不透明
+            # 像素（alpha>0.8，40–56 万像素/帧）上做最小二乘，得到原版相对我们（alpha=1）的
+            # 透明度比：  12.20→0.99、12.35→0.99、12.45→0.98、12.55→0.89、12.65→0.73、
+            #            12.75→0.49、12.85→贴纸已出画
+            # p = (t−12.4)/0.5 → 1−p² = 0.96/0.91/0.75/0.51，与实测 0.89/0.73/0.49 逐点相差
+            # ≤0.03。旧实现只位移不淡出，于是 12.4–12.9s 我们一直是一块**不透明的实心手机框**
+            # 压在画面上（原版是半透明的虚影）——12.5s 这一帧字幕带 6.89 级、12.77s 带内 11.6 级，
+            # 判它「不对」靠的就是这个，而不是位移量。
+            st.alpha *= max(0.0, 1.0 - w)
         return st
 
     return _fn
@@ -210,7 +270,6 @@ def plan_sticker_layers(
     st_by_id = {m.get("id"): m for m in (draft.get("materials", {}).get("stickers") or [])}
     layers: List[StickerLayer] = []
     miss = 0
-    skipped = 0
     (work / "stickers").mkdir(parents=True, exist_ok=True)
     for tr in draft.get("tracks") or []:
         if tr.get("type") != "sticker":
@@ -254,9 +313,25 @@ def plan_sticker_layers(
             cx = canvas_w / 2 + tx * canvas_w / 2
             cy = canvas_h / 2 - ty * canvas_h / 2
             rot = float(clip.get("rotation") or 0.0)
-            if abs(rot) > 0.5:
-                skipped += 1
-                report.setdefault("sticker_notes", []).append(f"{mat.get('name')}: 旋转 {rot:.1f}° 未实现")
+            hflip, vflip = _flip_hv(clip)
+            # 翻转/旋转：先把帧烘成「已缩放+已翻转+已旋转」的序列，再当普通贴纸叠。
+            # 旋转用 expand，包围盒会变大——所以 draw_w/draw_h 要换成新帧尺寸，
+            # 而 cx/cy 不变（旋转是绕贴纸自身的中心转的）。
+            frames_dir = seq.frames_dir
+            static = seq.static
+            if hflip or vflip or abs(rot) > STICKER_ROT_EPS:
+                xd = work / "stickers" / (f"xf_{k:02d}_{int(t_start * 1000):06d}_"
+                                         f"{_layer_tag(draw_w, draw_h, cx, cy, dur, out_fps, extra=f'f{int(hflip)}{int(vflip)}{rot:.2f}')}")
+                if not (xd / "f00000.png").is_file():
+                    _transform_frames(sorted(seq.frames_dir.glob("f*.png")), xd,
+                                      draw_w, draw_h, hflip, vflip, rot)
+                frames_dir = xd
+                static = True
+                with Image.open(xd / "f00000.png") as im:
+                    draw_w, draw_h = im.size
+                if depth == 0:
+                    report.setdefault("sticker_notes", []).append(
+                        f"{mat.get('name')}: 翻转 h={int(hflip)} v={int(vflip)} / 旋转 {rot:.1f}°（已实现）")
             if depth == 0:
                 pass
             out = work / "stickers" / (f"st_{k:02d}_{int(t_start * 1000):06d}_{_layer_tag(draw_w, draw_h, cx, cy, dur, out_fps)}.mov")
@@ -275,7 +350,7 @@ def plan_sticker_layers(
                             def _sfn(t_local, _sp=specs, _d=dur):
                                 return anim_state(_sp, t_local, _d, canvas_w, canvas_h)
                         render_animated_layer(
-                            sorted(seq.frames_dir.glob("f*.png")),
+                            sorted(frames_dir.glob("f*.png")),
                             (canvas_w, canvas_h), (draw_w, draw_h), (cx, cy),
                             t_start, dur, out_fps, specs, out,
                             state_fn=_sfn)
@@ -287,7 +362,7 @@ def plan_sticker_layers(
                     report["animated_stickers"] = report.get("animated_stickers", 0) + 1
                     report.setdefault("sticker_anims", []).extend(summarize(specs))
             if not specs and (not out.is_file() or out.stat().st_size < 1024):
-                render_one_layer(seq.frames_dir, seq.static, seq.fps, out,
+                render_one_layer(frames_dir, static, seq.fps, out,
                                  canvas_w, canvas_h, draw_w, draw_h, cx, cy,
                                  t_start, dur, out_fps)
             # 可见时长 = min(段长, 素材能铺满的长度)。
@@ -305,8 +380,6 @@ def plan_sticker_layers(
     if depth == 0:
         if miss:
             report["unrealized"]["sticker_missing"] = report["unrealized"].get("sticker_missing", 0) + miss
-        if skipped:
-            report["unrealized"]["sticker_rotation"] = report["unrealized"].get("sticker_rotation", 0) + skipped
     layers.sort(key=lambda l: l.t_start)
     return layers
 
