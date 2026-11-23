@@ -943,6 +943,101 @@ def yes_blur_sigma(value: float, layer_w: int = CANVAS_W, layer_h: int = CANVAS_
     return max(1.0, YES_BLUR_SIGMA_TAPS * taps * px_per_tap)
 
 
+def yes_blur_rt_ratio(value: float) -> float:
+    """着色器里模糊所在的渲染纹理比例：`RTRatio = 1 − 0.75·v`（v=0.5 → 0.625）。"""
+    return max(0.05, 1.0 - 0.75 * max(0.0, float(value)))
+
+
+def _bake_blurred_segment(src: str, s_in: float, dur: float, fps: int, out_p: Path,
+                          lw: int, lh: int, crop, flip: dict, value: float) -> Path:
+    """把剪映「模糊」特效**照着着色器**重烘成同尺寸底片（替代 ffmpeg `gblur`）。
+
+    原来什么：`-vf gblur=sigma=σ`——在**gamma 编码空间**、**图层满分辨率**上做高斯。
+    改成什么：按 GaussianBlur 的 .frag 逐步实现：
+        1. 先把图层缩到 RTRatio = 1−0.75v 的渲染纹理（v=0.5 → 0.625，双线性）；
+        2. 每个 tap 先 `pow(c, 2.2)` 再乘权重求和，最后一次 `pow(sum, 1/2.2)`
+           ——即**线性光里做模糊**；
+        3. 再双线性拉回图层尺寸。
+    σ 仍用 yes_blur_sigma 那套（σ 与 min(S)/720 成正比、tap 索引空间 4N/15），只是换算到
+    渲染纹理像素：σ_rt = σ_layer · RTRatio = (4N/15)·min(S)/720·(1−0.75v)。
+
+    为什么：用 sRGB 空间直接平均，Jensen 不等式下结果比线性光平均**暗**一截，
+    画面就是「原版发雾发白、复刻发黑发硬」。实测 style_21 5.5s 背景页层（v=0.5）：
+        旧 gblur：左右可见区带内带外 MAE 27.6 / 19.6，均值 125.2 / 175.1（原版 151.6 / 184.9）
+        新口径：           MAE 10.1 / 8.6，均值 145.9 / 190.7
+    只改模糊口径、σ 曲线不动（σ=8.98 在渲染纹理像素上的扫描极小点，6/11/14.4 都更差）。
+
+    保 alpha / 遮罩 / 复合片段的分支不走这里（它们要保留 alpha，这条流水线只出 yuv420p）。
+
+    时序口径：第一步用**与旧路径逐字相同的抽段命令**（不带 gblur）出 CFR 中间片，第二步
+    只在中间片上做「线性光 + 渲染纹理」重算。不能直接拿 `-ss/-t/-vf fps=60` 的 raw 管道当首帧
+    顺序的时间轴：这条素材是 VFR（avg 59.17fps），raw 管道里帧数与 60fps 不对应，按 60fps 重写
+    = 整层逐渐超前（实测 8.95s 处差 5 帧，全片 MEAN 7.79→13.03）。中间片已经是 CFR，逐帧读写
+    时序才与旧路径一致。
+    """
+    import numpy as _np
+    from PIL import Image as _Im
+    from scipy import ndimage as _nd
+
+    lw, lh = int(lw), int(lh)
+    tmp = Path(out_p).with_name(Path(out_p).stem + "_noblur.mp4")
+    if not Path(tmp).is_file():
+        fl = "hflip," if (flip or {}).get("h") else ("vflip," if (flip or {}).get("v") else "")
+        _geom = []
+        if crop:
+            _geom.append(f"crop={int(crop[2])}:{int(crop[3])}:{int(crop[0])}:{int(crop[1])}")
+        _geom.append(f"scale={lw}:{lh}:flags=bicubic")
+        _pre = ",".join(x for x in (fl.rstrip(","), ",".join(_geom)) if x)
+        run_ffmpeg(["ffmpeg", "-y", "-ss", f"{s_in:.4f}",
+                    "-t", f"{max(0.05, dur):.4f}", "-i", src,
+                    "-vf", f"fps={fps},setpts=PTS-STARTPTS,{_pre}",
+                    "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "14",
+                    "-pix_fmt", "yuv420p", str(tmp)])
+
+    ratio = yes_blur_rt_ratio(value)
+    sig_layer = yes_blur_sigma(value, lw, lh)
+    sig_rt = max(0.0, sig_layer * ratio)
+    rt_w = max(2, int(round(lw * ratio)))
+    rt_h = max(2, int(round(lh * ratio)))
+    dec = subprocess.Popen(["ffmpeg", "-nostdin", "-v", "error", "-i", str(tmp),
+                            "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                          stdout=subprocess.PIPE)
+    fsz = lw * lh * 3
+    n = 0
+    enc = subprocess.Popen(["ffmpeg", "-nostdin", "-y", "-v", "error", "-f", "rawvideo",
+                            "-pix_fmt", "rgb24", "-s", f"{lw}x{lh}", "-framerate", f"{fps:g}",
+                            "-i", "-", "-c:v", "libx264", "-preset", "fast", "-crf", "14",
+                            "-pix_fmt", "yuv420p", str(out_p)], stdin=subprocess.PIPE)
+    try:
+        while True:
+            buf = dec.stdout.read(fsz)
+            if not buf or len(buf) != fsz:
+                break
+            arr = _np.frombuffer(buf, dtype=_np.uint8).reshape(lh, lw, 3)
+            small = _np.asarray(_Im.fromarray(arr).resize((rt_w, rt_h), _Im.BILINEAR), dtype=_np.float32)
+            lin = (small / 255.0) ** 2.2                       # shader: pow(sample, 2.2)
+            lin = _nd.gaussian_filter(lin, sigma=(sig_rt, sig_rt, 0.0), mode="nearest")
+            srgb = _np.clip(lin, 0.0, 1.0) ** (1.0 / 2.2) * 255.0   # shader: clamp(pow(sum,1/2.2))
+            out = _Im.fromarray(_np.clip(srgb, 0, 255).astype(_np.uint8)).resize((lw, lh), _Im.BILINEAR)
+            enc.stdin.write(out.tobytes())
+            n += 1
+    finally:
+        dec.stdout.close()
+        dec.wait()
+        try:
+            enc.stdin.close()
+        except Exception:
+            pass
+        enc.wait()
+    if n == 0 or enc.returncode != 0 or not Path(out_p).is_file():
+        raise RuntimeError(f"模糊重烘失败（0 帧或编码错误）: {src}")
+    try:
+        Path(tmp).unlink()
+    except OSError:
+        pass
+    return out_p
+
+
 def _animbake_media(src: str, s_in: float, dur: float, specs: list, seg_dur: float,
                     fps: int, out_dir: Path, zoom_amp_fn, flash_fn) -> Path:
     """主轨段级「横向模糊」入场：径向变焦模糊 + 白光过曝，逐帧用 PIL 烘成同尺寸底片。
@@ -1036,6 +1131,26 @@ def _effect_blur_steps(seg: dict, effect: dict, t_start: float, dur: float, fps:
         s = yes_blur_sigma(_val((i + 0.5) * dur / n), layer_w, layer_h)
         out.append((t_start + i * dur / n, t_start + (i + 1) * dur / n, s))
     return out
+
+
+def _seg_blur_value_of(seg: dict, vfx: dict):
+    """段级「模糊」的原始 value（着色器里的 `effects_adjust_blur` 0..1）。
+
+    sigma 那条路已经把它算成了像素半径；渲染着色器还需要 value 本身（渲染纹理比例
+    RTRatio = 1−0.75v、tap 数 floor(72v)），所以单给一个取值入口，口径与 _seg_blur_sigma_of 一致：
+    优先 `adjust_params` 里的实际值，缺失时用草稿默认 0.5。
+    """
+    for _ref in seg.get("extra_material_refs") or []:
+        _e = vfx.get(_ref)
+        if not _e or "模糊" not in str(_e.get("name") or ""):
+            continue
+        _val = 0.5
+        for _p in _e.get("adjust_params") or []:
+            if _p.get("name") == "effects_adjust_blur":
+                _v = _p.get("value")
+                _val = float(_v if _v is not None else (_p.get("default_value") or 0.5))
+        return _val
+    return None
 
 
 def _seg_blur_sigma_of(seg: dict, vfx: dict, layer_size: tuple | None = None):
@@ -1275,6 +1390,10 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
     def _seg_blur_sigma(seg: dict):
         """段级画面特效真值：extra_material_refs 里的 video_effects（如「模糊」）。"""
         return _seg_blur_sigma_of(seg, vfx_by_id)
+
+    def _seg_blur_value(seg: dict):
+        """段级「模糊」的着色器入参 value（渲染纹理比例/tap 数用）。"""
+        return _seg_blur_value_of(seg, vfx_by_id)
 
     txt_by_id = {t["id"]: t for t in mats.get("texts") or []}
     stk_by_id = {s["id"]: s for s in mats.get("stickers") or []}
@@ -1963,12 +2082,28 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             if not seg_p.is_file():
                 fl = "hflip," if flip.get("h") else ("vflip," if flip.get("v") else "")
                 _ov_blur = _seg_blur_sigma(s)
-                fl = (f"gblur=sigma={_ov_blur:.2f}," if _ov_blur else "") + fl
+                # 「模糊」不吃 ffmpeg 的 gblur：它在线性光里、且在 RTRatio 渲染纹理上算，
+                # 直接 gblur（gamma 空间、满分辨率）会把画面磨得比原版又黑又硬（见 _bake_blurred_segment
+                # 注释里的实测数）。能保 alpha 的分支（遮罩/复合片段）仍走旧链，只换普通视频段。
+                _plain_video = not ov_mask and not alpha_src and (mat.get("type") or "") != "photo" \
+                    and Path(src).suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp")
+                _blur_value = _seg_blur_value(s)
+                if _ov_blur and _plain_video and _blur_value:
+                    _bake_blurred_segment(src, s_in, max(0.05, s_dur), fps, seg_p, lw, lh, geom.get("crop"),
+                                          flip, _blur_value)
+                    if depth == 0:
+                        report["layer_blur_baked"] = report.get("layer_blur_baked", 0) + 1
+                    _baked = True
+                else:
+                    fl = (f"gblur=sigma={_ov_blur:.2f}," if _ov_blur else "") + fl
+                    _baked = False
                 _geom_vf = layer_vf(geom, W, H)
                 # 拼接滤镜链：空段不能留逗号（`fps=30,` 这种尾部空滤镜 ffmpeg 会报 "No such filter: ''"）
                 _pre = ",".join(x for x in (fl.rstrip(","), _geom_vf) if x)
                 _pre = ("," + _pre) if _pre else ""
-                if ov_mask:
+                if _baked:
+                    pass    # 已在 _bake_blurred_segment 里出片（含 crop/翻转/缩放）
+                elif ov_mask:
                     # 遮罩作用于图层（裁切+缩放后）自身的 uv 空间：先裁/缩到图层尺寸，再按图层宽高比 alphamerge
                     _png = mask_alpha_png(ov_mask, lw, lh)
                     _nfr = max(1, int(round(max(0.05, s_dur) * fps)))

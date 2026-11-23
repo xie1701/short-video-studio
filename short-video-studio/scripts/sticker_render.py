@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import json
 import hashlib
-import math
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -102,29 +101,11 @@ def sticker_state_fn(specs: List["AnimSpec"], seg_dur: float, canvas_w: int, can
     return _fn
 
 
-def alpha_compensated(state_fn):
-    """把 render_animated_layer 写进图层的 **alpha²** 补偿回 alpha（平方根）。
-
-    为什么需要：anim_render.render_animated_layer 最后一步是
-        frame.paste(crop, (x, y), crop)
-    —— 把 RGBA 贴到透明画布上时又拿自己的 alpha 当掩模，于是
-        alpha_out = alpha × alpha。
-    实测（`Image.paste(crop, box, crop)` 单独验过）：alpha 128 贴完变 64。
-
-    对稳态（alpha=1）无影响，只影响渐变的入/出场，而这正好是入场曲线一直对不上的
-    真因：「缩小」的真实曲线是 1−(1−p)²，到了画面上却变成 (1−(1−p)²)²，
-    逐帧量原版 vs 复刻的透明度：10.6667s 原版 0.699 / 我们 0.352（≈ 0.699²）。
-
-    修在调用方而不是改 anim_render.py：本轮只允许动 sticker_render/animations/
-    render_replica_from_draft 三个文件，anim_render 由另一路负责；等那边把 paste 改成
-    `paste(crop, (x, y), crop.split()[3])` 后，这个包装就应该删掉（平方根会把 alpha 抬高）。
-    """
-    def wrapped(t_local):
-        st = state_fn(t_local)
-        st.alpha = math.sqrt(max(0.0, min(1.0, st.alpha)))
-        return st
-    return wrapped
-
+# 注：这里曾经有一个 `alpha_compensated()` 包装，把 render_animated_layer 写进图层的
+# **alpha²** 用开方硬顶回来。根因（`frame.paste(crop, (x,y), crop)` 把自身 alpha 当掩模、
+# 于是 alpha 被平方）已于 2026-11-24 在 anim_render.render_animated_layer 里改成
+# `frame.alpha_composite(crop, dest=(left, top))`；补偿必须删掉，否则会把已经正确的
+# alpha 再开一次方（0.5 → 0.71，入场反而变亮、曲线仍错）。
 
 @dataclass
 class StickerLayer:
@@ -289,8 +270,6 @@ def plan_sticker_layers(
                 out = work / "stickers" / (f"st_{k:02d}_{int(t_start * 1000):06d}_{tag}.mov")
                 if not out.is_file() or out.stat().st_size < 1024:
                     try:
-                        # 动画态一律过 alpha_compensated：anim_render 的合成会把 alpha
-                        # 平方（同一 m 掩模贴两次），不补回来入场/出场透明度全部偏暗。
                         _sfn = sticker_state_fn(specs, dur, canvas_w, canvas_h)
                         if _sfn is None:
                             def _sfn(t_local, _sp=specs, _d=dur):
@@ -299,7 +278,7 @@ def plan_sticker_layers(
                             sorted(seq.frames_dir.glob("f*.png")),
                             (canvas_w, canvas_h), (draw_w, draw_h), (cx, cy),
                             t_start, dur, out_fps, specs, out,
-                            state_fn=alpha_compensated(_sfn))
+                            state_fn=_sfn)
                     except Exception as exc:
                         report.setdefault("sticker_notes", []).append(
                             f"{mat.get('name')}: 动画渲染失败回退静态（{exc}）")

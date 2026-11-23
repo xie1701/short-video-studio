@@ -41,6 +41,12 @@ except Exception:  # pragma: no cover
 
 ALPHA_SKIP = 0.004     # 全透明帧不落盘，只留痕
 BLUR_MAX = 40.0
+# 关于合成口径的变更记录（2026-11-24）：
+#   原来什么：frame.paste(crop, (x, y), crop) —— 拿图层自身 alpha 当掩模贴到全透明画布，
+#             alpha 被平方（a → a²）、RGB 被预乘（rgb → rgb·a）。
+#   改成什么：frame.alpha_composite(crop, dest=(x, y)) —— 标准 over，透明底上等于原样拷贝。
+#   为什么：入/出场渐变的透明度被平方，所有走这条路的图层（贴纸「缩小/淡入」、文字层
+#           tanim_*.mov）入场都比原版暗一大截；调用方为此写过 sqrt() 补偿，根因在这里。
 
 
 @dataclass
@@ -129,12 +135,17 @@ def render_animated_layer(
         # 与画布求交后再贴，避免整幅超大图层（如 1560 宽的贴纸）把画布算歪
         left, top = max(0, px), max(0, py)
         right, bottom = min(W, px + im.width), min(H, py + im.height)
-        if right <= left or bottom <= top:
-            frame = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        else:
-            frame = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        frame = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        if right > left and bottom > top:
             crop = im.crop((left - px, top - py, left - px + (right - left), top - py + (bottom - top)))
-            frame.paste(crop, (left, top), crop)
+            # 合成必须用 alpha_composite，**不能** `paste(crop, (x, y), crop)`：
+            # paste 的第三个参数是「掩模」，不是「alpha」——它在目标(全透明)上做
+            #   dst = dst*(1-m) + src*m，m 取的是图层自己的 alpha，于是这一层被
+            #   乘了两遍：alpha_out = a·a（实测 alpha 128 贴完变 64），RGB 变成预乘值。
+            # 对稳态（a=1）无影响，只毁入/出场渐变——「缩小」真值曲线 1−(1−p)² 到画面上
+            # 变成 (1−(1−p)²)²（实测 10.6667s 原版 0.699 / 复刻 0.352 ≈ 0.699²）。
+            # alpha_composite 是标准 over 运算，在透明底上即原样拷贝（alpha 与 RGB 都不变）。
+            frame.alpha_composite(crop, dest=(left, top))
         full_alpha = frame.split()[3]
         if full_alpha.getextrema()[1] > int(255 * ALPHA_SKIP):
             visible = True
