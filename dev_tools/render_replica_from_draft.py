@@ -919,6 +919,22 @@ STROKE_FEATHER_SRC = float(os.environ.get("REPLICA_STROKE_FEATHER") or 0.667)  #
 # 所以 texture 不是「能调但不生效」的空捻钮；仍然是反解值域内的粗标定。
 STROKE_TEX_JITTER = float(os.environ.get("REPLICA_STROKE_TEX_JITTER") or 0.5)
 STROKE_TEX_GRAIN = float(os.environ.get("REPLICA_STROKE_TEX_GRAIN") or 0.5)
+# 抠像「外扩余量」（画布像素，1080 宽口径）：剪映的快速画笔抠像不是贴着人像轮廓剪的，
+# 而是人像外面**留一圈全亮原片**，纸边压在这圈的外沿。
+#
+# 反解过程（原版逐帧量，不是拟合）：
+#   · 逐帧把原版与「主轨背景层（0.65 压黑）」相减，残差在紧轮廓外是一条宽 60 px 的亮带，
+#     亮度 ≈ 原片本色（残差 /(1-0.65) 复原：5–20 px 带 169.2，原片 166.9；
+#     30–60 px 带 144.4 对 160.8），且 **sigma=0 拟合最好**（锐利原片，加高斯模糊只会更差：
+#     sigma 0/8/25/60 的 MAE 27.10/27.16/29.18/32.07）→ 是「没抠掉的画面」，不是光晕。
+#   · 原版纯白像素（min>195 且饱和度<22）相对紧轮廓的距离直方图，0.5/0.75/1.0/1.25/1.5s
+#     五个时刻都在 45–60 px 处出现同一个峰（40–45/45–50/50–55/55–60 px 计数
+#     4964/5881/5803/4253 @1.0s），紧轮廓外 3–40 px 基本没有白像素 → 纸边确实在外沿。
+#   · 环宽仍取反解值 11 px（见上），环带中心 ≈ 52 px → 外扩量 = 52 - 11/2 ≈ 46 px。
+# 这不是「能调但不生效」的旋钮（都实测过）：
+#   D=0（旧实现）1.0s 差量 20；D=46 → 17（成片实测，全片 MEAN 12.97 → 12.68）；
+#   numpy 同帧扫 D=30/40/50/60/70 为 18.26/17.59/17.11/17.17/17.82 → 40–60 是平台。
+STROKE_MATTE_DILATE = float(os.environ.get("REPLICA_STROKE_DILATE") or 46.0)
 
 
 def matting_stroke_spec(mat: dict) -> dict | None:
@@ -959,6 +975,7 @@ def bake_stroke_layer(seg_video: Path, matte_video: Path, out_mov: Path, spec: d
     W, H = int(size[0]), int(size[1])
     scale = W / float(CANVAS_W)
     width = max(1.5, float(spec["size"]) * STROKE_SIZE_GAIN * scale)
+    dilate = max(0.0, STROKE_MATTE_DILATE) * scale
     sigma = max(0.3, STROKE_FEATHER_SRC * scale)
     tex = max(0.0, min(1.0, float(spec.get("texture") or 0.0)))
     rgb = np.array(spec["color"], dtype=np.float32)
@@ -996,6 +1013,11 @@ def bake_stroke_layer(seg_video: Path, matte_video: Path, out_mov: Path, spec: d
                 break
             fg = np.frombuffer(bv, np.uint8).reshape(H, W, 3).astype(np.float32)
             a = np.frombuffer(bm, np.uint8).reshape(H, W).astype(np.float32) / 255.0
+            if dilate > 0.5:
+                # 快速画笔抠像的「外扩余量」：把 alpha 向外顶 dilate 像素，那圈留原片本色
+                # （不是半透明白），纸边之后压在扩后的边界上。
+                d_out = ndimage.distance_transform_edt(~(a > 0.5))
+                a = np.maximum(a, np.clip(1.0 - (d_out - dilate) / 1.5, 0.0, 1.0))
             inside = a > 0.5
             dt = ndimage.distance_transform_edt(~inside)      # 0=人像内，>0=向外第几像素
             w_field = width * (1.0 + STROKE_TEX_JITTER * tex * (2.0 * field - 1.0))
@@ -1340,7 +1362,11 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
         if abs(alpha - 1.0) > 1e-3:
             report["unrealized"]["main_alpha"] = report["unrealized"].get("main_alpha", 0) + 1
         # keyframe（时间为源时间）：scale 动画拆段；位移取终态（推近类动画的偏移通常归零）
+        # 关键帧 time_offset 与 source_timerange.start **同口径**（素材容器 PTS），
+        # 不是 ffmpeg 的 `-ss` 口径 —— 后者少了首帧 PTS。缩窗那段拿它逐帧解算（见下）。
+        _kf_base = s_in + media_start_time(src)
         _kfs = _kf_rel(s, "KFTypeScaleX", s_in)
+        _kfs_c = _kf_rel(s, "KFTypeScaleX", _kf_base)
         _fx = _kf_final(s, "KFTypePositionX")
         _fy = _kf_final(s, "KFTypePositionY")
         tx = _fx if _fx is not None else tx0
@@ -1348,8 +1374,10 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
         _t_end = t_start + t_dur
         pieces = []  # (t_a, t_b, scale|None=kenburns, tx, ty)
         if len(_kfs) == 2 and abs(_kfs[0][1] - _kfs[1][1]) > 1e-3 and _kfs[1][0] > _kfs[0][0]:
-            _a0, _s0 = _kfs[0]
-            _a1, _s1 = _kfs[1]
+            _shrink = min(_kfs[0][1], _kfs[1][1]) < 0.999
+            # 缩窗走容器口径（帧起点采样），推近保持原口径（不改已验证的那条路）
+            _a0, _s0 = (_kfs_c if _shrink else _kfs)[0]
+            _a1, _s1 = (_kfs_c if _shrink else _kfs)[1]
             _a0 = min(_a0, t_dur)
             _a1 = min(_a1, t_dur)
             if _a0 > 1e-3:
@@ -1372,20 +1400,34 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                     pieces.append((_ta, _tb, _ss, tx, ty))
                 report["unrealized"]["main_kf_zoom_sliced"] = report["unrealized"].get("main_kf_zoom_sliced", 0) + _n
             else:
-                # 含缩窗（scale<1）：拆成静态子段（黑底缩窗），2 帧一步，切点同样按整帧算。
-                # 逐帧一步（1 帧/段）试过：12.5s 反而 25.6 → 29.7、全片 12.97 → 13.20——
-                # 原版这条斜坡不是从头到尾的直线，2 帧取中点恰好抵消了一部分，
-                # 细分只把「窗口比原版小时多出来的黑边」暴露得更清楚。
+                # 含缩窗（scale<1）：**逐帧一段（1 帧/段），且段内位移 keyframe 也跟着插值**。
+                #
+                # 原版真值（60fps 逐帧量「画面上方纯黑带的下界」= 缩窗顶边，12.4667s 段首后）：
+                #   12.5000/5167/5333/5500/5667 → 217/166/115/64/13，每帧正好 -51 px、无台阶。
+                # 与草稿 keyframe 对照可逐点复现（scale 0.63→1.2 与 pos.y 0.036979→0 在 0.1667s
+                # 内**同时**线性插值，缩窗 top = H(1-scale)/2 - pos.y·H/2）：
+                #   p=0.2/0.3/0.4/0.5/0.6 算得 217.6/166.1/115.2/63.7/12.8 vs 实测 217/166/115/64/13。
+                # 所以曲线本身是直线，跳变全来自渲染侧，两条：
+                #   (a) 段内位移 keyframe 以前用 _kf_final 取**终值** 0 → 12.5s 顶边直接差 28 px；
+                #   (b) 2 帧一段 + 取段中点 → 每段整体领先原版半帧（scale 差 0.087 = 83 px）。
+                # 旧实验「1 帧/段反而更差（12.5s 25.6→29.7/全片 12.97→13.20）」是拿**中点采样**
+                # 的 1 帧/段比的：段变短后中点偏差一点没减（均匀 +半帧），却少了 2 帧一段那种
+                # 「一半帧对、一半帧错」的相互抵消——于是 12.4–12.6 这段整段单调偏大，测点全中招。
+                # 现在两错一起改：帧起点采样（p=i/n）+ 逐帧位移，才是量到的原版曲线。
                 _f0 = int(round((t_start + _a0) * fps))
                 _f1 = int(round((t_start + _a1) * fps))
-                _n = max(1, int(round(max(1, _f1 - _f0) / 2)))
+                _n = max(1, _f1 - _f0)
+                _kpx = _kf_rel(s, "KFTypePositionX", _kf_base)
+                _kpy = _kf_rel(s, "KFTypePositionY", _kf_base)
                 for _i in range(_n):
-                    _ta = (_f0 + (_f1 - _f0) * _i / _n) / fps
-                    _tb = (_f0 + (_f1 - _f0) * (_i + 1) / _n) / fps
-                    if _i == _n - 1:
-                        _tb = _f1 / fps
-                    _ss = _s0 + (_s1 - _s0) * ((_i + 0.5) / _n)
-                    pieces.append((_ta, _tb, _ss, tx, ty))
+                    _ta = (_f0 + _i) / fps
+                    _tb = (_f0 + _i + 1) / fps
+                    _p = _i / float(_n)                      # 帧*起点*时刻的动画进度
+                    _ss = _s0 + (_s1 - _s0) * _p
+                    _tr = _ta - t_start
+                    pieces.append((_ta, _tb, _ss,
+                                   _kv(_kpx, _tr) if _kpx else tx,
+                                   _kv(_kpy, _tr) if _kpy else ty))
                 report["unrealized"]["main_kf_zoom_sliced"] = report["unrealized"].get("main_kf_zoom_sliced", 0) + _n
             if _t_end > t_start + _a1 + 1e-4:
                 pieces.append((t_start + _a1, _t_end, _s1, tx, ty))
@@ -1777,7 +1819,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                     f"ov_{t_idx:02d}_{o:02d}_"
                     f"{_cache_tag('stroke', s_in, s_dur, fps, lw, lh, json.dumps(_stroke, sort_keys=True),
                                   STROKE_SIZE_GAIN, STROKE_FEATHER_SRC,
-                                  STROKE_TEX_JITTER, STROKE_TEX_GRAIN)}"
+                                  STROKE_TEX_JITTER, STROKE_TEX_GRAIN, STROKE_MATTE_DILATE)}"
                     "_stroke.mov")
                 if not _stroke_p.is_file():
                     bake_stroke_layer(seg_p, matte_p, _stroke_p, _stroke, (lw, lh), fps, ffmpeg_bin)
