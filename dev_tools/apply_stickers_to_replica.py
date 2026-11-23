@@ -80,7 +80,12 @@ def main() -> None:
     work.mkdir(parents=True, exist_ok=True)
     report: dict = {"unrealized": {}, "sticker_notes": []}
 
-    layers = plan_sticker_layers(draft, draft_dir, W, H, fps, total, work, report)
+    layers = plan_sticker_layers(draft, draft_dir, W, H, fps, total, work, report,
+                                 animations_by_id={m.get("id"): m for m in
+                                                   (draft.get("materials", {}).get("material_animations") or [])
+                                                   if isinstance(m, dict)})
+    if report.get("sticker_anims"):
+        print("[sticker] 入场/出场动画:", "; ".join(report["sticker_anims"][:8]))
     print(f"[sticker] {args.style_id}: {len(layers)} 段 -> " +
           (", ".join(f"{l.name}@{l.t_start:.2f}s" for l in layers) or "无"))
     if report.get("sticker_notes"):

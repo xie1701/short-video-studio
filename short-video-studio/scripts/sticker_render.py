@@ -30,6 +30,13 @@ from typing import Dict, List, Optional
 
 from sticker_assets import resolve_sticker_dir, sticker_sequence
 
+try:  # 允许脚本目录被直接加入 sys.path 的用法
+    from animations import parse_animations, summarize
+    from anim_render import render_animated_layer
+except Exception:  # pragma: no cover
+    from .animations import parse_animations, summarize  # type: ignore
+    from .anim_render import render_animated_layer  # type: ignore
+
 US = 1_000_000
 STICKER_REF_WIDTH = 720.0   # 剪映贴纸缩放的参考宽（同比 lua 里的 viewerWidth/720）
 
@@ -123,6 +130,7 @@ def plan_sticker_layers(
     draft: dict, base_dir: Path, canvas_w: int, canvas_h: int,
     out_fps: float, total_sec: float, work: Path, report: dict,
     cache_root: Optional[Path] = None, depth: int = 0,
+    animations_by_id: Optional[Dict[str, dict]] = None,
 ) -> List[StickerLayer]:
     """遍历 sticker 轨，逐段渲染成画布大小 RGBA 图层。缺素材的按 missing 计数、不中断。"""
     st_by_id = {m.get("id"): m for m in (draft.get("materials", {}).get("stickers") or [])}
@@ -178,7 +186,25 @@ def plan_sticker_layers(
             if depth == 0:
                 pass
             out = work / "stickers" / (f"st_{k:02d}_{int(t_start * 1000):06d}_{_layer_tag(draw_w, draw_h, cx, cy, dur, out_fps)}.mov")
-            if not out.is_file() or out.stat().st_size < 1024:
+            specs = parse_animations(seg, animations_by_id or {})
+            if specs:
+                # 带入场/出场动画：只能 PIL 逐帧（ffmpeg 的 scale 不能逐帧改尺寸）
+                tag = _layer_tag(draw_w, draw_h, cx, cy, dur, out_fps) + "a"
+                out = work / "stickers" / (f"st_{k:02d}_{int(t_start * 1000):06d}_{tag}.mov")
+                if not out.is_file() or out.stat().st_size < 1024:
+                    try:
+                        render_animated_layer(
+                            sorted(seq.frames_dir.glob("f*.png")),
+                            (canvas_w, canvas_h), (draw_w, draw_h), (cx, cy),
+                            t_start, dur, out_fps, specs, out)
+                    except Exception as exc:
+                        report.setdefault("sticker_notes", []).append(
+                            f"{mat.get('name')}: 动画渲染失败回退静态（{exc}）")
+                        specs = []
+                if specs and depth == 0:
+                    report["animated_stickers"] = report.get("animated_stickers", 0) + 1
+                    report.setdefault("sticker_anims", []).extend(summarize(specs))
+            if not specs and (not out.is_file() or out.stat().st_size < 1024):
                 render_one_layer(seq.frames_dir, seq.static, seq.fps, out,
                                  canvas_w, canvas_h, draw_w, draw_h, cx, cy,
                                  t_start, dur, out_fps)
