@@ -153,6 +153,7 @@ let colorSpace = CGColorSpaceCreateDeviceRGB()
 var frameCount = 0
 var fgCoverageSum: Double = 0.0
 var coverageSamples = 0
+var firstPTS: CMTime? = nil
 
 func makeContrastMask(_ ci: CIImage) -> CIImage {
     // 适度提升蒙版对比度使背景彻底归零、主体保持纯白且边缘保留平滑抗锯齿
@@ -202,6 +203,13 @@ func renderCI(_ ci: CIImage, into adaptor: AVAssetWriterInputPixelBufferAdaptor,
 while reader.status == .reading {
     guard let sampleBuf = readerOutput.copyNextSampleBuffer() else { break }
     let pts = CMSampleBufferGetPresentationTimeStamp(sampleBuf)
+    // 输入首帧 PTS 常不为 0（剪映源素材 start_time=0.033，ffmpeg 抽段会把它带下来）。
+    // 若直接按原 PTS 喂给 startSession(.zero) 的 writer，AVAssetWriter 会拿**黑帧**去填
+    // [0, firstPTS) 这段空洞，帧率越高填得越多：60fps 输入补 2 帧、30fps 补 1 帧实测。
+    // 那些黑帧在图层面板上就是「前两帧没有抠像」，本机实测 matte 0/1 帧全 0（后续帧 34% 覆盖）。
+    // 所以这里统一把 PTS 归零到首帧，输出帧数与输入一一对应。
+    if firstPTS == nil { firstPTS = pts }
+    let relPTS = CMTimeSubtract(pts, firstPTS!)
     guard let imgBuf = CMSampleBufferGetImageBuffer(sampleBuf) else { continue }
 
     var maskCI: CIImage
@@ -250,10 +258,10 @@ while reader.status == .reading {
         maskCI = CIImage(color: CIColor.black).cropped(to: targetRect)
     }
 
-    renderCI(maskCI, into: matteAdaptor, pts: pts)
+    renderCI(maskCI, into: matteAdaptor, pts: relPTS)
     if let ot = outlineTuple {
         let dilCI = makeDilatedOutline(maskCI, radius: outlinePx)
-        renderCI(dilCI, into: ot.2, pts: pts)
+        renderCI(dilCI, into: ot.2, pts: relPTS)
     }
     frameCount += 1
 }

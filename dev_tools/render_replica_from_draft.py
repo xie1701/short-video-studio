@@ -46,8 +46,21 @@ def _cache_tag(*parts) -> str:
     if not _CODE_SIG:
         _CODE_SIG = _h.sha1(Path(__file__).read_bytes()).hexdigest()[:8]
     blob = ("|".join(str(p) for p in parts) + "|" + _CODE_SIG + "|" + _mask_code_sig()
-            + "|" + _anim_code_sig())
+            + "|" + _anim_code_sig() + "|" + _matte_code_sig())
     return _h.sha1(blob.encode()).hexdigest()[:8]
+
+
+def _matte_code_sig() -> str:
+    """person_matting.py（含内嵌的 Swift 源码）的指纹：抠像器一改，旧 matte/描边必须重烘。
+
+    抠像器输出的是「逐帧 alpha」，改了首帧对齐方式后旧 matte 会被永久复用——
+    这正是「改了不生效」的典型陷阱（与 STROKE_MATTE_DILATE 注释里那次同因）。
+    """
+    import hashlib as _h
+    try:
+        return _h.sha1((SCRIPTS / "person_matting.py").read_bytes()).hexdigest()[:8]
+    except Exception:
+        return "nomatte"
 
 
 def _anim_code_sig() -> str:
@@ -808,10 +821,34 @@ def _compound_has_personable_video(sub_draft: dict) -> bool:
     return any(v.get("type") == "video" and (v.get("path") or "") for v in vids)
 
 
-# 剪映「模糊」特效（effect 634025）的 effects_adjust_blur 值 → gblur sigma 的标定系数。
-# style_21 背景视频层挂 value=0.5：原版 5.5–9.0s 整帧边缘能量是复刻的 0.66 倍（
-# 原版 1.83/1.99/1.42 vs 复刻 2.77/2.79/1.76），逐值重煰比对后定标（见交付报告）。
-SEG_BLUR_GAIN = float(os.environ.get("REPLICA_BLUR_GAIN") or 10.0)
+# 剪映「模糊」特效（effect 634025 / resource_id 6739752823140913675）的真实 PSF。
+# 不是拟合，是**读实现**得出（本机 effect 缓存里的 lua + GLSL）：
+#   · GaussianBlurLayerScript:onEvent：`effects_adjust_blur` 值 v → intensity = v × 72；
+#   · onUpdate：u_Sample = floor(intensity)，u_Steps = 1，u_ExpandFlag = 0；
+#   · 权重 shader（GaussianBlur .frag）：w_i = normpdf(i/s·15, sigma=4)，s = u_Sample
+#     → 高斯半径在 tap 索引空间恒为 4·N/15（N = floor(72v)），不是固定像素半径；
+#   · 每 tap 的 uv 步长 = 1/ratio，ratio = 720·S/min(S_xy) → 每 tap = min(S_w,S_h)/720 图层像素；
+#   · MidTex/OutputTex 缩到 RTRatio = 1−0.75v 再拉回，水平 / 垂直两趟可分离。
+# 因此等效高斯 sigma（图层像素）= (4·floor(72v)/15) · min(S_w,S_h)/720。
+# 1080×1920 图层 = 1.5 px/tap：v=0.36 → σ=10.0；v=0.5 → σ=14.4。
+# 交叉验证（源草稿 A 卡片层 v=0.36，逐卡扫 σ 取 MAE 极小）：b3 18.33/17.10/16.67/16.45/16.35、
+# b1 27.08/24.09/23.21/23.03/23.23（σ=3.6/6/8/10/12）→ 极小点就在 10–12，与公式一致。
+# 旧常量 SEG_BLUR_GAIN=10（σ=3.6）把「tap 数」当成了「sigma」，差一个数量级。
+# 同一 value 在不同显示尺寸下 σ 不同：σ 与 min(S) 成正比（按图层尺寸归一，不按画布）。
+YES_BLUR_TAPS_GAIN = 72.0     # intensityRatio：tap 数 = floor(72·v)
+YES_BLUR_SIGMA_TAPS = 4.0 / 15.0   # shader 里 sigma=4.0 作用在 i·15/N 上 → 索引空间 sigma = 4N/15
+YES_BLUR_REF_WIDTH = 720.0    # shader 的 uv 步长口径：每 tap = min(S)/720 像素
+SEG_BLUR_GAIN = float(os.environ.get("REPLICA_BLUR_GAIN") or 0.0)   # 非 0 时强制旧式线性口径（仅供 A/B 实验）
+
+
+def yes_blur_sigma(value: float, layer_w: int = CANVAS_W, layer_h: int = CANVAS_H) -> float:
+    """`effects_adjust_blur` 数值 → 等效高斯 sigma（图层像素）。"""
+    import math as _m
+    if SEG_BLUR_GAIN > 0:
+        return max(1.0, SEG_BLUR_GAIN * float(value))
+    taps = int(_m.floor(YES_BLUR_TAPS_GAIN * max(0.0, float(value))))
+    px_per_tap = min(int(layer_w), int(layer_h)) / YES_BLUR_REF_WIDTH
+    return max(1.0, YES_BLUR_SIGMA_TAPS * taps * px_per_tap)
 
 
 def _animbake_media(src: str, s_in: float, dur: float, specs: list, seg_dur: float,
@@ -870,7 +907,7 @@ def _animbake_media(src: str, s_in: float, dur: float, specs: list, seg_dur: flo
     return out
 
 
-def _seg_blur_sigma_of(seg: dict, vfx: dict):
+def _seg_blur_sigma_of(seg: dict, vfx: dict, layer_size: tuple | None = None):
     """段级画面特效真值：extra_material_refs 里的 video_effects（如「模糊」）。"""
     for _ref in seg.get("extra_material_refs") or []:
         _e = vfx.get(_ref)
@@ -881,7 +918,8 @@ def _seg_blur_sigma_of(seg: dict, vfx: dict):
             if _p.get("name") == "effects_adjust_blur":
                 _v = _p.get("value")
                 _val = float(_v if _v is not None else (_p.get("default_value") or 0.5))
-        return max(1.0, SEG_BLUR_GAIN * _val)
+        _lw, _lh = (layer_size or (CANVAS_W, CANVAS_H))
+        return yes_blur_sigma(_val, _lw, _lh)
     return None
 
 
@@ -1775,7 +1813,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 elif alpha_src:
                     # 复合片段输出是 ProRes4444 带 alpha：抽段必须保 alpha
                     run_ffmpeg([ffmpeg_bin, "-y", "-ss", f"{s_in:.4f}", "-t", f"{max(0.05, s_dur):.4f}", "-i", src,
-                                "-vf", f"fps={fps},format=rgba{_pre}",
+                                "-vf", f"fps={fps},setpts=PTS-STARTPTS,format=rgba{_pre}",
                                 "-an", "-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le", str(seg_p)], timeout=600)
                 else:
                     if (mat.get("type") or "") == "photo":
@@ -1786,8 +1824,15 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                                     "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "14",
                                     "-pix_fmt", "yuv420p", str(seg_p)])
                     else:
+                        # `setpts=PTS-STARTPTS` 不能省：源素材的 stream start_time 是 0.033s，
+                        # `-ss` 抽段后 fps 滤镜把首帧 PTS 留在 0.033，mp4 里就多出一帧「0–0.033 空洞」。
+                        # 实测（源草稿 A 的 30fps→60fps 抽段）：不加 setpts 时 start_time=0.033008，
+                        # AVFoundation 读到的那一帧是**全 0 黑帧**（BGRA 采样均值 0.0），
+                        # Vision 抠像对它返回空 mask → matte 前 2 帧全黑（后续帧覆盖率 34%），
+                        # 撕纸描边层跟着前 2 帧全透明，成片 0.0/0.0167s 少了整张纸边人像层。
+                        # 加上后 start_time=0.000000，帧数不变（74），首帧即真画面。
                         run_ffmpeg([ffmpeg_bin, "-y", "-ss", f"{s_in:.4f}", "-t", f"{max(0.05, s_dur):.4f}", "-i", src,
-                                    "-vf", f"fps={fps}{_pre}",
+                                    "-vf", f"fps={fps},setpts=PTS-STARTPTS{_pre}",
                                     "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "14",
                                     "-pix_fmt", "yuv420p", str(seg_p)])
             matte_p = None
@@ -2073,7 +2118,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 for _p in _e.get("adjust_params") or []:
                     if _p.get("name") == "effects_adjust_blur":
                         _bv = float(_p.get("value") if _p.get("value") is not None else (_p.get("default_value") or 0.5))
-                tail += f",gblur=sigma={max(1.0, SEG_BLUR_GAIN * _bv):.2f}:enable='between(t,{_st:.3f},{_en:.3f})'"
+                tail += f",gblur=sigma={yes_blur_sigma(_bv, W, H):.2f}:enable='between(t,{_st:.3f},{_en:.3f})'"
             else:
                 report["unrealized"]["effect_not_implemented"] = report["unrealized"].get("effect_not_implemented", 0) + 1
     fc_parts.append(tail + "[vout]")

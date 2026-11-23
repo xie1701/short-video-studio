@@ -40,6 +40,66 @@ except Exception:  # pragma: no cover
 US = 1_000_000
 STICKER_REF_WIDTH = 720.0   # 剪映贴纸缩放的参考宽（同比 lua 里的 viewerWidth/720）
 
+# ---------- 出场动画真值：窗口 + 缓动 + 位移幅度 ----------
+# 草稿里 out 动画的两个字段决定窗口：
+#   · `start` 存在 = **相对该段起点**的微秒偏移（不是时间线绝对时间）；
+#   · `start` 缺失 = 剪映按「段尾倒数 duration」摆位，窗口 = [段时长 - duration, 段时长]。
+#     style_21 手机边框贴纸实测：target_timerange = 10.433333 + 2.466667 → 段尾 12.9000；
+#     出「向下滑动」duration = 500000（0.5s）且 **没有 start 字段** → 窗口 [12.4000, 12.9000]。
+#     旧实现用 out_start_slack=0.03 + out_dur_scale=0.8 凑出 [12.47, 12.87]，起点晚了 0.07s。
+#
+# 幅度/缓动也是从原版帧反解的（不是拍的）：
+#   · 方法：把贴纸图层（画布大小 RGBA，静止帧 12.35s）的顶边带（y<360、alpha>0.6，共 50420 px）
+#     当模板，在 12.30–12.55s 的每帧上只搜竖直位移 dy，取 MAE 最小
+#     （tag=60fps，残差 4.5–11）。
+#   · 实测 dy = 0/2/10/23/42/65/94/128/167（t = 12.400/12.417/…/12.533）；
+#     拟合 dy = 9440·u²（u = t − 12.4000）→ 预测 2.7/10.3/23.6/42.3/65.6/94.4/129.2/166.5，
+#     残差 ≤1.3px。线性拟合同一批点残差 ≥30px，指数 1.5/2.5 均明显变差 → 起点 12.4000、
+#     缓动 **p²**（不是线性）。顶边 = 218 + dy：220/228/241/260 与原版逐帧量到的完全一致。
+#   · 幅度：p = u/0.5 → dy = H·GAIN·p²，GAIN = 9440·0.25/1920 = 1.229（画布高等比；
+#     12.467/12.533 两点分别得 1.229/1.223，取均值 1.226→取 1.229 与首帧吻合）。
+STICKER_OUT_SLIDE = {
+    "向下滑动": {"ux": 0.0, "uy": 1.0, "ease": 2.0, "gain": 1.229},
+}
+
+
+def sticker_state_fn(specs: List["AnimSpec"], seg_dur: float, canvas_w: int, canvas_h: int):
+    """逐帧状态函数：出场滑动用草稿真值接管，其余动画原样走 animations.anim_state。
+
+    返回 None = 没有需要接管的出场动画（调用方继续走 animations 的默认幅度表）。
+    为什么接管而不是改标定：`downward-slide` 的旧标定（0.8×时长 + 0.03 尾隙 + 线性）
+    是在错误的窗口上拟合出来的，真值窗口/曲线与它不相容；接管后只影响登记在
+    STICKER_OUT_SLIDE 里的出场动画，入场动画（缩小/淡入…）一字未动。
+    """
+    from animations import AnimState, anim_state
+
+    handled = [sp for sp in specs if sp.kind == "out" and sp.name in STICKER_OUT_SLIDE]
+    if not handled:
+        return None
+    rest = [sp for sp in specs if not (sp.kind == "out" and sp.name in STICKER_OUT_SLIDE)]
+    plan = []
+    for sp in handled:
+        k = STICKER_OUT_SLIDE[sp.name]
+        dur_o = max(1e-6, float(sp.duration))
+        # start 缺失 → 段尾倒数 duration；写了 start → 相对段起点的偏移（越界钳到段尾）
+        t1 = (sp.start + dur_o) if sp.start is not None else seg_dur
+        t1 = min(t1, seg_dur)
+        plan.append((t1 - dur_o, dur_o, k))
+
+    def _fn(t_local: float) -> "AnimState":
+        st = anim_state(rest, t_local, seg_dur, canvas_w, canvas_h)
+        for t0, dur_o, k in plan:
+            p = (t_local - t0) / dur_o
+            p = 0.0 if p < 0 else (1.0 if p > 1 else p)
+            if p <= 0.0:
+                continue
+            w = p ** float(k["ease"])
+            st.dx += float(k["ux"]) * canvas_w * float(k["gain"]) * w
+            st.dy += float(k["uy"]) * canvas_h * float(k["gain"]) * w
+        return st
+
+    return _fn
+
 
 @dataclass
 class StickerLayer:
@@ -196,7 +256,8 @@ def plan_sticker_layers(
                         render_animated_layer(
                             sorted(seq.frames_dir.glob("f*.png")),
                             (canvas_w, canvas_h), (draw_w, draw_h), (cx, cy),
-                            t_start, dur, out_fps, specs, out)
+                            t_start, dur, out_fps, specs, out,
+                            state_fn=sticker_state_fn(specs, dur, canvas_w, canvas_h))
                     except Exception as exc:
                         report.setdefault("sticker_notes", []).append(
                             f"{mat.get('name')}: 动画渲染失败回退静态（{exc}）")
