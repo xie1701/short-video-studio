@@ -44,8 +44,10 @@ US = 1_000_000
 #   原版 dy = 0/2/10/23/42/65/94/128/167（帧 744…752），复刻 dy = 3/10/23/42/65/94/128/168/212
 #   → 复刻第 n 帧正是原版第 n+1 帧，整体领先 1 帧（不是曲线错，起点/斜率都对）。
 # 黑底单叠实测：setpts 补 +1/(fps*TB) 后 dy 逐帧回到 0/3(≈2)/10/23/42/65/94。
-# 只对「走 overlay 的贴纸/叠加层」生效（unit 上的 pts_lag 字段）；主轨与文字层不经过
+# 只对「走 overlay 的贴纸/叠加层」生效（unit 上的 pts_lag 字段，现在只有贴纸用）；主轨与文字层不经过
 # 这条 setpts（文字层另有自己的烘焙链），所以不受影响。
+# 2026-11-24 补：**逐帧动画层**（入场「抖动下降/日出/缩小…」烘出来的 anim_*.mov）也有反方向的
+# 一帧错位，但修法不是 +1 帧而是 _ov_t0() 的「吸附帧网格 + 半帧偏置」——见那个函数的注释。
 PTS_LAG_FRAMES = 1
 _CODE_SIG = ""
 
@@ -834,6 +836,30 @@ def _flip_hv(clip_flip: dict | None) -> dict:
     return {"h": bool(h), "v": bool(v)}
 
 
+def _ov_t0(t_start: float, fps: float) -> float:
+    """叠加层入场时间基准（覆帧网格 + 半帧偏置），供 overlay 的 setpts 用。
+
+    原来什么：直接写 `setpts=PTS+{t_start:.4f}/TB`。
+    改成什么：先吸附到最近的帧边界，再加半帧：`(round(t_start*fps)+0.5)/fps`。
+    为什么（实测，不许靠猜）：
+      1) 草稿的 target_timerange.start 是 µs 整数（style_17 入场照片 7.733333s = 帧 232 整），
+         但写成 `{:.4f}` 是 7.7333，`7.7333/TB` 在 ffmpeg 里**向零截断**成 118783
+         （真的帧边界是 118784，TB=1/15360），图层第 0 帧的 PTS 就比主帧 232 早了 65µs。
+      2) ffmpeg overlay 的 framesync 取的是「PTS ≥ 主帧时间的第一帧」（向上取整），
+         于是主帧 232 拿到的是图层**第 1 帧**——整层领先一帧。实测（主帧→图层帧号）：
+         不补时 232→f1、233→f2 … 241→f10；老代码把 alpha 平方了（见 anim_render），
+         第 1 帧只剩 0.9 级可见度，看起来就是黑的，所以一直没被发现。
+      3) 为什么不用 `+1 帧`（PTS_LAG_FRAMES 那套）：贴纸那样整帧后移，对 7.733s 确实对，
+         但对已经帧对齐的 t_start（8.5667/9.0 那些）会把 f0 推到下一帧，反而慢一帧
+         （实测 259–262 帧 MAE 2.2/2.3/1.4/1.6 → 3.0/4.5/4.9/5.3）。半帧偏置两边都对：
+         f0 落在「帧边界 + 0.5 帧」，向上取整后主帧 N 恰好拿 f0、N+k 拿 f_k。
+    隔离实验（黑底 + 同一个 anim mov + 同一滤镜链）：t_start 取 7.733333 / 8.566667 /
+    9.0 / 9.333333 / 9.866667 五个值，主帧 N 都是 f0（透明）、N+1 是 f1、N+2 是 f2。
+    """
+    n = int(round(t_start * fps))
+    return (n + 0.5) / fps
+
+
 def _anim_base_png(src: str, mat: dict, geom: dict, out_png: Path, flip: dict | None = None) -> Path:
     """源素材 → geom 尺寸（crop→contain→×scale）的静态底图，作为逐帧动画层的模板。
 
@@ -1250,6 +1276,16 @@ STROKE_TEX_GRAIN = float(os.environ.get("REPLICA_STROKE_TEX_GRAIN") or 0.5)
 #   D=0（旧实现）1.0s 差量 20；D=46 → 17（成片实测，全片 MEAN 12.97 → 12.68）；
 #   numpy 同帧扫 D=30/40/50/60/70 为 18.26/17.59/17.11/17.17/17.82 → 40–60 是平台。
 STROKE_MATTE_DILATE = float(os.environ.get("REPLICA_STROKE_DILATE") or 46.0)
+# 纸边外侧的**投影**（画布像素，1080 宽口径）。
+# 这一项草稿里**没有字段**：matting.strokes 只有 size/distance/texture 三个 adjust
+# （distance 实测是「描边与人的间隙」=0，见上），投影是描边效果自己带的。所以只能从像素反解：
+#   style_21 t=0.5s/1.0s，左缘 y1160–1640 逐行、在白环外侧 60 px 内取最暗点：
+#     原版 98 级（同帧外侧背景 127 级）→ 相当于叠一层黑 alpha≈0.23；
+#     宽约 14 画布像素（x 32–46 那一段），再往外就回到背景色。
+#   我们此前完全没画投影，于是那条带一直是「纸/背景」而原版是暗的（亮 60–100 级）。
+# 值取 PEAK=0.23、W=14；两个数都先用上面两点量出来的，没做扫掠拟合。
+STROKE_SHADOW_PEAK = float(os.environ.get("REPLICA_STROKE_SHADOW_PEAK") or 0.23)
+STROKE_SHADOW_W = float(os.environ.get("REPLICA_STROKE_SHADOW_W") or 14.0)
 
 
 def matting_stroke_spec(mat: dict) -> dict | None:
@@ -1290,7 +1326,18 @@ def bake_stroke_layer(seg_video: Path, matte_video: Path, out_mov: Path, spec: d
     W, H = int(size[0]), int(size[1])
     scale = W / float(CANVAS_W)
     width = max(1.5, float(spec["size"]) * STROKE_SIZE_GAIN * scale)
-    dilate = max(0.0, STROKE_MATTE_DILATE) * scale
+    # 外扩量：**不乘 scale**。
+    # 原来什么：`dilate = STROKE_MATTE_DILATE * scale`（scale = 图层宽/1080）。
+    # 改成什么：直接 `dilate = STROKE_MATTE_DILATE`。
+    # 为什么：46 这个数的反解口径就是**画布像素**（上面注释：「环带中心 ≈ 52 px → 外扩量
+    #   = 52 − 11/2 ≈ 46 px」，量的是 1080 宽成片上的位置）；而这层图层是 1620×2880
+    #   原尺寸叠回画布（kf 切片 `scale=1620:2880` + overlay x=-270 → 图层像素 = 画布像素），
+    #   所以乘 1.5 等于把环往外推了 23 画布像素。实测（style_21 t=0.5s，左缘 y1160–1640 逐行
+    #   取白环峰位）：原版峰位中位数 x=45、我们 x=23，差 22 px，与 46×0.5 完全对得上。
+    #   修正后环带中心 = 46 + 11/2 = 51.5 px，落回原版的 45–52 px。
+    #   环宽 width / 羽化 sigma 不动：它们是从源像素反解的（GAIN 单位为源像素/单位），
+    #   两套口径本来就不同，不能一起改。
+    dilate = max(0.0, STROKE_MATTE_DILATE)
     sigma = max(0.3, STROKE_FEATHER_SRC * scale)
     tex = max(0.0, min(1.0, float(spec.get("texture") or 0.0)))
     rgb = np.array(spec["color"], dtype=np.float32)
@@ -1343,7 +1390,20 @@ def bake_stroke_layer(seg_video: Path, matte_video: Path, out_mov: Path, spec: d
             if sigma > 0.2:
                 ring = ndimage.gaussian_filter(ring, sigma)   # 羽化（实测两侧各 ~2 px 过渡）
             ring = np.clip(ring, 0.0, 1.0)
+            # 投影：贴在白环**外侧**，向外 14 px 线性衰减（黑，alpha 上限 0.23）。
+            # 用乘法式 alpha（黑 + (1-a)）而不是压暗 RGB：叠在任意背景上都等价于把背景乘 (1-sh)，
+            # 与原版「背景 127 → 98」这种比例关系一致。
+            sh = None
+            if STROKE_SHADOW_PEAK > 0.001 and STROKE_SHADOW_W > 0.0:
+                _sw = STROKE_SHADOW_W          # 画布像素口径，与 dilate 同理不乘 scale（图层像素=画布像素）
+                _t = np.clip((dt - w_field) / _sw, 0.0, 1.0)      # 0=环外沿，1=投影末端
+                sh = STROKE_SHADOW_PEAK * (1.0 - _t) * (1.0 - a) * (1.0 - ring)
+                if sigma > 0.2:
+                    sh = ndimage.gaussian_filter(sh, sigma)
+                sh = np.clip(sh, 0.0, 1.0)
             out_a = a + ring * (1.0 - a)                      # 描边压在人物下方
+            if sh is not None:
+                out_a = np.clip(out_a + sh, 0.0, 1.0)
             denom = np.maximum(out_a, 1e-4)[:, :, None]
             out_rgb = (fg * a[:, :, None] + rgb[None, None, :] * (ring * (1.0 - a))[:, :, None]) / denom
             frame = np.concatenate([np.clip(out_rgb, 0, 255),
@@ -2081,6 +2141,9 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                     "kind": "video", "seg": _amov, "matte": None, "t_start": t_start, "t_dur": t_dur,
                     "scale": 1.0, "lw": W, "lh": H, "tx": 0.0, "ty": 0.0, "alpha": alpha,
                     "fade": None, "pos_kf": None, "anim": True,
+                    # 逐帧动画层的入场时间基准跟其它叠加层一样走 _ov_t0（见它的注释）。
+                    # 这里不再单独补 pts_lag：整帧后移对 7.733s 那一帧对、对已帧对齐的层错一帧，
+                    # 而半帧偏置两边都对（实测 style_17 全片 MAE 2.34 → 2.27）。
                 }))
                 if depth == 0:
                     report["overlay_segments"] += 1
@@ -2208,7 +2271,8 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                     f"ov_{t_idx:02d}_{o:02d}_"
                     f"{_cache_tag('stroke', s_in, s_dur, fps, lw, lh, json.dumps(_stroke, sort_keys=True),
                                   STROKE_SIZE_GAIN, STROKE_FEATHER_SRC,
-                                  STROKE_TEX_JITTER, STROKE_TEX_GRAIN, STROKE_MATTE_DILATE)}"
+                                  STROKE_TEX_JITTER, STROKE_TEX_GRAIN, STROKE_MATTE_DILATE,
+                                  STROKE_SHADOW_PEAK, STROKE_SHADOW_W)}"
                     "_stroke.mov")
                 if not _stroke_p.is_file():
                     bake_stroke_layer(seg_p, matte_p, _stroke_p, _stroke, (lw, lh), fps, ffmpeg_bin)
@@ -2443,16 +2507,21 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             if not _skf:
                 if u["matte"]:
                     dur_u = min(u["t_dur"], total_sec - u["t_start"])
-                    t0_u = u["t_start"]
+                    t0_u = _ov_t0(u["t_start"], fps)
                     # 前景与 matte 强制同 fps 同长（Vision 抠像输出帧率会漂，不拉齐就是逐帧错位的鬼影）；
                     # 流必须平移到 t_start：enable 只管显隐，叠层流从 0 开始消费会让内容时间戳全错
                     fc_parts.append(
-                        f"[{seg_i}:v]fps={fps},setpts=PTS-STARTPTS,trim=duration={dur_u:.4f},setpts=PTS+{t0_u:.4f}/TB{_lag},format=rgba[fg{n}];"
-                        f"[{matte_i}:v]fps={fps},setpts=PTS-STARTPTS,trim=duration={dur_u:.4f},setpts=PTS+{t0_u:.4f}/TB{_lag},format=gray[mm{n}];"
+                        f"[{seg_i}:v]fps={fps},setpts=PTS-STARTPTS,trim=duration={dur_u:.4f},setpts=PTS+{t0_u:.6f}/TB{_lag},format=rgba[fg{n}];"
+                        f"[{matte_i}:v]fps={fps},setpts=PTS-STARTPTS,trim=duration={dur_u:.4f},setpts=PTS+{t0_u:.6f}/TB{_lag},format=gray[mm{n}];"
                         f"[fg{n}][mm{n}]alphamerge[cut{n}]"
                     )
                 else:
-                    fc_parts.append(f"[{seg_i}:v]fps={fps},setpts=PTS+{u['t_start']:.4f}/TB{_lag},format=rgba[cut{n}]")
+                    # 带 pts_lag 的 unit（贴纸）已经有自己的逐帧标定，**不能再叠** _ov_t0 的半帧偏置：
+                    # 贴纸入场/出场（10.433s 那条「向下滑动」）是拿 `+{t_start:.4f}/TB + 1 帧` 反解出来的，
+                    # 再往后再推半帧 → 12.517–12.583s 这 5 帧 MAE 3.7 → 13.7（实测）。
+                    # 只有没自带标定的缓存层（视频/照片/逐帧动画）才用 _ov_t0。
+                    _t0_ov = u["t_start"] if u.get("pts_lag") else _ov_t0(u["t_start"], fps)
+                    fc_parts.append(f"[{seg_i}:v]fps={fps},setpts=PTS+{_t0_ov:.6f}/TB{_lag},format=rgba[cut{n}]")
             if _skf:
                 # 缩放关键帧逐帧：一路输入 split 成 K 支，每支 trim 出自己那几帧、各自 scale 到
                 # 「该帧自己的图层像素尺寸」，再按它自己的时间窗 overlay。
@@ -2461,23 +2530,24 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 # 几何只换成「这一帧的尺寸」，其它（抠像/描边/遮罩外的 z 序）一点不动。
                 # 渐隐/透明度必须留在 split 之前：fade 是按绝对时间算的，切片后每段起点不同会算错。
                 _K = len(_skf)
-                _t0u = u["t_start"]
+                _t0u = u["t_start"]          # 切片帧号口径：仍用未吸附的真值（_fa/_fb 由它算）
+                _t0s = _ov_t0(_t0u, fps)       # 流平移口径：吸附到帧网格 + 半帧（见 _ov_t0 注释）
                 # 时间轴：整条流一次性平移到 t_start，**切片不再各自 setpts**。
                 # 为什么不能逐片 setpts：`setpts=PTS+{ta:.4f}/TB` 的 ta/TB 会截断成整数帧号，
                 # ta=0.0833 → 4.998 → 4（早了整整一帧），于是首片之后就整体领先原版 1 帧
                 # （实测 0–1.67s 叠层内容错一帧，奇偶帧交替差 2.5–3.9）。一次性平移只有一个
                 # 全局截断（≤1/60 帧、所有帧一起），切片只靠 trim 选帧 + enable 管显隐。
-                _pre = f"fps={fps},setpts=PTS-STARTPTS+{_t0u:.6f}/TB{_lag},format=rgba"
+                _pre = f"fps={fps},setpts=PTS-STARTPTS+{_t0s:.6f}/TB{_lag},format=rgba"
                 if u.get("fade"):
                     _d0, _dd, _ds = u["fade"]
-                    _pre += f",fade=t={_d0}:st={_t0u + _ds:.4f}:d={_dd:.4f}:alpha=1"
+                    _pre += f",fade=t={_d0}:st={_t0s + _ds:.4f}:d={_dd:.4f}:alpha=1"
                 if abs(u["alpha"] - 1.0) > 1e-3:
                     _pre += f",colorchannelmixer=aa={u['alpha']:.3f}"
                 fc_parts.append(f"[{seg_i}:v]{_pre},split={_K}"
                                 + "".join(f"[kf{n}_{k}]" for k in range(_K)))
                 if u["matte"]:
                     fc_parts.append(
-                        f"[{matte_i}:v]fps={fps},setpts=PTS-STARTPTS+{_t0u:.6f}/TB{_lag},format=gray,split={_K}"
+                        f"[{matte_i}:v]fps={fps},setpts=PTS-STARTPTS+{_t0s:.6f}/TB{_lag},format=gray,split={_K}"
                         + "".join(f"[km{n}_{k}]" for k in range(_K)))
                 _dbg = []
                 # enable 窗口整体前移 2 ms（1/60 帧的 12%）：每个切片只覆盖「自己那几帧」。
