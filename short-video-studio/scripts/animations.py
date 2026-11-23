@@ -64,7 +64,14 @@ DEFAULTS: Dict[str, dict] = {
 }
 
 # 用原版帧反解出来的覆盖值（键 = 动画名，字段同 DEFAULTS）。留空即全用 DEFAULTS。
-CALIBRATION: Dict[str, dict] = {}
+CALIBRATION: Dict[str, dict] = {
+    # 用原版帧反解的「向下滑动」出场（style_21 手机边框）：草稿写 duration=0.5，
+    # 但实测 12.45s 还是静止、12.85s 已完全移出 → 真实时长约 0.6×，起点比「段尾减时长」晚约 0.08s。
+    "向下滑动": {"slide_gain": 0.8, "out_dur_scale": 0.6, "out_start_slack": 0.08},
+    # 「缩小」入场（同一处手机边框）：14 组参数扫下来 a0=0 s0=1.3 最优——
+    # 起手是「从大处淡入」，10.45s 原版几乎还看不见边框，所以起点透明度必须是 0。
+    "缩小": {"scale0": 1.3, "alpha0": 0.0},
+}
 
 # 全库 113 套草稿里共 150 个动画名、2332 条。按行为归族比逐个硬编码可维护：
 # 同族共享一套数学，族内个别名字用 DEFAULTS 单独调幅度。
@@ -224,9 +231,16 @@ def anim_state(specs: List[AnimSpec], t_local: float, seg_dur: float,
             # 起点权重 = 1 - p，终点归位
             w = 1.0 - p
         else:
-            t1 = (sp.start + sp.duration) if sp.start is not None else seg_dur
-            t0 = t1 - sp.duration
-            p_raw = (t_local - t0) / max(1e-6, sp.duration)
+            dur_o = sp.duration * float(cfg.get("out_dur_scale") or 1.0)
+            if sp.start is not None:
+                t1 = sp.start + dur_o
+                # 草稿 start 是「相对段起点的偏移」，但剪映实际按「距段尾多久开始」计时
+                if t1 > seg_dur:
+                    t1 = seg_dur
+            else:
+                t1 = seg_dur - float(cfg.get("out_start_slack") or 0.0)
+            t0 = t1 - dur_o
+            p_raw = (t_local - t0) / max(1e-6, dur_o)
             p = 0.0 if p_raw < 0 else (1.0 if p_raw > 1 else p_raw)
             w = p
         if w <= 0:
@@ -288,12 +302,13 @@ def _self_test() -> None:
     assert s.alpha < 1e-6, s
     s = anim_state([AnimSpec("out", "渐隐", 0.5)], 0.5, 1.0, W, H)
     assert abs(s.alpha - 1.0) < 1e-6, s
-    # 3) 向下滑动出场：末帧整帧下移（屏幕坐标 y 正 = 下）
+    # 3) 向下滑动出场：末帧按标定幅度下移（屏幕坐标 y 正 = 下）
+    _g = float(_cfg("向下滑动").get("slide_gain") or 1.0)
     s = anim_state([AnimSpec("out", "向下滑动", 0.5)], 1.0, 1.0, W, H)
-    assert abs(s.dy - H) < 1e-6, s
-    # 3b) 向下滑动**入场**：起点在画面上方（dy = -H）
+    assert abs(s.dy - H * _g) < 1e-6, s
+    # 3b) 向下滑动**入场**：起点在画面上方（dy 为负）
     s = anim_state([AnimSpec("in", "向下滑动", 0.5)], 0.0, 1.0, W, H)
-    assert abs(s.dy + H) < 1e-6, s
+    assert abs(s.dy + H * _g) < 1e-6, s
     # 3c) 日出入场：从下方升起（dy = +H）
     s = anim_state([AnimSpec("in", "日出", 0.5)], 0.0, 1.0, W, H)
     assert abs(s.dy - H) < 1e-6, s
