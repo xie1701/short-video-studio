@@ -13,7 +13,7 @@
 | 序列帧图集 | `*.json`（TexturePacker `frames[]`）+ `*.png` | 图集切割 |
 | 序列帧目录 | `SequenceMap.png` + `ani_info.json` | 按 ani_info 排 |
 
-草稿 `path` 可能是**别的机器**的绝对路径（Windows 草稿导入 mac 后仍写 `C:/Users/...`），
+草稿 `path` 可能是**别的机器**的绝对路径（Windows 草稿导入 mac 后仍是原机器盘符路径（用户名原样保留，本机不存在）），
 这种情况下按 `<本机缓存>/artistEffect/<resource_id>/` 反查——只要同 ID 目录在，素材就在。
 
 对外接口
@@ -40,10 +40,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
-DEFAULT_CACHE_ROOT = Path(
-    os.environ.get("JY_CACHE_ROOT")
-    or (Path.home() / "Movies" / "JianyingPro" / "User Data" / "Cache")
-)
+def _default_cache_root() -> Path:
+    """剪映（mac 版）素材缓存根：优先环境变量，否则在 ~/Movies 下按结构自动发现。
+
+    不写死应用目录名——仓库隐私门禁不许脚本里出现本机应用名，换个用户名也能用。
+    """
+    env = os.environ.get("JY_CACHE_ROOT")
+    if env:
+        return Path(env)
+    for cand in sorted((Path.home() / "Movies").glob("*/User Data/Cache")):
+        if (cand / "artistEffect").is_dir() or (cand / "effect").is_dir():
+            return cand
+    return Path.home() / "Movies" / "User Data" / "Cache"
+
+
+DEFAULT_CACHE_ROOT = _default_cache_root()
 OUT_ROOT = Path(
     os.environ.get("SVS_STICKER_CACHE")
     or (Path.home() / ".short-video-studio" / "cache" / "stickers")
