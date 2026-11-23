@@ -237,6 +237,36 @@ def ffprobe_has_audio(path: str) -> bool:
         return False
 
 
+def media_start_time(path: str) -> float:
+    """素材容器的 `start_time`（秒）。
+
+    剪映草稿的 `source_timerange.start` 是相对**素材容器时间轴**的，而 mp4 容器可能自带
+    非零 start_time（实测 `二手车.mp4` = 0.033008s ≈ 一帧@30fps）。不补这个偏移，整段画面
+    就比原版晚一帧（style_17 逐点验证：原版最优偏移 k=-1、复刻 k=0，13.5/14.0/15.0 三点一致）。
+    `24-美业.mp4` 的 start_time 是 0，所以对 style_21 无影响。
+    """
+    if os.environ.get("SVS_IGNORE_START_TIME") == "1":
+        return 0.0
+    key = str(path)
+    if key in _START_TIME_CACHE:
+        return _START_TIME_CACHE[key]
+    val = 0.0
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=start_time", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, timeout=60)
+        raw = [ln for ln in (proc.stdout or "").strip().splitlines() if ln and ln != "N/A"]
+        if raw:
+            val = max(0.0, float(raw[0]))
+    except Exception:
+        val = 0.0
+    _START_TIME_CACHE[key] = val
+    return val
+
+
+_START_TIME_CACHE: dict = {}
+
+
 def make_black_segment(out_path: Path, dur: float, fps: int, w: int, h: int) -> Path:
     """主轨素材缺失时的诚实占位：黑场同长段，盲审里一眼可见，不冒充内容。"""
     if not out_path.is_file():
@@ -942,14 +972,14 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                     break
         if ckey:
             src = compound_media[ckey]
-            s_in = float(srcr.get("start") or 0) / US
+            s_in = float(srcr.get("start") or 0) / US + media_start_time(src)
             s_out = s_in + t_dur * speed
         elif mtype == "photo":
             src = materialize_photo(mat, max(t_dur, 0.5), media_dir / f"photo_{mat['id'][:8]}")
             s_in, s_out = 0.0, t_dur
         else:
             src = _subst(mat.get("path") or "", base_dir)
-            s_in = float(srcr.get("start") or 0) / US
+            s_in = float(srcr.get("start") or 0) / US + media_start_time(src)
             s_out = s_in + t_dur * speed
         if not Path(src).is_file():
             raise RuntimeError(f"主轨素材不存在: {src}")
@@ -997,6 +1027,8 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 for _i in range(_n):
                     _ta = (_f0 + _i) / fps
                     _tb = (_f0 + _i + 1) / fps
+                    # 子段代表值取子段中点：实测取起点会让 9.0s 从 4 掉到 19，
+                    # 取中点全片更优（0.0s 那 5 级差额属半帧偏差，等接入缓动曲线再收）
                     _ss = _s0 + (_s1 - _s0) * ((_i + 0.5) / _n)
                     pieces.append((_ta, _tb, _ss, tx, ty))
                 report["unrealized"]["main_kf_zoom_sliced"] = report["unrealized"].get("main_kf_zoom_sliced", 0) + _n
@@ -1167,7 +1199,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             t_start = float(tgt.get("start") or 0) / US
             t_dur = float(tgt.get("duration") or 0) / US
             speed = float(s.get("speed") or 1.0)
-            s_in = float(srcr.get("start") or 0) / US
+            s_in = float(srcr.get("start") or 0) / US   # 容器 start_time 偏移在下面 src 定下来后补
             s_dur = t_dur * speed
             ckey = None
             if not (mat.get("path") or ""):
@@ -1184,6 +1216,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             if not src or not Path(src).is_file():
                 report["unrealized"]["overlay_missing_source"] = report["unrealized"].get("overlay_missing_source", 0) + 1
                 continue
+            s_in += media_start_time(src)
             cl = s.get("clip") or {}
             sc = float((cl.get("scale") or {}).get("x") or 1.0)
             tx = float((cl.get("transform") or {}).get("x") or 0.0)
@@ -1375,7 +1408,10 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
     inputs = ["-i", str(base_mp4)]
     n_in = 1
     fc_parts = []
-    cur = "[0:v]"
+    # 主轨拼接后 PTS 网格会轻微漂（实测 41 段拼完 15.999s → 15.933s），不拉成 CFR 的话
+    # 下游所有 enable(t,…) 都会早/晚一帧。强制重采样到目标帧率再叠。
+    fc_parts.append(f"[0:v]fps={fps},setpts=PTS-STARTPTS[basecfr]")
+    cur = "[basecfr]"
     for n, (_t, _o, u) in enumerate(units):
         en = f"enable='between(t,{u['t_start']:.4f},{min(u['t_start'] + u['t_dur'], total_sec):.4f})'"
         if u["kind"] == "video":
@@ -1449,10 +1485,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             fc_parts.append(f"{cur}{lbl}overlay=x={ox}:y={oy}:{en}[v{n}]")
         cur = f"[v{n}]"
 
-    if not units:
-        tail = "[0:v]null"
-    else:
-        tail = f"{cur}null"
+    tail = f"{cur}null"   # 无叠加单元时 cur 就是 [basecfr]，直接消费它
     # 草稿 effect 轨真值：整画面特效按源窗口直接上（剪映「模糊」≈ gblur），不再蹭风格配置推断
     _vfx_by_id = vfx_by_id
     for _ti, _esegs in cls.get("effects") or []:
