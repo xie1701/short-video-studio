@@ -65,11 +65,20 @@ def render_animated_layer(
     anims: Optional[List[AnimSpec]] = None,
     out: Optional[Path] = None,
     loop_frames: bool = True,
+    src_fps: Optional[float] = None,
+    state_fn=None,
+    ctx: Optional[str] = None,
 ) -> Tuple[Path, int]:
     """逐帧合成一个带动画的图层，返回 (视频路径, 落地帧数)。
 
     输出：画布尺寸的 RGBA 序列（ProRes 4444 / qtrle mov），时间轴已归零，
     叠加时用 `setpts=PTS+t_start/TB` 平移到它的时间窗（见 sticker_render.overlay_stickers）。
+
+    src_fps   源序列播放帧率。缺省按贴纸那套（动图 16fps / 静态图循环）。视频素材必须
+              显式给出（按输出帧率抽帧），否则 4 秒的底片会被当成 16fps 循环图。
+    state_fn  可选：t_local -> AnimState 的自定义曲线（草稿关键帧那种）。给了就完全接管，
+              不再看 anims。
+    ctx       幅度表：None = 贴纸标定，"layer" = 视频叠加/文字层（见 animations.CTX_CALIBRATION）。
     """
     W, H = canvas
     bw, bh = base_size
@@ -90,21 +99,25 @@ def render_animated_layer(
         old.unlink()
 
     written = 0
+    visible = False
     for i in range(n):
         t_local = i / fps
-        st: AnimState = anim_state(anims, t_local, dur, W, H) if anims else AnimState()
-        # 源帧按「源帧率」循环：贴纸动图 16fps、静态图恒一张
+        st: AnimState = (state_fn(t_local) if state_fn
+                         else (anim_state(anims, t_local, dur, W, H, ctx=ctx) if anims else AnimState()))
+        # 源帧按「源帧率」推进：贴纸动图 16fps、静态图恒一张、视频素材=输出帧率
+        sfps = float(src_fps) if src_fps else _src_fps(len(src), dur)
         si = 0 if len(src) == 1 else (
-            int(t_local * _src_fps(len(src), dur)) % len(src) if loop_frames else min(len(src) - 1, i * len(src) // n)
+            int(t_local * sfps) % len(src) if loop_frames else min(len(src) - 1, int(t_local * sfps))
         )
-        im = src[si]
-        if len(src) > 1 and im.size != (bw, bh):
+        # 必须 copy：src[si] 是共享图像，putalpha/resize 会就地改动它——单帧源被 alpha=0
+        # 的第一帧改过一次后，后面每一帧都拿到全透明图（整层凭空消失）。
+        im = src[si].copy()
+        if im.size != (bw, bh):
             im = im.resize((max(1, bw), max(1, bh)), Image.LANCZOS)
-        elif len(src) == 1 and im.size != (bw, bh):
-            im = im.resize((max(1, bw), max(1, bh)), Image.LANCZOS)
-        if abs(st.scale - 1.0) > 1e-4:
-            w2 = max(1, int(round(bw * st.scale)))
-            h2 = max(1, int(round(bh * st.scale)))
+        sx, sy = st.sx(), st.sy()
+        if abs(sx - 1.0) > 1e-4 or abs(sy - 1.0) > 1e-4:
+            w2 = max(1, int(round(bw * sx)))
+            h2 = max(1, int(round(bh * sy)))
             im = im.resize((w2, h2), Image.LANCZOS)
         if st.blur > 0.05:
             im = im.filter(ImageFilter.GaussianBlur(radius=min(BLUR_MAX, st.blur)))
@@ -123,12 +136,14 @@ def render_animated_layer(
             crop = im.crop((left - px, top - py, left - px + (right - left), top - py + (bottom - top)))
             frame.paste(crop, (left, top), crop)
         full_alpha = frame.split()[3]
-        if full_alpha.getextrema()[1] <= int(255 * ALPHA_SKIP):
-            continue
+        if full_alpha.getextrema()[1] > int(255 * ALPHA_SKIP):
+            visible = True
+        # 不能跳帧落盘：序号一断，后面的帧全部前移，整层的时间就对不上了。
+        # 全透明的帧也照旧写（qtrle 压得极小），最后用 visible 判断整层是不是空壳。
         frame.save(seq_dir / ("f%05d.png" % written))
         written += 1
 
-    if written == 0:
+    if written == 0 or not visible:
         raise RuntimeError("render_animated_layer: 所有帧都是全透明，拒绝产出空壳")
 
     subprocess.run(

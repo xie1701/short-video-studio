@@ -45,8 +45,25 @@ def _cache_tag(*parts) -> str:
     global _CODE_SIG
     if not _CODE_SIG:
         _CODE_SIG = _h.sha1(Path(__file__).read_bytes()).hexdigest()[:8]
-    blob = "|".join(str(p) for p in parts) + "|" + _CODE_SIG + "|" + _mask_code_sig()
+    blob = ("|".join(str(p) for p in parts) + "|" + _CODE_SIG + "|" + _mask_code_sig()
+            + "|" + _anim_code_sig())
     return _h.sha1(blob.encode()).hexdigest()[:8]
+
+
+def _anim_code_sig() -> str:
+    """animations/anim_render 的指纹：动画曲线或幅度一改，逐帧动画层必须重烘。
+
+    这两个模块的标定（CTX_CALIBRATION）是逐帧反解出来的，改了不失效的话
+    缓存里躺着的旧图层会一直盖在成片上，看着像「改了没生效」。
+    """
+    import hashlib as _h
+    sig = ""
+    for nm in ("animations.py", "anim_render.py"):
+        try:
+            sig += _h.sha1((SCRIPTS / nm).read_bytes()).hexdigest()[:8]
+        except Exception:
+            sig += "noanim"
+    return sig
 
 
 def _mask_code_sig() -> str:
@@ -434,7 +451,7 @@ def parse_text_material(mat: dict) -> dict:
     """草稿文本素材 → {text, color, font_path, font_size, shadow, stroke, line_spacing}。"""
     out = {"text": "", "color": (255, 255, 255), "font_path": None,
            "font_candidates": _font_candidates(mat),
-           "font_size": float(mat.get("font_size") or 24.0)}
+           "font_size": float(mat.get("font_size") or 0.0)}
     if out["font_candidates"]:
         out["font_path"] = out["font_candidates"][0]
     content = mat.get("content")
@@ -446,6 +463,10 @@ def parse_text_material(mat: dict) -> dict:
             styles = cj.get("styles") or []
             if styles:
                 st0 = styles[0]
+                # 字号真源：识别字幕的 material 上 font_size 是 None，真值写在 content.styles[0].size
+                # （实测 17-二手车 的字幕是 15，旧代码回退 24 会让字幕大 1.6 倍）
+                if not out["font_size"] and st0.get("size"):
+                    out["font_size"] = float(st0["size"])
                 fill = ((st0.get("fill") or {}).get("content") or {}).get("solid") or {}
                 rgb = fill.get("color") or []
                 if len(rgb) >= 3:
@@ -643,6 +664,77 @@ def _kf_piecewise(pts: list, t_start: float, pix: float, offset: float) -> str:
             f"if(lt(t,{a1:.4f}),{p0:.2f}+({p1 - p0:.2f})*(t-{a0:.4f})/{span:.4f},{p1:.2f}))")
 
 
+def _kv(pts: list, t: float) -> float:
+    """keyframe 点列（相对秒, 值）→ t 时刻的值：段内线性插值，首点前/末点后保持。"""
+    if not pts:
+        return 0.0
+    if t <= pts[0][0]:
+        return pts[0][1]
+    if t >= pts[-1][0]:
+        return pts[-1][1]
+    for i in range(1, len(pts)):
+        t0, v0 = pts[i - 1]
+        t1, v1 = pts[i]
+        if t <= t1:
+            span = max(1e-6, t1 - t0)
+            return v0 + (v1 - v0) * (t - t0) / span
+    return pts[-1][1]
+
+
+def _anim_base_png(src: str, mat: dict, geom: dict, out_png: Path, flip: dict | None = None) -> Path:
+    """源素材 → geom 尺寸（crop→contain→×scale）的静态底图，作为逐帧动画层的模板。
+
+    和静态路径的 ffmpeg 滤镜链同参数（crop 框、lw/lh），差别只是用 PIL 落图——
+    这样动画层与静态层的几何完全一致，不会因为两套插值差半个像素。
+    """
+    from PIL import Image as _I
+    if out_png.is_file():
+        return out_png
+    with _I.open(src) as im:
+        im = im.convert("RGBA")
+        crop = geom.get("crop")
+        if crop:
+            x, y, w, h = crop
+            im = im.crop((x, y, x + w, y + h))
+        if im.size != (geom["lw"], geom["lh"]):
+            im = im.resize((geom["lw"], geom["lh"]), _I.LANCZOS)
+        fl = flip or {}
+        if fl.get("h"):
+            im = im.transpose(_I.FLIP_LEFT_RIGHT)
+        elif fl.get("v"):
+            im = im.transpose(_I.FLIP_TOP_BOTTOM)
+        out_png.parent.mkdir(parents=True, exist_ok=True)
+        im.save(out_png)
+    return out_png
+
+
+def _anim_video_frames(src: str, geom: dict, s_in: float, dur: float, fps: int,
+                       out_dir: Path, flip: dict | None = None) -> list:
+    """视频素材 → 按输出帧率抽成 geom 尺寸的 PNG 序列（带 crop/scale/flip），供逐帧动画层用。
+
+    为什么不能只抽一帧：出场淡出、滑出这类动画挂在真实视频层上，抽一帧等于把 4 秒底片
+    冻成静图（style_21 的背景层就是这么来的）。
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    pat = out_dir / "s%06d.png"
+    have = sorted(out_dir.glob("s*.png"))
+    if not have:
+        vf = []
+        if geom.get("crop"):
+            x, y, w, h = geom["crop"]
+            vf.append(f"crop={w}:{h}:{x}:{y}")
+        vf.append(f"scale={geom['lw']}:{geom['lh']}:flags=bicubic")
+        fl = flip or {}
+        if fl.get("h"):
+            vf.append("hflip")
+        elif fl.get("v"):
+            vf.append("vflip")
+        run_ffmpeg(["ffmpeg", "-y", "-ss", f"{s_in:.4f}", "-t", f"{max(0.05, dur):.4f}", "-i", src,
+                    "-vf", f"{','.join(vf)},fps={fps}", "-an", str(pat)], timeout=900)
+        have = sorted(out_dir.glob("s*.png"))
+    return have
+
+
 def classify_tracks(draft: dict) -> dict:
     tracks = draft.get("tracks") or []
     vid_main, vid_over, txt_tracks, stk_tracks, fx_tracks, aud_tracks = [], [], [], [], [], []
@@ -699,6 +791,9 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
     import mask_shapes as MS  # noqa: E402
     from step7_color_grade import run_step7  # noqa: E402
     from person_matting import generate_person_matte_video  # noqa: E402
+    from animations import (parse_animations, anim_state, alpha_ramp, fallback_names,  # noqa: E402
+                            summarize, AnimState)
+    from anim_render import render_animated_layer  # noqa: E402
 
     ffmpeg_bin = find_bin("ffmpeg")
 
@@ -750,6 +845,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
     txt_by_id = {t["id"]: t for t in mats.get("texts") or []}
     stk_by_id = {s["id"]: s for s in mats.get("stickers") or []}
     mask_by_id = {m["id"]: m for m in mats.get("common_mask") or []}
+    anim_by_id = {a["id"]: a for a in mats.get("material_animations") or []}
     drafts_entries = {dr["id"]: dr for dr in (mats.get("drafts") or []) if dr.get("draft")}
 
     # ---------- 1.5 剪映遮罩：alpha 场按 shader 数学算（mask_shapes），按 cfg+脚本指纹缓存 ----------
@@ -1263,6 +1359,47 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             # 图层几何：material.crop → contain(画布) → ×clip.scale（非 canvas×scale，见 layer_geometry）
             geom = layer_geometry(mat, src, W, H, sc)
             lw, lh = geom["lw"], geom["lh"]
+            # 入场/出场动画（material_animations）：纯透明度交给 ffmpeg 的 fade 链，
+            # 带位移/缩放/模糊的必须 PIL 逐帧（scale 滤镜的输出尺寸不能逐帧变）。
+            _specs = parse_animations(s, anim_by_id)
+            _ramp = alpha_ramp(_specs, t_dur, ctx="layer") if _specs else None
+            if _ramp:
+                fade = (_ramp[0], max(0.05, _ramp[2]), _ramp[1])
+                if depth == 0:
+                    report["overlay_anims"] = report.get("overlay_anims", 0) + 1
+                    report.setdefault("overlay_anim_list", []).extend(summarize(_specs))
+            _animated = bool(_specs) and not _ramp
+            if _animated:
+                # 整层按动画逐帧落图：几何/位移/透明度全部烘进画布尺寸的图层，
+                # 叠加时只做 setpts 平移（坐标/缩放已在图层内部完成）。
+                _cx = W / 2.0 + tx * W / 2.0
+                _cy = H / 2.0 - ty * H / 2.0
+                _atag = _cache_tag("an", s_in, s_dur, sc, tx, ty, alpha, fps, flip, json.dumps(geom, sort_keys=True),
+                                   json.dumps([(x.kind, x.name, x.duration, x.start) for x in _specs]))
+                _amov = media_dir / f"anim_{t_idx:02d}_{o:02d}_{_atag}.mov"
+                if not _amov.is_file():
+                    if (mat.get("type") or "") == "photo" or Path(src).suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"):
+                        _frames = [_anim_base_png(src, mat, geom, media_dir / f"anim_{t_idx:02d}_{o:02d}_{_atag}.png", flip)]
+                        _srcfps = None
+                    else:
+                        _frames = _anim_video_frames(src, geom, s_in, s_dur, fps,
+                                                     media_dir / f"anim_{t_idx:02d}_{o:02d}_{_atag}_src", flip)
+                        _srcfps = float(fps)
+                    render_animated_layer(_frames, (W, H), (lw, lh), (_cx, _cy),
+                                          t_start, t_dur, fps, _specs, _amov,
+                                          src_fps=_srcfps, ctx="layer")
+                units.append((t_idx, o, {
+                    "kind": "video", "seg": _amov, "matte": None, "t_start": t_start, "t_dur": t_dur,
+                    "scale": 1.0, "lw": W, "lh": H, "tx": 0.0, "ty": 0.0, "alpha": alpha,
+                    "fade": None, "pos_kf": None, "anim": True,
+                }))
+                if depth == 0:
+                    report["overlay_segments"] += 1
+                    report["animated_overlays"] = report.get("animated_overlays", 0) + 1
+                    report.setdefault("overlay_anim_list", []).extend(summarize(_specs))
+                    for _nm in fallback_names(_specs):
+                        report["unrealized"][_nm] = report["unrealized"].get(_nm, 0) + 1
+                continue
             seg_ext = ".mov" if (alpha_src or ov_mask) else ".mp4"
             seg_p = media_dir / (f"ov_{t_idx:02d}_{o:02d}_{_cache_tag('ov', s_in, s_dur, sc, tx, ty, alpha, fps, flip, json.dumps(geom, sort_keys=True), json.dumps(ov_mask, sort_keys=True) if ov_mask else '')}" + seg_ext)
             if not seg_p.is_file():
@@ -1355,11 +1492,72 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             t_dur = float(tgt.get("duration") or 0) / US
             cl = s.get("clip") or {}
             sc = float((cl.get("scale") or {}).get("x") or 1.0)
-            if sc < 0.05 and s.get("common_keyframes"):
-                sc = 1.0
-                report["unrealized"]["text_keyframe_animation"] = report["unrealized"].get("text_keyframe_animation", 0) + 1
             tx = float((cl.get("transform") or {}).get("x") or 0.0)
             ty = float((cl.get("transform") or {}).get("y") or 0.0)
+            # 入场/出场动画（material_animations）与关键帧驱动的缩放/透明度/位置。
+            # 草稿常把静态 clip.scale 写成动画终态（原创大字是 0.01），真尺寸在 KFTypeScaleX 里。
+            _specs = parse_animations(s, anim_by_id)
+            _ksx = _kf_rel(s, "KFTypeScaleX", 0.0)
+            _ka = _kf_rel(s, "KFTypeAlpha", 0.0) + _kf_rel(s, "KFTypeGlobalAlpha", 0.0)
+            _kpx = _kf_rel(s, "KFTypePositionX", 0.0)
+            _kpy = _kf_rel(s, "KFTypePositionY", 0.0)
+            _kf_driven = bool(_ksx or _ka or _kpx or _kpy)
+            _sc_base = sc
+            if _ksx:
+                _sc_max = max(v for _t, v in _ksx)
+                if _sc_max > 1e-3:
+                    _sc_base = _sc_max
+            elif sc < 0.05:
+                _sc_base = 1.0
+            # 缩放/透明度/位置 keyframe 现在真的按曲线渲染了（见 _tstate），不再计 unrealized
+            if _specs or _kf_driven:
+                # 逐帧图层：文字 PNG 作为模板，缩放/位移/透明度全部按动画曲线施加
+                _png, _pw, _ph = render_text_png(spec, _sc_base,
+                                                 text_dir / f"tx_{t_idx:02d}_{o:02d}_{_sc_base:.3f}.png",
+                                                 fail_log=report.setdefault("font_failures", []), pxu=pxu)
+                _bcx = W / 2.0 + tx * W / 2.0
+                _bcy = H / 2.0 - ty * H / 2.0
+
+                def _tstate(t_local, _specs=_specs, _ksx=_ksx, _ka=_ka, _kpx=_kpx, _kpy=_kpy,
+                            _sc=_sc_base, _tx=tx, _ty=ty, _dur=t_dur, _pw=_pw, _ph=_ph):
+                    # 文字动画的位移量按「文本包围盒」归一（剪映文字入场是相对文本框的），
+                    # 不是画布——拿画布宽算会把一行字直接甩出屏幕。
+                    st = anim_state(_specs, t_local, _dur, _pw, _ph, ctx="layer") if _specs else AnimState()
+                    if _ksx:
+                        _v = _kv(_ksx, t_local)
+                        if _v > 1e-4:
+                            st.scale *= _v / _sc
+                        else:
+                            st.alpha = 0.0
+                    if _ka:
+                        st.alpha *= max(0.0, _kv(_ka, t_local))
+                    if _kpx:
+                        st.dx += (_kv(_kpx, t_local) - _tx) * W / 2.0
+                    if _kpy:
+                        st.dy -= (_kv(_kpy, t_local) - _ty) * H / 2.0
+                    st.alpha = max(0.0, min(1.0, st.alpha))
+                    return st
+
+                _ttag = _cache_tag("tan", t_start, t_dur, _sc_base, tx, ty, fps, _pw, _ph,
+                                   json.dumps([(x.kind, x.name, x.duration, x.start) for x in _specs]),
+                                   json.dumps([_ksx, _ka, _kpx, _kpy], sort_keys=True))
+                _tmov = media_dir / f"tanim_{t_idx:02d}_{o:02d}_{_ttag}.mov"
+                if not _tmov.is_file():
+                    render_animated_layer([_png], (W, H), (_pw, _ph), (_bcx, _bcy),
+                                          t_start, t_dur, fps, _specs, _tmov,
+                                          state_fn=_tstate)
+                units.append((t_idx, o, {
+                    "kind": "video", "seg": _tmov, "matte": None, "t_start": t_start, "t_dur": t_dur,
+                    "scale": 1.0, "lw": W, "lh": H, "tx": 0.0, "ty": 0.0, "alpha": 1.0,
+                    "fade": None, "pos_kf": None, "anim": True,
+                }))
+                if depth == 0:
+                    report["text_segments"] += 1
+                    report["animated_texts"] = report.get("animated_texts", 0) + 1
+                    report.setdefault("text_anim_list", []).extend(summarize(_specs))
+                    for _nm in fallback_names(_specs):
+                        report["unrealized"][_nm] = report["unrealized"].get(_nm, 0) + 1
+                continue
             png, pw, ph = render_text_png(spec, sc, text_dir / f"tx_{t_idx:02d}_{o:02d}.png",
                                            fail_log=report.setdefault("font_failures", []), pxu=pxu)
             units.append((t_idx, o, {
