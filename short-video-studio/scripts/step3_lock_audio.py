@@ -533,6 +533,9 @@ def run_step3(
                 "is_filler": False,
                 "plan_line": True,
                 "plan_src_segs": [str(x.get("id")) for x in _segs],
+                # 跨多段的成稿行要把各段的逐字时间戳接起来，否则只有第一段有词表，
+                # 后半句的字幕只能按比例瞎分（2026-11-24 实测）
+                "words": [w for x in _segs for w in (x.get("words") or [])],
             })
             _gap = 0.0
             for _a, _b in zip(_segs, _segs[1:]):

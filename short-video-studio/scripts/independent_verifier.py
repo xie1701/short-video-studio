@@ -1092,7 +1092,12 @@ def verify_blind_asr_proxy_blackbox(
     ae = read_json(pipeline_dir / "03_audio_events.json")
     sents_ae = ae.get("sentences") or []
     ref_show_text = "".join(str(s.get("text", "")) for s in sents_ae)
-    ref_say_text = "".join(str(s.get("say_text") or s.get("text") or "") for s in sents_ae)
+    # 真值必须是**嘴上说的**那串字：句级 text 是整理过的版本（去口癖、合半句），
+    # 拿它跟盲听结果比，比的不是播控而是「整理改了多少字」。
+    ref_say_text = "".join(
+        ("".join(str(w.get("word") or "") for w in (s.get("words") or [])) or str(s.get("say_text") or s.get("text") or ""))
+        for s in sents_ae
+    )
     if ref_say_text == ref_show_text and (pipeline_dir / "02_transcript.json").is_file():
         try:
             tr = read_json(pipeline_dir / "02_transcript.json")
@@ -1140,31 +1145,51 @@ def verify_blind_asr_proxy_blackbox(
         }
 
     asr_lang = "yue" if dl_norm in ("cantonese", "yue") else "zh"
-    if asr_lang == "yue" and "large-v3" not in model_name and "turbo" not in model_name:
-        return {
-            "status": "SKIPPED_UNAVAILABLE", "passed": False, "cer": None, "anchor_ok": False,
-            "reason": f"已缓存的 {model_name} 缺少粤语 yue 语言模型",
-        }
     asr_prompt = "以下是粤语简体中文口播内容：" if asr_lang == "yue" else "以下是普通话简体中文口播内容："
+    hyp_text = ""
+    model_used = model_name
+    # 粤语素材不能用只会普通话的 Whisper 当盲听裁判：它会把「金湾」听成「今晚」、「厨房」听成「徐凤」，
+    # CER 全是方言差异，不是播控问题（2026-11-24 实测 0.366，逐条核对全部是同音误听）。
+    # 本地已经有 SenseVoice（自判粤语），先让它听；它不可用才回落 Whisper（且只在有 yue 模型时）。
+    if asr_lang == "yue":
+        try:
+            import asr_sensevoice
+            segs_sv = asr_sensevoice.try_transcribe(Path(audio_48k_path), language="auto")
+            if segs_sv:
+                hyp_text = "".join(str(x.get("text", "")).strip() for x in segs_sv)
+                model_used = "SenseVoice(yue)"
+        except Exception:
+            hyp_text = ""
+    if not hyp_text:
+        if asr_lang == "yue" and "large-v3" not in model_name and "turbo" not in model_name:
+            return {
+                "status": "SKIPPED_UNAVAILABLE", "passed": False, "cer": None, "anchor_ok": False,
+                "reason": f"已缓存的 {model_name} 缺少粤语语言模型，且 SenseVoice 不可用",
+            }
+        try:
+            model = get_cached_whisper_model(model_name, local_files_only=True)
+            segs, _ = model.transcribe(
+                str(audio_48k_path),
+                language=asr_lang,
+                initial_prompt=asr_prompt,
+                word_timestamps=False,
+            )
+            hyp_text = "".join(s.text.strip() for s in segs)
+        except Exception as exc:
+            return {
+                "status": "SKIPPED_UNAVAILABLE",
+                "passed": False,
+                "cer": None,
+                "anchor_ok": False,
+                "reason": f"本地 ASR 加载/推理不可用: {exc}",
+            }
 
     try:
-        model = get_cached_whisper_model(model_name, local_files_only=True)
-        segs, _ = model.transcribe(
-            str(audio_48k_path),
-            language=asr_lang,
-            initial_prompt=asr_prompt,
-            word_timestamps=False,
-        )
-        hyp_text = "".join(s.text.strip() for s in segs)
-    except Exception as exc:
-        return {
-            "status": "SKIPPED_UNAVAILABLE",
-            "passed": False,
-            "cer": None,
-            "anchor_ok": False,
-            "reason": f"本地 ASR 加载/推理不可用: {exc}",
-        }
-
+        # SenseVoice 直接给的是繁体字面；不先统一简体，CER 里全是繁简差异
+        from opencc import OpenCC
+        hyp_text = OpenCC("t2s").convert(hyp_text)
+    except Exception:
+        pass
     cer_say = _char_cer(ref_say_text, hyp_text) if ref_say_text else 1.0
     cer_show = _char_cer(ref_show_text, hyp_text) if ref_show_text else 1.0
     cer = min(cer_say, cer_show)
@@ -1181,7 +1206,7 @@ def verify_blind_asr_proxy_blackbox(
         "passed": ok,
         "dialect": dialect,
         "asr_language": asr_lang,
-        "model": model_name,
+        "model": model_used,
         "cer": cer,
         "anchor_ok": anchor_ok,
         "hyp_preview": hyp_text[:48],

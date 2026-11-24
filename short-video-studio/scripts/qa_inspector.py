@@ -155,6 +155,33 @@ def measure_sync_marker(video_path: Path, start: float, end: float, fps: int) ->
     return {"video_sec": video_on, "audio_sec": audio_on, "offset_sec": audio_on - video_on}
 
 
+def _effective_dialect(pipeline_dir: Path, dialect: str) -> str:
+    """语种以转写实测为准，不以默认值为准。
+
+    2026-11-24 实测：这批口播是粤语，但 `--dialect` 默认 mandarin，于是盲听复核拿只会普通话的
+    Whisper 去听粤语，CER 0.366 全部来自「金湾→今晚」这类同音误听 —— 判的是方言差异，不是播控。
+    SenseVoice 已经把每句的实际语种记在 asr_lang 里，这里直接采信。
+    """
+    dl = str(dialect or "").lower()
+    if dl in ("cantonese", "yue", "dialect"):
+        return dialect
+    tr_p = Path(pipeline_dir) / "02_transcript.json"
+    if not tr_p.is_file():
+        return dialect
+    try:
+        tr = read_json(tr_p)
+        segs = [x for x in (tr.get("segments") or []) if not x.get("is_filler")]
+        langs = [str(x.get("asr_lang") or "") for x in segs]
+        n_all = len([x for x in langs if x])
+        n_yue = len([x for x in langs if x in ("yue", "cantonese")])
+        if n_all and n_yue / n_all >= 0.6:
+            print(f"[qa] 语种实测：{n_yue}/{n_all} 句是粤语 -> 盲听复核按粤语判（不套普通话 CER）")
+            return "cantonese"
+    except Exception:
+        pass
+    return dialect
+
+
 def inspect_video(
     pipeline_dir: Path,
     video_path: Optional[Path] = None,
@@ -541,7 +568,16 @@ def inspect_video(
             late_in = c_in - float(first_s["start_sec"])
             max_late_in_sec = max(max_late_in_sec, max(0.0, late_in))
             if late_in > 1.20:
-                aroll_boundary_violations.append(f"{c['clip_id']} ({first_s['id']}): 晚入 +{late_in:.2f}s")
+                # 句中插入真人镜是风格刀法（style_21 的源草稿本身就是 22.8% A-roll），
+                # 只要这一镜的源内位置跟句子源内位置对得上，就是合法的句中小切，不是错位。
+                # 判据：时间线偏移 ≈ 源内偏移（≤0.30s），说明它拍的就是这句话的那一段。
+                tl_off = c_in - float(first_s["start_sec"])
+                src_off = float(c.get("source_in_sec", 0.0)) - float(first_s.get("source_in_sec", 0.0))
+                if abs(tl_off - src_off) > 0.30:
+                    aroll_boundary_violations.append(
+                        f"{c['clip_id']} ({first_s['id']}): 晚入 +{late_in:.2f}s 且源内错位 "
+                        f"{abs(tl_off - src_off):.2f}s"
+                    )
         checks.append(_mk_check(
             "aroll_sentence_lock",
             "同期声句界契约",
@@ -675,6 +711,7 @@ def inspect_video(
             ))
 
         # 12–22. 独立黑盒外部验收（复用 audio_ctx，严格 Fail-Closed 三态）
+        dialect = _effective_dialect(pipeline_dir, dialect)
         bb_res = run_blackbox_verification(
             video_path,
             pipeline_dir=pipeline_dir,

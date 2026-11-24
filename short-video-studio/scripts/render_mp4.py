@@ -1070,8 +1070,11 @@ def _build_dual_pip_cmd(
         main_fg = base_vf_chain
         return [
             ffmpeg_bin, "-v", "error",
-            "-i", str(media_path), "-ss", f"{max(0.0, float(src_in)):.3f}",
-            "-i", str(sec_media), "-ss", f"{max(0.0, float(sec_in)):.3f}",
+            # -ss 必须在该输入的 -i 之前：写在 -i 之后会变成**输出**侧的 seek，
+            # 主输入照旧从 0 开始读，再被输出侧跳掉 src_in 秒 —— 0.6 秒的镜头直接 0 帧。
+            # 2026-11-24 实测：21 个双源画中画镜头全部渲出 261 字节的空 mp4，成片比音轨短 3 秒。
+            "-ss", f"{max(0.0, float(src_in)):.3f}", "-i", str(media_path),
+            "-ss", f"{max(0.0, float(sec_in)):.3f}", "-i", str(sec_media),
             "-filter_complex",
             f"[0:v]{main_fg}[gpm];"
             f"[1:v]{sec_trim},{_cover_crop_vf(max(16, ww - bw * 2), max(16, wh - bw * 2), face_bias=True, anchor=pip_layout.get('secondary_face_anchor'))},"

@@ -40,6 +40,9 @@ import numpy as np
 from step3_lock_audio import SR, load_stereo_wav_np, save_stereo_wav_np
 
 
+LIMITER_LIMIT = 0.68  # 母带/分轨统一峰值上限（-3.35 dBFS）：过采样真峰实测比样本峰高约 1 dB
+
+
 def _estimate_raw_noise_floor_db(pipeline_dir: Path, fallback_voice: np.ndarray) -> float:
     """
     优先从 01_manifest 原始长音轨测未裁切环境谷值底噪（p8），防止在已去静音的 03_locked_voice 上测到轻声词尾。
@@ -365,7 +368,7 @@ def run_step8(
             run_cmd([
                 ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
                 "-i", str(wav_src),
-                "-af", f"volume={g_clamped:.2f}dB,alimiter=limit=0.794:attack=2:release=45:level=disabled:latency=true",
+                "-af", f"volume={g_clamped:.2f}dB,alimiter=limit={LIMITER_LIMIT:.3f}:attack=1.5:release=40:level=disabled:latency=true",
                 "-ar", str(SR), "-ac", "2", "-acodec", "pcm_s16le",
                 str(wav_dst),
             ])
@@ -373,19 +376,23 @@ def run_step8(
 
     metrics = _render_master_pair(cur_gain_db)
     if init_metrics["integrated_lufs"] > -65.0:
-        for _attempt in range(3):
+        for _attempt in range(4):
             err = target_lufs - metrics["integrated_lufs"]
-            if abs(err) <= 0.35 and metrics["true_peak_dbtp"] <= -1.5:
+            # 旧循环要求 true peak ≤ -1.5 dBTP，而 alimiter 只压样本峰 0.794(-2.0dB)，
+            # 过采样读出来的真峰恒在 -0.8 ~ -1.4 之间 → 每一轮都判「峰值超标」只降不升，
+            # 响度一路掉到 -16.5 / -17.4 LUFS（2026-11-24 两次实测）。峰值交给 limiter，
+            # 响度这一侧只在真峰越过 -0.5 dBTP 时才让路。
+            if abs(err) <= 0.35 and metrics["true_peak_dbtp"] <= -0.5:
                 break
-            if metrics["true_peak_dbtp"] > -1.5:
-                cur_gain_db -= max(0.5, metrics["true_peak_dbtp"] + 1.5)
+            if metrics["true_peak_dbtp"] > -0.5:
+                cur_gain_db -= max(0.5, metrics["true_peak_dbtp"] + 0.5)
             else:
                 cur_gain_db += err
             cur_gain_db = max(-24.0, min(24.0, cur_gain_db))
             metrics = _render_master_pair(cur_gain_db)
 
     # 同步导出三轨分离分轨 (人声规范母带 + 已闪避定电平 BGM含现场动作声 + 定电平 SFX)
-    # 统一采用与母带 alimiter 一致的 0.794 (-2.0dB) 峰值上限，保证三轨求和真峰值不越线
+    # 统一采用与母带 alimiter 一致的 LIMITER_LIMIT 峰值上限，保证三轨求和真峰值不越线
     final_scale = 10.0 ** (cur_gain_db / 20.0)
     v_stem_raw = voice_arr * 0.95 * final_scale
     b_stem_raw = (ducked_bgm + broll_ambient_arr) * final_scale
@@ -399,7 +406,7 @@ def run_step8(
         if pad_n > 0:
             abs_bus = np.pad(abs_bus, (0, pad_n), mode="constant")
         blk_peaks = np.max(abs_bus.reshape(n_blocks, win_n), axis=1)
-        blk_gains = np.minimum(1.0, 0.794 / np.maximum(1e-5, blk_peaks)).astype(np.float32)
+        blk_gains = np.minimum(1.0, LIMITER_LIMIT / np.maximum(1e-5, blk_peaks)).astype(np.float32)
         if n_blocks >= 3:
             # 前看后看平滑避免瞬态陡变
             blk_gains = np.minimum(blk_gains, np.roll(blk_gains, -1))

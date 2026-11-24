@@ -66,6 +66,31 @@ _COMMON_TWO_CHAR_WORDS = {
 }
 
 
+def _terms_file_for(pipeline_dir: Path) -> Optional[Path]:
+    """术语表可能在三处：pipeline/terms.txt、素材侧 `_SVS工作区/术语表.txt`、项目根。"""
+    cands = [
+        Path(pipeline_dir) / "terms.txt",
+        Path(pipeline_dir).parent / "terms.txt",
+        Path(pipeline_dir).parent / "_SVS工作区" / "术语表.txt",
+        Path(pipeline_dir).parent / "术语表.txt",
+    ]
+    inv_p = Path(pipeline_dir) / "00_inventory.json"
+    if inv_p.is_file():
+        try:
+            inv = read_json(inv_p)
+            for key in ("raw_dir", "source_dir", "input_dir"):
+                v = str(inv.get(key) or "").strip()
+                if v:
+                    cands.append(Path(v) / "_SVS工作区" / "术语表.txt")
+                    cands.append(Path(v) / "术语表.txt")
+        except Exception:
+            pass
+    for c in cands:
+        if c.is_file():
+            return c
+    return None
+
+
 def load_protected_terms(terms_path: Optional[Path] = None, extra_terms: Optional[List[str]] = None) -> List[str]:
     terms: List[str] = []
     if terms_path and Path(terms_path).is_file():
@@ -79,6 +104,25 @@ def load_protected_terms(terms_path: Optional[Path] = None, extra_terms: Optiona
             terms.append(ts)
     terms.sort(key=len, reverse=True)
     return terms
+
+
+_NUM_ONLY_RE = re.compile(r"^(?:[0-9]+(?:[.:][0-9]+)?|[零〇一二三四五六七八九十百千万亿两廿]+)$")
+_UNIT_ONLY_RE = re.compile(r"^(?:[%％倍度年万亿岁个次米元块斤克天月时分秒件家店条步项位层种平张台间人只杯碗盘]|平方|平米|公分)$")
+
+
+def _merge_numeral_units(toks: List[str]) -> List[str]:
+    """把「六百」+「平」、「三」+「百万」、「廿」+「五」这类相邻碎片拼回一整块。
+
+    jieba 会把中文数字和量词切开，于是字幕在「六|百平」这种地方断行 —— 一眼就是机器切的。
+    """
+    out: List[str] = []
+    for tk in toks:
+        if out and _NUM_ONLY_RE.match(out[-1]):
+            if _UNIT_ONLY_RE.match(tk) or (_NUM_ONLY_RE.match(tk) and len(out[-1]) <= 3):
+                out[-1] = out[-1] + tk
+                continue
+        out.append(tk)
+    return out
 
 
 def tokenize_semantic_words(sentence: str, terms: Optional[List[str]] = None) -> List[str]:
@@ -97,11 +141,15 @@ def tokenize_semantic_words(sentence: str, terms: Optional[List[str]] = None) ->
         jieba.setLogLevel(60)
         for tm in prot:
             jieba.add_word(tm, freq=2_000_000)
-        raw_toks = [t for t in jieba.cut(s, HMM=False) if t]
+        raw_toks = _merge_numeral_units([t for t in jieba.cut(s, HMM=False) if t])
     except Exception:
         # 零依赖高质量分词兜底：先整块匹配保护词/数字+单位/英文词，再按虚词与常见词切分
         i, n = 0, len(s)
-        num_unit_re = re.compile(r"[0-9]+(?:[.:][0-9]+)?[%％倍度年多万亿岁个次米元块斤克天月时分秒件家店条步项位层种]*")
+        # 中文数字 + 量词也要当一整块：「六百平」被切成「六|百平」是外行错
+        num_unit_re = re.compile(
+            r"(?:[0-9]+(?:[.:][0-9]+)?|[零〇一二三四五六七八九十百千万亿两廿]+)"
+            r"(?:[%％倍度年多万亿岁个次米元块斤克天月时分秒件家店条步项位层种平张台间位人只杯碗盘位]*\s*)"
+        )
         ascii_re = re.compile(r"[A-Za-z][A-Za-z0-9_\-]*")
         while i < n:
             matched_prot = None
@@ -363,6 +411,26 @@ def strip_display_punctuation(text: str) -> str:
     return _NON_CORE_PUNCT_RE.sub("", raw)
 
 
+_FILLER_WORDS = {"诶", "欸", "呃", "嗯", "啊", "呀", "哇", "唉", "哦", "噢", "喔", "咧"}
+
+
+def _drop_filler_tokens(words: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """剔掉纯语气词与紧邻重复词：字幕要跟嘴上说的一致，但「诶」「啊」这种不该占一屏字。"""
+    out: List[Dict[str, Any]] = []
+    for w in words:
+        t = str(w.get("word") or "").strip()
+        if not t:
+            continue
+        if t in _FILLER_WORDS:
+            continue
+        if out and str(out[-1].get("word") or "") == t:
+            # 紧邻重复（结巴 / NG 残留）只留第一次的时长，不重复占字
+            out[-1]["end_sec"] = max(float(out[-1].get("end_sec", 0.0)), float(w.get("end_sec", 0.0)))
+            continue
+        out.append(w)
+    return out
+
+
 def _clean_word_tokens(raw_words: List[Dict[str, Any]], strip_punct: bool) -> List[Dict[str, Any]]:
     """逐词清洗标点，并保护跨 token 拆分的数字小数点/时间冒号(如 '18:' + '30')不被误杀。"""
     if not strip_punct:
@@ -373,7 +441,7 @@ def _clean_word_tokens(raw_words: List[Dict[str, Any]], strip_punct: bool) -> Li
                 cw = dict(w)
                 cw["word"] = t
                 out.append(cw)
-        return out
+        return _drop_filler_tokens(out)
 
     out = []
     n = len(raw_words)
@@ -408,7 +476,7 @@ def _clean_word_tokens(raw_words: List[Dict[str, Any]], strip_punct: bool) -> Li
         if sent_end:
             cw["_sent_end"] = True
         out.append(cw)
-    return out
+    return _drop_filler_tokens(out)
 
 
 def fmt_ass_time(sec: float) -> str:
@@ -487,6 +555,40 @@ def _compute_authoritative_subtitle_bbox(
     return cand
 
 
+def _norm_tokens(s: Any) -> str:
+    return strip_display_punctuation(re.sub(r"\s+", "", str(s or "")))
+
+
+def align_words_to_sentence_text(text: str, asr_words: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """把**整理后**的句子文字重新对回逐字时间戳。
+
+    为什么会不一致：ASR 给的是原话（`然后唔知道大家` / `诶唔知道大家中意食` / 句尾多个 `听`），
+    上屏前 Agent 整理过（去口癖、补标点、合半句），字数和字面都变了。
+    旧实现直接把 ASR 词表拼起来当字幕，于是屏幕上印的还是那堆口癖 —— 整理白整理了。
+    """
+    norm = _norm_tokens(text)
+    if not norm or not asr_words:
+        return []
+    # align_corrected_text_to_words 返回的是逐字 dict 列表（word/start_sec/end_sec）
+    char_times, _cov = align_corrected_text_to_words(text, asr_words)
+    if len(char_times) != len(norm):
+        return []
+    out: List[Dict[str, Any]] = []
+    i = 0
+    for tok in tokenize_semantic_words(text):
+        n = len(_norm_tokens(tok))
+        if n <= 0:
+            continue
+        span = char_times[i:i + n]
+        if len(span) < n:
+            return []
+        out.append({"word": tok,
+                    "start_sec": float(span[0]["start_sec"]),
+                    "end_sec": float(span[-1]["end_sec"])})
+        i += n
+    return out if i == len(norm) else []
+
+
 def split_sentence_into_chunks(
     sent: Dict[str, Any],
     max_chars: int = 10,
@@ -502,6 +604,11 @@ def split_sentence_into_chunks(
     clean_fn = strip_display_punctuation if strip_punct else (lambda s: str(s or "").strip())
     words = _clean_word_tokens(list(sent.get("words") or []), strip_punct=strip_punct)
     sent_kws = list(sent.get("keywords") or [])
+    # 字幕文字一律跟**嘴上说的**走（逐词时间戳来自 ASR 词表）。
+    # 2026-11-24 实测教训：成稿那一行是「整理后」的文字（去口癖、合并半句），跟原始录音并不逐字一致；
+    # 拿它去覆盖字幕，屏幕上就会出现「𠮶边就系我哋嘅厨房」而观众听到的是「同大家介绍下啦…」，
+    # 而且按字对齐会把时间戳拉到句子另一端，出现 6 秒的空档。整理只用于决定**剪哪几句**，
+    # 上屏文字由词表清洗得到（口癖词单独剔掉，不动时间轴）。
     eff_terms = load_protected_terms(extra_terms=list(protected_terms or []) + [str(k) for k in sent_kws])
 
     if not words:
@@ -622,6 +729,17 @@ def split_sentence_into_chunks(
                     "words": list(tail_sl),
                     "keywords": sent_kws,
                 })
+    # 时间必须落在本句窗口内、且前后不重叠：成稿文字与 ASR 词表对不齐时，
+    # 插值会算到句界之外（2026-11-24 实测最大越窗 1480ms，1 处）
+    t_lo = float(sent["start_sec"])
+    t_hi = float(sent["end_sec"])
+    prev_end = t_lo
+    for _c in chunks:
+        st = min(max(float(_c["start_sec"]), prev_end), t_hi)
+        en = min(max(float(_c["end_sec"]), st + 0.08), t_hi)
+        _c["start_sec"] = round(st, 4)
+        _c["end_sec"] = round(en, 4)
+        prev_end = en
     for _c in chunks:
         for _w in _c.get("words") or []:
             _w.pop("_sent_end", None)
@@ -709,8 +827,9 @@ def run_step5(
     raw_pain_kws = set(str(k) for k in ((read_json(raw_intel_p).get("pain_keywords") or []) if raw_intel_p.is_file() else []) if str(k).strip())
 
     # 切分前即加载 terms.txt 与原材关键词作为 DP 保护词，从源头禁止把专有名词/品牌词切碎
-    terms_p = pipeline_dir / "terms.txt"
-    prot_terms = load_protected_terms(terms_p if terms_p.is_file() else None, extra_terms=list(raw_pain_kws))
+    # 2026-11-24 实测：术语表在素材侧 `_SVS工作区/术语表.txt`，而这里只找 pipeline/terms.txt，
+    # 于是「金湾」「点赞茶楼」「卡座」「中空」全被切碎，字幕在词中间断行。
+    prot_terms = load_protected_terms(_terms_file_for(pipeline_dir), extra_terms=list(raw_pain_kws))
 
     idx = 1
     suppressed_count = 0
