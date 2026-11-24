@@ -412,13 +412,31 @@ def _resolve_default_bgm(track: str, style_id: Optional[str] = None) -> Path:
     src = find_source_bgm(style_id)
     if src is not None:
         return src
+    # 只认这个风格自己的 manifest 节点。旧写法在最后写死 `style_01_bgm.m4a`（creator 轨写 style_11），
+    # 于是「源草稿没有 BGM」的风格会静悄悄放上别家的曲子（2026-11-24 实测：整片 BGM 是 style_01 的）。
+    node: Dict[str, Any] = {}
     try:
-        from vibe_sound import get_default_sound_profile
-        prof = get_default_sound_profile(track)
-        if prof and prof.get("bgm_wav") and Path(prof["bgm_wav"]).is_file():
-            return Path(prof["bgm_wav"])
+        mf = read_json(ASSETS_DIR / "sound_vibe" / "vibe_sound_manifest.json")
+        node = (mf.get("styles") or {}).get(str(style_id or "")) or {}
     except Exception:
-        pass
+        node = {}
+    rel = node.get("bgm_wav")
+    if rel and not node.get("bgm_is_silence_placeholder"):
+        cand = ASSETS_DIR / str(rel)
+        if cand.is_file():
+            return cand
+    # 本风格确实没有 BGM：给一条等长静音占位（下游会按小节循环），绝不再借别家的曲子。
+    quiet = ASSETS_DIR / "sound_vibe" / "bgm" / "_no_bgm.wav"
+    if not quiet.is_file():
+        try:
+            quiet.parent.mkdir(parents=True, exist_ok=True)
+            save_stereo_wav_np(quiet, np.zeros((SR * 3, 2), dtype=np.float32), SR)
+        except Exception:
+            pass
+    if quiet.is_file():
+        print(f"[step3] [WARN] {style_id or track} 没有自己的 BGM（{node.get('bgm_disabled_reason') or '源草稿里没有'}），"
+              f"整片不放 BGM，用静音占位顶住")
+        return quiet
     sid = "style_01" if track == "store" else "style_11"
     return ASSETS_DIR / "sound_vibe" / "bgm" / f"{sid}_bgm.m4a"
 
