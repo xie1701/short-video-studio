@@ -1028,6 +1028,9 @@ def patch_locked_audio_sentences(
     save_stereo_wav_np(voice_p, locked_voice, SR)
 
     # 同步调整 BGM 长度至新总长
+    # style_id 不在本函数签名里，从已落盘的风格应用记录读（读不到则按账号轨回落），
+    # 供 _resolve_default_bgm 挑对应风格的原曲/替代乐段。
+    style_id = load_style_applied(pipeline_dir) or ("style_01" if track == "store" else "style_11")
     bgm_src_file = Path(str((ae.get("bgm") or {}).get("file") or ""))
     if not bgm_src_file.is_file():
         bgm_src_file = bgm_p if bgm_p.is_file() else _resolve_default_bgm(track, style_id)

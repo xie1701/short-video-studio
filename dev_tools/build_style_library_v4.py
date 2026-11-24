@@ -308,6 +308,13 @@ def _shadow_hex(sh: dict) -> str:
     return f"#{col.upper()}{alpha:02X}"
 
 
+def _truth_key(project: str) -> str:
+    """草稿目录名 → 脱敏键。规则唯一真源在 common.truth_project_key()，这里只做薄封装。"""
+    sys.path.insert(0, str(ROOT / "short-video-studio" / "scripts"))
+    from common import truth_project_key  # noqa: PLC0415
+    return truth_project_key(project)
+
+
 def _load_text_truth() -> dict:
     if not TEXT_TRUTH.is_file():
         raise SystemExit(
@@ -502,7 +509,8 @@ def main() -> None:
         )
 
         sub = s["subtitle_spec"]
-        truth = TEXT_TRUTH_MAP.get(str(STYLE_SOURCES.get(sid) or ""), {})
+        _proj = str(STYLE_SOURCES.get(sid) or "")
+        truth = TEXT_TRUTH_MAP.get(_proj) or TEXT_TRUTH_MAP.get(_truth_key(_proj)) or {}
         # 无基础字幕的风格（纯花字叙事）没有 sub_y/sub_max_chars：用最密文字轨的实测中位值兜底
         ts_all = t.get("track_summaries") or []
         densest = max(ts_all, key=lambda x: x.get("seg_count") or 0) if ts_all else {}

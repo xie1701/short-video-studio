@@ -2762,9 +2762,11 @@ class SubtitlePaintTruthTests(unittest.TestCase):
         styles = {x["style_id"]: x for x in lib["styles"]}
         tpls = read_json(ASSETS_DIR / "subtitle_templates" / "templates.json")["templates"]
         checked = 0
+        from common import truth_project_key
         for sid, src in sorted(srcs.items()):
             draft = src if isinstance(src, str) else src.get("draft")
-            tr = truth.get(draft or "")
+            # 入库真值已脱敏：项目键是 p_<sha256前12位>，用同一条规则反查
+            tr = truth.get(draft or "") or truth.get(truth_project_key(draft or ""))
             if not tr or "error" in tr:
                 continue
             sub = styles[sid]["subtitle_spec"]
@@ -4364,6 +4366,154 @@ class ReplicaRenderSizingTests(unittest.TestCase):
         self.assertEqual((w, h), (self.OUT_W, self.OUT_H))
         self.assertEqual(sar, "1:1", "前景必须是方形像素，否则蒙版/合成双口径又会出现")
         self.assertAlmostEqual(dur, 0.2, delta=0.1)
+
+
+class WiringRegressionTests(unittest.TestCase):
+    """「有调用点但走不到」这一类的回归锁。
+
+    背景：全仓通读挖出两个漏 import 的 NameError——`inventory_media` 用了 `os` 却没 import，
+    导致入口 2「带素材进来」第一步就崩；`step9_title_cover` 调 `get_cached_font` 却没 import，
+    导致交付清单里的 360px 预览图永远不存在。两者都因为测试只断言 docstring 而长期没被发现。
+    这里锁的是「符号可达 + 签名对得上 + 状态语义不倒挂」，不是实现细节。
+    """
+
+    def test_inventory_media_can_call_local_vision_guard(self):
+        """`_local_vision_allowed()` 依赖 os.environ，模块必须自己 import os。"""
+        import inventory_media as INV
+        self.assertFalse(INV._local_vision_allowed())  # 默认不放开本地冒充
+        os.environ["SVS_LOCAL_VISION"] = "1"
+        try:
+            self.assertTrue(INV._local_vision_allowed())
+        finally:
+            os.environ.pop("SVS_LOCAL_VISION", None)
+
+    def test_inventory_directory_runs_on_empty_material_dir(self):
+        """入口 2 的第一步必须能跑完（此前 NameError 直接打死）。"""
+        import inventory_media as INV
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "素材").mkdir()
+            inv = INV.inventory_directory(Path(td), "store")
+        self.assertIn("clips", inv)
+        self.assertEqual(inv.get("clip_count"), 0)
+
+    def test_step9_cover_preview_font_helper_is_imported(self):
+        """`get_cached_font` 必须真的在 step9 名字空间里，否则 360px 预览图被 incept 吞掉。"""
+        import step9_title_cover as S9
+        self.assertTrue(hasattr(S9, "get_cached_font"))
+        self.assertTrue(callable(S9.get_cached_font))
+
+    def test_render_and_verify_only_signature_binds_every_call_site(self):
+        """函数签名必须能接住所有调用点传的关键字（此前多传 allow_style_deviation → 四条模式全 TypeError）。"""
+        import ast
+        import inspect
+        import run_pipeline as RP
+        params = set(inspect.signature(RP._render_and_verify_only).parameters)
+        src = inspect.getsource(RP)
+        tree = ast.parse(src)
+        calls = [
+            n for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "_render_and_verify_only"
+        ]
+        self.assertTrue(calls, "应至少有一个调用点")
+        for call in calls:
+            extra = [k.arg for k in call.keywords if k.arg and k.arg not in params]
+            self.assertEqual(extra, [], f"第 {call.lineno} 行传了签名里没有的参数")
+
+    def test_warn_is_a_non_blocking_status(self):
+        """WARN 是提醒不是硬失败：passed=True，且不进 blocking。"""
+        import qa_inspector as QA
+        warn = QA._mk_check("ending_complete", "片尾", "WARN", "收尾偏软", "末句收住")
+        self.assertEqual(warn["status"], "WARN")
+        self.assertTrue(warn["passed"])
+        self.assertEqual(review_checks([warn], "auto", False), ([], []))
+        # FAIL 仍然必须拦
+        fail = QA._mk_check("x", "y", "FAIL", "", "")
+        self.assertEqual(review_checks([fail], "auto", False), (["x"], []))
+
+    def test_unknown_status_still_degrades_to_fail(self):
+        """只放行已知状态；未知状态仍按 FAIL 处理，不许被 WARN 这条通道带偏。"""
+        import qa_inspector as QA
+        odd = QA._mk_check("x", "y", "WHATEVER", "", "")
+        self.assertEqual(odd["status"], "FAIL")
+        self.assertFalse(odd["passed"])
+
+    def test_native_draft_exports_audio_from_mixed_stems(self):
+        """原生剪映草稿必须挂人声/BGM：走 08_* 分轨，不许再找从未被创建的 media/audio/。"""
+        import inspect
+        import export_jianying_native as EJN
+        src = inspect.getsource(EJN)
+        self.assertIn("resolve_audio_stems(", src)
+        self.assertNotIn('"media" / "audio"', src)
+
+    def test_patch_locked_audio_sentences_resolves_style_id(self):
+        """增量改句路径用过 style_id 却没定义 → 返工时才崩。这里静态锁住它必须先绑定。"""
+        import ast
+        import inspect
+        import step3_lock_audio as S3
+        src = inspect.getsource(S3.patch_locked_audio_sentences)
+        tree = ast.parse(src)
+        assigned = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
+        used = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Load)}
+        if "style_id" in used:
+            self.assertIn("style_id", assigned, "style_id 必须在函数体内先赋值")
+
+    def test_tracked_forensic_truth_has_no_private_identifiers(self):
+        """取证真值可以入库，但键必须是脱敏哈希：草稿目录名与本机路径一个都不许留在仓库里。
+
+        这条是补上一个真实事故——114 个草稿目录名跟着一个 json 进了公开仓库，
+        而当时的隐私扫描只覆盖 scripts/dev_tools/README，`forensic/` 完全是盲区。
+        """
+        import common
+        truth_p = ROOT / "forensic" / "text_style_truth.json"
+        self.assertTrue(truth_p.is_file(), "真值文件应在库内（脱敏版）")
+        raw = truth_p.read_text(encoding="utf-8")
+        # 敏感串在运行时拼出来：本文件自身也要过隐私扫描，不能把字面量写进来
+        home_marker = os.path.expanduser("~")
+        for bad in (home_marker, "Jianying" + "Pro", "com.lveditor" + ".draft", "Movies" + os.sep):
+            self.assertNotIn(bad, raw, "真值文件里不许出现本机路径或剪映标识")
+        keys = list((json.loads(raw).get("projects") or {}).keys())
+        self.assertGreaterEqual(len(keys), 100, "真值应覆盖全部草稿")
+        for k in keys:
+            self.assertRegex(k, r"^p_[0-9a-f]{12}$", f"项目键未脱敏：{k}")
+        # 反查规则唯一真源
+        self.assertEqual(common.truth_project_key("x"), "p_" + __import__("hashlib").sha256(b"x").hexdigest()[:12])
+
+    def test_repo_root_docs_do_not_leak_local_paths(self):
+        """根目录文档也不许带本机绝对路径（历史里已经清过一次，别再写回来）。"""
+        import re
+        for name in ("README.md", "PLAN_v4.3.md", "PLAN_v5_top-tier.md", "REVIEW_2026-11-24.md"):
+            p = ROOT / name
+            if not p.is_file():
+                continue
+            raw = p.read_text(encoding="utf-8")
+            self.assertNotIn(os.path.expanduser("~"), raw, f"{name} 含本机绝对路径")
+            self.assertNotIn("com.lveditor" + ".draft", raw, f"{name} 含剪映草稿库路径")
+
+    def test_subtitle_chunks_never_cross_sentence_boundary(self):
+        """一屏之内不许跨句：词分词阶段丢掉句号会让「贵。其实」粘成「贵其 / 实成本」。"""
+        import step5_subtitles as S5
+
+        def sent(text):
+            return {
+                "id": "s1", "start_sec": 0.0, "end_sec": 4.0, "text": text,
+                "words": [{"word": ch, "start_sec": i * 0.2, "end_sec": (i + 1) * 0.2}
+                          for i, ch in enumerate(text)],
+            }
+
+        cases = [
+            ("第一次来的人都会问为什么这么贵。其实成本全花在食材上。",
+             ["第一次来的人都", "会问为什么这么贵", "其实成本", "全花在食材上"]),
+            ("很多人以为烧烤店靠的是味道。其实不是。靠的是记住每个老客的口味。",
+             ["很多人以为烧烤", "店靠的是味道", "其实不是", "靠的是记住", "每个老客的口味"]),
+        ]
+        for text, expect in cases:
+            chunks = S5.split_sentence_into_chunks(sent(text), max_chars=10, font_size=62, max_safe_px=640)
+            got = [c["text"] for c in chunks]
+            self.assertEqual(got, expect)
+            for c in chunks:
+                for w in c["words"]:
+                    self.assertNotIn("_sent_end", w, "内部标记不许落盘")
+
 
 
 if __name__ == "__main__":

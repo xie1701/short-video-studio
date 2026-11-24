@@ -259,7 +259,7 @@ def review_checks(checks: List[Dict[str, Any]], export_mode: str, strict_asr: bo
     blocking, manual = [], []
     for check in checks:
         cid, status = check["id"], check["status"]
-        if status == "PASS" or (cid == "bb_export_contracts" and not exports_required):
+        if status in ("PASS", "WARN") or (cid == "bb_export_contracts" and not exports_required):
             continue
         if status == "SKIPPED_UNAVAILABLE" and cid in reviewable:
             manual.append(cid)
@@ -1739,6 +1739,15 @@ def _sha256_file_cached(path_str: str, inode: int, size: int, mtime_ns: int, cti
         for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def truth_project_key(project: str) -> str:
+    """草稿目录名 → 取证真值文件里的脱敏键 `p_<sha256前12位>`。
+
+    取证产物（如 text_style_truth.json）要入库，但项目键原本就是用户的草稿目录名，属私有信息。
+    入库版本统一把键换成内容哈希；读取方用这条规则反查，全仓只此一份，别再各写一遍。
+    """
+    return "p_" + hashlib.sha256(str(project or "").encode("utf-8")).hexdigest()[:12]
 
 
 def sha256_file(path: Path) -> str:

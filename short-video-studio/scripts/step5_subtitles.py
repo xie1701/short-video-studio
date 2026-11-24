@@ -60,6 +60,9 @@ _COMMON_TWO_CHAR_WORDS = {
     "放大", "缩小", "面积", "真实", "成本", "利润", "价格", "时间", "方法", "步骤", "结果",
     "对比", "发现", "问题", "答案", "原因", "标准", "细节", "效果", "数据", "视频", "画面",
     "字幕", "镜头", "声音", "节奏", "烧烤", "羊排", "门店", "顾客", "老板", "新人", "完播",
+    # 高频连接/副词：不断开会读得更顺（此前「最后还|是删掉了」这类会被切开）
+    "还是", "就是", "只是", "于是", "要是", "或是", "总是", "老是", "已经", "一定",
+    "可能", "应该", "现在", "最后", "关键", "基本", "差不多", "下来", "起来", "出来",
 }
 
 
@@ -211,7 +214,8 @@ def dp_segment_short_lines(
             return 0.0
         left = raw[:pos]
         right = raw[pos:]
-        if left and left[-1] in _DP_SOFT_PUNCT:
+        # 句末标点与软标点一样是天然断点：此前只认软标点，导致「贵。其」跨句拼进同一行
+        if left and (left[-1] in _DP_SOFT_PUNCT or left[-1] in "。！？!?"):
             return 0.0
         cost = 4.0
         r_trim = right.lstrip("，、；：,;: 。！？!?")
@@ -253,6 +257,10 @@ def dp_segment_short_lines(
             if compact_len <= 3 and (i > 0 or j < nb - 1):
                 short_pen += 12.0
             cand = best[i] + _break_cost(bounds[j]) + short_pen + 1.0
+            # 一屏之内不允许跨句：span 中段（非末尾）夹着句末标点 = 先把两句话粘成一行，重罚
+            mid = raw[bounds[i]:bounds[j]]
+            if _DP_HARD_SPLIT_RE.search(mid.rstrip("。！？!? ")):
+                cand += 40.0
             if cand < best[j]:
                 best[j] = cand
                 prev[j] = i
@@ -387,10 +395,18 @@ def _clean_word_tokens(raw_words: List[Dict[str, Any]], strip_punct: bool) -> Li
         if trail_protected and cleaned.endswith("9"):
             cleaned = cleaned[:-1]
         cleaned = cleaned.strip()
+        # 句末标点会在这一步被剥掉。句界信息一旦丢了，后面的呼吸组与 DP 就再也分不清
+        # 「为什么这么贵。其实…」和「为什么这么贵其实…」，会把两句话粘进同一行。
+        # 所以在这里先打一个只在内部流转、落盘前会摘掉的标记。
+        sent_end = bool(re.search(r"[。！？!?]", orig))
         if not cleaned:
+            if sent_end and out:
+                out[-1]["_sent_end"] = True
             continue
         cw = dict(w)
         cw["word"] = cleaned
+        if sent_end:
+            cw["_sent_end"] = True
         out.append(cw)
     return out
 
@@ -529,6 +545,11 @@ def split_sentence_into_chunks(
     cur_grp: List[Dict[str, Any]] = [words[0]]
     for prev_w, cur_w in zip(words, words[1:]):
         gap = float(cur_w["start_sec"]) - float(prev_w["end_sec"])
+        # 句末强制断组：一屏之内不跨句
+        if prev_w.get("_sent_end"):
+            breath_groups.append(cur_grp)
+            cur_grp = [cur_w]
+            continue
         if gap >= 0.30 and len(cur_grp) >= 4:
             breath_groups.append(cur_grp)
             cur_grp = [cur_w]
@@ -601,6 +622,9 @@ def split_sentence_into_chunks(
                     "words": list(tail_sl),
                     "keywords": sent_kws,
                 })
+    for _c in chunks:
+        for _w in _c.get("words") or []:
+            _w.pop("_sent_end", None)
     return chunks
 
 

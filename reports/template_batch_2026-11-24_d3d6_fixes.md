@@ -3,7 +3,7 @@
 产物目录：`<产物根>/template_batch_24/`（每套 `final.mp4` / `report.json` / `frames/`）
 跑法：`python dev_tools/run_template_batch.py --styles style_07,style_09,style_11,style_16,style_19,style_22 --jobs 1 --force --date 2026-11-24_d3d6`
 批跑汇总：`reports/template_batch_2026-11-24_d3d6.csv` / `.md`
-基线（改前）report.json 原样留档：`reports/baseline_before_d3d6/<style>.report.json`
+基线（改前）report.json 原样留档：**不在仓库内**（含素材绝对路径，已移到 `<产物根>/_baseline_before_d3d6/<style>.report.json`）。仓库里只保留本文件的对照表。
 
 ## 一、6 套 × 前后对照（数字全部取自 report.json）
 

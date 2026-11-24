@@ -45,6 +45,7 @@ from common import (  # noqa: E402
     DEFAULT_FPS,
     maybe_reexec_in_venv,
     read_json,
+    resolve_audio_stems,
     write_json,
 )
 
@@ -490,12 +491,23 @@ def export_native_draft(pipeline_dir: Path, out_dir: Optional[Path] = None) -> D
         flower_segs.append(seg)
 
     # 音频轨：人声母带 / BGM / 音效（存在才挂）
+    # 三端同源：走 common.resolve_audio_stems()，优先 08_voice_master / 08_bgm_ducked / 08_sfx_master，
+    # 缺 08 时才回退 03 锁定音轨与 06 音效轨（旧代码只找从未被创建的 media/audio/，导出物永远无声音）。
+    def _rj(p: Path) -> Dict[str, Any]:
+        try:
+            return read_json(p) if p.is_file() else {}
+        except Exception:
+            return {}
+
+    _ae = _rj(pipeline_dir / "03_audio_events.json")
+    _mix = _rj(pipeline_dir / "08_mix_metrics.json")
+    stems = resolve_audio_stems(pipeline_dir, _ae, _mix)
     audios: List[Dict[str, Any]] = []
     audio_tracks: List[List[Dict[str, Any]]] = []
     for cand, cat in (
-        (pipeline_dir / "media" / "audio" / "voice_master.wav", "voice"),
-        (pipeline_dir / "media" / "audio" / "bgm_ducked.wav", "bgm"),
-        (Path(str(pkg.get("sfx_track_wav") or "")), "sfx"),
+        (stems.get("voice"), "voice"),
+        (stems.get("bgm"), "bgm"),
+        (stems.get("sfx") or Path(str(pkg.get("sfx_track_wav") or "")), "sfx"),
     ):
         p = Path(str(cand))
         if not p.is_file():

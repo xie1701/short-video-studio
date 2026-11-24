@@ -1061,7 +1061,7 @@ def run_visual_to_delivery(
         hook_variants=hook_variants,
         ws=ws,
         sync_window=sync_window,
-        allow_style_deviation=allow_style_deviation,
+        # 风格锁已在上方 _enforce_style_lock() 一次性强制执行，这里不再重复传参
     )
 
 
@@ -1670,8 +1670,9 @@ def main() -> None:
             )
             record_milestone(pipeline_dir, "stop2_blind_audio", "Step 3 盲听锁定音轨完成")
         elif args.mode == "relock-voice":
+            # eff_raw 必须在分支前绑定：下面的 run_step2 无论走哪条路都要用它做术语/背景资料目录
+            eff_raw = _ensure_effective_raw_dir()
             if not (pipeline_dir / "01_manifest.json").exists():
-                eff_raw = _ensure_effective_raw_dir()
                 _run_inventory_if_needed(eff_raw)
                 run_step1([eff_raw], pipeline_dir, shared_cache_dir=ws.get("shared_cache_dir"))
             else:

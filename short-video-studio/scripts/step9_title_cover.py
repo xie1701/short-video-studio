@@ -40,6 +40,7 @@ from common import (
     find_bin,
     find_commercial_font,
     fit_text_line,
+    get_cached_font,
     hex_to_rgba,
     load_style_applied,
     load_style_spectrum_entry,

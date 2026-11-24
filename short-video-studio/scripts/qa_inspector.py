@@ -59,12 +59,13 @@ def _mk_check(
     measured: str,
     threshold: str,
 ) -> Dict[str, Any]:
-    st = status if status in ("PASS", "FAIL", "SKIPPED_UNAVAILABLE", "NOT_REQUESTED") else "FAIL"
+    st = status if status in ("PASS", "WARN", "FAIL", "SKIPPED_UNAVAILABLE", "NOT_REQUESTED") else "FAIL"
     return {
         "id": cid,
         "name": name,
         "status": st,
-        "passed": (st == "PASS"),
+        # WARN = 提醒但不阻断交付；只有 FAIL 会把片子拦下来
+        "passed": (st in ("PASS", "WARN")),
         "measured": measured,
         "threshold": threshold,
     }
@@ -745,6 +746,7 @@ def inspect_video(
 
     pass_cnt = sum(1 for c in checks if c["status"] == "PASS")
     fail_cnt = sum(1 for c in checks if c["status"] == "FAIL")
+    warn_cnt = sum(1 for c in checks if c["status"] == "WARN")
     skip_cnt = sum(1 for c in checks if c["status"] == "SKIPPED_UNAVAILABLE")
 
     report: Dict[str, Any] = {
@@ -767,6 +769,8 @@ def inspect_video(
         "strict_asr": strict_asr,
         "pass_count": pass_cnt,
         "fail_count": fail_cnt,
+        "warn_count": warn_cnt,
+        "warning_checks": [c["id"] for c in checks if c["status"] == "WARN"],
         "skipped_count": skip_cnt,
         "total_checks": len(checks),
         "checks": checks,

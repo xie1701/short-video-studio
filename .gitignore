@@ -47,3 +47,12 @@ dist/
 short-video-studio/vendor/
 
 
+
+# 取证中间产物（含草稿目录名/本机路径，禁止入库）；已入库的三个真值文件用 ! 白名单放行
+forensic/decrypted/
+forensic/*.json
+forensic/*.csv
+!forensic/style_edit_grammar.json
+!forensic/style_render_truth.json
+!forensic/text_style_truth.json
+forensic/jy_*.py
