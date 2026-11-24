@@ -1128,6 +1128,7 @@ def run_visual_to_delivery(
     no_flower_text: bool = False,
     agent: Optional[str] = None,
     allow_style_deviation: bool = False,
+    allow_broll_mismatch: bool = False,
 ) -> Dict[str, Any]:
     edl_p = pipeline_dir / "04_edl.json"
     if keep_edl and edl_p.is_file():
@@ -1154,6 +1155,9 @@ def run_visual_to_delivery(
             style_id=style_id,
             account_profile=account_profile,
             edit_profile=edit_profile,
+            # 选片必须真按台词语义核过：命中率不够就停，不许静默出片
+            enforce_broll_gate=True,
+            allow_broll_mismatch=allow_broll_mismatch,
         )
     _record_cli_style_choices(pipeline_dir, style_id, subtitle_template, lut_name)
     run_step5(pipeline_dir, track=track, template_id=subtitle_template)
@@ -1235,6 +1239,12 @@ def main() -> None:
         action="store_true",
         help="默认关闭：出片前会校验是否 100%% 套用了所选风格的库标准，发现偏离即停下。"
              "只有用户明确同意偏离时才加这个开关，并在交付说明里写清改了哪几项",
+    )
+    parser.add_argument(
+        "--allow-broll-mismatch",
+        action="store_true",
+        help="默认关闭：B-roll 选片要与台词语义对上（命中率 ≥45%% 且无依据占比 ≤25%%），不够即停。"
+             "只有用户明确接受「画面和台词对不上」时才加这个开关",
     )
     parser.add_argument("--subtitle-template", help="字幕模板 ID")
     parser.add_argument("--lut", help="调色 LUT 文件名")
@@ -1689,6 +1699,7 @@ def main() -> None:
             store_anchor=args.store_anchor,
             require_lock=args.require_lock,
             allow_style_deviation=args.allow_style_deviation,
+            allow_broll_mismatch=args.allow_broll_mismatch,
             strict_asr=args.strict_asr,
             export_mode=args.exports,
             edit_profile=edit_profile,
@@ -1763,6 +1774,7 @@ def main() -> None:
             store_anchor=args.store_anchor,
             require_lock=args.require_lock,
             allow_style_deviation=args.allow_style_deviation,
+            allow_broll_mismatch=args.allow_broll_mismatch,
             strict_asr=args.strict_asr,
             export_mode=args.exports,
             edit_profile=edit_profile,
@@ -1871,6 +1883,7 @@ def main() -> None:
             store_anchor=args.store_anchor,
             require_lock=args.require_lock,
             allow_style_deviation=args.allow_style_deviation,
+            allow_broll_mismatch=args.allow_broll_mismatch,
             strict_asr=args.strict_asr,
             export_mode=args.exports,
             edit_profile=edit_profile,
