@@ -27,7 +27,9 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 FACE_HEADROOM = 0.44
 # 一张脸在窗口里至少占到这个比例才认为"人脸是主体"，否则按普通物体构图处理
 FACE_MAIN_RATIO = 0.22
-_SAMPLE_TS = (0.25, 0.55, 0.85)
+# 取点要盖住整段：实测 norm_05 只在 0.92s 有正脸，旧三点（25%/55%/85%）全落空 → 整条 a_roll 没脸锚点，
+# 小窗人脸取景与花字避脸就全部瞎了。改成五点、含首尾附近。
+_SAMPLE_TS = (0.08, 0.3, 0.5, 0.7, 0.92)
 
 
 def headroom_for(anchor: Optional[Dict[str, Any]]) -> float:

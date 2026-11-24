@@ -352,6 +352,32 @@ def normalize_single_media(
             item["eye_anchor"] = None
 
         item["saliency_bbox"] = map_norm_bbox_to_crop(shot_meta.get("saliency_bbox"), crop_tx)
+
+    # 盘点走大模型判定时本地不出人脸框，于是 a_roll 镜全都没有脸锚点 →
+    # 小窗人脸取景、花字/贴纸避脸、竖屏重构重心全部没依据（实测 89 条素材里 31 条空，占满 12 个 A-roll 镜）。
+    # 这里对「没有脸锚点」的素材补一次 Apple Vision 三点采样，写回归一化后的坐标。
+    if not item.get("faces") and item.get("normalized_mp4"):
+        norm_p = Path(str(item["normalized_mp4"]))
+        if norm_p.is_file():
+            try:
+                import face_framing
+
+                dur_s = float(item.get("duration_sec") or 3.0)
+                anc = face_framing.anchor_for(str(norm_p), max(0.0, dur_s / 2.0), dur_s)
+            except Exception:
+                anc = None
+            if isinstance(anc, dict) and float(anc.get("w") or 0.0) > 0.0:
+                item["faces"] = [{
+                    "bbox": {
+                        "x": round(float(anc["cx"]) - float(anc["w"]) / 2.0, 4),
+                        "y": round(float(anc["cy"]) - float(anc["h"]) / 2.0, 4),
+                        "w": round(float(anc["w"]), 4),
+                        "h": round(float(anc["h"]), 4),
+                    },
+                    "source": anc.get("source") or "apple_vision",
+                    "frames_sampled": anc.get("frames_sampled"),
+                    "backfilled": True,
+                }]
     return item
 
 
