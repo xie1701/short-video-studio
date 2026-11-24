@@ -283,10 +283,23 @@ def main() -> int:
                 failures.append(f"{sid}.shadow 库={sub.get('shadow')} 草稿真值={want_sh.get('enabled')}")
             if want_sh.get("enabled"):
                 paint_checks += 1
-                want_off = [int(v) for v in (want_sh.get("offset_px") or [0, 0])]
+                # 2026-11-24 重新标定：库里的 shadow_offset 不再是「distance × 4.0」占位分量，
+                # 而是 distance × 2.3px（1080 宽）沿 shadow_point 的分量（实测幅度 11.7px / distance 5.0）。
+                _dist = float(want_sh.get("distance_units") or 0.0)
+                _pt = want_sh.get("point") or {}
+                try:
+                    _ux = float(_pt.get("x"))
+                    _uy = -float(_pt.get("y"))
+                except (TypeError, ValueError, AttributeError):
+                    _ux, _uy = 0.636396103067893, 0.636396103067893
+                _norm = ((_ux * _ux + _uy * _uy) ** 0.5) or 1.0
+                want_off = [int(round(_dist * 2.3 * _ux / _norm)), int(round(_dist * 2.3 * _uy / _norm))]
                 got_off = [int(v) for v in (sub.get("shadow_offset") or [0, 0])]
                 if got_off != want_off:
-                    failures.append(f"{sid}.shadow_offset 库={got_off} 草稿真值={want_off}")
+                    failures.append(f"{sid}.shadow_offset 库={got_off} 重算值={want_off}（distance={_dist}×2.3px）")
+                paint_checks += 1
+                if abs(float(sub.get("shadow_distance_units") or 0) - _dist) > 0.01:
+                    failures.append(f"{sid}.shadow_distance_units 库={sub.get('shadow_distance_units')} 草稿真值={_dist}")
                 paint_checks += 1
                 if abs(float(sub.get("shadow_alpha") or 0) - float(want_sh.get("alpha") or 0)) > 0.06:
                     failures.append(f"{sid}.shadow_alpha 库={sub.get('shadow_alpha')} 草稿真值={want_sh.get('alpha')}")

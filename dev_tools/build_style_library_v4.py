@@ -54,10 +54,11 @@ NAME_OVERRIDES = {
     "style_24": "不露脸混剪 · 炸裂金句高燃踩点风",
 }
 
-# JianYing text `size` → 1080 宽画布像素的换算。剪映没有公开系数，取 4.0 作为
-# 标定初值（size 15 ≈ 60px），校验方式见 reports/style_parity_review §7 的
-# fixture 比对；字段里同时保留原始 units，换算错了只影响 px 一个派生值。
-PX_PER_UNIT = 4.0
+# JianYing text `size` → 1080 宽画布像素的换算：**canvas_w / 172.8 = 6.25**。
+# 2026-11-24 修正：旧值 4.0 让 24 套字幕整体偏小 1.4~1.6 倍（原版 style_21 墨高 70px，我们渲染
+# 48px）。172.8 已由文字图层 content.styles[0].size 反解验证（见 replica_template.PX_PER_UNIT）。
+# 派生器与三道同步：dev_tools/rebuild_subtitle_typography.py。
+PX_PER_UNIT = 1080 / 172.8
 
 # 旧视频壳遗留下来的版式描述（描皱纸模型/Notion卡片/胶片齿孔…），
 # 与真实源不符，按真实草稿重写。数据驱动的部分由上生成，这里只写文本。

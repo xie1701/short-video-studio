@@ -1,5 +1,24 @@
 {
  "note": "剪映字体名（含扩展名）→ 随包字体文件。kind：bundled=已随包（assets/fonts/jianying/<剪映原名>）、alias=剪映商品名对应的开源字体已在 assets/fonts/ 根、missing=本机也没有（套用时回落并在报告计 font_fallback_slots）",
+ "ass_style_families_note": "ASS Style 行里的字体族名（Style: Default,<Fontname>,...）→ 随包字体文件。字幕到底用的哪套字体，唯一真源是每套模板的 ass_style（剪映导出/预览都按它排字）；剪映草稿里的 font_path 常被前一套的思源宋体残留覆盖，不能当证据。重建器：dev_tools/rebuild_subtitle_typography.py",
+ "ass_style_families": {
+  "Alimama ShuHeiTi": {
+   "file": "assets/fonts/AlimamaShuHeiTi-Bold.otf",
+   "note": "阿里妈妈书黑体（粗黑体）。style_21 实测原版成片是粗黑体，而草稿 font_path 残留思源宋体——以本条为准"
+  },
+  "Source Han Serif CN": {
+   "file": "assets/fonts/SourceHanSerifCN-Bold.otf",
+   "note": "思源宋体 Bold"
+  },
+  "Source Han Serif CN Heavy": {
+   "file": "assets/fonts/SourceHanSerifCN-Heavy.otf",
+   "note": "思源宋体 Heavy（ASS 族名带字重后缀，与 Bold 分开映射）"
+  },
+  "Smiley Sans": {
+   "file": "assets/fonts/SmileySans-Oblique.ttf",
+   "note": "得意黑 Smiley Sans"
+  }
+ },
  "entries": {
   "得意黑.ttf": {
    "kind": "alias",

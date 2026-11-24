@@ -169,7 +169,7 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 48,
+        "font_size_1080p_px": 75,
         "keyword_scale": 1.16,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFE28A",
@@ -187,8 +187,8 @@
         "shadow": true,
         "shadow_color": "#000000E6",
         "shadow_offset": [
-          14,
-          14
+          8,
+          8
         ],
         "max_chars_per_line": 12,
         "symmetry_center_x": 540,
@@ -207,7 +207,7 @@
         },
         "max_chars_source": "base_subtitle",
         "font_size_jianying_units": 12.0,
-        "px_per_unit_at_1080": 4.0,
+        "px_per_unit_at_1080": 6.25,
         "bg_box_alpha": 0.0,
         "bg_shape": "none",
         "bg_ratio_measured": 0.0,
@@ -216,11 +216,23 @@
         "safe_y_source": "base_subtitle",
         "stroke_mode": "none",
         "stroke_width_rel": 0.0,
-        "shadow_blur_px": 1.1,
+        "shadow_blur_px": 4.39,
         "shadow_alpha": 0.9,
         "shadow_distance_units": 5.0,
         "shadow_source": "styles.shadows",
-        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）"
+        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）",
+        "ass_font_family": "Alimama ShuHeiTi",
+        "shadow_smoothing": 0.45,
+        "shadow_point": {
+          "x": 0.636396103067893,
+          "y": -0.636396103067893
+        },
+        "typography_calibration": {
+          "px_per_unit_at_1080": 6.25,
+          "shadow_dist_px_per_unit": 2.3,
+          "shadow_blur_em": 0.13,
+          "note": "字号 = font_size_jianying_units × canvas_w/172.8；阴影幅度 = distance × 2.3px（1080 宽）；σ = smoothing × font_px × 0.13。重建器 dev_tools/rebuild_subtitle_typography.py"
+        }
       },
       "color_and_lut": {
         "y_mean_255": 134.0,
@@ -715,7 +727,7 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 64,
+        "font_size_1080p_px": 100,
         "keyword_scale": 1.14,
         "primary_color": "#FFFFFF",
         "keyword_color": "#BCFF00",
@@ -733,8 +745,8 @@
         "shadow": true,
         "shadow_color": "#00000099",
         "shadow_offset": [
-          20,
-          20
+          11,
+          11
         ],
         "max_chars_per_line": 13,
         "symmetry_center_x": 540,
@@ -753,7 +765,7 @@
         },
         "max_chars_source": "base_subtitle",
         "font_size_jianying_units": 16.0,
-        "px_per_unit_at_1080": 4.0,
+        "px_per_unit_at_1080": 6.25,
         "bg_box_alpha": 0.7,
         "bg_shape": "square",
         "bg_ratio_measured": 0.67,
@@ -762,11 +774,23 @@
         "safe_y_source": "base_subtitle",
         "stroke_mode": "none",
         "stroke_width_rel": 0.0,
-        "shadow_blur_px": 0.4,
+        "shadow_blur_px": 1.56,
         "shadow_alpha": 0.6,
         "shadow_distance_units": 7.0,
         "shadow_source": "styles.shadows",
-        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）"
+        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）",
+        "ass_font_family": "Source Han Serif CN",
+        "shadow_smoothing": 0.12,
+        "shadow_point": {
+          "x": 0.890954544295,
+          "y": -0.890954544295
+        },
+        "typography_calibration": {
+          "px_per_unit_at_1080": 6.25,
+          "shadow_dist_px_per_unit": 2.3,
+          "shadow_blur_em": 0.13,
+          "note": "字号 = font_size_jianying_units × canvas_w/172.8；阴影幅度 = distance × 2.3px（1080 宽）；σ = smoothing × font_px × 0.13。重建器 dev_tools/rebuild_subtitle_typography.py"
+        }
       },
       "color_and_lut": {
         "y_mean_255": 81.0,
@@ -1204,7 +1228,7 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 48,
+        "font_size_1080p_px": 75,
         "keyword_scale": 1.12,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFF589",
@@ -1222,8 +1246,8 @@
         "shadow": true,
         "shadow_color": "#000000E6",
         "shadow_offset": [
-          14,
-          14
+          8,
+          8
         ],
         "max_chars_per_line": 15,
         "symmetry_center_x": 540,
@@ -1242,7 +1266,7 @@
         },
         "max_chars_source": "base_subtitle",
         "font_size_jianying_units": 12.0,
-        "px_per_unit_at_1080": 4.0,
+        "px_per_unit_at_1080": 6.25,
         "bg_box_alpha": 0.0,
         "bg_shape": "none",
         "bg_ratio_measured": 0.0,
@@ -1251,11 +1275,23 @@
         "safe_y_source": "base_subtitle",
         "stroke_mode": "none",
         "stroke_width_rel": 0.0,
-        "shadow_blur_px": 0.9,
+        "shadow_blur_px": 4.39,
         "shadow_alpha": 0.9,
         "shadow_distance_units": 5.0,
         "shadow_source": "styles.shadows",
-        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）"
+        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）",
+        "ass_font_family": "Source Han Serif CN Heavy",
+        "shadow_smoothing": 0.45,
+        "shadow_point": {
+          "x": 0.636396103068,
+          "y": -0.636396103068
+        },
+        "typography_calibration": {
+          "px_per_unit_at_1080": 6.25,
+          "shadow_dist_px_per_unit": 2.3,
+          "shadow_blur_em": 0.13,
+          "note": "字号 = font_size_jianying_units × canvas_w/172.8；阴影幅度 = distance × 2.3px（1080 宽）；σ = smoothing × font_px × 0.13。重建器 dev_tools/rebuild_subtitle_typography.py"
+        }
       },
       "color_and_lut": {
         "y_mean_255": 39.5,
@@ -1706,7 +1742,7 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 48,
+        "font_size_1080p_px": 75,
         "keyword_scale": 1.08,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFF589",
@@ -1724,8 +1760,8 @@
         "shadow": true,
         "shadow_color": "#000000E6",
         "shadow_offset": [
-          14,
-          14
+          8,
+          8
         ],
         "max_chars_per_line": 7,
         "symmetry_center_x": 540,
@@ -1744,7 +1780,7 @@
         },
         "max_chars_source": "base_subtitle",
         "font_size_jianying_units": 12.0,
-        "px_per_unit_at_1080": 4.0,
+        "px_per_unit_at_1080": 6.25,
         "bg_box_alpha": 0.0,
         "bg_shape": "none",
         "bg_ratio_measured": 0.0,
@@ -1753,11 +1789,23 @@
         "safe_y_source": "base_subtitle",
         "stroke_mode": "none",
         "stroke_width_rel": 0.0,
-        "shadow_blur_px": 1.1,
+        "shadow_blur_px": 4.39,
         "shadow_alpha": 0.9,
         "shadow_distance_units": 5.0,
         "shadow_source": "styles.shadows",
-        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）"
+        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）",
+        "ass_font_family": "Source Han Serif CN Heavy",
+        "shadow_smoothing": 0.45,
+        "shadow_point": {
+          "x": 0.636396103068,
+          "y": -0.636396103068
+        },
+        "typography_calibration": {
+          "px_per_unit_at_1080": 6.25,
+          "shadow_dist_px_per_unit": 2.3,
+          "shadow_blur_em": 0.13,
+          "note": "字号 = font_size_jianying_units × canvas_w/172.8；阴影幅度 = distance × 2.3px（1080 宽）；σ = smoothing × font_px × 0.13。重建器 dev_tools/rebuild_subtitle_typography.py"
+        }
       },
       "color_and_lut": {
         "y_mean_255": 206.0,
@@ -2171,13 +2219,14 @@
       "subtitle_spec": {
         "font_family": "Smiley Sans",
         "font_candidates": [
+          "AlimamaShuHeiTi-Bold.otf",
           "SmileySans-Oblique.otf",
           "SourceHanSansCN-Bold.otf",
           "NotoSansCJKsc-Bold.otf"
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 96,
+        "font_size_1080p_px": 150,
         "keyword_scale": 1.15,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FE5252",
@@ -2209,7 +2258,7 @@
         },
         "max_chars_source": "base_subtitle",
         "font_size_jianying_units": 24.0,
-        "px_per_unit_at_1080": 4.0,
+        "px_per_unit_at_1080": 6.25,
         "bg_box_alpha": 0.0,
         "bg_shape": "none",
         "bg_ratio_measured": 0.0,
@@ -2221,14 +2270,26 @@
         "shadow": true,
         "shadow_color": "#000000E6",
         "shadow_offset": [
-          14,
-          14
+          8,
+          8
         ],
-        "shadow_blur_px": 1.5,
+        "shadow_blur_px": 8.78,
         "shadow_alpha": 0.9,
         "shadow_distance_units": 5.0,
         "shadow_source": "styles.shadows",
-        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）"
+        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）",
+        "ass_font_family": "Alimama ShuHeiTi",
+        "shadow_smoothing": 0.45,
+        "shadow_point": {
+          "x": 0.636396103068,
+          "y": -0.636396103068
+        },
+        "typography_calibration": {
+          "px_per_unit_at_1080": 6.25,
+          "shadow_dist_px_per_unit": 2.3,
+          "shadow_blur_em": 0.13,
+          "note": "字号 = font_size_jianying_units × canvas_w/172.8；阴影幅度 = distance × 2.3px（1080 宽）；σ = smoothing × font_px × 0.13。重建器 dev_tools/rebuild_subtitle_typography.py"
+        }
       },
       "color_and_lut": {
         "y_mean_255": 162.7,
@@ -2707,13 +2768,14 @@
       "subtitle_spec": {
         "font_family": "Alimama ShuHeiTi",
         "font_candidates": [
+          "SourceHanSerifCN-Bold.otf",
           "AlimamaShuHeiTi-Bold.otf",
           "SourceHanSansCN-Bold.otf",
           "NotoSansCJKsc-Bold.otf"
         ],
         "font_weight": "Bold",
         "bilingual": true,
-        "font_size_1080p_px": 48,
+        "font_size_1080p_px": 75,
         "keyword_scale": 1.08,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFF589",
@@ -2731,8 +2793,8 @@
         "shadow": true,
         "shadow_color": "#000000B2",
         "shadow_offset": [
-          14,
-          14
+          8,
+          8
         ],
         "max_chars_per_line": 9,
         "symmetry_center_x": 540,
@@ -2751,7 +2813,7 @@
         },
         "max_chars_source": "base_subtitle",
         "font_size_jianying_units": 12.0,
-        "px_per_unit_at_1080": 4.0,
+        "px_per_unit_at_1080": 6.25,
         "bg_box_alpha": 0.0,
         "bg_shape": "none",
         "bg_ratio_measured": 0.0,
@@ -2760,11 +2822,23 @@
         "safe_y_source": "base_subtitle",
         "stroke_mode": "none",
         "stroke_width_rel": 0.0,
-        "shadow_blur_px": 1.1,
+        "shadow_blur_px": 4.39,
         "shadow_alpha": 0.7,
         "shadow_distance_units": 5.0,
         "shadow_source": "styles.shadows",
-        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）"
+        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）",
+        "ass_font_family": "Source Han Serif CN",
+        "shadow_smoothing": 0.45,
+        "shadow_point": {
+          "x": 0.636396103068,
+          "y": -0.636396103068
+        },
+        "typography_calibration": {
+          "px_per_unit_at_1080": 6.25,
+          "shadow_dist_px_per_unit": 2.3,
+          "shadow_blur_em": 0.13,
+          "note": "字号 = font_size_jianying_units × canvas_w/172.8；阴影幅度 = distance × 2.3px（1080 宽）；σ = smoothing × font_px × 0.13。重建器 dev_tools/rebuild_subtitle_typography.py"
+        }
       },
       "color_and_lut": {
         "y_mean_255": 157.7,
@@ -3209,7 +3283,7 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 40,
+        "font_size_1080p_px": 62,
         "keyword_scale": 1.15,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFBF17",
@@ -3227,8 +3301,8 @@
         "shadow": true,
         "shadow_color": "#000000B2",
         "shadow_offset": [
-          14,
-          14
+          8,
+          8
         ],
         "max_chars_per_line": 10,
         "symmetry_center_x": 540,
@@ -3247,7 +3321,7 @@
         },
         "max_chars_source": "base_subtitle",
         "font_size_jianying_units": 10.0,
-        "px_per_unit_at_1080": 4.0,
+        "px_per_unit_at_1080": 6.25,
         "bg_box_alpha": 0.0,
         "bg_shape": "none",
         "bg_ratio_measured": 0.0,
@@ -3256,11 +3330,23 @@
         "safe_y_source": "base_subtitle",
         "stroke_mode": "none",
         "stroke_width_rel": 0.0,
-        "shadow_blur_px": 0.9,
+        "shadow_blur_px": 3.63,
         "shadow_alpha": 0.7,
         "shadow_distance_units": 5.0,
         "shadow_source": "styles.shadows",
-        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）"
+        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）",
+        "ass_font_family": "Alimama ShuHeiTi",
+        "shadow_smoothing": 0.45,
+        "shadow_point": {
+          "x": 0.636396103068,
+          "y": -0.636396103068
+        },
+        "typography_calibration": {
+          "px_per_unit_at_1080": 6.25,
+          "shadow_dist_px_per_unit": 2.3,
+          "shadow_blur_em": 0.13,
+          "note": "字号 = font_size_jianying_units × canvas_w/172.8；阴影幅度 = distance × 2.3px（1080 宽）；σ = smoothing × font_px × 0.13。重建器 dev_tools/rebuild_subtitle_typography.py"
+        }
       },
       "color_and_lut": {
         "y_mean_255": 133.9,
@@ -3688,13 +3774,14 @@
       "subtitle_spec": {
         "font_family": "Alimama ShuHeiTi",
         "font_candidates": [
+          "SmileySans-Oblique.ttf",
           "AlimamaShuHeiTi-Bold.otf",
           "SourceHanSansCN-Bold.otf",
           "NotoSansCJKsc-Bold.otf"
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 48,
+        "font_size_1080p_px": 75,
         "keyword_scale": 1.12,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFDE00",
@@ -3732,7 +3819,7 @@
         },
         "max_chars_source": "base_subtitle",
         "font_size_jianying_units": 12.0,
-        "px_per_unit_at_1080": 4.0,
+        "px_per_unit_at_1080": 6.25,
         "bg_box_alpha": 0.7,
         "bg_shape": "square",
         "bg_ratio_measured": 1.0,
@@ -3743,9 +3830,21 @@
         "stroke_width_rel": 0.0,
         "shadow_blur_px": 0.0,
         "shadow_alpha": 0.0,
-        "shadow_distance_units": null,
+        "shadow_distance_units": 5.0,
         "shadow_source": "none",
-        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）"
+        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）",
+        "ass_font_family": "Smiley Sans",
+        "shadow_smoothing": 0.45,
+        "shadow_point": {
+          "x": 0.636396103068,
+          "y": -0.636396103068
+        },
+        "typography_calibration": {
+          "px_per_unit_at_1080": 6.25,
+          "shadow_dist_px_per_unit": 2.3,
+          "shadow_blur_em": 0.13,
+          "note": "字号 = font_size_jianying_units × canvas_w/172.8；阴影幅度 = distance × 2.3px（1080 宽）；σ = smoothing × font_px × 0.13。重建器 dev_tools/rebuild_subtitle_typography.py"
+        }
       },
       "color_and_lut": {
         "y_mean_255": 145.3,
@@ -4163,13 +4262,14 @@
       "subtitle_spec": {
         "font_family": "Smiley Sans",
         "font_candidates": [
+          "SmileySans-Oblique.ttf",
           "SmileySans-Oblique.otf",
           "SourceHanSansCN-Bold.otf",
           "NotoSansCJKsc-Bold.otf"
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 48,
+        "font_size_1080p_px": 75,
         "keyword_scale": 1.1,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FF1837",
@@ -4187,8 +4287,8 @@
         "shadow": true,
         "shadow_color": "#000000E6",
         "shadow_offset": [
-          14,
-          14
+          8,
+          8
         ],
         "max_chars_per_line": 46,
         "symmetry_center_x": 540,
@@ -4207,7 +4307,7 @@
         },
         "max_chars_source": "base_subtitle",
         "font_size_jianying_units": 12.0,
-        "px_per_unit_at_1080": 4.0,
+        "px_per_unit_at_1080": 6.25,
         "bg_box_alpha": 0.0,
         "bg_shape": "none",
         "bg_ratio_measured": 0.0,
@@ -4216,11 +4316,23 @@
         "safe_y_source": "base_subtitle",
         "stroke_mode": "none",
         "stroke_width_rel": 0.0,
-        "shadow_blur_px": 1.1,
+        "shadow_blur_px": 4.39,
         "shadow_alpha": 0.9,
         "shadow_distance_units": 5.0,
         "shadow_source": "styles.shadows",
-        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）"
+        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）",
+        "ass_font_family": "Smiley Sans",
+        "shadow_smoothing": 0.45,
+        "shadow_point": {
+          "x": 0.636396103068,
+          "y": -0.636396103068
+        },
+        "typography_calibration": {
+          "px_per_unit_at_1080": 6.25,
+          "shadow_dist_px_per_unit": 2.3,
+          "shadow_blur_em": 0.13,
+          "note": "字号 = font_size_jianying_units × canvas_w/172.8；阴影幅度 = distance × 2.3px（1080 宽）；σ = smoothing × font_px × 0.13。重建器 dev_tools/rebuild_subtitle_typography.py"
+        }
       },
       "color_and_lut": {
         "y_mean_255": 115.5,
@@ -4657,13 +4769,14 @@
       "subtitle_spec": {
         "font_family": "Smiley Sans",
         "font_candidates": [
+          "SmileySans-Oblique.ttf",
           "SmileySans-Oblique.otf",
           "SourceHanSansCN-Bold.otf",
           "NotoSansCJKsc-Bold.otf"
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 84,
+        "font_size_1080p_px": 132,
         "keyword_scale": 1.12,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFBF17",
@@ -4681,8 +4794,8 @@
         "shadow": true,
         "shadow_color": "#000000E6",
         "shadow_offset": [
-          14,
-          14
+          8,
+          8
         ],
         "max_chars_per_line": 10,
         "symmetry_center_x": 540,
@@ -4701,7 +4814,7 @@
         },
         "max_chars_source": "base_subtitle",
         "font_size_jianying_units": 21.1,
-        "px_per_unit_at_1080": 4.0,
+        "px_per_unit_at_1080": 6.25,
         "bg_box_alpha": 0.0,
         "bg_shape": "none",
         "bg_ratio_measured": 0.0,
@@ -4710,11 +4823,23 @@
         "safe_y_source": "base_subtitle",
         "stroke_mode": "none",
         "stroke_width_rel": 0.0,
-        "shadow_blur_px": 1.1,
+        "shadow_blur_px": 7.72,
         "shadow_alpha": 0.9,
         "shadow_distance_units": 5.0,
         "shadow_source": "styles.shadows",
-        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）"
+        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）",
+        "ass_font_family": "Smiley Sans",
+        "shadow_smoothing": 0.45,
+        "shadow_point": {
+          "x": 0.636396103068,
+          "y": -0.636396103068
+        },
+        "typography_calibration": {
+          "px_per_unit_at_1080": 6.25,
+          "shadow_dist_px_per_unit": 2.3,
+          "shadow_blur_em": 0.13,
+          "note": "字号 = font_size_jianying_units × canvas_w/172.8；阴影幅度 = distance × 2.3px（1080 宽）；σ = smoothing × font_px × 0.13。重建器 dev_tools/rebuild_subtitle_typography.py"
+        }
       },
       "color_and_lut": {
         "y_mean_255": 163.4,
@@ -5149,13 +5274,14 @@
       "subtitle_spec": {
         "font_family": "Smiley Sans",
         "font_candidates": [
+          "SmileySans-Oblique.ttf",
           "SmileySans-Oblique.otf",
           "SourceHanSansCN-Bold.otf",
           "NotoSansCJKsc-Bold.otf"
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 48,
+        "font_size_1080p_px": 75,
         "keyword_scale": 1.12,
         "primary_color": "#FFFFFF",
         "keyword_color": "#B71C1C",
@@ -5173,8 +5299,8 @@
         "shadow": true,
         "shadow_color": "#000000B4",
         "shadow_offset": [
-          14,
-          14
+          8,
+          8
         ],
         "max_chars_per_line": 10,
         "symmetry_center_x": 540,
@@ -5193,7 +5319,7 @@
         },
         "max_chars_source": "base_subtitle",
         "font_size_jianying_units": 12.0,
-        "px_per_unit_at_1080": 4.0,
+        "px_per_unit_at_1080": 6.25,
         "bg_box_alpha": 0.0,
         "bg_shape": "none",
         "bg_ratio_measured": 0.0,
@@ -5202,11 +5328,23 @@
         "safe_y_source": "base_subtitle",
         "stroke_mode": "none",
         "stroke_width_rel": 0.0,
-        "shadow_blur_px": 1.1,
+        "shadow_blur_px": 4.39,
         "shadow_alpha": 0.704,
         "shadow_distance_units": 5.0,
         "shadow_source": "styles.shadows",
-        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）"
+        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）",
+        "ass_font_family": "Smiley Sans",
+        "shadow_smoothing": 0.45,
+        "shadow_point": {
+          "x": 0.636396103068,
+          "y": -0.636396103068
+        },
+        "typography_calibration": {
+          "px_per_unit_at_1080": 6.25,
+          "shadow_dist_px_per_unit": 2.3,
+          "shadow_blur_em": 0.13,
+          "note": "字号 = font_size_jianying_units × canvas_w/172.8；阴影幅度 = distance × 2.3px（1080 宽）；σ = smoothing × font_px × 0.13。重建器 dev_tools/rebuild_subtitle_typography.py"
+        }
       },
       "color_and_lut": {
         "y_mean_255": 181.7,
@@ -5629,13 +5767,14 @@
       "subtitle_spec": {
         "font_family": "Alimama ShuHeiTi",
         "font_candidates": [
+          "SmileySans-Oblique.ttf",
           "AlimamaShuHeiTi-Bold.otf",
           "SourceHanSansCN-Bold.otf",
           "NotoSansCJKsc-Bold.otf"
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 56,
+        "font_size_1080p_px": 88,
         "keyword_scale": 1.15,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFA800",
@@ -5667,7 +5806,7 @@
         },
         "max_chars_source": "base_subtitle",
         "font_size_jianying_units": 14.0,
-        "px_per_unit_at_1080": 4.0,
+        "px_per_unit_at_1080": 6.25,
         "bg_box_alpha": 0.0,
         "bg_shape": "none",
         "bg_ratio_measured": 0.0,
@@ -5679,14 +5818,26 @@
         "shadow": true,
         "shadow_color": "#000000B2",
         "shadow_offset": [
-          14,
-          14
+          8,
+          8
         ],
-        "shadow_blur_px": 1.3,
+        "shadow_blur_px": 5.15,
         "shadow_alpha": 0.7,
         "shadow_distance_units": 5.0,
         "shadow_source": "styles.shadows",
-        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）"
+        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）",
+        "ass_font_family": "Smiley Sans",
+        "shadow_smoothing": 0.45,
+        "shadow_point": {
+          "x": 0.636396103068,
+          "y": -0.636396103068
+        },
+        "typography_calibration": {
+          "px_per_unit_at_1080": 6.25,
+          "shadow_dist_px_per_unit": 2.3,
+          "shadow_blur_em": 0.13,
+          "note": "字号 = font_size_jianying_units × canvas_w/172.8；阴影幅度 = distance × 2.3px（1080 宽）；σ = smoothing × font_px × 0.13。重建器 dev_tools/rebuild_subtitle_typography.py"
+        }
       },
       "color_and_lut": {
         "y_mean_255": 170.5,
@@ -6114,13 +6265,14 @@
       "subtitle_spec": {
         "font_family": "Smiley Sans",
         "font_candidates": [
+          "SourceHanSerifCN-Bold.otf",
           "SmileySans-Oblique.otf",
           "SourceHanSansCN-Bold.otf",
           "NotoSansCJKsc-Bold.otf"
         ],
         "font_weight": "Regular",
         "bilingual": false,
-        "font_size_1080p_px": 48,
+        "font_size_1080p_px": 75,
         "keyword_scale": 1.12,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFBF17",
@@ -6152,7 +6304,7 @@
         },
         "max_chars_source": "base_subtitle",
         "font_size_jianying_units": 12.0,
-        "px_per_unit_at_1080": 4.0,
+        "px_per_unit_at_1080": 6.25,
         "bg_box_alpha": 0.0,
         "bg_shape": "none",
         "bg_ratio_measured": 0.0,
@@ -6164,14 +6316,26 @@
         "shadow": true,
         "shadow_color": "#000000E6",
         "shadow_offset": [
-          14,
-          14
+          8,
+          8
         ],
-        "shadow_blur_px": 1.1,
+        "shadow_blur_px": 4.39,
         "shadow_alpha": 0.9,
         "shadow_distance_units": 5.0,
         "shadow_source": "styles.shadows",
-        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）"
+        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）",
+        "ass_font_family": "Source Han Serif CN",
+        "shadow_smoothing": 0.45,
+        "shadow_point": {
+          "x": 0.636396103068,
+          "y": -0.636396103068
+        },
+        "typography_calibration": {
+          "px_per_unit_at_1080": 6.25,
+          "shadow_dist_px_per_unit": 2.3,
+          "shadow_blur_em": 0.13,
+          "note": "字号 = font_size_jianying_units × canvas_w/172.8；阴影幅度 = distance × 2.3px（1080 宽）；σ = smoothing × font_px × 0.13。重建器 dev_tools/rebuild_subtitle_typography.py"
+        }
       },
       "color_and_lut": {
         "y_mean_255": 171.5,
@@ -6615,13 +6779,14 @@
       "subtitle_spec": {
         "font_family": "Smiley Sans",
         "font_candidates": [
+          "AlimamaShuHeiTi-Bold.otf",
           "SmileySans-Oblique.otf",
           "SourceHanSansCN-Bold.otf",
           "NotoSansCJKsc-Bold.otf"
         ],
         "font_weight": "Medium",
         "bilingual": true,
-        "font_size_1080p_px": 60,
+        "font_size_1080p_px": 94,
         "english_font_size_px": 22,
         "keyword_scale": 1.14,
         "primary_color": "#FFFFFF",
@@ -6654,7 +6819,7 @@
         },
         "max_chars_source": "base_subtitle",
         "font_size_jianying_units": 15.0,
-        "px_per_unit_at_1080": 4.0,
+        "px_per_unit_at_1080": 6.25,
         "bg_box_alpha": 0.0,
         "bg_shape": "none",
         "bg_ratio_measured": 0.0,
@@ -6666,14 +6831,26 @@
         "shadow": true,
         "shadow_color": "#000000E6",
         "shadow_offset": [
-          14,
-          14
+          8,
+          8
         ],
-        "shadow_blur_px": 1.1,
+        "shadow_blur_px": 5.5,
         "shadow_alpha": 0.9,
         "shadow_distance_units": 5.0,
         "shadow_source": "styles.shadows",
-        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）"
+        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）",
+        "ass_font_family": "Alimama ShuHeiTi",
+        "shadow_smoothing": 0.45,
+        "shadow_point": {
+          "x": 0.636396103068,
+          "y": -0.636396103068
+        },
+        "typography_calibration": {
+          "px_per_unit_at_1080": 6.25,
+          "shadow_dist_px_per_unit": 2.3,
+          "shadow_blur_em": 0.13,
+          "note": "字号 = font_size_jianying_units × canvas_w/172.8；阴影幅度 = distance × 2.3px（1080 宽）；σ = smoothing × font_px × 0.13。重建器 dev_tools/rebuild_subtitle_typography.py"
+        }
       },
       "color_and_lut": {
         "y_mean_255": 162.7,
@@ -7116,7 +7293,7 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": null,
+        "font_size_1080p_px": 94,
         "keyword_scale": 1.15,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFBF17",
@@ -7134,8 +7311,8 @@
         "shadow": true,
         "shadow_color": "#000000E6",
         "shadow_offset": [
-          14,
-          14
+          8,
+          8
         ],
         "max_chars_per_line": 4,
         "symmetry_center_x": 540,
@@ -7153,8 +7330,8 @@
           "override_dir": "fonts/style_15/"
         },
         "max_chars_source": "densest_text_track",
-        "font_size_jianying_units": null,
-        "px_per_unit_at_1080": 4.0,
+        "font_size_jianying_units": 15.0,
+        "px_per_unit_at_1080": 6.25,
         "bg_box_alpha": 0.0,
         "bg_shape": "none",
         "bg_ratio_measured": 0.0,
@@ -7163,11 +7340,23 @@
         "safe_y_source": "densest_text_track",
         "stroke_mode": "none",
         "stroke_width_rel": 0.0,
-        "shadow_blur_px": 1.4,
+        "shadow_blur_px": 5.5,
         "shadow_alpha": 0.9,
         "shadow_distance_units": 5.0,
         "shadow_source": "styles.shadows",
-        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）"
+        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）",
+        "ass_font_family": "Source Han Serif CN",
+        "shadow_smoothing": 0.45,
+        "shadow_point": {
+          "x": 0.636396103068,
+          "y": -0.636396103068
+        },
+        "typography_calibration": {
+          "px_per_unit_at_1080": 6.25,
+          "shadow_dist_px_per_unit": 2.3,
+          "shadow_blur_em": 0.13,
+          "note": "字号 = font_size_jianying_units × canvas_w/172.8；阴影幅度 = distance × 2.3px（1080 宽）；σ = smoothing × font_px × 0.13。重建器 dev_tools/rebuild_subtitle_typography.py"
+        }
       },
       "color_and_lut": {
         "y_mean_255": 87.7,
@@ -7630,7 +7819,7 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 40,
+        "font_size_1080p_px": 62,
         "keyword_scale": 1.14,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFF589",
@@ -7648,8 +7837,8 @@
         "shadow": true,
         "shadow_color": "#000000E6",
         "shadow_offset": [
-          14,
-          14
+          8,
+          8
         ],
         "max_chars_per_line": 12,
         "symmetry_center_x": 540,
@@ -7668,7 +7857,7 @@
         },
         "max_chars_source": "base_subtitle",
         "font_size_jianying_units": 10.0,
-        "px_per_unit_at_1080": 4.0,
+        "px_per_unit_at_1080": 6.25,
         "bg_box_alpha": 0.0,
         "bg_shape": "none",
         "bg_ratio_measured": 0.0,
@@ -7677,11 +7866,23 @@
         "safe_y_source": "base_subtitle",
         "stroke_mode": "none",
         "stroke_width_rel": 0.0,
-        "shadow_blur_px": 0.9,
+        "shadow_blur_px": 3.63,
         "shadow_alpha": 0.9,
         "shadow_distance_units": 5.0,
         "shadow_source": "styles.shadows",
-        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）"
+        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）",
+        "ass_font_family": "Alimama ShuHeiTi",
+        "shadow_smoothing": 0.45,
+        "shadow_point": {
+          "x": 0.636396103068,
+          "y": -0.636396103068
+        },
+        "typography_calibration": {
+          "px_per_unit_at_1080": 6.25,
+          "shadow_dist_px_per_unit": 2.3,
+          "shadow_blur_em": 0.13,
+          "note": "字号 = font_size_jianying_units × canvas_w/172.8；阴影幅度 = distance × 2.3px（1080 宽）；σ = smoothing × font_px × 0.13。重建器 dev_tools/rebuild_subtitle_typography.py"
+        }
       },
       "color_and_lut": {
         "y_mean_255": 68.9,
@@ -8118,7 +8319,7 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 60,
+        "font_size_1080p_px": 94,
         "keyword_scale": 1.15,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFDE00",
@@ -8136,8 +8337,8 @@
         "shadow": true,
         "shadow_color": "#000000E6",
         "shadow_offset": [
-          14,
-          14
+          8,
+          8
         ],
         "max_chars_per_line": 7,
         "symmetry_center_x": 540,
@@ -8156,7 +8357,7 @@
         },
         "max_chars_source": "base_subtitle",
         "font_size_jianying_units": 15.0,
-        "px_per_unit_at_1080": 4.0,
+        "px_per_unit_at_1080": 6.25,
         "bg_box_alpha": 0.7,
         "bg_shape": "square",
         "bg_ratio_measured": 1.0,
@@ -8165,11 +8366,23 @@
         "safe_y_source": "base_subtitle",
         "stroke_mode": "none",
         "stroke_width_rel": 0.0,
-        "shadow_blur_px": 1.4,
+        "shadow_blur_px": 5.5,
         "shadow_alpha": 0.9,
         "shadow_distance_units": 5.0,
         "shadow_source": "styles.shadows",
-        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）"
+        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）",
+        "ass_font_family": "Source Han Serif CN Heavy",
+        "shadow_smoothing": 0.45,
+        "shadow_point": {
+          "x": 0.636396103068,
+          "y": -0.636396103068
+        },
+        "typography_calibration": {
+          "px_per_unit_at_1080": 6.25,
+          "shadow_dist_px_per_unit": 2.3,
+          "shadow_blur_em": 0.13,
+          "note": "字号 = font_size_jianying_units × canvas_w/172.8；阴影幅度 = distance × 2.3px（1080 宽）；σ = smoothing × font_px × 0.13。重建器 dev_tools/rebuild_subtitle_typography.py"
+        }
       },
       "color_and_lut": {
         "y_mean_255": 96.2,
@@ -8614,13 +8827,14 @@
       "subtitle_spec": {
         "font_family": "Smiley Sans",
         "font_candidates": [
+          "SmileySans-Oblique.ttf",
           "SmileySans-Oblique.otf",
           "SourceHanSansCN-Bold.otf",
           "NotoSansCJKsc-Bold.otf"
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 48,
+        "font_size_1080p_px": 75,
         "keyword_scale": 1.18,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFBF17",
@@ -8638,8 +8852,8 @@
         "shadow": true,
         "shadow_color": "#000000E6",
         "shadow_offset": [
-          14,
-          14
+          8,
+          8
         ],
         "max_chars_per_line": 10,
         "symmetry_center_x": 540,
@@ -8658,7 +8872,7 @@
         },
         "max_chars_source": "base_subtitle",
         "font_size_jianying_units": 12.0,
-        "px_per_unit_at_1080": 4.0,
+        "px_per_unit_at_1080": 6.25,
         "bg_box_alpha": 0.0,
         "bg_shape": "none",
         "bg_ratio_measured": 0.0,
@@ -8667,11 +8881,23 @@
         "safe_y_source": "base_subtitle",
         "stroke_mode": "none",
         "stroke_width_rel": 0.0,
-        "shadow_blur_px": 1.1,
+        "shadow_blur_px": 4.39,
         "shadow_alpha": 0.9,
         "shadow_distance_units": 5.0,
         "shadow_source": "styles.shadows",
-        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）"
+        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）",
+        "ass_font_family": "Smiley Sans",
+        "shadow_smoothing": 0.45,
+        "shadow_point": {
+          "x": 0.636396103068,
+          "y": -0.636396103068
+        },
+        "typography_calibration": {
+          "px_per_unit_at_1080": 6.25,
+          "shadow_dist_px_per_unit": 2.3,
+          "shadow_blur_em": 0.13,
+          "note": "字号 = font_size_jianying_units × canvas_w/172.8；阴影幅度 = distance × 2.3px（1080 宽）；σ = smoothing × font_px × 0.13。重建器 dev_tools/rebuild_subtitle_typography.py"
+        }
       },
       "color_and_lut": {
         "y_mean_255": 99.0,
@@ -9127,13 +9353,14 @@
       "subtitle_spec": {
         "font_family": "Smiley Sans",
         "font_candidates": [
+          "SmileySans-Oblique.ttf",
           "SmileySans-Oblique.otf",
           "SourceHanSansCN-Bold.otf",
           "NotoSansCJKsc-Bold.otf"
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 48,
+        "font_size_1080p_px": 75,
         "keyword_scale": 1.1,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFBF17",
@@ -9151,8 +9378,8 @@
         "shadow": true,
         "shadow_color": "#000000E6",
         "shadow_offset": [
-          14,
-          14
+          8,
+          8
         ],
         "max_chars_per_line": 83,
         "symmetry_center_x": 540,
@@ -9171,7 +9398,7 @@
         },
         "max_chars_source": "base_subtitle",
         "font_size_jianying_units": 12.0,
-        "px_per_unit_at_1080": 4.0,
+        "px_per_unit_at_1080": 6.25,
         "bg_box_alpha": 0.0,
         "bg_shape": "none",
         "bg_ratio_measured": 0.0,
@@ -9180,11 +9407,23 @@
         "safe_y_source": "base_subtitle",
         "stroke_mode": "none",
         "stroke_width_rel": 0.0,
-        "shadow_blur_px": 1.1,
+        "shadow_blur_px": 4.39,
         "shadow_alpha": 0.9,
         "shadow_distance_units": 5.0,
         "shadow_source": "styles.shadows",
-        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）"
+        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）",
+        "ass_font_family": "Smiley Sans",
+        "shadow_smoothing": 0.45,
+        "shadow_point": {
+          "x": 0.636396103068,
+          "y": -0.636396103068
+        },
+        "typography_calibration": {
+          "px_per_unit_at_1080": 6.25,
+          "shadow_dist_px_per_unit": 2.3,
+          "shadow_blur_em": 0.13,
+          "note": "字号 = font_size_jianying_units × canvas_w/172.8；阴影幅度 = distance × 2.3px（1080 宽）；σ = smoothing × font_px × 0.13。重建器 dev_tools/rebuild_subtitle_typography.py"
+        }
       },
       "color_and_lut": {
         "y_mean_255": 164.8,
@@ -9608,13 +9847,14 @@
       "subtitle_spec": {
         "font_family": "Alimama ShuHeiTi",
         "font_candidates": [
+          "SourceHanSerifCN-Heavy.otf",
           "AlimamaShuHeiTi-Bold.otf",
           "SourceHanSansCN-Bold.otf",
           "NotoSansCJKsc-Bold.otf"
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 56,
+        "font_size_1080p_px": 88,
         "keyword_scale": 1.08,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFF589",
@@ -9632,8 +9872,8 @@
         "shadow": true,
         "shadow_color": "#000000E6",
         "shadow_offset": [
-          14,
-          14
+          8,
+          8
         ],
         "max_chars_per_line": 10,
         "symmetry_center_x": 540,
@@ -9652,7 +9892,7 @@
         },
         "max_chars_source": "base_subtitle",
         "font_size_jianying_units": 14.0,
-        "px_per_unit_at_1080": 4.0,
+        "px_per_unit_at_1080": 6.25,
         "bg_box_alpha": 0.0,
         "bg_shape": "none",
         "bg_ratio_measured": 0.0,
@@ -9661,11 +9901,23 @@
         "safe_y_source": "base_subtitle",
         "stroke_mode": "none",
         "stroke_width_rel": 0.0,
-        "shadow_blur_px": 1.3,
+        "shadow_blur_px": 5.15,
         "shadow_alpha": 0.9,
         "shadow_distance_units": 5.0,
         "shadow_source": "styles.shadows",
-        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）"
+        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）",
+        "ass_font_family": "Source Han Serif CN Heavy",
+        "shadow_smoothing": 0.45,
+        "shadow_point": {
+          "x": 0.636396103068,
+          "y": -0.636396103068
+        },
+        "typography_calibration": {
+          "px_per_unit_at_1080": 6.25,
+          "shadow_dist_px_per_unit": 2.3,
+          "shadow_blur_em": 0.13,
+          "note": "字号 = font_size_jianying_units × canvas_w/172.8；阴影幅度 = distance × 2.3px（1080 宽）；σ = smoothing × font_px × 0.13。重建器 dev_tools/rebuild_subtitle_typography.py"
+        }
       },
       "color_and_lut": {
         "y_mean_255": 95.6,
@@ -10102,13 +10354,14 @@
       "subtitle_spec": {
         "font_family": "Source Han Serif CN",
         "font_candidates": [
+          "AlimamaShuHeiTi-Bold.otf",
           "SourceHanSerifCN-Heavy.otf",
           "SourceHanSansCN-Bold.otf",
           "NotoSansCJKsc-Bold.otf"
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 48,
+        "font_size_1080p_px": 75,
         "keyword_scale": 1.15,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFF589",
@@ -10126,8 +10379,8 @@
         "shadow": true,
         "shadow_color": "#000000B2",
         "shadow_offset": [
-          14,
-          14
+          8,
+          8
         ],
         "max_chars_per_line": 10,
         "symmetry_center_x": 540,
@@ -10146,7 +10399,7 @@
         },
         "max_chars_source": "base_subtitle",
         "font_size_jianying_units": 12.0,
-        "px_per_unit_at_1080": 4.0,
+        "px_per_unit_at_1080": 6.25,
         "bg_box_alpha": 0.0,
         "bg_shape": "none",
         "bg_ratio_measured": 0.0,
@@ -10155,11 +10408,23 @@
         "safe_y_source": "base_subtitle",
         "stroke_mode": "none",
         "stroke_width_rel": 0.0,
-        "shadow_blur_px": 1.1,
+        "shadow_blur_px": 4.39,
         "shadow_alpha": 0.7,
         "shadow_distance_units": 5.0,
         "shadow_source": "styles.shadows",
-        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）"
+        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）",
+        "ass_font_family": "Alimama ShuHeiTi",
+        "shadow_smoothing": 0.45,
+        "shadow_point": {
+          "x": 0.636396103068,
+          "y": -0.636396103068
+        },
+        "typography_calibration": {
+          "px_per_unit_at_1080": 6.25,
+          "shadow_dist_px_per_unit": 2.3,
+          "shadow_blur_em": 0.13,
+          "note": "字号 = font_size_jianying_units × canvas_w/172.8；阴影幅度 = distance × 2.3px（1080 宽）；σ = smoothing × font_px × 0.13。重建器 dev_tools/rebuild_subtitle_typography.py"
+        }
       },
       "color_and_lut": {
         "y_mean_255": 140.1,
@@ -10575,13 +10840,14 @@
       "subtitle_spec": {
         "font_family": "Smiley Sans",
         "font_candidates": [
+          "SmileySans-Oblique.ttf",
           "SmileySans-Oblique.otf",
           "SourceHanSansCN-Bold.otf",
           "NotoSansCJKsc-Bold.otf"
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 48,
+        "font_size_1080p_px": 75,
         "keyword_scale": 1.12,
         "primary_color": "#FFFFFF",
         "keyword_color": "#B71C1C",
@@ -10599,8 +10865,8 @@
         "shadow": true,
         "shadow_color": "#00000059",
         "shadow_offset": [
-          14,
-          14
+          8,
+          8
         ],
         "max_chars_per_line": 18,
         "symmetry_center_x": 540,
@@ -10619,7 +10885,7 @@
         },
         "max_chars_source": "base_subtitle",
         "font_size_jianying_units": 12.0,
-        "px_per_unit_at_1080": 4.0,
+        "px_per_unit_at_1080": 6.25,
         "bg_box_alpha": 0.0,
         "bg_shape": "none",
         "bg_ratio_measured": 0.0,
@@ -10628,11 +10894,23 @@
         "safe_y_source": "base_subtitle",
         "stroke_mode": "none",
         "stroke_width_rel": 0.0,
-        "shadow_blur_px": 0.6,
+        "shadow_blur_px": 2.34,
         "shadow_alpha": 0.35,
         "shadow_distance_units": 5.0,
         "shadow_source": "styles.shadows",
-        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）"
+        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）",
+        "ass_font_family": "Smiley Sans",
+        "shadow_smoothing": 0.24,
+        "shadow_point": {
+          "x": 0.636396103068,
+          "y": -0.636396103068
+        },
+        "typography_calibration": {
+          "px_per_unit_at_1080": 6.25,
+          "shadow_dist_px_per_unit": 2.3,
+          "shadow_blur_em": 0.13,
+          "note": "字号 = font_size_jianying_units × canvas_w/172.8；阴影幅度 = distance × 2.3px（1080 宽）；σ = smoothing × font_px × 0.13。重建器 dev_tools/rebuild_subtitle_typography.py"
+        }
       },
       "color_and_lut": {
         "y_mean_255": 163.9,
@@ -11053,7 +11331,7 @@
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 48,
+        "font_size_1080p_px": 75,
         "keyword_scale": 1.06,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFBF17",
@@ -11071,8 +11349,8 @@
         "shadow": true,
         "shadow_color": "#00000099",
         "shadow_offset": [
-          14,
-          14
+          8,
+          8
         ],
         "max_chars_per_line": 11,
         "symmetry_center_x": 540,
@@ -11091,7 +11369,7 @@
         },
         "max_chars_source": "base_subtitle",
         "font_size_jianying_units": 12.0,
-        "px_per_unit_at_1080": 4.0,
+        "px_per_unit_at_1080": 6.25,
         "bg_box_alpha": 0.0,
         "bg_shape": "none",
         "bg_ratio_measured": 0.0,
@@ -11100,11 +11378,23 @@
         "safe_y_source": "base_subtitle",
         "stroke_mode": "none",
         "stroke_width_rel": 0.0,
-        "shadow_blur_px": 1.1,
+        "shadow_blur_px": 4.39,
         "shadow_alpha": 0.6,
         "shadow_distance_units": 5.0,
         "shadow_source": "styles.shadows",
-        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）"
+        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）",
+        "ass_font_family": "Source Han Serif CN",
+        "shadow_smoothing": 0.45,
+        "shadow_point": {
+          "x": 0.636396103068,
+          "y": -0.636396103068
+        },
+        "typography_calibration": {
+          "px_per_unit_at_1080": 6.25,
+          "shadow_dist_px_per_unit": 2.3,
+          "shadow_blur_em": 0.13,
+          "note": "字号 = font_size_jianying_units × canvas_w/172.8；阴影幅度 = distance × 2.3px（1080 宽）；σ = smoothing × font_px × 0.13。重建器 dev_tools/rebuild_subtitle_typography.py"
+        }
       },
       "color_and_lut": {
         "y_mean_255": 77.9,
@@ -11533,13 +11823,14 @@
       "subtitle_spec": {
         "font_family": "Alimama ShuHeiTi",
         "font_candidates": [
+          "SourceHanSerifCN-Heavy.otf",
           "AlimamaShuHeiTi-Bold.otf",
           "SourceHanSansCN-Bold.otf",
           "NotoSansCJKsc-Bold.otf"
         ],
         "font_weight": "Bold",
         "bilingual": false,
-        "font_size_1080p_px": 71,
+        "font_size_1080p_px": 111,
         "keyword_scale": 1.18,
         "primary_color": "#FFFFFF",
         "keyword_color": "#FFBF17",
@@ -11557,8 +11848,8 @@
         "shadow": true,
         "shadow_color": "#000000E6",
         "shadow_offset": [
-          14,
-          14
+          8,
+          8
         ],
         "max_chars_per_line": 14,
         "symmetry_center_x": 540,
@@ -11577,7 +11868,7 @@
         },
         "max_chars_source": "base_subtitle",
         "font_size_jianying_units": 17.8,
-        "px_per_unit_at_1080": 4.0,
+        "px_per_unit_at_1080": 6.25,
         "bg_box_alpha": 0.0,
         "bg_shape": "none",
         "bg_ratio_measured": 0.0,
@@ -11586,11 +11877,23 @@
         "safe_y_source": "base_subtitle",
         "stroke_mode": "none",
         "stroke_width_rel": 0.0,
-        "shadow_blur_px": 1.1,
+        "shadow_blur_px": 6.49,
         "shadow_alpha": 0.9,
         "shadow_distance_units": 5.0,
         "shadow_source": "styles.shadows",
-        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）"
+        "text_paint_source": "forensic/text_style_truth.json（解密草稿 styles[].strokes/shadows）",
+        "ass_font_family": "Source Han Serif CN Heavy",
+        "shadow_smoothing": 0.45,
+        "shadow_point": {
+          "x": 0.636396103068,
+          "y": -0.636396103068
+        },
+        "typography_calibration": {
+          "px_per_unit_at_1080": 6.25,
+          "shadow_dist_px_per_unit": 2.3,
+          "shadow_blur_em": 0.13,
+          "note": "字号 = font_size_jianying_units × canvas_w/172.8；阴影幅度 = distance × 2.3px（1080 宽）；σ = smoothing × font_px × 0.13。重建器 dev_tools/rebuild_subtitle_typography.py"
+        }
       },
       "color_and_lut": {
         "y_mean_255": 103.6,
@@ -11889,6 +12192,7 @@
     "save_version": "draft_content.json（最新保存态）",
     "broll_target_hard": false,
     "transition_policy": "源 24/24 零转场，默认 none",
-    "font_policy": "source_font_family 为准，delivered 找不到源字体时回落并标记 exact_1to1=false"
+    "font_policy": "source_font_family 为准，delivered 找不到源字体时回落并标记 exact_1to1=false",
+    "subtitle_typography": "字号 = font_size_jianying_units × canvas_w/172.8（6.25@1080）；阴影幅度 = shadow_distance_units × 2.3px（1080 宽，实测互相关 11.7px/5unit）；σ = shadow_smoothing × font_px × 0.13；字体族以 ass_style 为唯一真源，经 assets/fonts/font_aliases.json 的 ass_style_families 映射。单源重建器：dev_tools/rebuild_subtitle_typography.py"
   }
 }

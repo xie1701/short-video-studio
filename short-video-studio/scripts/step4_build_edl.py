@@ -36,7 +36,8 @@ from common import (
 )
 import os
 
-from broll_semantics import describe_clip, legacy_score, relate, summarize as summarize_semantics
+import broll_match
+from broll_semantics import describe_clip, legacy_score
 from edit_grammar import check_edl, load_grammar, plan_shot_budget, select_cuts
 from generate_code_broll import render_broll_clip_pillow, render_code_clip, resolve_style_palette
 
@@ -53,6 +54,16 @@ MEDIA_GAP_OBJECT_GROUPS: Tuple[Tuple[str, Tuple[str, ...]], ...] = (
 )
 POSITIVE_PRAISE_CUES = ("招牌", "正宗", "干净", "舒服", "鲜嫩", "多汁", "放心", "透明", "美味", "好吃", "靓", "靠谱", "新鲜", "卫生", "环境好")
 HARD_TABOO_ALWAYS = {"crew_leak", "kitchen_trash", "construction_trash"}
+# B-roll 选片口径（v4.6）：语义对位是主序，其它风格加分项只做「同分裁决」。
+# 以前选片按「稳/锐/用得少」轮转池子，画面自然对不上台词（用户实测：讲卡座配了 10 条航拍）。
+BROLL_SEM_RANK_WEIGHT = 1.0
+# 对位门禁阈值：写在 broll_match 里（MAX_NONE_RATIO / MIN_HIT_RATIO），这里只做开关
+
+
+class BrollSemanticGateError(RuntimeError):
+    """B-roll 与台词对不上到越线（fail-closed）：默认只审计，显式开启后必须中断出片。"""
+
+
 # 旧口径对照开关：只用于证明"以前为什么对不上"，正常出片必须走概念桥
 LEGACY_SEM_MATCH = str(os.environ.get("SVS_LEGACY_SEM_MATCH") or "").strip() in ("1", "true", "yes")
 
@@ -282,6 +293,60 @@ def pick_first_3s_events(events: List[Dict[str, Any]], fps: int, count: int = 2)
     return picked
 
 
+def _hydrate_vision_semantics(pipeline_dir: Path, items: List[Dict[str, Any]]) -> int:
+    """把抽帧判读出来的画面描述补进素材条目，返回补了几条。
+
+    为什么必须补：`01_manifest.json` 只有 `semantic_tags`（文件名/OCR 猜的），真正的画面判读
+    （`description` / `scene_tags_zh` / `scene_labels_source=agent`）落在 `00_inventory.json`
+    与 `00_visual_index.json` 里。选片不把这几段文字接进来，等于又回到「不看画面瞎轮转」。
+    """
+    by_name: Dict[str, Dict[str, Any]] = {}
+    inv_p = pipeline_dir / "00_inventory.json"
+    if inv_p.is_file():
+        for c in (read_json(inv_p).get("clips") or []):
+            for key in (c.get("filename"), Path(str(c.get("path") or "")).name):
+                if key:
+                    by_name.setdefault(str(key), c)
+    vis_p = pipeline_dir / "00_visual_index.json"
+    if vis_p.is_file():
+        for c in (read_json(vis_p).get("clips") or []):
+            key = str(c.get("filename") or c.get("file") or "")
+            if not key or key in by_name:
+                continue
+            src = str(c.get("source") or "")
+            by_name[key] = {
+                "description": c.get("description") or c.get("summary") or "",
+                "scene_tags_zh": c.get("tags") or c.get("scene_tags_zh") or [],
+                "scene_labels_source": "agent" if src.startswith("agent") else src,
+            }
+    if not by_name:
+        return 0
+    filled = 0
+    for m in items:
+        if str(m.get("description") or "").strip() and (m.get("scene_tags_zh") or []):
+            continue
+        cand: Optional[Dict[str, Any]] = by_name.get(Path(str(m.get("source_path") or "")).name)
+        if cand is None:
+            stem = Path(str(m.get("normalized_mp4") or "")).stem
+            # norm_20_2026-05-29 183554 -> 2026-05-29 183554
+            stem2 = re.sub(r"^norm_\d+_", "", stem)
+            for key, val in by_name.items():
+                if Path(key).stem == stem2:
+                    cand = val
+                    break
+        if cand is None:
+            continue
+        if not str(m.get("description") or "").strip():
+            m["description"] = str(cand.get("description") or "")
+        if not (m.get("scene_tags_zh") or []):
+            m["scene_tags_zh"] = list(cand.get("scene_tags_zh") or [])
+        if not str(m.get("scene_labels_source") or "").strip():
+            m["scene_labels_source"] = str(cand.get("scene_labels_source") or "")
+        if str(m.get("description") or "").strip() or (m.get("scene_tags_zh") or []):
+            filled += 1
+    return filled
+
+
 def ensure_code_broll_pool(
     pipeline_dir: Path,
     sentences: List[Dict[str, Any]],
@@ -506,6 +571,28 @@ def _prune_cut_points_to_budget(cut_points: List[Dict[str, Any]], target_shots: 
     return cut_points, note
 
 
+def summarize_broll_semantic(clips: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """把逐镜的 `sem_match` 汇总成 EDL 的 `broll_semantic`（含逐条 score/tier/hits/why）。"""
+    rows: List[Dict[str, Any]] = []
+    for c in clips:
+        if str(c.get("track_role")) not in ("b_roll", "code_broll"):
+            continue
+        rel = c.get("sem_match") or {}
+        rows.append({
+            "clip_id": c.get("clip_id"),
+            "role": c.get("track_role"),
+            "timeline_in_sec": c.get("timeline_in_sec"),
+            "sentence": c.get("sentence_text"),
+            "media": Path(str(c.get("media_path") or "")).name,
+            "score": rel.get("score"),
+            "tier": rel.get("tier") or rel.get("verdict") or "none",
+            "hits": rel.get("hits") or rel.get("basis") or [],
+            "why": rel.get("why") or "",
+            "source": rel.get("source") or "rules",
+        })
+    return broll_match.summarize_choices(rows)
+
+
 def run_step4(
     pipeline_dir: Path,
     track: str = "store",
@@ -516,6 +603,8 @@ def run_step4(
     account_profile: Optional[Dict[str, Any]] = None,
     edit_profile: str = "talking",
     grammar: str = "style",
+    allow_broll_mismatch: bool = False,
+    enforce_broll_gate: bool = False,
 ) -> Dict[str, Any]:
     raw_jc = int(j_cut_frames)
     j_cut_frames = 0 if raw_jc <= 0 else max(2, min(4, raw_jc))
@@ -535,6 +624,13 @@ def run_step4(
     usable_aroll_paths = {str(m["normalized_mp4"]) for m in usable_arolls}
     vgrade_by_mp4 = {str(m.get("normalized_mp4")): str(m.get("video_grade", "usable")) for m in manifest["items"]}
     brolls_raw = [m for m in active_items if m["role"] in ("b_roll", "code_broll")]
+    # 画面描述（抽帧判读结果）不在 manifest 里，必须从盘点/视觉索引补进来，否则语义选片无从谈起
+    n_hydrated = _hydrate_vision_semantics(pipeline_dir, brolls_raw)
+    if n_hydrated:
+        print(f"[step4] 已接入抽帧判读画面描述 {n_hydrated}/{len(brolls_raw)} 条 B-roll（选片按台词语义排序）")
+    else:
+        print("[step4] [WARN] 没有可用的画面描述（00_inventory/00_visual_index 缺 description），"
+              "B-roll 只能按质量轮转，对位会大面积记 none")
     broll_pool = ensure_code_broll_pool(pipeline_dir, sentences, brolls_raw, track, style_id=style_id, total_dur=total_dur)
 
     deictic_gaps = detect_script_media_gaps(sentences, broll_pool)
@@ -1091,6 +1187,10 @@ def run_step4(
                     j_leads[idx] = 0
 
     usage_counts: Dict[str, int] = {m["id"]: 0 for m in broll_pool}
+    # Agent 逐句指定过素材（04b_broll_choice.json）就优先采信，读一次即可
+    agent_choices = broll_match.load_agent_choices(pipeline_dir)
+    if agent_choices.get("items"):
+        print(f"[step4] 采信 Agent 逐句选片 {len(agent_choices['items'])} 处（{broll_match.AGENT_CHOICE_FILE}）")
     n_live = max(1, sum(1 for m in broll_pool if m.get("role") == "b_roll"))
     budget_per_live = (total_dur * 0.92) / float(n_live)
     used_cursors: Dict[str, float] = {}
@@ -1108,10 +1208,25 @@ def run_step4(
 
     OPPOSING_MOTION = {("pan_left", "pan_right"), ("pan_right", "pan_left"), ("tilt_up", "tilt_down"), ("tilt_down", "tilt_up")}
 
-    def sem_of_choice(m: Dict[str, Any], s: Dict[str, Any]) -> Dict[str, Any]:
-        """写进剪辑表的语义依据（与选片同口径；旧口径对照模式下也照实记录概念桥判定）。"""
-        rel = relate(str(s.get("text", "")), m, s.get("keywords") or [])
-        rel["legacy_tag_hits"] = legacy_score(str(s.get("text", "")), m, s.get("keywords") or [])
+    def sem_of_choice(m: Dict[str, Any], s: Dict[str, Any], used_count: int = 0,
+                       need_sec: Optional[float] = None) -> Dict[str, Any]:
+        """写进剪辑表的语义依据（与选片同口径）；旧口径对照时另外记一笔字面 tag 命中数。"""
+        sel = broll_match.score_clip(
+            str(s.get("text", "")), m, used_count=used_count, need_sec=need_sec,
+            keywords=s.get("keywords") or [],
+        )
+        rel = {
+            "score": sel["score"],
+            "tier": sel["tier"],
+            # verdict/basis 是旧字段名：QA 与剪辑表都按这两个名字读，保持兼容
+            "verdict": sel["tier"],
+            "hits": sel["hits"],
+            "basis": sel["hits"],
+            "why": sel["why"],
+            "source": "rules",
+        }
+        if LEGACY_SEM_MATCH:
+            rel["legacy_tag_hits"] = legacy_score(str(s.get("text", "")), m, s.get("keywords") or [])
         return rel
 
     def pick_best_broll(
@@ -1124,12 +1239,22 @@ def run_step4(
         prev_motion: str = "static",
         prev_shot_size: str = "medium",
         forbid_code: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> Tuple[Dict[str, Any], str]:
+        """这镜配哪条 B-roll：先按「这句台词讲了什么画面」排，再拿质量/时长/复用次数同分裁决。"""
         nonlocal taboo_blocked_count
         s_txt = str(sent.get("text", ""))
         s_kws = [str(k) for k in sent.get("keywords", [])]
         is_praise = any(cue in s_txt for cue in POSITIVE_PRAISE_CUES)
         candidates = [m for m in broll_pool if not (forbid_code and m.get("role") == "code_broll")] or broll_pool
+
+        # Agent 已经逐句指定素材（04b_broll_choice.json）→ 直接采信，只在表里标明是谁选的
+        forced = broll_match.agent_choice_for(agent_choices, t_start) if agent_choices else None
+        if forced:
+            mp_forced = str(forced.get("media_path") or "")
+            for m in candidates:
+                if broll_match.same_media(str(m.get("normalized_mp4") or m.get("media_path") or ""), mp_forced):
+                    return m, "agent"
+
         best_m = candidates[0]
         best_score = -1e9
         blocked_here = False
@@ -1148,9 +1273,11 @@ def run_step4(
                 sem_hits = sum(1 for tg in tags if tg and (tg in s_txt or any(tg in k or k in tg for k in s_kws)))
                 sem_weight = sem_hits * 6.5
             else:
-                rel = relate(s_txt, m, s_kws)
-                sem_hits = 1 if rel["verdict"] == "hit" else 0
-                sem_weight = float(rel["score"]) * 10.0
+                # 语义分是主序（0~100）：台词概念 ↔ 画面描述命中越多越前，质量/复用/时长已在 rank 里扣完
+                m_sel = broll_match.score_clip(
+                    s_txt, m, used_count=usage_counts.get(m["id"], 0), need_sec=seg_dur, keywords=s_kws,
+                )
+                sem_weight = float(m_sel["rank"]) * BROLL_SEM_RANK_WEIGHT
             # 一手原始痛点词/物证优先匹配加权
             intel_bonus = 0.0
             if raw_pain_kws and any(pk in s_txt and (pk in fname_m or any(pk in tg for tg in tags)) for pk in raw_pain_kws):
@@ -1166,7 +1293,6 @@ def run_step4(
             cont_bonus = 1.5 if m.get("scene_group") == last_group else 0.0
             stab_bonus = float(m.get("stability_score", 0.8)) * 1.2
             sharp_bonus = min(1.5, float(m.get("sharpness_score", 40.0)) / 40.0)
-            reuse_pen = usage_counts.get(m["id"], 0) * 12.0
             avail = float(m.get("duration_sec", 3.0))
             mp_str = str(m.get("normalized_mp4") or "")
             is_live_m = m.get("role") == "b_roll" and avail > 2.0
@@ -1186,14 +1312,14 @@ def run_step4(
             live_bonus = 3.5 if (t_start < 3.0 and m.get("role") == "b_roll") else 0.0
             sc = (
                 sem_weight + intel_bonus + size_bonus + cont_bonus + stab_bonus + sharp_bonus
-                + dur_bonus + live_bonus - reuse_pen - taboo_pen - same_media_pen - exhausted_pen - motion_pen
+                + dur_bonus + live_bonus - taboo_pen - same_media_pen - exhausted_pen - motion_pen
             )
             if sc > best_score:
                 best_score = sc
                 best_m = m
         if blocked_here and not best_m.get("taboo_tags"):
             taboo_blocked_count += 1
-        return best_m
+        return best_m, "rules"
 
     clips: List[Dict[str, Any]] = []
     last_group = "shoot_default"
@@ -1304,7 +1430,7 @@ def run_step4(
             prev_mp = str(clips[-1]["media_path"]) if clips else ""
             prev_so = float(clips[-1]["source_out_sec"]) if clips else 0.0
 
-            br = pick_best_broll(
+            br, br_source = pick_best_broll(
                 sent, seg_dur, last_group, t_start, prev_mp, prev_so,
                 prev_motion=last_motion, prev_shot_size=last_shot_size, forbid_code=forbid_code,
             )
@@ -1365,6 +1491,9 @@ def run_step4(
                 and not br.get("source_is_code_scene", False)
                 and any(w in str(sent.get("text", "")) for w in ambient_words)
             )
+            # 语义对位可审计：这个画面凭什么被认为「对得上这句台词」（概念命中就写命中的字面，零依据就是 none）
+            sem_here = sem_of_choice(br, sent, need_sec=seg_dur)
+            sem_here["source"] = br_source
             clips.append({
                 "clip_id": f"clip_{idx+1:03d}",
                 "track_role": eff_role,
@@ -1396,8 +1525,7 @@ def run_step4(
                 "sentence_id": sent["id"],
                 "sentence_text": sent["text"],
                 "purpose": b_purpose,
-                # 语义对位可审计：这个画面凭什么被认为"对得上这句台词"（零依据就是 none）
-                "sem_match": sem_of_choice(br, sent),
+                "sem_match": sem_here,
                 "media_signal": describe_clip(br)[:160],
             })
 
@@ -1736,6 +1864,11 @@ def run_step4(
         and (first_c.get("track_role") in ("a_roll", "code_broll") or float(first_item.get("sharpness_score", 25.0)) >= 12.0)
     )
 
+    # 语义对位汇总 + 门禁判定都在写 EDL 前算好：门禁不达标也要先把账写下来，便于事后追
+    sem_summary = summarize_broll_semantic(clips)
+    sem_gate = broll_match.check_semantic_gate(sem_summary, allow=allow_broll_mismatch)
+    sem_summary["gate"] = sem_gate
+
     edl = {
         "step": "04_build_edl",
         "fps": fps,
@@ -1762,14 +1895,11 @@ def run_step4(
         "broll_ratio_target": round(broll_target_ratio, 3),
         "broll_ratio_actual": broll_ratio_actual,
         "broll_ratio_with_cards": broll_ratio_with_cards,
-        "broll_semantic": summarize_semantics([
-            {"role": c.get("track_role"), "verdict": (c.get("sem_match") or {}).get("verdict", "none")}
-            for c in clips if c.get("track_role") in ("b_roll", "code_broll")
-        ]),
+        "broll_semantic": sem_summary,
         "broll_semantic_note": (
-            "外来画面与它压着的那句台词的语义对位：hit=有概念依据，weak=同场景沾边，"
-            "none=素材侧没有任何可用于匹配的描述（文件名/OCR/素材说明都没有），"
-            "不代表画错了，但不能声称对得上"
+            "外来画面与它压着的那句台词的语义对位（逐镜看画面描述与台词的概念）："
+            "hit=有概念命中，weak=同场景/近义沾边，none=素材侧确实没有可用描述或与台词没有公共概念。"
+            "选片本身已按这个分数排序（高者先上），这里只是把账记清。"
         ),
         "code_card_ratio": round(code_card_dur / max(0.1, total_dur), 3),
         "broll_ratio_prior": round(broll_prior_ratio, 3),
@@ -1868,9 +1998,17 @@ def run_step4(
     if _sem.get("clips"):
         print(
             f"[step4] 外来画面与台词对位：{_sem['clips']} 个里贴合 {_sem['hit']}、同场景 {_sem['weak']}、"
-            f"无依据 {_sem['none']}（命中率 {_sem['hit_ratio']*100:.0f}%；无依据的多半是素材侧没有主题词，"
-            f"补一句 素材说明.txt 即可，不在剪辑里瞎配）"
-    )
+            f"无依据 {_sem['none']}（命中率 {_sem['hit_ratio']*100:.0f}%；"
+            f"无依据=素材侧确实没描述或与这句没公共概念，不在剪辑里瞎配）"
+        )
+        _gate = _sem.get("gate") or {}
+        if not _gate.get("raw_pass", True):
+            for _reason in (_gate.get("fails") or []):
+                print(f"[step4] [FAIL] B-roll 语义对位：{_reason}")
+            if _gate.get("waived"):
+                print("[step4] [WARN] 已用 --allow-broll-mismatch 显式放行：账本仍记为不达标")
+            elif enforce_broll_gate:
+                raise BrollSemanticGateError("；".join(_gate.get("fails") or []))
     return edl
 
 
@@ -1886,18 +2024,29 @@ def main() -> None:
     parser.add_argument("--prefer-broll-only", action="store_true", help="打断#3只改画面时可选切换纯B-roll混剪")
     parser.add_argument("--grammar", choices=["style", "dynamic"], default="style",
                         help="style=按风格刀法真值排切点（默认）；dynamic=不读刀法真值，保留旧行为")
+    parser.add_argument("--allow-broll-mismatch", action="store_true",
+                        help="显式放行 B-roll 语义对位不达标（默认 fail-closed：命中率低或无依据镜头超阈值即退出）")
     args = parser.parse_args()
     prof = read_json(Path(args.account_profile)) if args.account_profile and Path(args.account_profile).exists() else None
-    run_step4(
-        Path(args.pipeline_dir),
-        track=args.track,
-        j_cut_frames=args.j_cut_frames,
-        prefer_broll_only=args.prefer_broll_only,
-        style_id=args.style_id,
-        account_profile=prof,
-        edit_profile=args.edit_profile,
-        grammar=args.grammar,
-    )
+    try:
+        run_step4(
+            Path(args.pipeline_dir),
+            track=args.track,
+            j_cut_frames=args.j_cut_frames,
+            prefer_broll_only=args.prefer_broll_only,
+            style_id=args.style_id,
+            account_profile=prof,
+            edit_profile=args.edit_profile,
+            grammar=args.grammar,
+            allow_broll_mismatch=args.allow_broll_mismatch,
+            enforce_broll_gate=True,
+        )
+    except BrollSemanticGateError as exc:
+        # fail-closed：剪辑表已经写好了（带 gate 账本），但流程以非 0 退出码停下，
+        # 不许“静默出片”；真要放行请显式加 --allow-broll-mismatch
+        print(f"[step4] B-roll 与台词对不上，已中止（未被放行）：{exc}")
+        print("[step4] 处理方式：补齐素材描述/重抽帧判读，或加 --allow-broll-mismatch 显式放行")
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":

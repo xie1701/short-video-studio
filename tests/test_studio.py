@@ -2547,11 +2547,12 @@ class StyleLockTests(unittest.TestCase):
             self.assertIn("subtitles.font_size", fields)
             self.assertIn("subtitles.keyword_color", fields)
             # 必须能说清「库是多少、实际是多少」，不能只说一句不一致
-            self.assertEqual(fields["subtitles.font_size"]["expected"], 48)
+            self.assertEqual(fields["subtitles.font_size"]["expected"],
+                             load_subtitle_templates()["style_01"]["font_size"])
             self.assertEqual(fields["subtitles.font_size"]["actual"], 64)
             report = render_report(rep)
             self.assertIn("字幕字号", report)
-            self.assertIn("48", report)
+            self.assertIn("64", report)
 
     def test_only_fields_the_user_agreed_to_are_waived(self):
         from style_lock import audit_pipeline, write_waiver
@@ -2782,9 +2783,17 @@ class SubtitlePaintTruthTests(unittest.TestCase):
             self.assertEqual(int(tpls[sid].get("stroke_width") or 0), int(sub.get("stroke_width") or 0),
                              f"{sid} 模板与库不一致")
             if (tr.get("shadow") or {}).get("enabled"):
-                self.assertEqual([int(v) for v in sub.get("shadow_offset") or []],
-                                 [int(v) for v in tr["shadow"]["offset_px"]],
-                                 f"{sid} 阴影偏移与草稿不一致")
+                # 2026-11-24 重新标定：offset 不再是「distance × 4.0」的占位分量，而是
+                # distance × 2.3px（1080 宽）沿 shadow_point 方向的分量（实测原版幅度 11.7px / distance 5.0）。
+                self.assertEqual(float(sub.get("shadow_distance_units") or 0),
+                                 float(tr["shadow"]["distance_units"] or 0),
+                                 f"{sid} 阴影距离与草稿不一致")
+                from render_mp4 import resolve_subtitle_shadow
+                _dx, _dy, _blur, _on = resolve_subtitle_shadow(
+                    dict(sub, shadow=True), float(sub.get("font_size_1080p_px") or 0)
+                )
+                self.assertEqual([int(v) for v in sub.get("shadow_offset") or []], [_dx, _dy],
+                                 f"{sid} 阴影偏移不等于 distance×2.3 的重算值")
         self.assertGreaterEqual(checked, 20, "至少要核到 20 套，说明真值文件是全的")
 
 

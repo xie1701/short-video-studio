@@ -589,6 +589,106 @@ def align_words_to_sentence_text(text: str, asr_words: List[Dict[str, Any]]) -> 
     return out if i == len(norm) else []
 
 
+# ── 字幕上屏文字的两处收口（2026-11-24 用户实测：字号放大后冒出「四大轩王啦」这种行，
+#    以及只剩 2~3 个字的残句）────────────────────────────────────────────────
+MIN_CHUNK_CHARS = 4      # 少于这个字数的字幕块不单独占一屏，并进相邻块
+# 与成稿文字的相似下限：只改「听错一两个字」的情况（四大轩王→四大天王），改写过的整句不动。
+# 配合「窗口单调向前」（cursor）使用：每块只在上一块之后的成稿文字里找，避免两块文字重叠。
+CONFIRM_MATCH_RATIO = 0.75
+
+
+def _retarget_words_to_text(words: List[Dict[str, Any]], text: str) -> List[Dict[str, Any]]:
+    """把逐词表里的**字形**按成稿订正，词数与时间轴一概不动。
+
+    2026-11-24：ASR 把「四大天王」听成「四大轩王」，字幕就印错。成稿是用户核过的，
+    整句做一次字符对齐，凡是「一对一替换」的位置就换成成稿的字（同音误听、专名听错都在这里修好）；
+    增删块（口癖、重复词）保持原样，因此不会改动块边界，也不会把时间戳拉偏。
+    """
+    base = str(text or "")
+    if not words or not base:
+        return words
+    joined = "".join(str(w.get("word") or "") for w in words)
+    if not joined or joined == base:
+        return words
+    sm = difflib.SequenceMatcher(None, joined, base, autojunk=False)
+    chars = list(joined)
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "replace" and (i2 - i1) == (j2 - j1):
+            for k in range(i2 - i1):
+                chars[i1 + k] = base[j1 + k]
+    fixed = "".join(chars)
+    if fixed == joined:
+        return words
+    out: List[Dict[str, Any]] = []
+    pos = 0
+    for w in words:
+        wt = str(w.get("word") or "")
+        n = len(wt)
+        nw = dict(w)
+        nw["word"] = fixed[pos : pos + n] or wt
+        pos += n
+        out.append(nw)
+    return out
+
+def _merge_short_chunks(chunks: List[Dict[str, Any]], min_chars: int = MIN_CHUNK_CHARS) -> List[Dict[str, Any]]:
+    """把 2~3 个字的残句并进相邻块。
+
+    为什么：字号修到真值（75px）后一行只放得下 8 个字，句尾常被切出一个「仲有」「去制造」，
+    单占一屏既难看也被平台安全区体检判成「残句」。
+    """
+    out: List[Dict[str, Any]] = []
+    for ch in chunks:
+        txt = str(ch.get("text") or "").replace(" ", "")
+        if out and len(txt) < min_chars:
+            prev = out[-1]
+            gap = float(ch["start_sec"]) - float(prev["end_sec"])
+            if gap <= 0.50:
+                prev["text"] = str(prev.get("text") or "") + str(ch.get("text") or "")
+                prev["end_sec"] = max(float(prev["end_sec"]), float(ch["end_sec"]))
+                prev["words"] = list(prev.get("words") or []) + list(ch.get("words") or [])
+                prev["keywords"] = list(dict.fromkeys(list(prev.get("keywords") or []) + list(ch.get("keywords") or [])))
+                continue
+        out.append(dict(ch))
+    # 并不到一起的残块（中间隔了停顿）如果这一句还有别的块，就别单独占一屏
+    if len(out) >= 2:
+        out = [c for c in out if len(str(c.get("text") or "").replace(" ", "")) >= min_chars] or out
+    # 头一块太短（第一块就只剩两个字）并到后一块
+    if len(out) >= 2 and len(str(out[0].get("text") or "")) < min_chars:
+        first, second = out[0], out[1]
+        if float(second["start_sec"]) - float(first["end_sec"]) <= 0.50:
+            second["text"] = str(first.get("text") or "") + str(second.get("text") or "")
+            second["start_sec"] = min(float(first["start_sec"]), float(second["start_sec"]))
+            second["words"] = list(first.get("words") or []) + list(second.get("words") or [])
+            out.pop(0)
+    return out
+
+
+def _confirm_chunk_text(chunk: Dict[str, Any], sent_text: str, cursor: int = 0) -> Tuple[Dict[str, Any], int]:
+    """把 ASR 听错的字换成用户核过的成稿用字（只换字，不动时间轴）。
+
+    例：ASR 把「四大天王」听成「四大轩王」，词表上屏就会印错。成稿是用户核过的，
+    同一长度窗口里模糊匹配上就采信成稿的字形；匹配不上就不动（怕是另一句话）。
+    """
+    txt = str(chunk.get("text") or "")
+    base = str(sent_text or "")
+    n = len(txt.replace(" ", ""))
+    if not base or n == 0 or n > len(base):
+        return chunk
+    import difflib
+
+    best_ratio, best, best_at = 0.0, "", cursor
+    for i in range(max(0, cursor), len(base) - n + 1):
+        win = base[i : i + n]
+        if len(win) != n:
+            continue
+        r = difflib.SequenceMatcher(None, win, txt).ratio()
+        if r > best_ratio:
+            best_ratio, best, best_at = r, win, i
+    if best_ratio >= CONFIRM_MATCH_RATIO and best and best != txt:
+        chunk = dict(chunk)
+        chunk["text"] = best
+    return chunk, best_at + (n if best else 0)
+
 def split_sentence_into_chunks(
     sent: Dict[str, Any],
     max_chars: int = 10,
@@ -603,6 +703,8 @@ def split_sentence_into_chunks(
     """
     clean_fn = strip_display_punctuation if strip_punct else (lambda s: str(s or "").strip())
     words = _clean_word_tokens(list(sent.get("words") or []), strip_punct=strip_punct)
+    # 字形按成稿订正（只换字，不增删词），避免「四大轩王」这种同音误听印上屏
+    words = _retarget_words_to_text(words, str(sent.get("text") or ""))
     sent_kws = list(sent.get("keywords") or [])
     # 字幕文字一律跟**嘴上说的**走（逐词时间戳来自 ASR 词表）。
     # 2026-11-24 实测教训：成稿那一行是「整理后」的文字（去口癖、合并半句），跟原始录音并不逐字一致；
@@ -835,8 +937,14 @@ def run_step5(
     suppressed_count = 0
     # 每套风格的字数上限来自源草稿实测（7–96 字），不再统一压到 14 字
     tpl_char_cap = max(6, int(tpl.get("max_chars_hard", 96)))
-    tpl_max_chars = max(6, min(tpl_char_cap, int(tpl.get("max_chars_per_line", 10))))
     base_fs = int(tpl.get("font_size", 62))
+    # 每行字数必须由**字号**反推，而不是先让渲染器把字号砍小：
+    # 原版 style_21 一行最多 8 字、行宽约 516px；字号 75px 时 8 字 = 600px 正好落在 640 安全带内。
+    # 以前这里直接吃库里写死的 10，字号一修到真值就会被 render_subtitle_png 的溢出兜底
+    # 默默砍回 60 左右（用户看到的「字还是小」），这里把源头卡住，字号才能保住。
+    _line_px = SUBTITLE_SYMMETRIC_MAX_W - 32  # 与 split_sentence_into_chunks 的 max_safe_px 同口径
+    _chars_by_font = max(4, int(_line_px // max(1, base_fs)))
+    tpl_max_chars = max(4, min(tpl_char_cap, int(tpl.get("max_chars_per_line", 10)), _chars_by_font))
     kw_scale_f = float(tpl.get("keyword_scale", 1.133))
     eff_measure_fs = int(round(base_fs * max(1.0, (1.0 + kw_scale_f) * 0.5)))
 
@@ -908,14 +1016,15 @@ def run_step5(
                             search_i = hit_end
                     sent_eff["words"] = new_ws
         sent_prot = load_protected_terms(None, extra_terms=[*prot_terms, *(sent_eff.get("keywords") or [])])
-        for ch in split_sentence_into_chunks(
+        _chunks = _merge_short_chunks(list(split_sentence_into_chunks(
             sent_eff,
             max_chars=tpl_max_chars,
             font_path=font_path,
             font_size=eff_measure_fs,
             strip_punct=strip_punct,
             protected_terms=sent_prot,
-        ):
+        )))
+        for ch in _chunks:
             st_sec = round(float(ch["start_sec"]), 4)
             en_sec = round(float(ch["end_sec"]), 4)
             sub_dur = max(0.05, en_sec - st_sec)

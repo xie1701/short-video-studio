@@ -136,6 +136,68 @@ def compute_subtitle_place_xy(img_w: int, img_h: int, tpl: Dict[str, Any]) -> Tu
     return int(px), int(py)
 
 
+# ── 字幕阴影真值口径（2026-11-24 实测重新标定，用户反馈「投影偏移过多，影响观感」）──
+# 位移：剪映 shadow_point 是 -45° 的方向分量（0.6364=1/√2），乘 shadow_distance 得到阴影幅度。
+# 实测法：style_21 原版成片取 540×960 预览，把「字形掩膜」与「暗像素掩膜」做互相关，最佳位移
+#   dx≈-5 / dy≈+3（预览口径）→ ×2 落到 1080 宽 = 合成幅度 ≈11.7px；草稿真值 distance=5.0、
+#   angle=-45°，即 11.5px / 5.0 单位 = **2.3px 每 unit（1080 宽）**。旧值 [14,14]（幅度 19.8px）
+#   比实测大 1.7 倍，正是「投影糊出墨迹一大圈、像双层黑边」的根因。
+SHADOW_CALIB_CANVAS_W = 1080.0  # 2.3px/unit 的标定画布宽，换画布按比例缩放
+SHADOW_DIST_PX_PER_UNIT = 2.3  # 见上：style_21 distance 5.0 → 11.5px（实测 11.7px）
+# 虚化：σ = smoothing × font_px × 0.13。「0.13」由两档字号实测反解（style_21 字幕 font_px=75 时
+#   σ≈4.4px、300px 巨字 σ≈11.4px，4 倍字号 → 2.6 倍 σ，线性拟合残差 ≤1px），与 dev_tools/
+#   render_replica_from_draft.py 的 SHADOW_BLUR_EM 同一口径。旧模板 shadow_blur_px=1.1 太硬，
+#   阴影边缘像描边。
+SHADOW_BLUR_EM = 0.13
+SHADOW_DEFAULT_POINT = (0.636396103067893, -0.636396103067893)  # -45°，剪映 y 负 = 屏幕向下
+SHADOW_DEFAULT_SMOOTHING = 0.45  # 24 套草稿里 21 套的 shadow_smoothing 都是 0.45
+
+
+def resolve_subtitle_shadow(tpl: Dict[str, Any], font_px: float) -> Tuple[int, int, float, bool]:
+    """算字幕阴影：(dx, dy, σ, 是否启用)。
+
+    优先按草稿真值（shadow_distance_units / shadow_point / shadow_smoothing）现场推：
+    偏移幅度与画布宽成正比、与字号无关；虚化 σ 与字号成正比。
+    模板里没有真值字段时回落旧的 shadow_offset / shadow_blur_px 占位分量。
+    """
+    dist_units = tpl.get("shadow_distance_units")
+    try:
+        dist = float(dist_units) if dist_units is not None else 0.0
+    except (TypeError, ValueError):
+        dist = 0.0
+    if dist > 0:
+        mag = dist * SHADOW_DIST_PX_PER_UNIT * (float(CANVAS_WIDTH) / SHADOW_CALIB_CANVAS_W)
+        pt = tpl.get("shadow_point")
+        try:
+            ux = float(pt.get("x"))  # type: ignore[union-attr]
+            uy = -float(pt.get("y"))  # type: ignore[union-attr]
+        except (TypeError, ValueError, AttributeError):
+            ux, uy = SHADOW_DEFAULT_POINT[0], -SHADOW_DEFAULT_POINT[1]
+        norm = (ux * ux + uy * uy) ** 0.5 or 1.0
+        sm_raw = tpl.get("shadow_smoothing")
+        try:
+            sm = float(sm_raw) if sm_raw is not None else SHADOW_DEFAULT_SMOOTHING
+        except (TypeError, ValueError):
+            sm = SHADOW_DEFAULT_SMOOTHING
+        return (
+            int(round(mag * ux / norm)),
+            int(round(mag * uy / norm)),
+            max(0.0, sm * float(font_px) * SHADOW_BLUR_EM),
+            True,
+        )
+
+    off = tpl.get("shadow_offset") or [0, 0]
+    try:
+        dx, dy = int(off[0]), int(off[1])
+    except (TypeError, ValueError, IndexError):
+        dx, dy = 0, 0
+    try:
+        blur = float(tpl.get("shadow_blur_px") or 0.0)
+    except (TypeError, ValueError):
+        blur = 0.0
+    return dx, dy, blur, bool(dx or dy or blur)
+
+
 def render_subtitle_png(
     entry: Dict[str, Any],
     tpl: Dict[str, Any],
@@ -179,6 +241,9 @@ def render_subtitle_png(
     base_sz = orig_fs
     probe_img = Image.new("RGBA", (8, 8), (0, 0, 0, 0))
     probe_draw = ImageDraw.Draw(probe_img)
+    # 只做溢出兜底：字号以库/模板为准（units × canvas_w/172.8，见 dev_tools/rebuild_subtitle_typography.py）。
+    # 正常路径不该进这个循环——每行字数已在 step5_subtitles.py 按字号反推（可用宽度 // 字号），
+    # 24 套原版成片也是一行 ≤6~8 字。这里只防「调用方硬塞一整段长文」把字排到安全带外。
     while base_sz > 28:
         fnt_probe = get_cached_font(font_path, int(round(base_sz * max(1.0, (1.0 + kw_scale) * 0.5))))
         sw_p = 0 if orig_stroke_w <= 0 else max(1, int(round(orig_stroke_w * max(0.75, base_sz / float(orig_fs)))))
@@ -281,17 +346,16 @@ def render_subtitle_png(
     # ── 阴影：按真草稿量出来的值画（偏移 px / 透明度 / 虚化 px）──
     # 老实现把阴影画成「和正文同宽描边的一个黑影」，只要 stroke_width > 0 就变成双层黑边；
     # 而真草稿里 24/24 套字幕根本没有描边，只有阴影（见 forensic/text_style_truth.json）。
-    sh_off = tpl.get("shadow_offset") or [0, 0]
-    try:
-        sh_dx_raw, sh_dy_raw = int(sh_off[0]), int(sh_off[1])
-    except (TypeError, ValueError, IndexError):
-        sh_dx_raw, sh_dy_raw = 0, 0
-    sh_blur_raw = float(tpl.get("shadow_blur_px") or 0.0)
-    use_shadow = bool(tpl.get("shadow", False)) and shadow_rgba[3] > 0 and (sh_dx_raw or sh_dy_raw or sh_blur_raw)
     sz_scale = max(0.4, base_sz / float(orig_fs))
-    sh_dx = int(round(sh_dx_raw * sz_scale))
-    sh_dy = int(round(sh_dy_raw * sz_scale))
-    sh_blur = float(sh_blur_raw * sz_scale)
+    if tpl.get("shadow_distance_units") is not None:
+        # 真值路径：偏移/虚化按草稿量出来的口径现场算（不再吃模板里的占位分量）
+        sh_dx, sh_dy, sh_blur, _ = resolve_subtitle_shadow(tpl, base_sz)
+    else:
+        sh_dx_raw, sh_dy_raw, sh_blur_raw, _ = resolve_subtitle_shadow(tpl, base_sz)
+        sh_dx = int(round(sh_dx_raw * sz_scale))
+        sh_dy = int(round(sh_dy_raw * sz_scale))
+        sh_blur = float(sh_blur_raw * sz_scale)
+    use_shadow = bool(tpl.get("shadow", False)) and shadow_rgba[3] > 0 and (sh_dx or sh_dy or sh_blur)
 
     # 先将每行单独渲染至临时透明层并精确裁出真实墨迹包围盒，消除字形左轴承/末字尾距造成的不对称偏移
     rendered_lines: List[Image.Image] = []

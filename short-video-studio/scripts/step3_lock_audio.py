@@ -546,6 +546,49 @@ def run_step3(
         if _missing:
             print(f"[step3] [WARN] 成稿里有 {len(_missing)} 个转写段找不到：{_missing[:5]}")
         if _merged:
+            # 2026-11-24：一行成稿是按「转写段」整段取的，段里往往夹着打板口令、重来的半句和
+            # 现场其他人的话（用户实测：「还是混有大量导演/摄影师的声音」）。所以再按字级时间戳
+            # 把成稿的每个字对回去，只保留对得上的那一小段，对不上的连画面一起砍。
+            try:
+                import script_align as _SA
+                _expanded: List[Dict[str, Any]] = []
+                _cut_total = 0.0
+                _trim_notes: List[str] = []
+                for _m in _merged:
+                    _r = _SA.keep_intervals(str(_m.get("text") or ""), _m.get("words") or [])
+                    _ivs = _r.get("intervals") or []
+                    if not _ivs:
+                        print(f"[step3] [WARN] 这一行对不上逐字稿，按原窗口保留：{str(_m.get('text'))[:16]}")
+                        _expanded.append(_m)
+                        continue
+                    _win = float(_m["end_sec"]) - float(_m["start_sec"])
+                    _kept = sum(float(x["end"]) - float(x["start"]) for x in _ivs)
+                    _cut_total += max(0.0, _win - _kept)
+                    if _r.get("low_coverage"):
+                        _trim_notes.append(str(_r.get("reason") or ""))
+                    for _iv in _ivs:
+                        _sub = dict(_m)
+                        _sub.update({
+                            "start_sec": float(_iv["start"]),
+                            "end_sec": float(_iv["end"]),
+                            "text": str(_iv["text"]),
+                            "words": list(_iv["words"]),
+                            "plan_split": len(_ivs) > 1,
+                            "plan_trim_head_sec": _r.get("head_trim_sec", 0.0),
+                            "plan_trim_tail_sec": _r.get("tail_trim_sec", 0.0),
+                        })
+                        _expanded.append(_sub)
+                if _expanded:
+                    print(
+                        f"[step3] 按成稿逐字对齐：砍掉 {_cut_total:.1f} 秒非成稿声音"
+                        f"（口令/重来/插话/废开头），{len(_merged)} 行 → {len(_expanded)} 段"
+                    )
+                    for _t in dict.fromkeys(_trim_notes):
+                        if _t:
+                            print(f"[step3] [WARN] {_t}")
+                    _merged = _expanded
+            except Exception as _e:  # 对齐失败不许静默降级成「整段保留」而不说
+                print(f"[step3] [WARN] 逐字对齐不可用（{_e}），退回按整段保留")
             _plan_dur = sum(float(x["end_sec"]) - float(x["start_sec"]) for x in _merged)
             _raw_dur = sum(float(x["end_sec"]) - float(x["start_sec"]) for x in valid_segments)
             print(f"[step3] 按成稿剪：{len(_merged)} 句 / {_plan_dur:.1f} 秒（原始逐字稿 {len(valid_segments)} 句 / {_raw_dur:.1f} 秒）")
@@ -675,6 +718,14 @@ def run_step3(
 
         next_seg = valid_segments[s_idx] if s_idx < len(valid_segments) else None
         cur_pause_sec, pause_reason = resolve_dynamic_pause(seg, next_seg, pause_sec, eff_prof)
+        # 同一行成稿被切成几段时，段与段之间是「剪掉口令后的直接拼接」，
+        # 中间不能再墊一个呼吸停顿，否则听起来像两句话（2026-11-24 实测）。
+        if (
+            next_seg
+            and seg.get("plan_src_segs")
+            and seg.get("plan_src_segs") == next_seg.get("plan_src_segs")
+        ):
+            cur_pause_sec, pause_reason = 0.0, "same_plan_line_join"
 
         sent_obj = {
             "id": sid,
