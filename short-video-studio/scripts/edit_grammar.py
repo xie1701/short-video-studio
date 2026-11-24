@@ -526,9 +526,13 @@ def check_edl(edl: dict, grammar: dict) -> dict:
     durations = [round(float(c.get("duration_sec") or 0.0), 3) for c in clips]
     n = len(durations)
     fast_n = sum(1 for d in durations if d < 1.0)
-    # B 覆盖只算真实外来画面（b_roll）；自产图卡（code_broll）单列，不混进与源真值的比较
-    b_sec = sum(float(c.get("duration_sec") or 0.0) for c in clips
-                if str(c.get("track_role")) == "b_roll")
+    # B 覆盖只算真实外来画面（全屏 b_roll 或分层剪辑的底图 B-roll）；自产图卡（code_broll）单列，不混进与源真值的比较
+    b_sec = sum(
+        float(c.get("duration_sec") or 0.0)
+        for c in clips
+        if str(c.get("track_role")) == "b_roll"
+        or (bool(c.get("b_roll_overlay")) and bool((c.get("pip_layout") or {}).get("secondary_media_path")))
+    )
     b_sec_cards = sum(float(c.get("duration_sec") or 0.0) for c in clips
                       if str(c.get("track_role")) == "code_broll")
     opening_changes = sum(1 for c in clips[1:]

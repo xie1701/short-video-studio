@@ -50,7 +50,7 @@ def _aliases_doc() -> Dict[str, Any]:
 
 
 def _search_dirs() -> List[Path]:
-    # 与 common.find_commercial_font 同一套搜索目录（随包 fonts/ + fonts/jianying/ + 系统字体）
+    # 与 common.find_commercial_font 同一套搜索目录（随包开源 fonts/ + 本机私有 local_assets/ + 系统字体）
     from common import _font_search_dirs  # noqa: PLC0415
 
     return _font_search_dirs()

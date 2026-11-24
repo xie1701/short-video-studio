@@ -983,6 +983,10 @@ def _discover_agent_visual_index(pipeline_dir: Path) -> Optional[Path]:
         if vi:
             print(f"[pipeline] 画面语义索引 -> {vi}")
             return vi
+    existing_vi = pipeline_dir / "00_visual_index.json"
+    if existing_vi.is_file():
+        print(f"[pipeline] 复用已有画面语义索引 -> {existing_vi}")
+        return existing_vi
     print("[pipeline] 提示：没有 Agent 画面判定（没抽帧或没判），配镜会按『无画面依据』标出来")
     return None
 
@@ -1213,94 +1217,113 @@ def run_visual_to_delivery(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="short-video-studio 专业端到端流水线编排器 (支持多账号与专属工作区隔离)")
-    parser.add_argument("--project-dir", help="可选：自定义加工项目目录（未传时自动落在 --workspace-root 下隔离目录）")
-    parser.add_argument("--raw-dir", help="原始素材目录（严格只读，绝不向此目录写入任何加工文件）")
-    parser.add_argument("--account", help="账号标识，自动隔离该账号参数基因/合规白名单/复盘日志/项目目录")
-    parser.add_argument("--project-id", help="项目标识")
-    parser.add_argument("--workspace-root", help="专属加工工作区根目录")
-    parser.add_argument("--track", choices=["store", "creator"], default="store")
-    parser.add_argument(
+    parser = argparse.ArgumentParser(description="short-video-studio 专业端到端流水线编排器 (支持三入口与多账号隔离)")
+
+    g_entry = parser.add_argument_group("1. 核心入口与项目定位")
+    g_entry.add_argument(
+        "--entry",
+        choices=["new", "edit", "review"],
+        default=None,
+        help="三条核心入口：new(新拍筹备/出确认单) / edit(现成素材开剪) / review(发布数据复盘)",
+    )
+    g_entry.add_argument(
         "--mode",
         choices=["full", "plan-only", "lock-preview", "reedit-visuals", "relock-voice", "patch-lines", "render-locked", "code-video", "knowledge-animation"],
-        default="full",
-        help="执行模式（plan-only 仅盘点+转写+出文案确认单不直接开剪；patch-lines 增量局部改句）",
+        default=None,
+        help="精细执行动作（plan-only 出确认单 / full 全流程 / patch-lines 改几句 / reedit-visuals 只改画面）",
     )
-    parser.add_argument("--patch-json", help="patch-lines 模式：增量改句 JSON 路径（仅替换指定 sentence_id，不动其余原声）")
-    parser.add_argument("--require-plan-confirm", action="store_true", help="严格门禁：未先确认 00_confirm_plan.md 时暂停并输出确认单")
-    parser.add_argument("--keep-edl", action="store_true", help="换风格/微调时保留已有 04_edl.json 选镜与花字文案，只刷新视觉层")
-    parser.add_argument("--no-flower-text", action="store_true", help="关闭全部自动花字/巨字，仅保留干净字幕与音效")
-    parser.add_argument("--agent", help="可选：显式指定当前运行智能体标识（如 cola 自动联动内置封面技能）")
-    parser.add_argument("--anim-title", default="知识讲解动画", help="knowledge-animation 模式：片名")
-    parser.add_argument("--anim-idea", default="用直观画面看穿一个反常识规律", help="knowledge-animation 模式：核心命题")
-    parser.add_argument("--anim-ratio", choices=["16x9", "9x16", "1x1", "3x4"], default="16x9", help="knowledge-animation 模式：画幅")
-    parser.add_argument("--anim-font-mode", choices=["sans", "serif"], default="sans", help="knowledge-animation 模式：字幕与封面字体气质")
-    parser.add_argument("--anim-blur", type=int, default=1, help="knowledge-animation 模式：运动模糊子帧数 (1=关闭, 8=电影级模糊)")
-    parser.add_argument("--anim-lines-json", help="knowledge-animation 模式：可选自定义 lines.json（含分句与金句标记）")
-    parser.add_argument("--anim-audio", help="knowledge-animation 模式：可选配音 WAV/M4A（自动同步音轨并压低 BGM）")
-    parser.add_argument("--code-spec", help="入口 3 (code-video)：已有 00_code_spec.json 路径")
-    parser.add_argument("--code-html", help="入口 3 (code-video)：自定义程序动画 HTML 目录或入口 HTML 文件路径")
-    parser.add_argument(
-        "--code-backend",
-        choices=["auto", "html", "pillow"],
-        default="auto",
-        help="入口 3 / 代码补镜渲染后端",
+    g_entry.add_argument("--track", choices=["store", "creator"], default="store", help="账号轨道：store(门店) / creator(个人博主)")
+    g_entry.add_argument("--style-id", help="可选：套用风格谱模板 ID (style_01 ~ style_24)")
+    g_entry.add_argument("--account", help="账号标识，自动隔离该账号参数基因/合规白名单/复盘日志/项目目录")
+    g_entry.add_argument("--project-id", help="项目标识")
+    g_entry.add_argument("--raw-dir", help="原始素材目录（严格只读，绝不向此目录写入任何加工文件）")
+    g_entry.add_argument("--project-dir", help="可选：自定义加工项目目录（未传时自动落在 --workspace-root 下隔离目录）")
+    g_entry.add_argument("--workspace-root", help="专属加工工作区根目录")
+
+    g_audio = parser.add_argument_group("2. 口播文案与音频锁轨")
+    g_audio.add_argument("--script-json", help="口播或配音台词 JSON 文件")
+    g_audio.add_argument("--force-tts", action="store_true", help="强制使用文案生成 TTS 配音")
+    g_audio.add_argument("--bgm", help="自定义 BGM 文件路径")
+    g_audio.add_argument("--pause-sec", type=float, help="基准句间停顿，显式值覆盖账号配置 (0.14-0.32s)")
+    g_audio.add_argument("--patch-json", help="patch-lines 模式：增量改句 JSON 路径（仅替换指定 sentence_id，不动其余原声）")
+    g_audio.add_argument("--dialect", choices=["mandarin", "cantonese", "dialect"], default="mandarin", help="口播语种，用于转写与盲听复核")
+    g_audio.add_argument("--store-anchor", help="门店听觉锚点（如门店名），用于热词与盲听核验")
+    g_audio.add_argument("--multi-speaker", action="store_true", help="多人访谈/双人对话模式（禁止抑制第二人声音）")
+    g_audio.add_argument("--whisper-model", help="可选：显式指定本地 faster-whisper 模型名称")
+    g_audio.add_argument(
+        "--asr-engine", choices=["auto", "sensevoice", "whisper"], default="auto",
+        help="ASR 引擎：auto（默认，SenseVoice 优先，方言自判）/ sensevoice / whisper",
     )
-    parser.add_argument("--script-json", help="口播或配音台词 JSON 文件")
-    parser.add_argument("--force-tts", action="store_true", help="强制使用文案生成 TTS 配音")
-    parser.add_argument("--bgm", help="自定义 BGM 文件路径")
-    parser.add_argument("--pause-sec", type=float, help="基准句间停顿，显式值覆盖账号配置 (0.14-0.32s)")
-    parser.add_argument("--j-cut-frames", type=int, default=None, help="句间 J-cut 声先入帧数 (默认 3，或由 --style-id 决定)")
-    parser.add_argument("--style-id", help="可选：套用风格谱模板 ID (style_01 ~ style_24)")
-    parser.add_argument(
+    g_audio.add_argument(
+        "--no-polish", action="store_true",
+        help="不生成文案整理任务清单（ASR 逐字稿会直接进确认单，含口癖与重拍版本）",
+    )
+
+    g_visual = parser.add_argument_group("3. 画面剪辑、包装与导出")
+    g_visual.add_argument("--j-cut-frames", type=int, default=None, help="句间 J-cut 声先入帧数 (默认 3，或由 --style-id 决定)")
+    g_visual.add_argument("--subtitle-template", help="字幕模板 ID")
+    g_visual.add_argument("--lut", help="调色 LUT 文件名")
+    g_visual.add_argument("--prefer-broll-only", action="store_true", help="改画模式：尽量切换为纯 B-roll/代码补镜")
+    g_visual.add_argument("--keep-edl", action="store_true", help="换风格/微调时保留已有 04_edl.json 选镜与花字文案，只刷新视觉层")
+    g_visual.add_argument("--no-flower-text", action="store_true", help="关闭全部自动花字/巨字，仅保留干净字幕与音效")
+    g_visual.add_argument("--raw-intel", help="可选：一手原材萃取 00_raw_intel.json 路径")
+    g_visual.add_argument("--visual-index", help="可选：外部高精度镜头语义索引 00_visual_index.json 路径")
+    g_visual.add_argument("--opening-title-previews", "--hook-variants", dest="hook_variants", type=int, default=1, help="生成片头标题条对比预览")
+    g_visual.add_argument("--edit-profile", choices=["auto", *EDIT_PROFILES], default="auto")
+    g_visual.add_argument("--benchmark", help="可选：对标视频路径")
+    g_visual.add_argument("--sources-json", help="主张与原始材料对应表")
+    g_visual.add_argument("--platform", help="制作目标平台，用于选择已启用的实验参数")
+    g_visual.add_argument("--account-profile", help="可选：账号参数基因 account_profile.json 路径")
+    g_visual.add_argument("--whitelist", help="可选：账号合规白名单 compliance_whitelist.json 路径")
+    g_visual.add_argument("--licenses-json", help="可选：外部资产商用授权清单 licenses.json 路径")
+    g_visual.add_argument("--exports", choices=EXPORT_CHOICES, help="auto 尝试两种工程并允许 MP4 降级，显式选择的工程进入必检")
+    g_visual.add_argument("--agent", help="可选：显式指定当前运行智能体标识（如 cola 自动联动内置封面技能）")
+    g_visual.add_argument(
+        "--no-vision-package", action="store_true",
+        help="不自动准备「抽密帧 + 大模型判定拼版图」（跳过会让配镜没有画面依据）",
+    )
+
+    g_adv = parser.add_argument_group("4. 高级门禁、入口3动画与调试开关")
+    g_adv.add_argument("--require-plan-confirm", action="store_true", help="严格门禁：未先确认 00_confirm_plan.md 时暂停并输出确认单")
+    g_adv.add_argument("--require-lock", action="store_true", help="正式渲染前强制校验 approval_lock.json 指纹锁")
+    g_adv.add_argument(
         "--allow-style-deviation",
         action="store_true",
         help="默认关闭：出片前会校验是否 100%% 套用了所选风格的库标准，发现偏离即停下。"
              "只有用户明确同意偏离时才加这个开关，并在交付说明里写清改了哪几项",
     )
-    parser.add_argument(
+    g_adv.add_argument(
         "--allow-broll-mismatch",
         action="store_true",
         help="默认关闭：B-roll 选片要与台词语义对上（命中率 ≥45%% 且无依据占比 ≤25%%），不够即停。"
              "只有用户明确接受「画面和台词对不上」时才加这个开关",
     )
-    parser.add_argument("--subtitle-template", help="字幕模板 ID")
-    parser.add_argument("--lut", help="调色 LUT 文件名")
-    parser.add_argument("--prefer-broll-only", action="store_true", help="改画模式：尽量切换为纯 B-roll/代码补镜")
-    parser.add_argument("--benchmark", help="可选：对标视频路径")
-    parser.add_argument("--sources-json", help="主张与原始材料对应表")
-    parser.add_argument("--edit-profile", choices=["auto", *EDIT_PROFILES], default="auto")
-    parser.add_argument("--raw-intel", help="可选：一手原材萃取 00_raw_intel.json 路径")
-    parser.add_argument("--visual-index", help="可选：外部高精度镜头语义索引 00_visual_index.json 路径")
-    parser.add_argument("--platform", help="制作目标平台，用于选择已启用的实验参数")
-    parser.add_argument("--account-profile", help="可选：账号参数基因 account_profile.json 路径")
-    parser.add_argument("--whitelist", help="可选：账号合规白名单 compliance_whitelist.json 路径")
-    parser.add_argument("--licenses-json", help="可选：外部资产商用授权清单 licenses.json 路径")
-    parser.add_argument("--opening-title-previews", "--hook-variants", dest="hook_variants", type=int, default=1, help="生成片头标题条对比预览")
-    parser.add_argument("--dialect", choices=["mandarin", "cantonese", "dialect"], default="mandarin", help="口播语种，用于转写与盲听复核")
-    parser.add_argument("--store-anchor", help="门店听觉锚点（如门店名），用于热词与盲听核验")
-    parser.add_argument("--multi-speaker", action="store_true", help="多人访谈/双人对话模式（禁止抑制第二人声音）")
-    parser.add_argument("--whisper-model", help="可选：显式指定本地 faster-whisper 模型名称")
-    parser.add_argument(
-        "--asr-engine", choices=["auto", "sensevoice", "whisper"], default="auto",
-        help="ASR 引擎：auto（默认，SenseVoice 优先，方言自判）/ sensevoice / whisper",
+    g_adv.add_argument("--strict-asr", action="store_true", help="无本地 Whisper 模型时阻止 #21 通过")
+    g_adv.add_argument("--sync-window", type=float, nargs=2, metavar=("START", "END"), help="可选：实测闪帧/测试音同步检测窗")
+    g_adv.add_argument("--keep-temp", action="store_true", help="调试用：完工后保留大体积中间临时文件")
+    g_adv.add_argument("--simulate-jy-fail", action="store_true", help="测试剪映草稿失效降级保护")
+    g_adv.add_argument("--simulate-hf-fail", action="store_true", help="测试 HyperFrames 草稿失效降级保护")
+    g_adv.add_argument("--anim-title", default="知识讲解动画", help="knowledge-animation 模式：片名")
+    g_adv.add_argument("--anim-idea", default="用直观画面看穿一个反常识规律", help="knowledge-animation 模式：核心命题")
+    g_adv.add_argument("--anim-ratio", choices=["16x9", "9x16", "1x1", "3x4"], default="16x9", help="knowledge-animation 模式：画幅")
+    g_adv.add_argument("--anim-font-mode", choices=["sans", "serif"], default="sans", help="knowledge-animation 模式：字幕与封面字体气质")
+    g_adv.add_argument("--anim-blur", type=int, default=1, help="knowledge-animation 模式：运动模糊子帧数 (1=关闭, 8=电影级模糊)")
+    g_adv.add_argument("--anim-lines-json", help="knowledge-animation 模式：可选自定义 lines.json（含分句与金句标记）")
+    g_adv.add_argument("--anim-audio", help="knowledge-animation 模式：可选配音 WAV/M4A（自动同步音轨并压低 BGM）")
+    g_adv.add_argument("--code-spec", help="入口 3 (code-video)：已有 00_code_spec.json 路径")
+    g_adv.add_argument("--code-html", help="入口 3 (code-video)：自定义程序动画 HTML 目录或入口 HTML 文件路径")
+    g_adv.add_argument(
+        "--code-backend",
+        choices=["auto", "html", "pillow"],
+        default="auto",
+        help="入口 3 / 代码补镜渲染后端",
     )
-    parser.add_argument(
-        "--no-polish", action="store_true",
-        help="不生成文案整理任务清单（ASR 逐字稿会直接进确认单，含口癖与重拍版本）",
-    )
-    parser.add_argument(
-        "--no-vision-package", action="store_true",
-        help="不自动准备「抽密帧 + 大模型判定拼版图」（跳过会让配镜没有画面依据）",
-    )
-    parser.add_argument("--sync-window", type=float, nargs=2, metavar=("START", "END"), help="可选：实测闪帧/测试音同步检测窗")
-    parser.add_argument("--require-lock", action="store_true", help="正式渲染前强制校验 approval_lock.json 指纹锁")
-    parser.add_argument("--exports", choices=EXPORT_CHOICES, help="auto 尝试两种工程并允许 MP4 降级，显式选择的工程进入必检")
-    parser.add_argument("--strict-asr", action="store_true", help="无本地 Whisper 模型时阻止 #21 通过")
-    parser.add_argument("--keep-temp", action="store_true", help="调试用：完工后保留大体积中间临时文件")
-    parser.add_argument("--simulate-jy-fail", action="store_true", help="测试剪映草稿失效降级保护")
-    parser.add_argument("--simulate-hf-fail", action="store_true", help="测试 HyperFrames 草稿失效降级保护")
     args = parser.parse_args()
+    if args.mode is None:
+        if args.entry == "new":
+            args.mode = "plan-only"
+        else:
+            args.mode = "full"
 
     ws = resolve_workspace_paths(
         account=args.account,
@@ -1309,6 +1332,14 @@ def main() -> None:
         raw_dir=Path(args.raw_dir) if args.raw_dir else None,
         workspace_root=Path(args.workspace_root) if args.workspace_root else None,
     )
+    if args.entry == "review":
+        from content_log_review import generate_weekly_review
+        try:
+            rev = generate_weekly_review(ws["content_log_dir"], track=args.track)
+            print(f"[review] 周复盘已生成 -> {rev.get('weekly_review_md')}")
+        except ValueError as exc:
+            print(f"[review] {exc} 请先用 scripts/content_log_review.py --add-json 补录已发布视频数据（可附 09_publish_ops.md 的归因码）。")
+        return
     project_dir = ws["project_dir"]
     raw_dir = ws["raw_dir"]
     pipeline_dir = ws["pipeline_dir"]

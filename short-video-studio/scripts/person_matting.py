@@ -452,15 +452,43 @@ def generate_person_matte_video(
 ) -> Optional[Dict[str, Any]]:
     """
     为指定视频逐帧生成人像前景 Alpha 蒙版视频（及可选沿人体轮廓膨胀的白边蒙版视频）。
-    返回包含 has_person / person_coverage / matte_mp4 / outline_mp4 的字典；引擎不可用时返回 None。
+    先写同目录临时文件、成功且确认有人像后再原子替换目标文件，防止半成品被误当缓存复用。
     """
     import json
+    import os
 
     src_mp4 = Path(src_mp4)
     out_matte_mp4 = Path(out_matte_mp4)
     if not src_mp4.is_file():
         return None
     out_matte_mp4.parent.mkdir(parents=True, exist_ok=True)
+    tmp_matte = out_matte_mp4.with_name(f".{out_matte_mp4.stem}.tmp.{os.getpid()}.mp4")
+    tmp_outline = (
+        Path(out_outline_mp4).with_name(f".{Path(out_outline_mp4).stem}.tmp.{os.getpid()}.mp4")
+        if (out_outline_mp4 and outline_px > 0)
+        else None
+    )
+
+    def _finalize(meta: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not meta or not meta.get("has_person") or not tmp_matte.is_file() or tmp_matte.stat().st_size == 0:
+            tmp_matte.unlink(missing_ok=True)
+            if tmp_outline:
+                tmp_outline.unlink(missing_ok=True)
+            # 清理可能残留的旧半成品
+            out_matte_mp4.unlink(missing_ok=True)
+            if out_outline_mp4:
+                Path(out_outline_mp4).unlink(missing_ok=True)
+            return meta if (meta and not meta.get("has_person")) else None
+        tmp_matte.replace(out_matte_mp4)
+        meta["matte_mp4"] = str(out_matte_mp4)
+        if tmp_outline and out_outline_mp4 and tmp_outline.is_file() and tmp_outline.stat().st_size > 0:
+            tmp_outline.replace(out_outline_mp4)
+            meta["outline_mp4"] = str(out_outline_mp4)
+        else:
+            if tmp_outline:
+                tmp_outline.unlink(missing_ok=True)
+            meta["outline_mp4"] = None
+        return meta
 
     # 1. macOS 原生 Swift + Apple Vision + Metal GPU 硬件加速（首选）
     bin_p = ensure_macos_vision_matte_bin()
@@ -468,31 +496,33 @@ def generate_person_matte_video(
         args = [
             str(bin_p),
             str(src_mp4),
-            str(out_matte_mp4),
-            str(out_outline_mp4) if (out_outline_mp4 and outline_px > 0) else "",
+            str(tmp_matte),
+            str(tmp_outline) if tmp_outline else "",
             str(max(0, int(outline_px))),
             quality if quality in ("balanced", "accurate") else "balanced",
         ]
         try:
             proc = subprocess.run(args, capture_output=True, text=True, timeout=180)
-            if proc.returncode == 0 and out_matte_mp4.is_file():
+            if proc.returncode == 0 and tmp_matte.is_file():
                 meta_line = (proc.stdout or "").strip().splitlines()[-1] if (proc.stdout or "").strip() else "{}"
                 meta = json.loads(meta_line)
                 meta["backend"] = "macos_vision"
-                meta["matte_mp4"] = str(out_matte_mp4)
-                meta["outline_mp4"] = str(out_outline_mp4) if (out_outline_mp4 and Path(out_outline_mp4).is_file()) else None
-                return meta
+                return _finalize(meta)
         except Exception:
             pass
+        tmp_matte.unlink(missing_ok=True)
+        if tmp_outline:
+            tmp_outline.unlink(missing_ok=True)
 
     # 2. 非 macOS 探测 mediapipe
-    return _generate_mediapipe_matte_video(
+    mp_meta = _generate_mediapipe_matte_video(
         src_mp4=src_mp4,
-        out_matte_mp4=out_matte_mp4,
-        out_outline_mp4=out_outline_mp4,
+        out_matte_mp4=tmp_matte,
+        out_outline_mp4=tmp_outline,
         outline_px=outline_px,
         fps=fps,
     )
+    return _finalize(mp_meta)
 
 
 def render_cool_data_news_bg_mp4(

@@ -1127,16 +1127,56 @@ def is_verified_commercial_font(font_path: Optional[Path | str]) -> bool:
     return any(stem in low for stem in VERIFIED_COMMERCIAL_FONT_STEMS)
 
 
+def local_assets_dir(assets_root: Optional[Path] = None) -> Optional[Path]:
+    """本机私有/复刻资产目录（不随公开 Skill 包分发）。
+
+    优先读环境变量 SVS_LOCAL_ASSETS_DIR；默认 ~/.short-video-studio/local_assets。
+    若调用方（如单元测试）将 assets_root 指向了隔离临时目录且未显式设置环境变量，
+    返回 None 以避免真实 HOME 资产穿透破坏测试隔离。
+    """
+    env = os.environ.get("SVS_LOCAL_ASSETS_DIR", "").strip()
+    if env:
+        return Path(env).expanduser()
+    if assets_root is not None:
+        try:
+            if Path(assets_root).resolve() != ASSETS_DIR.resolve():
+                return None
+        except OSError:
+            return None
+    return SVS_HOME_DIR / "local_assets"
+
+
+def resolve_asset_path(rel_or_path: str | Path, assets_root: Optional[Path] = None) -> Optional[Path]:
+    """按 随仓 assets_root → 本机私有 local_assets_dir() 顺序解析资产路径。"""
+    p = Path(rel_or_path)
+    if p.is_absolute():
+        return p if p.exists() else None
+    base = assets_root or ASSETS_DIR
+    candidates: List[Path] = [base / p]
+    loc = local_assets_dir(base)
+    if loc is not None:
+        candidates.append(loc / p)
+    for cand in candidates:
+        if cand.exists():
+            return cand
+    return None
+
+
 def style_font_dirs(style_id: Optional[str] = None) -> List[Path]:
     """风格专属字体目录：把源模版原版字体放进这里，就按原版渲染。
 
-    assets/style_spectrum/fonts/            全风格共享（按文件名匹配）
-    assets/style_spectrum/fonts/<style_id>/ 该风格专属
+    1) assets/style_spectrum/fonts/<style_id>/（及全风格共享）
+    2) local_assets_dir()/style_spectrum/fonts/<style_id>/（本机私有挂载）
     """
-    base = ASSETS_DIR / "style_spectrum" / "fonts"
-    dirs = [base]
-    if style_id:
-        dirs.insert(0, base / str(style_id))
+    bases = [ASSETS_DIR / "style_spectrum" / "fonts"]
+    loc = local_assets_dir(ASSETS_DIR)
+    if loc is not None:
+        bases.append(loc / "style_spectrum" / "fonts")
+    dirs: List[Path] = []
+    for base in bases:
+        if style_id:
+            dirs.append(base / str(style_id))
+        dirs.append(base)
     return [d for d in dirs if d.is_dir()]
 
 
@@ -1169,10 +1209,20 @@ def find_source_font(source_family: Optional[str], style_id: Optional[str] = Non
 
 
 def _font_search_dirs() -> List[Path]:
-    # `assets/fonts` 是随包的开源字体；`assets/fonts/jianying` 是**按剪映原名**随包的字体
-    # （24 套模版一共用到 30 种字体，其中 21 种只有剪映缓存里有 —— 不带一份，换台没有剪映的
-    # 电脑就全回落成系统字体，字号/字宽跟着变，模版就不成立）。见 assets/fonts/font_aliases.json。
-    dirs: List[Path] = [ASSETS_DIR / "fonts", ASSETS_DIR / "fonts" / "jianying"]
+    # 公开随仓仅带 5 款开源商用字体（ASSETS_DIR/fonts）；
+    # 本机自用/复刻所需的源字体目录自动挂载于 ~/.short-video-studio/local_assets/fonts/jianying。
+    dirs: List[Path] = [ASSETS_DIR / "fonts"]
+    loc = local_assets_dir(ASSETS_DIR)
+    if loc is not None:
+        loc_jy = loc / "fonts" / "jianying"
+        if loc_jy.is_dir():
+            dirs.append(loc_jy)
+        loc_fonts = loc / "fonts"
+        if loc_fonts.is_dir():
+            dirs.append(loc_fonts)
+    legacy_jy = ASSETS_DIR / "fonts" / "jianying"
+    if legacy_jy.is_dir():
+        dirs.append(legacy_jy)
     sys_name = platform.system()
     if sys_name == "Darwin":
         dirs += [
@@ -1530,6 +1580,9 @@ def compute_sfx_band_windows(
         lo_hz = min(2000.0, hi_hz * 0.5)
         sos = butter(4, [lo_hz, hi_hz], btype="bandpass", fs=sr, output="sos")
         hb_base = sosfiltfilt(sos, np.asarray(nosfx_mono, dtype=np.float64))
+        mid_lo_hz = min(300.0, hi_hz * 0.25)
+        sos_mid = butter(4, [mid_lo_hz, hi_hz], btype="bandpass", fs=sr, output="sos")
+        mb_base = sosfiltfilt(sos_mid, np.asarray(nosfx_mono, dtype=np.float64))
     except Exception:
         return []
 
@@ -1542,12 +1595,14 @@ def compute_sfx_band_windows(
         if i1 - i0 < 64:
             continue
         r_no = float(np.sqrt(np.mean(hb_base[i0:i1] ** 2) + 1e-12))
+        r_mid = float(np.sqrt(np.mean(mb_base[i0:i1] ** 2) + 1e-12))
         rows.append({
             "sfx_id": cue.get("id") or f"sfx_{idx + 1:03d}",
             "sfx_name": cue.get("sfx_name"),
             "win_start_sec": round(i0 / float(sr), 4),
             "win_end_sec": round(i1 / float(sr), 4),
             "nosfx_2_8k_rms": round(r_no, 10),
+            "nosfx_0_3_8k_rms": round(r_mid, 10),
         })
     return rows
 

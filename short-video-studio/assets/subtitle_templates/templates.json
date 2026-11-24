@@ -203,7 +203,7 @@
         11,
         11
       ],
-      "max_chars_per_line": 13,
+      "max_chars_per_line": 8,
       "full_width_bar": false,
       "dual_line_banner": true,
       "bg_shape": "square",
@@ -241,7 +241,7 @@
         "NotoSansCJKsc-Bold.otf"
       ],
       "license": "SIL OFL 1.1 / 阿里妈妈免费商用开源字体链",
-      "font_size": 75,
+      "font_size": 62,
       "keyword_scale": 1.12,
       "primary_color": "#FFFFFF",
       "keyword_color": "#FFF589",
@@ -265,7 +265,7 @@
         8,
         8
       ],
-      "max_chars_per_line": 15,
+      "max_chars_per_line": 12,
       "full_width_bar": false,
       "dual_line_banner": true,
       "bg_shape": "none",
@@ -281,7 +281,7 @@
         "override_dir": "fonts/style_03/"
       },
       "stroke_mode": "none",
-      "shadow_blur_px": 4.39,
+      "shadow_blur_px": 3.63,
       "shadow_distance_units": 5.0,
       "shadow_point": {
         "x": 0.636396103068,
@@ -290,7 +290,7 @@
       "shadow_smoothing": 0.45,
       "shadow_alpha": 0.9,
       "ass_font_family": "Source Han Serif CN Heavy",
-      "font_size_jianying_units": 12.0,
+      "font_size_jianying_units": 10.0,
       "px_per_unit_at_1080": 6.25
     },
     "style_04": {
@@ -365,7 +365,7 @@
         "NotoSansCJKsc-Bold.otf"
       ],
       "license": "SIL OFL 1.1 / 阿里妈妈免费商用开源字体链",
-      "font_size": 150,
+      "font_size": 75,
       "keyword_scale": 1.15,
       "primary_color": "#FFFFFF",
       "keyword_color": "#FE5252",
@@ -404,7 +404,7 @@
         "override_dir": "fonts/style_05/"
       },
       "stroke_mode": "none",
-      "shadow_blur_px": 8.78,
+      "shadow_blur_px": 4.39,
       "shadow_distance_units": 5.0,
       "shadow_point": {
         "x": 0.636396103068,
@@ -413,7 +413,7 @@
       "shadow_smoothing": 0.45,
       "shadow_alpha": 0.9,
       "ass_font_family": "Alimama ShuHeiTi",
-      "font_size_jianying_units": 24.0,
+      "font_size_jianying_units": 12.0,
       "px_per_unit_at_1080": 6.25
     },
     "style_06": {
@@ -590,7 +590,7 @@
       },
       "stroke_mode": "none",
       "shadow_blur_px": 0.0,
-      "shadow_distance_units": 5.0,
+      "shadow_distance_units": null,
       "shadow_point": {
         "x": 0.636396103068,
         "y": -0.636396103068
@@ -636,7 +636,7 @@
         8,
         8
       ],
-      "max_chars_per_line": 46,
+      "max_chars_per_line": 14,
       "full_width_bar": false,
       "bg_shape": "none",
       "max_chars_hard": 96,
@@ -674,7 +674,7 @@
         "NotoSansCJKsc-Bold.otf"
       ],
       "license": "SIL OFL 1.1 / 阿里妈妈免费商用开源字体链",
-      "font_size": 132,
+      "font_size": 75,
       "keyword_scale": 1.12,
       "primary_color": "#FFFFFF",
       "keyword_color": "#FFBF17",
@@ -698,7 +698,7 @@
         8,
         8
       ],
-      "max_chars_per_line": 10,
+      "max_chars_per_line": 8,
       "full_width_bar": false,
       "bg_shape": "none",
       "max_chars_hard": 96,
@@ -713,7 +713,7 @@
         "override_dir": "fonts/style_10/"
       },
       "stroke_mode": "none",
-      "shadow_blur_px": 7.72,
+      "shadow_blur_px": 4.39,
       "shadow_distance_units": 5.0,
       "shadow_point": {
         "x": 0.636396103068,
@@ -722,7 +722,7 @@
       "shadow_smoothing": 0.45,
       "shadow_alpha": 0.9,
       "ass_font_family": "Smiley Sans",
-      "font_size_jianying_units": 21.1,
+      "font_size_jianying_units": 12.0,
       "px_per_unit_at_1080": 6.25
     },
     "style_11": {
@@ -822,7 +822,7 @@
         8,
         8
       ],
-      "max_chars_per_line": 16,
+      "max_chars_per_line": 12,
       "full_width_bar": false,
       "bg_shape": "none",
       "max_chars_hard": 96,
@@ -884,7 +884,7 @@
         8,
         8
       ],
-      "max_chars_per_line": 96,
+      "max_chars_per_line": 11,
       "full_width_bar": false,
       "bg_shape": "none",
       "max_chars_hard": 96,
@@ -922,7 +922,7 @@
         "NotoSansCJKsc-Bold.otf"
       ],
       "license": "SIL OFL 1.1 / 阿里妈妈免费商用开源字体链",
-      "font_size": 94,
+      "font_size": 75,
       "keyword_scale": 1.14,
       "primary_color": "#FFFFFF",
       "keyword_color": "#FFBF17",
@@ -946,7 +946,7 @@
         8,
         8
       ],
-      "max_chars_per_line": 11,
+      "max_chars_per_line": 9,
       "full_width_bar": false,
       "bg_shape": "none",
       "max_chars_hard": 96,
@@ -961,7 +961,7 @@
         "override_dir": "fonts/style_14/"
       },
       "stroke_mode": "none",
-      "shadow_blur_px": 5.5,
+      "shadow_blur_px": 4.39,
       "shadow_distance_units": 5.0,
       "shadow_point": {
         "x": 0.636396103068,
@@ -970,7 +970,7 @@
       "shadow_smoothing": 0.45,
       "shadow_alpha": 0.9,
       "ass_font_family": "Alimama ShuHeiTi",
-      "font_size_jianying_units": 15.0,
+      "font_size_jianying_units": 12.0,
       "px_per_unit_at_1080": 6.25
     },
     "style_15": {
@@ -1068,7 +1068,7 @@
         8,
         8
       ],
-      "max_chars_per_line": 12,
+      "max_chars_per_line": 9,
       "full_width_bar": false,
       "bg_shape": "none",
       "max_chars_hard": 96,
@@ -1105,7 +1105,7 @@
         "NotoSansCJKsc-Bold.otf"
       ],
       "license": "SIL OFL 1.1 / 阿里妈妈免费商用开源字体链",
-      "font_size": 94,
+      "font_size": 50,
       "keyword_scale": 1.15,
       "primary_color": "#FFFFFF",
       "keyword_color": "#FFDE00",
@@ -1144,7 +1144,7 @@
         "override_dir": "fonts/style_17/"
       },
       "stroke_mode": "none",
-      "shadow_blur_px": 5.5,
+      "shadow_blur_px": 2.93,
       "shadow_distance_units": 5.0,
       "shadow_point": {
         "x": 0.636396103068,
@@ -1153,7 +1153,7 @@
       "shadow_smoothing": 0.45,
       "shadow_alpha": 0.9,
       "ass_font_family": "Source Han Serif CN Heavy",
-      "font_size_jianying_units": 15.0,
+      "font_size_jianying_units": 8.0,
       "px_per_unit_at_1080": 6.25
     },
     "style_18": {
@@ -1253,7 +1253,7 @@
         8,
         8
       ],
-      "max_chars_per_line": 83,
+      "max_chars_per_line": 12,
       "full_width_bar": false,
       "bg_shape": "none",
       "max_chars_hard": 96,
@@ -1315,7 +1315,7 @@
         8,
         8
       ],
-      "max_chars_per_line": 10,
+      "max_chars_per_line": 8,
       "full_width_bar": false,
       "dual_line_banner": true,
       "bg_shape": "none",
@@ -1440,7 +1440,7 @@
         8,
         8
       ],
-      "max_chars_per_line": 18,
+      "max_chars_per_line": 10,
       "full_width_bar": false,
       "bg_shape": "none",
       "max_chars_hard": 96,
@@ -1539,7 +1539,7 @@
         "NotoSansCJKsc-Bold.otf"
       ],
       "license": "SIL OFL 1.1 / 阿里妈妈免费商用开源字体链",
-      "font_size": 111,
+      "font_size": 75,
       "keyword_scale": 1.18,
       "primary_color": "#FFFFFF",
       "keyword_color": "#FFBF17",
@@ -1578,7 +1578,7 @@
         "override_dir": "fonts/style_24/"
       },
       "stroke_mode": "none",
-      "shadow_blur_px": 6.49,
+      "shadow_blur_px": 4.39,
       "shadow_distance_units": 5.0,
       "shadow_point": {
         "x": 0.636396103068,
@@ -1587,7 +1587,7 @@
       "shadow_smoothing": 0.45,
       "shadow_alpha": 0.9,
       "ass_font_family": "Source Han Serif CN Heavy",
-      "font_size_jianying_units": 17.8,
+      "font_size_jianying_units": 12.0,
       "px_per_unit_at_1080": 6.25
     }
   }

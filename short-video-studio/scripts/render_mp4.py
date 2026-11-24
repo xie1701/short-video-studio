@@ -227,9 +227,8 @@ def render_subtitle_png(
     if not raw_text and words:
         raw_text = "".join(str(w.get("word", "")) for w in words)
 
-    orig_fs = max(24, int(tpl.get("font_size", 62)))
-    if bool(tpl.get("dual_line_banner")):
-        orig_fs = max(76, int(round(orig_fs * 1.32)))
+    dual_banner = bool(tpl.get("dual_line_banner"))
+    raw_base_fs = max(24, int(tpl.get("font_size", 62)))
     orig_stroke_w = int(tpl.get("stroke_width", 4))
     kw_scale = float(tpl.get("keyword_scale", 1.133))
 
@@ -240,8 +239,7 @@ def render_subtitle_png(
     pad_x = 28 if has_bg else 14
     pad_y = 18 if has_bg else 12
 
-    dual_banner = bool(tpl.get("dual_line_banner"))
-    max_line_w = 840 if dual_banner else (SUBTITLE_SYMMETRIC_MAX_W - pad_x * 2)
+    max_line_w = SUBTITLE_SYMMETRIC_MAX_W - pad_x * 2
     if dual_banner and "\n" not in raw_text and len(raw_text) >= 5:
         # 通宽双行大字横幅（上白下荧光/暖黄/雅金）：优先在重点词前断行，否则对半断行
         cut_at = (len(raw_text) + 1) // 2
@@ -254,6 +252,11 @@ def render_subtitle_png(
     lines_text = raw_text.splitlines() if "\n" in raw_text else [raw_text]
     if not lines_text:
         lines_text = [""]
+
+    if dual_banner:
+        orig_fs = min(84, max(62, raw_base_fs)) if len(lines_text) >= 2 else min(100, max(62, raw_base_fs))
+    else:
+        orig_fs = raw_base_fs
 
     base_sz = orig_fs
     probe_img = Image.new("RGBA", (8, 8), (0, 0, 0, 0))
@@ -453,6 +456,28 @@ def render_subtitle_png(
             total_w += 1
         pad_y_eff = pad_y
         total_h = max(48, sum(im.height for im in rendered_lines) + line_gap * max(0, len(rendered_lines) - 1) + pad_y_eff * 2)
+    if dual_banner and total_h > 284 and rendered_lines:
+        # 双行横幅高度严守字幕安全带总高 [1180, 1468]=288px，防止实拍 PNG 溢出 final_bbox 导致黑盒 OCR 拦腰截断
+        avail_h = max(48, 284 - pad_y_eff * 2 - line_gap * max(0, len(rendered_lines) - 1))
+        cur_sum_h = max(1, sum(im.height for im in rendered_lines))
+        h_ratio = avail_h / float(cur_sum_h)
+        if h_ratio < 0.999:
+            scaled_lines: List[Image.Image] = []
+            scaled_offsets: List[Tuple[float, float]] = []
+            for ln_i, im_ln in enumerate(rendered_lines):
+                nw = max(20, int(round(im_ln.width * h_ratio)))
+                nh = max(20, int(round(im_ln.height * h_ratio)))
+                scaled_lines.append(im_ln.resize((nw, nh), Image.Resampling.LANCZOS))
+                ox, oy = line_ink_offsets[ln_i] if ln_i < len(line_ink_offsets) else (im_ln.width / 2.0, im_ln.height / 2.0)
+                scaled_offsets.append((ox * h_ratio, oy * h_ratio))
+            rendered_lines = scaled_lines
+            line_ink_offsets = scaled_offsets
+            max_ink_w = max((im.width for im in rendered_lines), default=60)
+            if not is_full_width_bar:
+                total_w = max(80, min(SUBTITLE_SYMMETRIC_MAX_W, max_ink_w + pad_x * 2))
+                if total_w % 2 == 1 and total_w < SUBTITLE_SYMMETRIC_MAX_W:
+                    total_w += 1
+            total_h = max(48, sum(im.height for im in rendered_lines) + line_gap * max(0, len(rendered_lines) - 1) + pad_y_eff * 2)
 
     canvas = Image.new("RGBA", (total_w, total_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
@@ -723,9 +748,9 @@ def render_packaging_png(
         return img
 
     if elem_kind == "center_burst_title":
-        # 真·巨字冲击引擎（126px–164px 四大剪映爆款巨字排版）
+        # 真·巨字冲击引擎（支持按元素因果表 112px–488px 分档）
         giant_mode = str(elem.get("giant_mode") or "giant_smash_single")
-        req_fs = max(112, min(168, int(elem.get("font_size_px") or 140)))
+        req_fs = max(112, min(520, int(elem.get("font_size_px") or 140)))
         fg_rgba = parse_hex_rgba(elem.get("fg_hex") or "#FFE28A")
         acc_rgba = parse_hex_rgba(elem.get("accent_hex") or "#FF2438")
         st_rgba = parse_hex_rgba(elem.get("stroke_hex") or "#000000")
@@ -809,7 +834,21 @@ def render_packaging_png(
             draw.text(((sx0 + sx1) // 2, sy0 + 72), seal_t[2:4], font=s_fnt, fill=(255, 248, 230, 255), anchor="mm")
             return img
 
-        # 默认 giant_smash_single：130px–156px 超粗重描边砸屏巨字 + 顶部微导语签
+        # 默认 giant_smash_single：若为因果分级大字（giant_text / req_fs>168），放开尺寸直接纯大字砸屏
+        is_giant_role = str(elem.get("display_role") or "") == "giant_text" or req_fs > 168
+        if is_giant_role:
+            target_fs = max(96, req_fs)
+            w = max(max_w_cap, 960)
+            h = max(180, int(target_fs * 1.45))
+            img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+            draw = ImageDraw.Draw(img)
+            f_main, m_fit = _fit_line(draw, raw_txt, font_path, w - 24, target_fs, 72)
+            mx, my = w // 2, h // 2
+            sw = max(10, min(20, int(round(target_fs / 22.0))))
+            draw.text((mx + 6, my + 8), m_fit, font=f_main, fill=(0, 0, 0, 235), anchor="mm", stroke_width=sw, stroke_fill=(0, 0, 0, 235))
+            draw.text((mx, my), m_fit, font=f_main, fill=fg_rgba, anchor="mm", stroke_width=sw, stroke_fill=st_rgba)
+            ink = img.getbbox()
+            return img.crop(ink) if ink else img
         w, h = max_w_cap, 156
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
@@ -1686,6 +1725,7 @@ _AI_MATTING_MODES = {
     "person_behind_giant_text_pip",
     "vision_portrait_cutout_pip",
     "data_news_cutout_pip",
+    "layered_cutout_over_broll",
 }
 
 
@@ -1831,6 +1871,72 @@ def _render_ai_person_matting_segment(
                     "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS, str(out_mp4),
                 ])
                 return out_mp4.is_file()
+
+        if mode == "layered_cutout_over_broll":
+            if not has_sec:
+                return False
+            fg_scale = max(1.0, min(1.5, float(pip_cfg.get("fg_scale") or 1.2)))
+            fg_tx = max(-0.3, min(0.3, float(pip_cfg.get("fg_transform_x") or 0.0)))
+            fg_ty = max(-0.35, min(0.2, float(pip_cfg.get("fg_transform_y") or -0.10)))
+            fw = max(2, int(round(CANVAS_WIDTH * fg_scale)) & ~1)
+            fh = max(2, int(round(CANVAS_HEIGHT * fg_scale)) & ~1)
+            ox = int(round((CANVAS_WIDTH - fw) / 2.0 + fg_tx * CANVAS_WIDTH / 2.0))
+            oy = int(round((1.0 - fg_ty) * CANVAS_HEIGHT / 2.0 - fh / 2.0))
+            fa = pip_cfg.get("face_anchor") if isinstance(pip_cfg.get("face_anchor"), dict) else None
+            if fa:
+                head_y = max(0.0, float(fa.get("y") or 0.0) - float(fa.get("h") or 0.15) * 0.45) * fh
+                if oy + head_y < 0.03 * CANVAS_HEIGHT:
+                    oy = int(round(0.03 * CANVAS_HEIGHT - head_y))
+            # 确保底边不悬空、顶边不留黑带
+            oy = max(CANVAS_HEIGHT - fh, min(0, oy))
+
+            sec_color_part = f",{color_vf}" if color_vf else ""
+            sec_trim = (
+                f"fps=fps={fps},tpad=stop_mode=clone:stop_duration=3.0,"
+                f"trim=duration={clip_dur:.4f},setpts=PTS-STARTPTS"
+            )
+            scale_fg = f",scale={fw}:{fh}:flags=lanczos" if (fw != CANVAS_WIDTH or fh != CANVAS_HEIGHT) else ""
+            out_hex = str(pip_cfg.get("outline_hex") or "#FFFFFF")[:7]
+            if outline_mp4 and outline_mp4.is_file() and outline_px > 0:
+                fc = (
+                    f"[3:v]{sec_trim},{_cover_crop_vf(CANVAS_WIDTH, CANVAS_HEIGHT, face_bias=True)}{sec_color_part}[bg];"
+                    f"color=c={out_hex}:s={CANVAS_WIDTH}x{CANVAS_HEIGHT}:r={fps}:d={clip_dur + 0.2:.4f},format=rgba[wc];"
+                    f"[2:v]format=gray[om];"
+                    f"[wc][om]alphamerge{scale_fg}[white_outline];"
+                    f"[0:v]format=rgba[fg_raw];"
+                    f"[1:v]format=gray[mm];"
+                    f"[fg_raw][mm]alphamerge{scale_fg}[fg_cut];"
+                    f"[bg][white_outline]overlay=x={ox}:y={oy}:shortest=1[m1];"
+                    f"[m1][fg_cut]overlay=x={ox}:y={oy}:shortest=1,{tail_str}[vout]"
+                )
+                run_cmd([
+                    ffmpeg_bin, "-y",
+                    "-i", str(fg_clean),
+                    "-i", str(matte_mp4),
+                    "-i", str(outline_mp4),
+                    "-ss", f"{sec_in:.4f}", "-t", f"{clip_dur + 0.2:.4f}", "-i", sec_media,
+                    "-an", "-filter_complex", fc, "-map", "[vout]",
+                    "-frames:v", str(clip_frames), "-c:v", "libx264", "-preset", "medium", "-crf", "15",
+                    "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS, str(out_mp4),
+                ])
+                return out_mp4.is_file()
+            fc = (
+                f"[2:v]{sec_trim},{_cover_crop_vf(CANVAS_WIDTH, CANVAS_HEIGHT, face_bias=True)}{sec_color_part}[bg];"
+                f"[0:v]format=rgba[fg_raw];"
+                f"[1:v]format=gray[mm];"
+                f"[fg_raw][mm]alphamerge{scale_fg}[fg_cut];"
+                f"[bg][fg_cut]overlay=x={ox}:y={oy}:shortest=1,{tail_str}[vout]"
+            )
+            run_cmd([
+                ffmpeg_bin, "-y",
+                "-i", str(fg_clean),
+                "-i", str(matte_mp4),
+                "-ss", f"{sec_in:.4f}", "-t", f"{clip_dur + 0.2:.4f}", "-i", sec_media,
+                "-an", "-filter_complex", fc, "-map", "[vout]",
+                "-frames:v", str(clip_frames), "-c:v", "libx264", "-preset", "medium", "-crf", "15",
+                "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS, str(out_mp4),
+            ])
+            return out_mp4.is_file()
 
         if mode == "data_news_cutout_pip":
             if has_sec:
@@ -2292,10 +2398,13 @@ def build_base_video_track(
                     if cut and main_sc >= 0.999:
                         mat_m = "vision_portrait_cutout_pip"
                 mat_ok = False
-                if (not preview) and (mat_m in _AI_MATTING_MODES):
+                if (not preview) and (mat_m in _AI_MATTING_MODES) and bool(pip_cfg_m.get("cutout", True)):
+                    outline_val = (
+                        10 if (pip_cfg_m.get("outline_px") is None and mat_m == "vision_portrait_cutout_pip")
+                        else int(pip_cfg_m.get("outline_px") or 0)
+                    )
                     clip_for_mat = dict(j_clip)
-                    clip_for_mat["pip_layout"] = {**pip_cfg_m, "mode": mat_m,
-                                                  "outline_px": int(pip_cfg_m.get("outline_px") or 10)}
+                    clip_for_mat["pip_layout"] = {**pip_cfg_m, "mode": mat_m, "outline_px": outline_val}
                     mat_ok = _render_ai_person_matting_segment(
                         ffmpeg_bin=ffmpeg_bin,
                         clip=clip_for_mat,

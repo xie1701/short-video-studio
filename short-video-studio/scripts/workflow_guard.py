@@ -390,15 +390,51 @@ def write_confirm_plan_doc(
 
     # 听不准的地方单独列出来让用户核，而不是藏在正文里让他自己发现
     notes = [n for n in (final_doc.get("notes") or []) if str(n.get("note") or "").strip()]
+    next_sec = 4
     if notes:
         lines.append("")
-        lines.append("## 4. 需要你核一下的地方（听不准/我按上下文删了）")
+        lines.append(f"## {next_sec}. 需要你核一下的地方（听不准/我按上下文删了）")
         for n in notes:
             lines.append(f"- 「{n.get('text')}」：{n.get('note')}")
+        next_sec += 1
+
+    # 口播/新拍主张证据红线提醒（接 raw_intel_ingest.lint_script，大白话提醒发前核验）
+    lint_items: List[Dict[str, Any]] = []
+    if polished_lines:
+        for ln in polished_lines:
+            t_ln = str(ln.get("text") or "").strip()
+            if t_ln:
+                lint_items.append({"text": t_ln, "say": t_ln})
+    else:
+        for seg in raw_segs:
+            t_seg = str(seg.get("text") or "").strip()
+            if t_seg:
+                lint_items.append({"text": t_seg, "say": t_seg})
+    lint_issues: List[Dict[str, Any]] = []
+    if lint_items:
+        try:
+            from raw_intel_ingest import lint_script as _lint_script
+            _ri_p = pipeline_dir / "00_raw_intel.json"
+            _ri_doc = read_json(_ri_p) if _ri_p.is_file() else None
+            _lint_res = _lint_script(lint_items, raw_intel=_ri_doc)
+            lint_issues = list(_lint_res.get("issues") or [])
+        except Exception:
+            lint_issues = []
+    _priority_codes = {"exaggerated_claim": 0, "ai_cliche": 1, "platform_residue": 2, "weak_opening": 3, "dangling_pronoun": 4}
+    lint_issues.sort(key=lambda x: (_priority_codes.get(str(x.get("code") or ""), 9), int(x.get("line") or 0)))
+    if lint_issues:
+        lines.append("")
+        lines.append(f"## {next_sec}. 证据与表达红线提醒（发前核一下，避免踩审稿坑）")
+        for iss in lint_issues[:5]:
+            ln_no = iss.get("line") or "?"
+            txt_s = str(iss.get("text") or "")[:24]
+            msg_s = str(iss.get("message") or "")
+            lines.append(f"- ⚠️ 第 {ln_no} 句「{txt_s}」：{msg_s}")
+        next_sec += 1
 
     lines.extend([
         "",
-        f"## {5 if notes else 4}. 下一步只需要回复一个选项",
+        f"## {next_sec}. 下一步只需要回复一个选项",
         "- **回 A**：文案和方案都没问题，直接按这个开剪出片",
         "- **回 B**：有哪一句想删掉/改字，或者某段镜头（如第几秒）不要放进去，直接告诉我",
         "- **回 C**：想先换一套画面风格，或者补几段特写素材再剪",

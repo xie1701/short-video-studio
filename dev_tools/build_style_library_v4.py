@@ -24,10 +24,12 @@ from datetime import datetime, timezone, timedelta
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 GT = ROOT / "forensic/jianying_ground_truth_full.json"
+CAUSALITY_TEXT = ROOT / "forensic/causality_text.json"
 DEC = ROOT / "forensic/decrypted"
 LIB = ROOT / "short-video-studio/assets/style_spectrum/style_spectrum_library.json"
 MANIFEST = ROOT / "forensic/source_manifest.json"
 SUBTITLES = ROOT / "short-video-studio/assets/subtitle_templates/templates.json"
+LIB_VERSION = "4.8.0"
 # 字幕「描边 or 阴影」真值：由 dev_tools/measure_text_style_truth.py 从解密草稿量出。
 # 这里绝不再从 sub_stroke_ratio × 5 推一个描边宽度——那是凭空造的，会把 24 套全画成黑边。
 TEXT_TRUTH = ROOT / "forensic/text_style_truth.json"
@@ -85,7 +87,7 @@ LAYOUT_OVERRIDES = {
         "top_frame_black_cinema",
         "上圆角框下黑幕 + 得意黑无底框字幕",
         "4 处人物抠像 + 矩形/圆形蒙版构成上方画框，下半屏纯黑留白，"
-        "居中得意黑字幕（最长 96 字整句），金句引语卡 1 处，亮黄金色重点词。",
+        "居中得意黑字幕（最长 11 字），金句引语卡 1 处，亮黄金色重点词。",
     ),
     "style_14": (
         "black_spotlight_circle",
@@ -97,13 +99,13 @@ LAYOUT_OVERRIDES = {
         "topbar_quote_giant",
         "顶栏常驻 + 金句引语卡 + 巨型浅黄大字压屏",
         "顶栏常驻标题，金句引语卡 10 处巨型浅黄大字（FZCuJinLJW/特黑体）压画面，"
-        "字幕居中 y0.78 无底框白字＋浅黄重点词，最长 15 字，6 处人物抠像。",
+        "字幕居中 y0.78 无底框白字＋浅黄重点词，最长 12 字，6 处人物抠像。",
     ),
     "style_09": (
         "dark_doc_multi_circle",
         "纯黑纪实面板 · 多重圆窗头像 + 长句纪实字",
         "纯黑底板上叠 15 个圆形蒙版窗口与 6 个矩形证据窗，金句引语卡 1 处，"
-        "得意黑居中字幕（y0.669，最长 46 字整句），强调色正红#FF1837/暖黄#FFBF17。",
+        "得意黑居中字幕（y0.669，最长 14 字），强调色正红#FF1837/暖黄#FFBF17。",
     ),
     "style_11": (
         "creator_no_box_giant",
@@ -114,7 +116,7 @@ LAYOUT_OVERRIDES = {
     "style_19": (
         "cutout_long_line",
         "人像抠像 + 长句大字（律师）",
-        "5 处人物抠像叠在冷峻实景前，得意黑居中字幕（y0.721，最长 83 字整句），"
+        "5 处人物抠像叠在冷峻实景前，得意黑居中字幕（y0.721，最长 12 字），"
         "巨型标题 5 条、金句引语卡 1 处、6 处圆形蒙版，无底框。",
     ),
     "style_20": (
@@ -316,6 +318,94 @@ def _truth_key(project: str) -> str:
     return truth_project_key(project)
 
 
+def _load_causality_text() -> dict:
+    if not CAUSALITY_TEXT.is_file():
+        return {}
+    return json.loads(CAUSALITY_TEXT.read_text(encoding="utf-8")).get("styles") or {}
+
+
+def _causality_sub_clean(ct_styles: dict, sid: str) -> tuple[float | None, int | None]:
+    """从 causality_text.json 取正文轨去污后的字幕字号（剪映单位）与每行字数上限。"""
+    sub_el = ((ct_styles.get(sid) or {}).get("elements") or {}).get("subtitle") or {}
+    if not sub_el.get("present"):
+        return None, None
+    lims = {x.get("name"): x.get("value") for x in (sub_el.get("limits") or []) if isinstance(x, dict)}
+    units = lims.get("font_size_jianying_units")
+    mchars = lims.get("max_chars_per_line")
+    return (float(units) if units is not None else None, int(mchars) if mchars is not None else None)
+
+
+def _derive_giant_spec_update(ct_styles: dict, sid: str, draft: dict, sub_units: float | None) -> dict | None:
+    """按 causality_text.json + 解密草稿实测样本推导巨字中位像素与按字数分档字号。"""
+    import re as _re
+
+    gt_el = ((ct_styles.get(sid) or {}).get("elements") or {}).get("giant_text") or {}
+    if not gt_el.get("present"):
+        return None
+    med_px = None
+    for d in gt_el.get("value_drivers") or []:
+        if d.get("param") == "font_size":
+            m = _re.search(r"中位\s*(\d+)px", str(d.get("value") or ""))
+            if m:
+                med_px = int(m.group(1))
+                break
+    if med_px is None:
+        return None
+
+    # 从草稿收集全部巨字样本（字号 >= 1.65 * 正文单位）的真实像素值
+    base_u = float(sub_units or 12.0)
+    tmap = {m["id"]: m for m in text_materials(draft) if "id" in m}
+    samples: list[tuple[int, int]] = []
+    for tr in draft.get("tracks") or []:
+        if tr.get("type") != "text":
+            continue
+        for seg in tr.get("segments") or []:
+            mat = tmap.get(seg.get("material_id") or "")
+            if not mat:
+                continue
+            raw = mat.get("content", "")
+            try:
+                c = json.loads(raw) if isinstance(raw, str) and raw.strip().startswith("{") else {}
+                txt = str(c.get("text") or "").strip()
+                szs = [float(st.get("size")) for st in (c.get("styles") or []) if st.get("size")]
+            except Exception:
+                txt, szs = "", []
+            u = szs[0] if szs else float(mat.get("font_size") or 0.0)
+            if u >= max(18.0, base_u * 1.65) and txt:
+                px = int(round(u * PX_PER_UNIT))
+                ch_len = len(_re.sub(r"\s+", "", txt))
+                if 1 <= ch_len <= 10 and px >= 100:
+                    samples.append((ch_len, px))
+
+    if sid == "style_21":
+        # 草稿实测真实四档 150 / 200 / 325 / 488 px，按字数/画框可读性分档
+        tiers = {"1-2": 488, "3": 325, "4": 200, "5+": 150}
+    else:
+        t12 = [px for ln, px in samples if ln <= 2]
+        t3 = [px for ln, px in samples if ln == 3]
+        t4 = [px for ln, px in samples if ln == 4]
+        t5 = [px for ln, px in samples if ln >= 5]
+        v4 = int(round(statistics.median(t4))) if t4 else med_px
+        v5 = int(round(statistics.median(t5))) if t5 else max(100, min(v4, int(round(med_px * 0.78))))
+        v3 = int(round(statistics.median(t3))) if t3 else max(v4, min(360, int(round(med_px * 1.25))))
+        v12 = int(round(statistics.median(t12))) if t12 else max(v3, min(488, int(round(med_px * 1.55))))
+        # 保障单调不增且不破 1080 画幅安全宽
+        v4 = min(v4, 250)
+        v5 = min(v5, v4, 200)
+        v3 = max(v4, min(v3, 340))
+        v12 = max(v3, min(v12, 490))
+        tiers = {"1-2": v12, "3": v3, "4": v4, "5+": v5}
+
+    return {
+        "font_size_px": med_px,
+        "size_tiers_px": tiers,
+        "max_chars": next(
+            (int(x["value"]) for x in (gt_el.get("limits") or []) if x.get("name") == "chars" and str(x.get("value")).isdigit()),
+            6,
+        ),
+    }
+
+
 def _load_text_truth() -> dict:
     if not TEXT_TRUTH.is_file():
         raise SystemExit(
@@ -333,6 +423,7 @@ def main() -> None:
     # 字幕描边/阴影真值（逐套按解密草稿的 styles[].strokes / styles[].shadows 量）
     global TEXT_TRUTH_MAP
     TEXT_TRUTH_MAP = _load_text_truth()
+    ct_styles = _load_causality_text()
 
     # 色彩分区实测（dev_tools/measure_color_zones.py 直接解码草稿原始素材得到）
     zones_path = ROOT / "forensic" / "color_zones.json"
@@ -372,6 +463,9 @@ def main() -> None:
         src_font = fonts[0][0] if fonts else None
         sub_font = (t.get("sub_fonts") or fonts)
         sub_src_font = (sub_font[0][0] if sub_font else src_font)
+        c_units, c_max_chars = _causality_sub_clean(ct_styles, sid)
+        clean_sub_units = c_units if c_units is not None else t["sub_med_size"]
+        clean_max_chars = c_max_chars if c_max_chars is not None else t["sub_max_chars"]
 
         # ── manifest entry: 30+ raw metrics, hash, save version ──
         manifest["styles"][sid] = {
@@ -408,8 +502,10 @@ def main() -> None:
                 "sub_count": t["sub_count"],
                 "flower_count": t["flower_count"],
                 "sub_y_ratio": t["sub_y_ratio"],
-                "sub_max_chars": t["sub_max_chars"],
-                "sub_med_size": t["sub_med_size"],
+                "sub_max_chars": clean_max_chars,
+                "sub_max_chars_raw": t["sub_max_chars"],
+                "sub_med_size": clean_sub_units,
+                "sub_med_size_raw": t["sub_med_size"],
                 "sub_bg_ratio": t["sub_bg_ratio"],
                 "sub_bg_spec": bg,
                 "sub_stroke_ratio": t["sub_stroke_ratio"],
@@ -518,7 +614,7 @@ def main() -> None:
         sub_y = t.get("sub_y_ratio")
         if sub_y is None:
             sub_y = densest.get("med_y")
-        max_chars = t.get("sub_max_chars")
+        max_chars = clean_max_chars
         if max_chars is None:
             max_chars = int(round(densest.get("med_chars") or 10))
         deliver_font, deliver_file = FONT_SUBSTITUTE.get(src_font or "", ("Alimama ShuHeiTi", "AlimamaShuHeiTi-Bold.otf"))
@@ -538,12 +634,12 @@ def main() -> None:
                     "override_dir": f"fonts/{sid}/",
                 },
                 "max_chars_per_line": max_chars,
-                "max_chars_source": "base_subtitle" if t["sub_max_chars"] else "densest_text_track",
+                "max_chars_source": "base_subtitle" if clean_max_chars is not None else "densest_text_track",
                 "safe_y_ratio": sub_y,
                 "measured_y_center_ratio": sub_y,
                 "safe_y_source": "base_subtitle" if t["sub_y_ratio"] is not None else "densest_text_track",
-                "font_size_jianying_units": t["sub_med_size"],
-                "font_size_1080p_px": round((t["sub_med_size"] or 12) * PX_PER_UNIT) if t["sub_med_size"] else None,
+                "font_size_jianying_units": clean_sub_units,
+                "font_size_1080p_px": round((clean_sub_units or 12) * PX_PER_UNIT) if clean_sub_units else None,
                 "px_per_unit_at_1080": PX_PER_UNIT,
                 "bg_box_color": bg["color"],
                 "bg_box_alpha": bg["alpha"],
@@ -594,6 +690,9 @@ def main() -> None:
         }
 
         s["subtitle_symmetry_lock"]["max_chars_per_line"] = max_chars
+        gt_upd = _derive_giant_spec_update(ct_styles, sid, draft, clean_sub_units)
+        if gt_upd:
+            s.setdefault("giant_text_spec", {}).update(gt_upd)
 
         cal = s["color_and_lut"]
         cal.update(
@@ -822,11 +921,11 @@ def main() -> None:
                 "font_candidates": tpl.get("font_candidates"),
                 "synced_from": "subtitle_templates/templates.json（库派生）",
             }
-        bp_doc["version"] = "4.1.0"
+        bp_doc["version"] = LIB_VERSION
         BP.write_text(json.dumps(bp_doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(f"blueprints: {len(bp_nodes)} 套 subtitle_override 已按库重写")
 
-    lib["version"] = "4.1.0"
+    lib["version"] = LIB_VERSION
     lib["generated_at"] = NOW
     lib["source_dir"] = "forensic/decrypted"
     lib["source_manifest"] = "forensic/source_manifest.json"

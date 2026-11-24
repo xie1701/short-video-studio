@@ -37,6 +37,7 @@ from common import (
 import os
 
 import broll_match
+import element_rules
 import pip_policy
 import scene_budget
 import treatment_policy
@@ -593,18 +594,20 @@ def _prune_cut_points_to_budget(cut_points: List[Dict[str, Any]], target_shots: 
 
 
 def summarize_broll_semantic(clips: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """把逐镜的 `sem_match` 汇总成 EDL 的 `broll_semantic`（含逐条 score/tier/hits/why）。"""
+    """把逐镜的 `sem_match` 汇总成 EDL 的 `broll_semantic`（含全屏 B-roll 与分层底图 B-roll）。"""
     rows: List[Dict[str, Any]] = []
     for c in clips:
-        if str(c.get("track_role")) not in ("b_roll", "code_broll"):
+        is_layered_bg = bool(c.get("b_roll_overlay")) and bool((c.get("pip_layout") or {}).get("secondary_media_path"))
+        if str(c.get("track_role")) not in ("b_roll", "code_broll") and not is_layered_bg:
             continue
         rel = c.get("sem_match") or {}
+        bg_mp = (c.get("pip_layout") or {}).get("secondary_media_path") if is_layered_bg else c.get("media_path")
         rows.append({
             "clip_id": c.get("clip_id"),
-            "role": c.get("track_role"),
+            "role": "b_roll_bg" if is_layered_bg else c.get("track_role"),
             "timeline_in_sec": c.get("timeline_in_sec"),
             "sentence": c.get("sentence_text"),
-            "media": Path(str(c.get("media_path") or "")).name,
+            "media": Path(str(bg_mp or "")).name,
             "score": rel.get("score"),
             "tier": rel.get("tier") or rel.get("verdict") or "none",
             "hits": rel.get("hits") or rel.get("basis") or [],
@@ -925,11 +928,27 @@ def run_step4(
             )
             grammar_notes.append("shot_budget_capped: " + shot_budget_capped)
 
-    def find_sentence_for_time(t_sec: float, ev: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    def find_sentence_for_time(
+        t_sec: float,
+        ev: Dict[str, Any] | None = None,
+        t_end: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        if t_end is not None and float(t_end) > t_sec + 0.04:
+            ov = [
+                s for s in sentences
+                if min(float(t_end), float(s["end_sec"])) - max(t_sec, float(s["start_sec"])) > 0.04
+            ]
+            if ov:
+                return ov[0]
         if ev and ev.get("sentence_id") in sent_by_id and ev.get("type") in ("sentence_start", "pause_end", "keyword_accent", "stress"):
-            return sent_by_id[ev["sentence_id"]]
+            ev_s = sent_by_id[ev["sentence_id"]]
+            if t_sec <= float(ev_s["end_sec"]) + 0.04:
+                return ev_s
         for s in sentences:
             if s["start_sec"] <= t_sec <= s["end_sec"]:
+                return s
+        for s in sentences:
+            if 0.0 < float(s["start_sec"]) - t_sec <= 0.65:
                 return s
         for s in sentences:
             if s["start_sec"] <= t_sec <= s["end_sec"] + 0.40:
@@ -944,10 +963,11 @@ def run_step4(
     budget_merged_flags: List[bool] = [bool(cp.get("budget_merged")) for cp in cut_points]
     # 跨句的连续长镜（同源首尾相接）：允许当 A-roll，但逐镜留痕，导出侧能看出这一刀盖了几句
     multi_sentence_aroll_flags: List[bool] = [False] * len(cut_points)
-    for cp in cut_points:
+    for ci, cp in enumerate(cut_points):
         ev = cp["event"]
         t_start = frames_to_sec(cp["cut_frame"], fps)
-        sent = find_sentence_for_time(t_start, ev)
+        t_end_cp = frames_to_sec(cut_points[ci + 1]["raw_frame"] if ci + 1 < n_segs else total_frames, fps)
+        sent = find_sentence_for_time(t_start, ev, t_end=t_end_cp)
         sm_p = str(sent.get("source_media", "") or "")
         sent_vgrade = str(sent.get("source_video_grade") or vgrade_by_mp4.get(sm_p, "usable"))
         forced_mask = sent_vgrade in ("audio_only", "ng")
@@ -995,7 +1015,8 @@ def run_step4(
     for idx, cp in enumerate(cut_points):
         ev = cp["event"]
         t_start = frames_to_sec(cp["cut_frame"], fps)
-        sent = find_sentence_for_time(t_start, ev)
+        t_end_cp = frames_to_sec(cut_points[idx + 1]["raw_frame"] if idx + 1 < n_segs else total_frames, fps)
+        sent = find_sentence_for_time(t_start, ev, t_end=t_end_cp)
         offset_in_sent = t_start - float(sent["start_sec"])
         near_sent_start = offset_in_sent <= 0.85
         has_prop_show = any(cue in sent.get("text", "") for cue in PROP_SHOW_CUES)
@@ -1378,10 +1399,11 @@ def run_step4(
         t_end = frames_to_sec(f_end, fps)
         seg_dur = round(t_end - t_start, 4)
         ev = cp["event"]
-        sent = find_sentence_for_time(t_start, ev)
+        sent = find_sentence_for_time(t_start, ev, t_end=t_end)
         has_prop_show = any(cue in sent.get("text", "") for cue in PROP_SHOW_CUES)
 
-        if roles[idx] == "a_roll":
+        use_aroll = (roles[idx] == "a_roll")
+        if use_aroll:
             ar = next((a for a in usable_arolls if a["normalized_mp4"] == sent.get("source_media")), usable_arolls[0])
             offset_in_sent = max(0.0, t_start - float(sent["start_sec"]))
             if sent.get("source_media") == ar["normalized_mp4"]:
@@ -1408,6 +1430,10 @@ def run_step4(
             # 源窗口差在 1 帧以内是时间量化误差，不是真冻帧（渲不出来的一帧不算冻）
             need_freeze = src_in + seg_dur > max_src_out + 1.0 / max(1, fps)
             src_out = round(min(max_src_out, src_in + seg_dur), 4)
+            if (src_out - src_in) < max(0.25, seg_dur - 1.2) and len(broll_pool) > 0:
+                use_aroll = False
+                roles[idx] = "b_roll"
+        if use_aroll:
             max_out_by_mp[ar_mp] = max(float(max_out_by_mp.get(ar_mp, 0.0)), src_out)
 
             vf_extra = ""
@@ -1455,7 +1481,7 @@ def run_step4(
                 "sentence_text": sent["text"],
                 "purpose": purpose,
             })
-        else:
+        if not use_aroll:
             has_fresh_live = any(
                 m.get("role") == "b_roll"
                 and (
@@ -1664,6 +1690,269 @@ def run_step4(
         pip_mode = ""
     pip_applied_count = explainer_applied_count
 
+    # 分层剪辑模型（人层 + 底图层）：有高占比抠像叠 B-roll 语法的风格（如 style_21）
+    # 将连续主体讲解区改造为「前景抠像人物（口型同步）+ 底图 B-roll（按镜切换）」，避免 A/B 互切频闪。
+    layered_model_info: Dict[str, Any] = {"enabled": False, "clips": 0, "seconds": 0.0, "coverage": 0.0, "runs": 0}
+    cut_elem_rule = element_rules.get_element_rule(style_id, "cutout")
+    v_cut_rule = treatment_policy.style_rules(style_id).get("cutout") or {}
+    _cut_scope = v_cut_rule.get("scope") or {}
+    _cut_cov = float(element_rules.get_limit(style_id, "cutout", "max_coverage_ratio", default=0.0) or 0.0)
+    has_person_over_broll = bool(
+        cut_elem_rule and cut_elem_rule.get("present") and v_cut_rule.get("enabled")
+        and ab_pattern not in ("depth_hook_then_framed_broll", "dual_window_broll_switcher", "container_internal_switch")
+        and (
+            (_cut_cov >= 0.30 and str(_cut_scope.get("window_scale_sec") or "") == "full_frame")
+            or pip_mode in ("vision_portrait_cutout_pip", "data_news_cutout_pip")
+        )
+    )
+    live_b_for_layer = [m for m in broll_pool if m.get("role") == "b_roll"] or list(broll_pool)
+    if (
+        has_person_over_broll and clips and usable_arolls and live_b_for_layer
+        and edit_profile != "documentary"
+        and not prefer_broll_only and not broll_only_mode and not zero_broll_mode
+    ):
+        max_cov = float(element_rules.get_limit(style_id, "cutout", "max_coverage_ratio", default=0.65) or 0.65)
+        max_seg_lim = float(element_rules.get_limit(style_id, "cutout", "max_seg_sec", default=2.52) or 2.52)
+        max_runs_lim = max(1, int(element_rules.get_limit(style_id, "cutout", "max_runs", default=1) or 1))
+        target_layer_cov = min(max_cov * 0.85, max(0.35, broll_target_ratio * 0.82))
+        target_layer_sec = total_dur * target_layer_cov
+
+        # 解析因果表前景缩放与纵坐标（默认 1.2 / -0.1，贴底不悬空）
+        fg_scale = 1.2
+        raw_sc = str(element_rules.get_driver(style_id, "cutout", "clip.scale / uniform_scale.scale", default="") or "")
+        m_sc = re.search(r"中位\s*([\d.]+)", raw_sc)
+        if m_sc:
+            try:
+                fg_scale = max(1.0, min(1.5, float(m_sc.group(1))))
+            except ValueError:
+                fg_scale = 1.2
+        fg_ty = -0.10
+        raw_ty = str(element_rules.get_driver(style_id, "cutout", "clip.transform.y", default="") or "")
+        m_ty = re.findall(r"-?\d+\.\d+", raw_ty)
+        if len(m_ty) >= 2:
+            try:
+                fg_ty = max(-0.35, min(0.15, (float(m_ty[0]) + float(m_ty[1])) / 2.0))
+            except ValueError:
+                fg_ty = -0.10
+        stroke_drv = str(element_rules.get_driver(style_id, "cutout", "matting.strokes[0].adjust_params.effects_adjust_size", default="") or "")
+        outline_px_layer = 10 if (pip_mode == "vision_portrait_cutout_pip" and "1 段" not in stroke_drv) else 0
+
+        deictic_words = set(PROP_SHOW_CUES) | set(DEICTIC_CUES)
+        for cond in v_cut_rule.get("conditions") or []:
+            ck = cond.get("check") or {}
+            if ck.get("key") == "no_deictic_terms":
+                deictic_words.update(str(t) for t in (ck.get("terms") or []) if t)
+        aroll_by_mp = {str(a["normalized_mp4"]): a for a in usable_arolls}
+
+        def _aroll_window_for_clip(c_item: Dict[str, Any]) -> Optional[Tuple[str, float, float]]:
+            s_obj = sent_by_id.get(str(c_item.get("sentence_id") or "")) or {}
+            sm = str(s_obj.get("source_media") or "")
+            if sm not in aroll_by_mp:
+                if str(c_item.get("track_role")) == "a_roll" and str(c_item.get("media_path") or "") in aroll_by_mp:
+                    return (
+                        str(c_item["media_path"]),
+                        float(c_item.get("source_in_sec") or 0.0),
+                        float(c_item.get("source_out_sec") or 0.0),
+                    )
+                return None
+            ar_item = aroll_by_mp[sm]
+            t_s = float(c_item.get("timeline_in_sec") or 0.0)
+            dur_s = float(c_item.get("duration_sec") or 0.0)
+            off = max(0.0, t_s - float(s_obj.get("start_sec") or 0.0))
+            sin = round(float(s_obj.get("source_in_sec") or 0.0) + off, 4)
+            s_end = min(float(ar_item.get("duration_sec") or 0.0), float(s_obj.get("source_out_sec") or ar_item.get("duration_sec") or 0.0))
+            if sin + dur_s > s_end + 0.05 or sin < 0.0:
+                return None
+            sout = round(min(s_end, sin + dur_s), 4)
+            return sm, sin, sout
+
+        # 按「连续段」筛选合格分层镜，并保证同一源片不发生时间倒带
+        _cut_lims = v_cut_rule.get("limits") or {}
+        _min_face_h = float(_cut_lims.get("require_face_min_h") or 0.12)
+        _min_face_w = float(_cut_lims.get("require_face_min_w") or 0.07)
+        _has_manifest_faces = any(isinstance(a.get("faces"), list) for a in usable_arolls)
+
+        def _aroll_has_valid_face(mp_path: str) -> bool:
+            if not _has_manifest_faces:
+                return True
+            fs = (aroll_by_mp.get(mp_path) or {}).get("faces") or []
+            return any(
+                float((f.get("bbox") or {}).get("h") or 0.0) >= _min_face_h
+                and float((f.get("bbox") or {}).get("w") or 0.0) >= _min_face_w
+                for f in fs
+                if isinstance(f, dict)
+            )
+
+        eligible_flags: List[bool] = []
+        for ci, c_item in enumerate(clips):
+            role_c = str(c_item.get("track_role") or "")
+            dur_c = float(c_item.get("duration_sec") or 0.0)
+            stxt_c = str(c_item.get("sentence_text") or "")
+            if (
+                role_c == "code_broll"
+                or c_item.get("pip_layout")
+                or c_item.get("audio_only_masked")
+                or dur_c > max_seg_lim + 1e-6
+                or any(dw in stxt_c for dw in deictic_words)
+            ):
+                eligible_flags.append(False)
+                continue
+            win = _aroll_window_for_clip(c_item)
+            eligible_flags.append(bool(win is not None and _aroll_has_valid_face(win[0])))
+
+        # 找连续合格块，优先挑最长或前部连续块，控制连续段数 <= max_runs_lim
+        blocks: List[List[int]] = []
+        cur_blk: List[int] = []
+        for ci, ok_f in enumerate(eligible_flags):
+            if ok_f:
+                cur_blk.append(ci)
+            elif cur_blk:
+                blocks.append(cur_blk)
+                cur_blk = []
+        if cur_blk:
+            blocks.append(cur_blk)
+        # 首段优先挑靠近开场且足够长的块；若有多个段额度，按时长补齐
+        blocks_sorted = sorted(blocks, key=lambda b: (-sum(float(clips[i]["duration_sec"]) for i in b), b[0]))
+        picked_indices: List[int] = []
+        acc_layer_sec = 0.0
+        runs_used = 0
+        for blk in blocks_sorted:
+            if runs_used >= max_runs_lim or acc_layer_sec >= target_layer_sec:
+                break
+            blk_picked: List[int] = []
+            for ci in blk:
+                if acc_layer_sec >= target_layer_sec:
+                    break
+                blk_picked.append(ci)
+                acc_layer_sec += float(clips[ci]["duration_sec"])
+            if blk_picked:
+                picked_indices.extend(blk_picked)
+                runs_used += 1
+
+        picked_set = set(picked_indices)
+        # 单调校验：将转化后的 a_roll 与未转化的后续 a_roll 逐镜核对，若会造成同源倒带则剔除该镜
+        last_src_out_map: Dict[str, float] = {}
+        final_picked: set = set()
+        for ci, c_item in enumerate(clips):
+            if ci in picked_set:
+                win = _aroll_window_for_clip(c_item)
+                if win is None:
+                    continue
+                mp_w, sin_w, sout_w = win
+                if mp_w in last_src_out_map and sin_w < last_src_out_map[mp_w] - 0.04:
+                    continue
+                # 再往后看一眼，确认不会与后面未改的同类 a_roll 冲突
+                conflict_later = False
+                for cj in range(ci + 1, len(clips)):
+                    if cj not in picked_set and str(clips[cj].get("track_role")) == "a_roll" and str(clips[cj].get("media_path")) == mp_w:
+                        if float(clips[cj].get("source_in_sec") or 0.0) < sout_w - 0.04:
+                            conflict_later = True
+                        break
+                if conflict_later:
+                    continue
+                last_src_out_map[mp_w] = max(last_src_out_map.get(mp_w, 0.0), sout_w)
+                final_picked.add(ci)
+            elif str(c_item.get("track_role")) == "a_roll":
+                mp_a = str(c_item.get("media_path") or "")
+                last_src_out_map[mp_a] = max(last_src_out_map.get(mp_a, 0.0), float(c_item.get("source_out_sec") or 0.0))
+
+        # 正式应用分层改造
+        layered_clips_cnt = 0
+        layered_sec = 0.0
+        for ci in sorted(final_picked):
+            c_obj = clips[ci]
+            dur_c = float(c_obj["duration_sec"])
+            win = _aroll_window_for_clip(c_obj)
+            if win is None:
+                continue
+            fg_mp, fg_sin, fg_sout = win
+            if str(c_obj.get("track_role")) == "b_roll":
+                bg_mp = str(c_obj.get("media_path") or "")
+                bg_in = float(c_obj.get("source_in_sec") or 0.0)
+                bg_out = float(c_obj.get("source_out_sec") or bg_in)
+                bg_sem = c_obj.get("sem_match")
+                bg_sig = c_obj.get("media_signal")
+            else:
+                sent_c = sent_by_id.get(str(c_obj.get("sentence_id") or "")) or {"text": c_obj.get("sentence_text", ""), "keywords": []}
+                prev_bg = str((clips[ci - 1].get("pip_layout") or {}).get("secondary_media_path") or clips[ci - 1].get("media_path") or "") if ci > 0 else ""
+                prev_bg_out = float((clips[ci - 1].get("pip_layout") or {}).get("secondary_out_sec") or clips[ci - 1].get("source_out_sec") or 0.0) if ci > 0 else 0.0
+                br_pick, br_src = pick_best_broll(
+                    sent_c, dur_c, last_group, float(c_obj.get("timeline_in_sec") or 0.0),
+                    prev_bg, prev_bg_out, prev_motion=last_motion, prev_shot_size=last_shot_size, forbid_code=True,
+                )
+                bg_mp = str(br_pick["normalized_mp4"])
+                avail_bg = float(br_pick.get("duration_sec", 3.0))
+                h_bg = 0.40 if (br_pick.get("role") == "b_roll" and avail_bg >= dur_c + 0.80) else 0.0
+                min_fl = max(h_bg, float(max_out_by_mp.get(bg_mp, 0.0)))
+                cur_p = max(min_fl, float(used_cursors.get(br_pick["id"], min_fl)))
+                if cur_p + dur_c <= avail_bg - h_bg or (avail_bg - cur_p >= dur_c):
+                    bg_in = round(cur_p, 4)
+                elif avail_bg - min_fl >= 0.30:
+                    bg_in = round(min_fl, 4)
+                else:
+                    bg_in = round(min(min_fl, max(0.0, avail_bg - 0.05)), 4)
+                if br_pick.get("excluded_windows"):
+                    bg_in = _avoid_excluded_windows(bg_in, dur_c, avail_bg, br_pick["excluded_windows"])
+                bg_out = round(min(avail_bg, bg_in + dur_c), 4)
+                max_out_by_mp[bg_mp] = max(float(max_out_by_mp.get(bg_mp, 0.0)), bg_out)
+                used_cursors[br_pick["id"]] = round(bg_out + 0.10, 4)
+                usage_counts[br_pick["id"]] = usage_counts.get(br_pick["id"], 0) + 1
+                used_media_counts[bg_mp] = used_media_counts.get(bg_mp, 0) + 1
+                last_group = str(br_pick.get("scene_group", last_group))
+                bg_sem = sem_of_choice(br_pick, sent_c, need_sec=dur_c)
+                bg_sem["source"] = br_src
+                bg_sig = describe_clip(br_pick)[:160]
+
+            c_obj["track_role"] = "a_roll"
+            c_obj["media_path"] = fg_mp
+            c_obj["source_in_sec"] = fg_sin
+            c_obj["source_out_sec"] = fg_sout
+            c_obj["audio_locked"] = True
+            c_obj["b_roll_overlay"] = True
+            c_obj["layered_role"] = "person_over_broll"
+            c_obj["cutout"] = True
+            c_obj["purpose"] = "前景真人持续说话 + 底图切入对应细节（分层剪辑）"
+            c_obj["sem_match"] = bg_sem
+            c_obj["media_signal"] = bg_sig
+            c_obj["pip_layout"] = {
+                **pip_spec,
+                "mode": "layered_cutout_over_broll",
+                "cutout": True,
+                "single_source": False,
+                "secondary_media_path": bg_mp,
+                "secondary_in_sec": round(max(0.0, bg_in), 4),
+                "secondary_out_sec": round(max(0.0, bg_out), 4),
+                "fg_scale": fg_scale,
+                "fg_transform_x": 0.0,
+                "fg_transform_y": fg_ty,
+                "outline_px": outline_px_layer,
+                "bg_blur_sigma": 0,
+            }
+            layered_clips_cnt += 1
+            layered_sec += dur_c
+            pip_applied_count += 1
+
+        if layered_clips_cnt > 0:
+            # 重新按「全屏 B-roll + 分层底图 B-roll」统一口径核算 broll_ratio_actual
+            broll_actual_dur = sum(
+                float(c["duration_sec"]) for c in clips
+                if c.get("track_role") == "b_roll"
+                or (bool(c.get("b_roll_overlay")) and bool((c.get("pip_layout") or {}).get("secondary_media_path")))
+            )
+            broll_ratio_actual = round(broll_actual_dur / max(0.1, total_dur), 3)
+            broll_ratio_with_cards = round((broll_actual_dur + code_card_dur) / max(0.1, total_dur), 3)
+            layered_model_info = {
+                "enabled": True,
+                "clips": layered_clips_cnt,
+                "seconds": round(layered_sec, 2),
+                "coverage": round(layered_sec / max(0.1, total_dur), 3),
+                "runs": runs_used,
+                "fg_scale": fg_scale,
+                "fg_transform_y": fg_ty,
+                "outline_px": outline_px_layer,
+            }
+            print(f"[step4] 分层剪辑启用（人叠 B-roll）：{layered_clips_cnt} 镜 / {layered_sec:.1f}s ({layered_model_info['coverage']*100:.1f}%) · {runs_used} 连续段")
+
     # 关键帧推拉频次：严格按风格实测值（0=机位完全不动；>=80=几乎每镜都推/拉）
     kf_applied = _apply_keyframe_policy(clips, kf_target, total_dur) if kf_target is not None else None
 
@@ -1706,7 +1995,16 @@ def run_step4(
         a_seen = -1
         for c_obj in clips:
             role = c_obj.get("track_role")
-            if role == "code_broll" or c_obj.get("pip_layout"):
+            lay_mode_cur = str((c_obj.get("pip_layout") or {}).get("mode") or "")
+            if (
+                role == "code_broll"
+                or c_obj.get("pip_layout")
+                or c_obj.get("layered_role") == "person_over_broll"
+                or lay_mode_cur == "layered_cutout_over_broll"
+            ):
+                continue
+            # 分层模型已接管成段抠像时，块外 A-roll 保持全屏硬切，不散撒单镜抠像抢占 max_runs 名额
+            if layered_model_info.get("enabled") and ab_pattern == "cutout_broll_alternating":
                 continue
             main_media = str(c_obj.get("media_path") or "")
             cfg: Optional[Dict[str, Any]] = None
@@ -1789,7 +2087,15 @@ def run_step4(
             s0_kws = [str(k).strip() for k in (sentences[0].get("keywords") or []) if 2 <= len(str(k).strip()) <= 5]
             first_kw_back = s0_kws[0] if s0_kws else re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", str(sentences[0].get("text") or ""))[:4]
         for c_i, c_obj in enumerate(clips):
-            if c_obj.get("track_role") == "code_broll" or c_obj.get("pip_layout"):
+            lay_mode_cur = str((c_obj.get("pip_layout") or {}).get("mode") or "")
+            if (
+                c_obj.get("track_role") == "code_broll"
+                or c_obj.get("pip_layout")
+                or c_obj.get("layered_role") == "person_over_broll"
+                or lay_mode_cur == "layered_cutout_over_broll"
+            ):
+                continue
+            if layered_model_info.get("enabled") and ab_pattern == "cutout_broll_alternating":
                 continue
             main_media = str(c_obj.get("media_path") or "")
             if pip_mode in single_source_frame_modes:
@@ -1870,6 +2176,7 @@ def run_step4(
         "geometry_pip_window", "geometry_pip_main_shrunk", "geometry_pip_main_punch_in",
         "blur_bg_center_card_pip", "smooth_orbit_pip", "black_polaroid_frame_pip",
         "person_behind_giant_text_pip", "vision_portrait_cutout_pip", "data_news_cutout_pip",
+        "layered_cutout_over_broll",
     }
     try:
         import face_framing
@@ -2016,6 +2323,7 @@ def run_step4(
         "kf_per_min_target": kf_target,
         "keyframe_moves_applied": kf_applied,
         "pip_applied_count": pip_applied_count,
+        "layered_model": layered_model_info,
         "cutout_gate": cutout_gate,
         "explainer_broll_windows": explainer_windows,
         "explainer_applied_count": explainer_applied_count,

@@ -11,6 +11,8 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
+import hashlib
 import json
 import os
 import re
@@ -284,6 +286,57 @@ def _render_ui_safe_preview(composed: Image.Image, out_path: Path) -> None:
     Image.alpha_composite(composed.convert("RGBA"), ov).convert("RGB").save(out_path, quality=88)
 
 
+def _make_attribution_code(pipeline_dir: Path, title_seed: str, style_id: Optional[str] = "") -> str:
+    """生成确定性发布复盘归因码 SVS-YYYYMMDD-XXXX。"""
+    day_str = datetime.now().strftime("%Y%m%d")
+    raw = f"{pipeline_dir.name}|{style_id or ''}|{title_seed or ''}"
+    suffix = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:4].upper()
+    return f"SVS-{day_str}-{suffix}"
+
+
+def write_publish_ops_doc(
+    pipeline_dir: Path,
+    attribution_code: str,
+    preferred_title: str,
+    style_id: Optional[str] = None,
+    track: str = "store",
+) -> Path:
+    """输出发布前 3 秒静音三问自测卡与复盘归因码单 `09_publish_ops.md`。"""
+    edl_p = pipeline_dir / "04_edl.json"
+    sample_json = json.dumps({
+        "video_id": attribution_code,
+        "attribution_code": attribution_code,
+        "track": track,
+        "platform": "douyin",
+        "traffic_source": "local_feed" if track == "store" else "feed",
+        "observation_hours": 48,
+        "title": preferred_title[:28],
+        "style_id": str(style_id or "style_01"),
+        "edl_path": str(edl_p.resolve()),
+    }, ensure_ascii=False)
+    lines = [
+        "# 发布前 3 秒自测卡与复盘归因码",
+        "",
+        f"- **本次出片归因码**：`{attribution_code}`",
+        f"- **推荐主标题**：{preferred_title}",
+        "",
+        "## 一、发前 3 秒静音三问自测（关掉声音过一遍，只要 15 秒）",
+        "1. [ ] **关掉声音看前 3 秒**：不听解说词，单看开场画面和顶部大字，路人能不能一秒看懂你在讲什么事？",
+        "2. [ ] **小图清不清楚**：把 `09_cover_3x4.jpg` 缩到手机列表大小（或看 `09_ui_safe_preview.jpg`），人脸和封面字有没有被平台按钮挡住？",
+        "3. [ ] **片尾收住没有**：看到最后一帧时，观众知不知道接下来该点赞、评论还是私信到店？",
+        "",
+        "## 二、发布后 48 小时复盘填报（把后台数字贴进这一条即可追踪病因）",
+        f"- 记录归因码 `{attribution_code}`，后续运行：",
+        "```bash",
+        f"python3 scripts/content_log_review.py --account <你的账号> --track {track} --add-json '{sample_json}'",
+        "```",
+        "",
+    ]
+    out_p = pipeline_dir / "09_publish_ops.md"
+    out_p.write_text("\n".join(lines), encoding="utf-8")
+    return out_p
+
+
 def build_publish_copy_pack(
     pipeline_dir: Path,
     title_seed: str,
@@ -294,6 +347,7 @@ def build_publish_copy_pack(
     cover_main: str = "",
     cover_sub: str = "",
     has_4k_covers: bool = False,
+    attribution_code: str = "",
 ) -> Dict[str, Any]:
     """
     生成分平台差异化发布文案交付包（09_publish_copy_pack.md/.json）：
@@ -345,6 +399,7 @@ def build_publish_copy_pack(
     tags_bili = f"#{top_kw} #知识科普 #深度拆解 #实用技巧 #真实体验 #逻辑思维 #避坑指南 #细节控"
 
     pack = {
+        "attribution_code": attribution_code,
         "preferred_title": dy_titles[0],
         "preferred_reason": "第一句直接抛出反常识或具体问题，不绕弯子，信息密度最高且正文可直接兑现。",
         "platforms": {
@@ -375,6 +430,7 @@ def build_publish_copy_pack(
     md_lines = [
         f"# 分平台发布文案与封面交付包",
         "",
+        *([f"> **复盘归因码**：`{attribution_code}`（发前 3 秒自测见 `09_publish_ops.md`）"] if attribution_code else []),
         f"> **首选推荐标题**：`{pack['preferred_title']}`",
         f"> **推荐理由**：{pack['preferred_reason']}",
         "",
@@ -1196,6 +1252,7 @@ def run_step9(
             },
         )
     has_4k = bool(dual_4k_res and dual_4k_res.get("ok"))
+    attr_code = _make_attribution_code(pipeline_dir, titles[0] if titles else hook_clean, eff_style)
     copy_pack = build_publish_copy_pack(
         pipeline_dir,
         title_seed=titles[0] if titles else hook_clean,
@@ -1206,6 +1263,14 @@ def run_step9(
         cover_main=cover_main,
         cover_sub=fit_sub,
         has_4k_covers=has_4k,
+        attribution_code=attr_code,
+    )
+    ops_path = write_publish_ops_doc(
+        pipeline_dir,
+        attribution_code=attr_code,
+        preferred_title=copy_pack["preferred_title"],
+        style_id=eff_style,
+        track=track,
     )
 
     # 若检测到当前运行的智能体是 Cola（PI_PROVIDER=cola / COLA_ACCOUNT_DIR / COLA_*），自动衔接内置 gbro-cover-design
@@ -1223,6 +1288,7 @@ def run_step9(
 
     out = {
         "step": "09_title_cover",
+        "attribution_code": attr_code,
         "titles": titles,
         "cover_main": cover_main,
         "cover_sub": fit_sub,
@@ -1239,6 +1305,7 @@ def run_step9(
         "feed_360px_preview_jpg": str(feed_preview_path.resolve()) if feed_preview_path.is_file() else None,
         "publish_copy_pack_md": str((pipeline_dir / "09_publish_copy_pack.md").resolve()),
         "publish_copy_pack_json": str((pipeline_dir / "09_publish_copy_pack.json").resolve()),
+        "publish_ops_md": str(ops_path.resolve()),
         "dual_4k_covers": dual_4k_res,
         "preferred_title": copy_pack["preferred_title"],
         "gbro_cover_handoff": gbro_handoff,

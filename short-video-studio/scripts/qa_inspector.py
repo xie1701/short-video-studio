@@ -286,18 +286,25 @@ def inspect_video(
             sid = sub.get("sentence_id")
             st_sub = float(sub.get("start_sec", 0.0))
             en_sub = float(sub.get("end_sec", 0.0))
-            ref_sent = sents_by_id.get(sid)
-            if not ref_sent:
-                sub_sync_violations.append(f"{sub.get('id')}: 未关联有效 03_audio_events 句子 {sid}")
-                continue
-            s_st = float(ref_sent.get("start_sec", 0.0))
-            s_en = float(ref_sent.get("end_sec", 0.0))
+            merged_ids = sub.get("merged_sentence_ids")
+            if isinstance(merged_ids, list) and len(merged_ids) > 1 and all(mid in sents_by_id for mid in merged_ids):
+                ref_group = [sents_by_id[mid] for mid in merged_ids]
+                s_st = min(float(rs.get("start_sec", 0.0)) for rs in ref_group)
+                s_en = max(float(rs.get("end_sec", 0.0)) for rs in ref_group)
+                ref_words = [w for rs in ref_group for w in (rs.get("words") or [])]
+            else:
+                ref_sent = sents_by_id.get(sid)
+                if not ref_sent:
+                    sub_sync_violations.append(f"{sub.get('id')}: 未关联有效 03_audio_events 句子 {sid}")
+                    continue
+                s_st = float(ref_sent.get("start_sec", 0.0))
+                s_en = float(ref_sent.get("end_sec", 0.0))
+                ref_words = ref_sent.get("words") or []
             if st_sub < s_st - 0.08 or en_sub > s_en + 0.12:
                 overrun = max(s_st - st_sub, en_sub - s_en, 0.0)
                 max_sub_err_sec = max(max_sub_err_sec, overrun)
                 sub_sync_violations.append(f"{sub.get('id')}: 超出所属锁定句窗 [{s_st:.2f},{s_en:.2f}]")
 
-            ref_words = ref_sent.get("words") or []
             sub_words = sub.get("words") or []
             if ref_words and sub_words:
                 rw_starts = [float(w["start_sec"]) for w in ref_words if "start_sec" in w]
@@ -479,7 +486,10 @@ def inspect_video(
         ))
 
         # 8b. 外来画面 ↔ 口播文案：只查"有没有说实话"，不替创作者背锅
-        broll_clips = [c for c in edl["clips"] if str(c.get("track_role")) in ("b_roll", "code_broll")]
+        broll_clips = [
+            c for c in edl["clips"]
+            if str(c.get("track_role")) in ("b_roll", "code_broll") or bool(c.get("b_roll_overlay"))
+        ]
         sem_bad = []
         for c in broll_clips:
             rel = c.get("sem_match")
@@ -507,7 +517,8 @@ def inspect_video(
 
         # 8c. 画中画小窗人脸构图：会裁切的构图必须交代到底有没有按人脸取景
         pip_cut_modes = ("geometry_pip_window", "geometry_pip_main_shrunk", "geometry_pip_main_punch_in",
-                         "blur_bg_center_card_pip", "smooth_orbit_pip", "black_polaroid_frame_pip")
+                         "blur_bg_center_card_pip", "smooth_orbit_pip", "black_polaroid_frame_pip",
+                         "layered_cutout_over_broll")
         pip_clips = [c for c in edl["clips"] if isinstance(c.get("pip_layout"), dict)]
         cut_clips = [c for c in pip_clips if str((c.get("pip_layout") or {}).get("mode") or "") in pip_cut_modes]
         unaccounted = [
@@ -667,6 +678,54 @@ def inspect_video(
                 "FAIL",
                 f"风格锁校验未跑通：{exc}",
                 "所选风格的库参数逐项一致，或偏离项都有用户同意的豁免记录",
+            ))
+
+        # 11d. 元素因果规则契合度：核对所选风格该出/不该出元素与数量上限
+        try:
+            _pk_er = pkg if isinstance(pkg, dict) else {}
+            _style_er = str(
+                _pk_er.get("style_id")
+                or ((edl.get("style_spectrum_applied") or {}).get("style_id") if isinstance(edl, dict) else "")
+                or ""
+            ).strip()
+            if _style_er:
+                import element_rules as _er
+                if _er.load_rules().get(_style_er):
+                    _er_res = _er.audit(pipeline_dir)
+                    _er_fail_rows = list(_er_res.get("fail_rows") or [])
+                    _er_raw_fails = _er_res.get("fails")
+                    _er_fail_cnt = int(_er_raw_fails) if isinstance(_er_raw_fails, int) else len(_er_raw_fails or _er_fail_rows)
+                    _er_ok = bool(_er_res.get("passed")) and _er_fail_cnt == 0
+                    def _fmt_er(item: Any) -> str:
+                        if isinstance(item, dict):
+                            el = item.get("element") or ""
+                            msg = item.get("metric") or item.get("reason") or item.get("detail") or item.get("rule") or ""
+                            act = item.get("actual")
+                            if msg and act is not None:
+                                return f"{el}.{msg}={act}"
+                            if msg:
+                                return f"{el}:{msg}"
+                            return str(item)
+                        return str(item)
+                    _er_detail = (
+                        f"{_style_er} 全部元素符合因果规则（{len(_er_res.get('rows') or [])} 项）"
+                        if _er_ok else
+                        f"{_er_fail_cnt} 项偏离：" + "；".join(_fmt_er(x) for x in _er_fail_rows[:3])
+                    )
+                    checks.append(_mk_check(
+                        "element_causality_fit",
+                        "元素因果规则契合度",
+                        "PASS" if _er_ok else "FAIL",
+                        _er_detail,
+                        "该出的核心元素不缺席、不该出的克制项不泛滥、密度不越上限",
+                    ))
+        except Exception as exc:
+            checks.append(_mk_check(
+                "element_causality_fit",
+                "元素因果规则契合度",
+                "FAIL",
+                f"元素因果规则审计异常：{exc}",
+                "该出的核心元素不缺席、不该出的克制项不泛滥、密度不越上限",
             ))
 
         # 片尾收没收住：话没说完 / 没有行动指引 = 观众划走
@@ -865,6 +924,7 @@ def inspect_video(
         "forbidden_meta_text": "画面和文案没有多余乱码或模板字样",
         "residual_repeat_scan": "没有漏剪的口误重说和半截话",
         "style_lock_intact": "画面样式严格按你选的那套来，没被偷偷改",
+        "element_causality_fit": "花字、抠像、大字、结尾卡与音效密度按所选风格习惯控制",
         "ending_complete": "片尾收住了，观众知道下一步做什么",
         "bb_audio_master": "成品声音饱满清晰、无爆音无穿帮",
         "bb_ocr_av_loop": "成片字幕实测正中对齐、字句准确",

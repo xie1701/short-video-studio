@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import re
 import subprocess
 import sys
@@ -58,6 +59,7 @@ import numpy as np
 # 库内 style_spectrum_library.json 只读：本文件只消费它的 color_and_lut / packaging_techniques 实测值。
 _PLACEHOLDER_SHADOW_RGB = (32.0, 34.0, 38.0)
 _PLACEHOLDER_HIGHLIGHT_RGB = (225.0, 224.0, 220.0)
+SKIN_GUARD_MARGIN = 4.0
 _SAT_NEUTRAL_PCT = 20.0
 _COLOR_EFFECTS_DOC: Optional[Dict[str, Any]] = None
 _STYLE_COLOR_CACHE: Dict[str, Dict[str, Any]] = {}
@@ -132,7 +134,7 @@ def _derive_style_color(style_id: str) -> Dict[str, Any]:
     p95 = _clampf(cl.get("y_p95_255"), 0.0, 255.0, min(255.0, y + 55.0))
 
     lut_strength = round(_clampf(0.50 + 0.0045 * sat + 0.0008 * abs(warm) - 0.0025 * hsl, 0.45, 0.76), 2)
-    sat_scale = round(_clampf(0.94 + 0.006 * (sat - _SAT_NEUTRAL_PCT), 0.88, 1.14), 3)
+    sat_scale = round(_clampf(1.0 + (sat - _SAT_NEUTRAL_PCT) / 220.0, 0.88, 1.14), 3)
     contrast = round(_clampf(cl.get("contrast_gain"), 1.0, 1.16, 1.06), 3)
     extreme = _clampf(abs(y - 128.0) / 128.0, 0.0, 1.0)
     curve_w = round(_clampf(0.42 + 0.10 * min(hsl / 32.0, 1.0) + 0.18 * extreme, 0.42, 0.78), 2)
@@ -495,10 +497,10 @@ def _compute_masked_skin_ycbcr_from_rgb(
     fx, fy, fw, fh = float(face_bbox["x"]), float(face_bbox["y"]), float(face_bbox["w"]), float(face_bbox["h"])
     if max(fx, fy, fw, fh) > 1.01:
         fx, fy, fw, fh = fx / 1080.0, fy / 1920.0, fw / 1080.0, fh / 1920.0
-    x0 = max(0, int((fx + fw * 0.22) * w_s))
-    x1 = min(w_s, max(x0 + 4, int((fx + fw * 0.78) * w_s)))
+    x0 = max(0, int((fx + fw * 0.25) * w_s))
+    x1 = min(w_s, max(x0 + 4, int((fx + fw * 0.75) * w_s)))
     y0 = max(0, int((fy + fh * 0.22) * h_s))
-    y1 = min(h_s, max(y0 + 4, int((fy + fh * 0.76) * h_s)))
+    y1 = min(h_s, max(y0 + 4, int((fy + fh * 0.68) * h_s)))
     roi = arr_rgb[y0:y1, x0:x1].astype(np.float32)
     if roi.size < 12:
         return None
@@ -513,7 +515,7 @@ def _compute_masked_skin_ycbcr_from_rgb(
     # 旧掩膜写着 cr <= 178，而 BT.709 健康扇区的上限是 174 —— 于是「肤色已经跑到 178」这件事
     # 在掩膜这一步就被夹回 167，守门永远看不见（2026-11-24 实测：同一帧窄掩膜 cr=167.6、
     # 宽掩膜 cr=178.1，成片实测 180）。掩膜范围一律放宽到扇区之外，判定仍用 SKIN_YCBCR_RANGE。
-    skin_mask = (cb >= 70.0) & (cb <= 150.0) & (cr >= 110.0) & (cr <= 195.0) & (y_val >= 35.0) & (y_val <= 235.0)
+    skin_mask = (cb >= 55.0) & (cb <= 155.0) & (cr >= 105.0) & (cr <= 245.0) & (y_val >= 35.0) & (y_val <= 235.0)
     if int(np.sum(skin_mask)) >= 8:
         return {
             "skin_y": round(float(np.median(y_val[skin_mask])), 1),
@@ -613,6 +615,22 @@ def compute_hero_and_shot_correction(
 
 # 闭环降强度的下限（相对 1.0）：低于这个值画面影调已经明显偏离风格真值
 LUT_STRENGTH_FLOOR = 0.45
+
+
+def _lut_backoff_candidates(configured_strength: float) -> List[float]:
+    """全局 LUT 回测退避阶梯：不低于 LUT_STRENGTH_FLOOR 且不低于风格真值的 70%（与 element_rules 同口径）。"""
+    eff = round(max(0.0, min(1.0, float(configured_strength))), 2)
+    if eff <= 0.01:
+        return [eff]
+    truth_floor = math.ceil(eff * 0.70 * 100.0 - 1e-6) / 100.0
+    eff_floor = round(min(eff, max(LUT_STRENGTH_FLOOR, truth_floor)), 2)
+    raw = [eff, min(eff, max(0.55, eff_floor)), eff_floor]
+    out: List[float] = []
+    for cs in raw:
+        cs_r = round(float(cs), 2)
+        if cs_r <= eff + 1e-6 and cs_r not in out:
+            out.append(cs_r)
+    return out or [eff]
 
 
 def build_blended_cube_lut(lut_path: Path, strength: float, out_path: Path) -> tuple[Path, float]:
@@ -801,30 +819,131 @@ def _skin_in_sector(skin: Optional[Dict[str, float]], margin: float = 0.0) -> bo
 
 
 def _guard_probe_times(c_in: float, c_dur: float) -> List[float]:
-    """肤色守门采样点：镜头的 25% / 50% / 75%，单点会漏掉镜内换光（实测 t=0~5s 就是这样漏的）。"""
+    """肤色守门采样点：>=2.0s 长镜头采 5 点覆盖中段位移与峰值，短镜头采 3 点。"""
     d = max(0.1, float(c_dur))
-    return [round(float(c_in) + frac * d, 2) for frac in (0.25, 0.50, 0.75)]
+    fracs = (0.15, 0.32, 0.50, 0.68, 0.85) if d >= 2.0 else (0.25, 0.50, 0.75)
+    return [round(float(c_in) + frac * d, 2) for frac in fracs]
 
 
-def _probe_skin_series(media_path: Path, face_bbox: Dict[str, float], times: List[float], vf: str) -> List[Tuple[float, Dict[str, float]]]:
+def _detect_clip_dynamic_faces(
+    clips: List[Dict[str, Any]],
+    manifest_by_mp4: Dict[str, Dict[str, Any]],
+) -> Dict[str, List[Tuple[float, Dict[str, float]]]]:
+    """对 A-roll 或含人脸素材按实际切片时间点批量探测 Apple Vision 动态人脸框。"""
+    import tempfile
+
+    ffmpeg = find_bin("ffmpeg")
+    if not ffmpeg:
+        return {}
+    try:
+        from vision_inspector import ensure_vision_inspector_bin, inspect_images
+
+        if ensure_vision_inspector_bin() is None:
+            return {}
+    except Exception:
+        return {}
+
+    pending: List[Tuple[Path, str, float]] = []
+    out: Dict[str, List[Tuple[float, Dict[str, float]]]] = {}
+    with tempfile.TemporaryDirectory(prefix="svs_step7_faces_") as td:
+        td_path = Path(td)
+        for clip in clips:
+            clip_id = str(clip.get("clip_id") or "")
+            mp = str(clip.get("media_path") or "")
+            if not clip_id or not mp:
+                continue
+            mp_item = manifest_by_mp4.get(mp) or {}
+            is_code = (str(clip.get("track_role") or "") == "code_broll") or bool(mp_item.get("source_is_code_scene"))
+            if is_code:
+                continue
+            has_manifest_face = bool(parse_manifest_faces(mp_item))
+            if str(clip.get("track_role") or "") != "a_roll" and not has_manifest_face:
+                continue
+            mp_path = Path(mp)
+            if not mp_path.is_file():
+                continue
+
+            c_in = float(clip.get("source_in_sec", 0.0))
+            c_dur = float(clip.get("duration_sec", 2.0))
+            sample_ts = _guard_probe_times(c_in, c_dur)
+            safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", clip_id)
+            for idx, at_sec in enumerate(sample_ts):
+                jpg = td_path / f"{safe_id}_{idx}_{len(pending)}.jpg"
+                subprocess.run(
+                    [
+                        ffmpeg, "-hide_banner", "-loglevel", "error",
+                        "-ss", f"{max(0.0, float(at_sec)):.2f}", "-i", str(mp_path),
+                        "-frames:v", "1", "-vf", "scale=540:-2", "-q:v", "4", "-y", str(jpg),
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+                if jpg.is_file() and jpg.stat().st_size > 0:
+                    pending.append((jpg, clip_id, float(at_sec)))
+
+        if not pending:
+            return {}
+        try:
+            inspected = inspect_images([p for p, _, _ in pending])
+        except Exception:
+            return {}
+
+        for jpg, clip_id, at_sec in pending:
+            item = inspected.get(str(jpg)) or {}
+            faces = item.get("faces") or []
+            best_bb: Optional[Dict[str, float]] = None
+            best_area = -1.0
+            for f in faces:
+                bb = f.get("bbox")
+                if not bb:
+                    continue
+                try:
+                    fx = float(bb["x"])
+                    fy = float(bb["y"])
+                    fw = float(bb["w"])
+                    fh = float(bb["h"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                area = max(0.0, fw) * max(0.0, fh)
+                if fw > 0.0 and fh > 0.0 and area > best_area:
+                    best_area = area
+                    best_bb = {"x": fx, "y": fy, "w": fw, "h": fh}
+            if best_bb is not None:
+                out.setdefault(clip_id, []).append((at_sec, best_bb))
+    return out
+
+
+def _probe_skin_series(
+    media_path: Path,
+    face_bbox: Optional[Dict[str, float]],
+    times: List[float],
+    vf: str,
+    face_by_time: Optional[List[Tuple[float, Dict[str, float]]]] = None,
+) -> List[Tuple[float, Dict[str, float]]]:
     out: List[Tuple[float, Dict[str, float]]] = []
     for at in times:
-        s = probe_face_skin_ycbcr(media_path, face_bbox, at_sec=at, extra_vf=vf)
+        fb = (
+            min(face_by_time, key=lambda item: abs(item[0] - float(at)))[1]
+            if face_by_time
+            else face_bbox
+        )
+        if not fb:
+            continue
+        s = probe_face_skin_ycbcr(media_path, fb, at_sec=at, extra_vf=vf)
         if s:
             out.append((float(at), s))
     return out
 
 
-def _skin_excess(skin: Dict[str, float]) -> float:
+def _skin_excess(skin: Dict[str, float], margin: float = 0.0) -> float:
     """出扇区的「超限量」（0 = 健康），用于挑最差样本。"""
     cb, cr = float(skin["skin_cb"]), float(skin["skin_cr"])
-    return max(
-        0.0,
-        SKIN_YCBCR_RANGE["cb_min"] - cb,
-        cb - SKIN_YCBCR_RANGE["cb_max"],
-        SKIN_YCBCR_RANGE["cr_min"] - cr,
-        cr - SKIN_YCBCR_RANGE["cr_max"],
-    )
+    cb_lo = SKIN_YCBCR_RANGE["cb_min"] + margin
+    cb_hi = SKIN_YCBCR_RANGE["cb_max"] - margin
+    cr_lo = SKIN_YCBCR_RANGE["cr_min"] + margin
+    cr_hi = SKIN_YCBCR_RANGE["cr_max"] - margin
+    return max(0.0, cb_lo - cb, cb - cb_hi, cr_lo - cr, cr - cr_hi)
 
 
 def _all_in_sector(series: List[Tuple[float, Dict[str, float]]], margin: float = 0.0) -> bool:
@@ -888,7 +1007,7 @@ def run_step7(
         return clip_stats_cache[ck]
 
     def _get_clip_skin(mp_s: str, fb_dict: Dict[str, float], at_s: float) -> Optional[Dict[str, float]]:
-        sk = f"{mp_s}@{at_s:.2f}"
+        sk = f"{mp_s}@{at_s:.2f}@{float(fb_dict.get('x', 0.0)):.2f},{float(fb_dict.get('y', 0.0)):.2f}"
         if sk not in clip_skin_cache:
             clip_skin_cache[sk] = probe_face_skin_ycbcr(Path(mp_s), fb_dict, at_sec=at_s)
         return clip_skin_cache[sk]
@@ -946,13 +1065,8 @@ def run_step7(
         # 旧阶梯一路探到 0.15 只为把肤色拉回扇区 → 全片主亮 yavg 105（真值 140），
         # 整整暗 35 级、画面发灰，人眼看着「闷」；而真值本来就是「均衡自然高通透」。
         # 影调是这套风格的第一性，肤色偏移应该用中间调纠回来，不能靠把强度降到 1/4 来回避。
-        raw_cands = [eff_strength, min(eff_strength, 0.55), min(eff_strength, LUT_STRENGTH_FLOOR)]
-        cand_strengths: List[float] = []
-        for cs in raw_cands:
-            cs_r = round(float(cs), 2)
-            if cs_r <= eff_strength + 1e-6 and cs_r not in cand_strengths:
-                cand_strengths.append(cs_r)
-        min_cand = min(cand_strengths) if cand_strengths else 0.15
+        cand_strengths = _lut_backoff_candidates(eff_strength)
+        min_cand = min(cand_strengths) if cand_strengths else LUT_STRENGTH_FLOOR
         for cand_str in cand_strengths:
             if abs(cand_str - eff_strength) < 1e-6 and blended_lut.is_file():
                 cand_lut, cand_eff = blended_lut, eff_strength
@@ -976,6 +1090,7 @@ def run_step7(
             if all_in_sector or cand_str <= min_cand:
                 break
 
+    dynamic_faces_by_clip = _detect_clip_dynamic_faces(edl["clips"], manifest_by_mp4)
     clip_plans: List[Dict[str, Any]] = []
 
     for clip in edl["clips"]:
@@ -996,12 +1111,15 @@ def run_step7(
         stats = _get_clip_stats(mp, c_in, c_dur)
         is_hero = (mp == hero_mp and abs(c_in - hero_in) < 0.5)
 
+        clip_id_str = str(clip.get("clip_id") or "")
+        dyn_faces = dynamic_faces_by_clip.get(clip_id_str) or []
         shot_skin: Optional[Dict[str, float]] = skin_ycbcr if is_hero else None
-        if not is_hero and mp in manifest_by_mp4:
-            clip_faces = parse_manifest_faces(manifest_by_mp4[mp])
-            if clip_faces:
+        if not is_hero:
+            clip_faces = parse_manifest_faces(manifest_by_mp4[mp]) if mp in manifest_by_mp4 else []
+            primary_face = dyn_faces[0][1] if dyn_faces else (clip_faces[0] if clip_faces else None)
+            if primary_face is not None:
                 c_at = round(c_in + min(1.5, c_dur * 0.5), 2)
-                shot_skin = _get_clip_skin(mp, clip_faces[0], c_at)
+                shot_skin = _get_clip_skin(mp, primary_face, c_at)
 
         corr = compute_hero_and_shot_correction(
             stats,
@@ -1023,41 +1141,100 @@ def run_step7(
         # 1.0/0.95/0.90/0.85 阶梯降本镜饱和度（只降不升，不碰亮度与曲线），每个镜头实际用了哪一档写进 07_color_plan.json。
         skin_guard: Optional[Dict[str, Any]] = None
         guard_faces = parse_manifest_faces(manifest_by_mp4[mp]) if mp in manifest_by_mp4 else []
-        if guard_faces:
+        if dyn_faces or guard_faces:
+            fallback_face = dyn_faces[0][1] if dyn_faces else guard_faces[0]
             g_times = _guard_probe_times(c_in, c_dur)
-            g_pre = _probe_skin_series(Path(mp), guard_faces[0], g_times, vf_str)
+            g_pre = _probe_skin_series(Path(mp), fallback_face, g_times, vf_str, face_by_time=dyn_faces or None)
             if g_pre:
                 applied_scale, applied_sat = 1.0, float(corr["saturation"])
+                applied_tint_scale, applied_curve_damp = 1.0, 1.0
                 chosen = g_pre
                 best_effort = False
-                if not _all_in_sector(g_pre):
-                    last: Optional[Tuple[float, float, str, List[Tuple[float, Dict[str, float]]]]] = None
+                if not _all_in_sector(g_pre, margin=SKIN_GUARD_MARGIN):
+                    pre_ex = max((_skin_excess(s, margin=SKIN_GUARD_MARGIN) for _, s in g_pre), default=0.0)
+                    best_cand = (
+                        pre_ex,
+                        1.0, 1.0, 1.0, float(corr["saturation"]), vf_str, g_pre,
+                    )
+                    solved = False
                     for g_scale in (0.95, 0.90, 0.85, 0.80):
                         g_sat = round(float(corr["saturation"]) * g_scale, 3)
                         g_vf = _retune_eq_saturation(vf_str, g_sat)
-                        g_post = _probe_skin_series(Path(mp), guard_faces[0], g_times, g_vf)
+                        g_post = _probe_skin_series(Path(mp), fallback_face, g_times, g_vf, face_by_time=dyn_faces or None)
                         if not g_post:
                             continue
-                        chosen = g_post
-                        last = (g_scale, g_sat, g_vf, g_post)
-                        if _all_in_sector(g_post):
-                            corr = dict(corr)
-                            corr["saturation"] = g_sat
-                            vf_str = g_vf
-                            applied_scale, applied_sat = g_scale, g_sat
-                            break
-                    else:
-                        # 阶梯走完还出不来的（实测 178 → 最低档 172.7），也要用上最低那档：
-                        # 旧写法在这一步什么都不改，于是「明明能改善 5 个单位」的白等一场，
-                        # 成片照样 178 出扇区。这里如实记 best_effort。
-                        if last is not None:
-                            g_scale, g_sat, g_vf, g_post = last
+                        ex = max((_skin_excess(s, margin=SKIN_GUARD_MARGIN) for _, s in g_post), default=0.0)
+                        if ex < best_cand[0]:
+                            best_cand = (ex, g_scale, 1.0, 1.0, g_sat, g_vf, g_post)
+                        if _all_in_sector(g_post, margin=SKIN_GUARD_MARGIN):
                             corr = dict(corr)
                             corr["saturation"] = g_sat
                             vf_str = g_vf
                             applied_scale, applied_sat = g_scale, g_sat
                             chosen = g_post
-                            best_effort = True
+                            solved = True
+                            break
+                    if not solved:
+                        # 二阶渐进防护：若降饱和仍被高光偏红(zone_tint)+陡峭S曲线顶出扇区，温和收敛二者幅度，保留LUT真值强度
+                        pre_b0 = _zone_balance_filter(style_color, corr)
+                        pre_c0 = f"eq=brightness={corr['brightness']}:contrast={corr['contrast']}:saturation={corr['saturation']}"
+                        if pre_b0:
+                            pre_c0 = f"{pre_c0},{pre_b0}"
+                        base_src_pct = probe_luma_percentiles(mp, c_in, c_dur, pre_vf=pre_c0)
+                        for t_sc, c_dmp, s_sc in ((0.50, 0.75, 0.82), (0.25, 0.55, 0.78), (0.0, 0.40, 0.72), (0.0, 0.25, 0.62), (0.0, 0.15, 0.52)):
+                            sc_adj = dict(style_color)
+                            zt = style_color.get("zone_tint") or {}
+                            if zt:
+                                sc_adj["zone_tint"] = {
+                                    zn: [round(float(v) * t_sc, 4) for v in (zt.get(zn) or [0.0, 0.0, 0.0])]
+                                    for zn in ("shadow", "midtone", "highlight")
+                                }
+                            tc = style_color.get("tone_curve") or {}
+                            if tc:
+                                tc_adj = dict(tc)
+                                if tc.get("curve_weight") is not None:
+                                    tc_adj["curve_weight"] = round(float(tc["curve_weight"]) * c_dmp, 3)
+                                sc_adj["tone_curve"] = tc_adj
+                            corr_try = dict(corr)
+                            g_sat = round(float(corr["saturation"]) * s_sc, 3)
+                            corr_try["saturation"] = g_sat
+                            adj_targets = None
+                            if base_src_pct is not None and cal_targets and len(cal_targets) == 3:
+                                adj_targets = tuple(
+                                    _clampf(base_src_pct[i] + c_dmp * ((float(cal_targets[i]) / 255.0) - base_src_pct[i]), 0.0, 1.0)
+                                    for i in range(3)
+                                )
+                            g_vf = _build_vf_for_corr(
+                                corr_try,
+                                blended_lut,
+                                lut_strength=eff_strength,
+                                style_color=sc_adj,
+                                is_broll=is_broll,
+                                src_pct=base_src_pct,
+                                targets=adj_targets,
+                                clip_window=clip_win,
+                            )
+                            g_post = _probe_skin_series(Path(mp), fallback_face, g_times, g_vf, face_by_time=dyn_faces or None)
+                            if not g_post:
+                                continue
+                            ex = max((_skin_excess(s, margin=SKIN_GUARD_MARGIN) for _, s in g_post), default=0.0)
+                            if ex < best_cand[0]:
+                                best_cand = (ex, s_sc, t_sc, c_dmp, g_sat, g_vf, g_post)
+                            if _all_in_sector(g_post, margin=SKIN_GUARD_MARGIN):
+                                corr = corr_try
+                                vf_str = g_vf
+                                applied_scale, applied_tint_scale, applied_curve_damp, applied_sat = s_sc, t_sc, c_dmp, g_sat
+                                chosen = g_post
+                                solved = True
+                                break
+                    if not solved and best_cand[0] < pre_ex:
+                        _, b_sc, b_tsc, b_cdmp, b_sat, b_vf, b_post = best_cand
+                        corr = dict(corr)
+                        corr["saturation"] = b_sat
+                        vf_str = b_vf
+                        applied_scale, applied_tint_scale, applied_curve_damp, applied_sat = b_sc, b_tsc, b_cdmp, b_sat
+                        chosen = b_post
+                        best_effort = True
                 worst = _worst_skin(chosen)
                 skin_guard = {
                     "probe_sec": g_times,
@@ -1068,11 +1245,14 @@ def run_step7(
                         for t, s in chosen
                     ],
                     "saturation_scale": applied_scale,
+                    "tint_scale": applied_tint_scale,
+                    "curve_damp": applied_curve_damp,
                     "saturation_applied": applied_sat,
-                    "applied": bool(applied_scale < 1.0),
+                    "applied": bool(applied_scale < 1.0 or applied_tint_scale < 1.0 or applied_curve_damp < 1.0),
                     "in_sector_after": _all_in_sector(chosen),
                     "best_effort": best_effort,
                     "source_limited": bool(float(worst.get("y") or 0.0) < 45.0),
+                    "guard_face_source": "dynamic_vision" if dyn_faces else "manifest_static",
                 }
         clip_plans.append({
             "clip_id": clip["clip_id"],

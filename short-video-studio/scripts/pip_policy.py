@@ -45,7 +45,7 @@ DEFAULT_POLICY: Dict[str, Any] = {
 }
 
 _CUTOUT_MODES_PREFIX = ("geometry_pip",)
-_CUTOUT_MODES_EXACT = ("vision_portrait_cutout_pip", "data_news_cutout_pip")
+_CUTOUT_MODES_EXACT = ("vision_portrait_cutout_pip", "data_news_cutout_pip", "layered_cutout_over_broll")
 
 
 def _norm_name(p: Any) -> str:
@@ -233,6 +233,11 @@ def apply_cutout_gate(
         # 降级：保留风格的真值几何（推近/窗口），但不再跑人像抠像
         lay["cutout"] = False
         lay["cutout_gated_reason"] = verdict["reason"]
+        _was_layered = str(lay.get("mode") or "") == "layered_cutout_over_broll"
+        if _was_layered:
+            c["cutout"] = False
+            c["b_roll_overlay"] = False
+            c.pop("layered_role", None)
         wins = lay.get("windows") or []
         # 真草稿里的「窗口」有两类：`scale≈1.0` 的是**满屏叠加层**（不是小窗），
         # 真正的画中画窗口 `scale` 明显小于 1。不抠像之后，满屏叠加层会把真人整条盖住，
@@ -242,6 +247,11 @@ def apply_cutout_gate(
         for w in real_wins:
             w["matting"] = False
             w["stroke_hex"] = None
+        if _was_layered:
+            if real_wins:
+                lay["mode"] = "geometry_pip_window"
+            else:
+                c.pop("pip_layout", None)
         if not real_wins:
             lay.pop("secondary_media_path", None)
             lay.pop("secondary_in_sec", None)

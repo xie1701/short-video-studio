@@ -29,10 +29,12 @@ from common import (
     find_bin,
     load_style_applied,
     load_style_spectrum_entry,
+    local_assets_dir,
     maybe_reexec_in_venv,
     read_json,
     read_wav_as_48k_stereo,
     rescue_stereo_channels,
+    resolve_asset_path,
     run_cmd,
     sec_to_frames,
     write_json,
@@ -375,15 +377,19 @@ def resolve_dynamic_pause(
 
 
 def find_source_bgm(style_id: Optional[str]) -> Optional[Path]:
-    """按源模版 BGM 曲名在 sound_vibe/user/<style_id>/ 里找用户自备的原曲。
+    """按源模版 BGM 曲名在 sound_vibe/user/<style_id>/（及本机挂载目录）里找原曲。
 
     匹配规则：文件名包含源曲名（去空格、忽略大小写）即命中。
-    命中即用原曲（像素/听感层面 1:1），否则回落到自带 CC0 音库。
+    命中即用原曲（像素/听感层面 1:1），否则回落到自带/本机音库。
     """
     if not style_id:
         return None
-    user_dir = ASSETS_DIR / "sound_vibe" / "user" / str(style_id)
-    if not user_dir.is_dir():
+    user_dirs = [ASSETS_DIR / "sound_vibe" / "user" / str(style_id)]
+    loc = local_assets_dir(ASSETS_DIR)
+    if loc is not None:
+        user_dirs.append(loc / "sound_vibe" / "user" / str(style_id))
+    user_dirs = [d for d in user_dirs if d.is_dir()]
+    if not user_dirs:
         return None
     try:
         manifest = read_json(ASSETS_DIR / "sound_vibe" / "vibe_sound_manifest.json")
@@ -394,7 +400,10 @@ def find_source_bgm(style_id: Optional[str]) -> Optional[Path]:
     if not names:
         return None
     audio_ext = {".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"}
-    files = [p for p in sorted(user_dir.glob("**/*")) if p.is_file() and p.suffix.lower() in audio_ext]
+    files = [
+        p for d in user_dirs for p in sorted(d.glob("**/*"))
+        if p.is_file() and p.suffix.lower() in audio_ext
+    ]
     for want in names:
         key = want.replace(" ", "").lower()
         for f in files:
@@ -404,10 +413,10 @@ def find_source_bgm(style_id: Optional[str]) -> Optional[Path]:
 
 
 def _resolve_default_bgm(track: str, style_id: Optional[str] = None) -> Path:
-    """统一优先使用 CC0 真录 sound_vibe 音库，彻底告别正弦波合成占位音。
+    """统一优先使用随仓 CC0 音库或本机挂载源曲，绝不跨风格借别家曲子。
 
-    若用户把源模版原曲放进 sound_vibe/user/<style_id>/ 且文件名含源曲名，
-    则优先用原曲（听感 1:1），不再用替代乐段。
+    顺序：user/<style_id>/ 原曲 → 随仓/本机 local_assets 中的本风格 bgm_wav
+         → 随仓同风格 CC0 .m4a → 静音占位 _no_bgm.wav。
     """
     src = find_source_bgm(style_id)
     if src is not None:
@@ -422,9 +431,14 @@ def _resolve_default_bgm(track: str, style_id: Optional[str] = None) -> Path:
         node = {}
     rel = node.get("bgm_wav")
     if rel and not node.get("bgm_is_silence_placeholder"):
-        cand = ASSETS_DIR / str(rel)
-        if cand.is_file():
+        cand = resolve_asset_path(str(rel), ASSETS_DIR)
+        if cand is not None and cand.is_file():
             return cand
+        # 纯净开源分发包未带源草稿 .mp3 时，仅回落到同风格的 CC0 曲目（若有），绝不跨风格借曲
+        if style_id:
+            cc0_same = ASSETS_DIR / "sound_vibe" / "bgm" / f"{style_id}_bgm.m4a"
+            if cc0_same.is_file():
+                return cc0_same
     # 本风格确实没有 BGM：给一条等长静音占位（下游会按小节循环），绝不再借别家的曲子。
     quiet = ASSETS_DIR / "sound_vibe" / "bgm" / "_no_bgm.wav"
     if not quiet.is_file():
@@ -515,7 +529,6 @@ def run_step3(
     pause_sec = max(0.14, min(0.32, pause_sec))
     if not style_id:
         try:
-            from common import load_style_applied
             style_id = load_style_applied(Path(pipeline_dir))
         except Exception:
             style_id = None
@@ -891,7 +904,7 @@ def run_step3(
     dual_bgm_switch_sec: Optional[float] = None
     intro_beats: List[float] = []
     intro_downs: List[float] = []
-    active_sid = load_style_applied(pipeline_dir) or ("style_01" if track == "store" else "style_11")
+    active_sid = style_id or load_style_applied(pipeline_dir) or ("style_01" if track == "store" else "style_11")
     style_entry = load_style_spectrum_entry(active_sid) if active_sid else None
     dual_cfg = (style_entry or {}).get("dual_bgm_structure") or {}
     if bool(dual_cfg.get("enabled")) and total_dur >= 6.0:
@@ -924,6 +937,79 @@ def run_step3(
                     add_event("bgm_section", dual_bgm_switch_sec, "双段BGM切换：引子转入正文主曲")
             except Exception:
                 pass
+
+    # 因果规则驱动双 BGM 前奏 sting（如 style_21 intro_overlay_exit：仅探测本风格专属/用户目录 sting，绝不跨风格借用）
+    dual_bgm_meta: Dict[str, Any] = {
+        "rule_present": False,
+        "mode": "dual_bgm_structure" if dual_bgm_applied else None,
+        "applied": bool(dual_bgm_applied),
+        "target_switch_sec": dual_bgm_switch_sec,
+        "reason": "已启用双段BGM切换" if dual_bgm_applied else "",
+    }
+    try:
+        import element_rules
+        db_rule = element_rules.get_element_rule(active_sid, "dual_bgm_switch")
+    except Exception:
+        db_rule = None
+    db_triggers = [str(t) for t in ((db_rule or {}).get("why_appears") or {}).get("triggers") or []]
+    if db_rule and db_rule.get("present"):
+        dual_bgm_meta["rule_present"] = True
+        if not dual_bgm_meta["mode"] and db_triggers:
+            dual_bgm_meta["mode"] = db_triggers[0]
+    if not dual_bgm_applied and db_rule and db_rule.get("present") and "intro_overlay_exit" in db_triggers and total_dur >= 4.0:
+        try:
+            import element_rules
+            raw_sw = element_rules.get_driver(active_sid, "dual_bgm_switch", "switch_sec", default=1.733)
+            target_sw = max(0.8, min(3.5, float(raw_sw)))
+        except (TypeError, ValueError):
+            target_sw = 1.733
+        snap_pts = [s["end_sec"] for s in locked_sentences] + [s["start_sec"] for s in locked_sentences]
+        near_pts = [pt for pt in snap_pts if abs(pt - target_sw) <= 0.25 and 0.6 <= pt <= min(3.5, total_dur - 1.0)]
+        if near_pts:
+            target_sw = min(near_pts, key=lambda t: abs(t - target_sw))
+        dual_bgm_meta["target_switch_sec"] = round(target_sw, 4)
+
+        la = local_assets_dir(ASSETS_DIR)
+        sting_dirs = ([la / "sound_vibe" / "bgm"] if la is not None else []) + [ASSETS_DIR / "sound_vibe" / "bgm"]
+        sting_cands: List[Path] = []
+        for sdir in sting_dirs:
+            if sdir.is_dir():
+                for pat in (f"{active_sid}_intro.*", f"{active_sid}_sting.*"):
+                    sting_cands.extend(sorted(sdir.glob(pat)))
+        for pat in ("00_intro_sting.*", "intro_sting.*"):
+            sting_cands.extend(sorted(pipeline_dir.glob(pat)))
+        intro_sting_p = next((p for p in sting_cands if p.is_file() and p.resolve() != bgm_path.resolve()), None)
+        if intro_sting_p is not None:
+            try:
+                sting_arr, _ = load_stereo_wav_np(intro_sting_p)
+                sw_i = min(total_samples - int(0.8 * SR), max(int(0.6 * SR), int(round(target_sw * SR))))
+                fo_n = min(int(0.22 * SR), max(16, sw_i // 4))
+                seg = sting_arr[:sw_i].copy()
+                if len(seg) >= 32:
+                    s_rms = float(np.sqrt(np.mean(seg ** 2) + 1e-10))
+                    b_rms = float(np.sqrt(np.mean(locked_bgm[:len(seg)] ** 2) + 1e-10))
+                    seg *= min(2.0, max(0.5, (b_rms * 1.45) / max(1e-5, s_rms)))
+                    if len(seg) > fo_n and fo_n > 2:
+                        seg[-fo_n:] *= np.cos(np.linspace(0.0, np.pi * 0.5, fo_n, dtype=np.float32))[:, None]
+                    mixed = locked_bgm[:len(seg)] + seg
+                    pk = float(np.max(np.abs(mixed)))
+                    if pk > 0.92:
+                        mixed *= (0.92 / pk)
+                    locked_bgm[:len(seg)] = mixed
+                    dual_bgm_applied = True
+                    dual_bgm_switch_sec = round(len(seg) / float(SR), 4)
+                    dual_bgm_meta.update({
+                        "applied": True,
+                        "mode": "intro_overlay_exit",
+                        "target_switch_sec": dual_bgm_switch_sec,
+                        "sting_file": str(intro_sting_p.resolve()),
+                        "reason": f"已在 0~{dual_bgm_switch_sec:.2f}s 叠入本风格专属前奏 sting 并淡出交棒正文主床",
+                    })
+                    add_event("bgm_section", dual_bgm_switch_sec, "双段BGM前奏退场：转入正文主床")
+            except Exception as exc:
+                dual_bgm_meta["reason"] = f"前奏 sting 加载失败，退回单一主床：{exc}"
+        else:
+            dual_bgm_meta["reason"] = f"缺少 {active_sid} 专属前奏 sting 音频（{active_sid}_intro.* / 00_intro_sting.*），保持单一正片床不跨风格借用"
 
     fade_out_n = min(len(locked_bgm), int(0.25 * SR))
     if fade_out_n > 2:
@@ -983,6 +1069,7 @@ def run_step3(
             "beat_method": bgm_info["method"],
             "dual_bgm_applied": dual_bgm_applied,
             "dual_bgm_switch_sec": dual_bgm_switch_sec,
+            "dual_bgm_switch": dual_bgm_meta,
             "beat_times_sec": [t for t in eff_beats if t <= total_dur],
             "downbeat_times_sec": [t for t in eff_downs if t <= total_dur],
             "hook_first_word_sec": locked_sentences[0]["start_sec"],

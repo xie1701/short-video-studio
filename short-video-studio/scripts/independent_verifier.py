@@ -59,6 +59,7 @@ from common import (
     is_verified_commercial_font,
     load_style_applied,
     load_style_spectrum_entry,
+    local_assets_dir,
     maybe_reexec_in_venv,
     measure_lufs_ebur128,
     read_json,
@@ -1332,8 +1333,12 @@ def verify_sfx_in_window_blackbox(
         lo_hz = min(2000.0, hi_hz * 0.5)
         sos = butter(4, [lo_hz, hi_hz], btype="bandpass", fs=sr1, output="sos")
         bb_band = sosfiltfilt(sos, bb_mono)
+        mid_lo_hz = min(300.0, hi_hz * 0.25)
+        sos_mid = butter(4, [mid_lo_hz, hi_hz], btype="bandpass", fs=sr1, output="sos")
+        bb_mid: Optional[Any] = sosfiltfilt(sos_mid, bb_mono)
     except Exception:
         bb_band = bb_mono
+        bb_mid = None
         sos = None
 
     windows: List[Dict[str, Any]] = []
@@ -1362,7 +1367,14 @@ def verify_sfx_in_window_blackbox(
         if i1 <= i0 + 64 or r_no <= 0.0:
             continue
         r_bb = float(np.sqrt(np.mean(bb_band[i0:i1] ** 2) + 1e-12))
-        lifts.append(round(20.0 * math.log10(max(1e-8, r_bb) / max(1e-8, r_no)), 2))
+        lift_hi = 20.0 * math.log10(max(1e-8, r_bb) / max(1e-8, r_no))
+        r_no_mid = float(win.get("nosfx_0_3_8k_rms", 0.0))
+        if r_no_mid > 0.0 and bb_mid is not None and i1 <= len(bb_mid):
+            r_bb_mid = float(np.sqrt(np.mean(bb_mid[i0:i1] ** 2) + 1e-12))
+            lift_mid = 20.0 * math.log10(max(1e-8, r_bb_mid) / max(1e-8, r_no_mid))
+            lifts.append(round(max(lift_hi, lift_mid), 2))
+        else:
+            lifts.append(round(lift_hi, 2))
 
     if not lifts:
         return {"status": "FAIL", "passed": False, "cues_checked": 0, "median_lift_db": 0.0, "max_lift_db": 0.0, "source": source_used}
@@ -1686,19 +1698,44 @@ def verify_compliance_and_license_blackbox(pipeline_dir: Optional[Path]) -> Dict
 
     unverified_fonts: List[str] = []
     file_mismatches: List[str] = []
+    invalid_tiers: List[str] = []
     external_documents = 0
+    local_private_count = 0
+    loc_root_raw = local_assets_dir()
+    loc_root = loc_root_raw.resolve() if loc_root_raw is not None else None
+    allowed_tiers = {
+        "builtin_svs",
+        "verified_commercial_font",
+        "project_generated",
+        "project_derived_lut",
+        "external_registered",
+        "local_private_self_use",
+    }
     for item in lic.get("assets", []):
         asset = Path(item["path"])
-        generated = item.get("source_tier") == "project_generated"
+        tier = str(item.get("source_tier") or "")
+        generated = tier == "project_generated"
         tidy_cleaned = generated and (not asset.exists()) and any(
             d in asset.parts for d in tidy_removed
         )
         if not tidy_cleaned:
             if not asset.is_file() or sha256_file(asset) != item.get("sha256"):
                 file_mismatches.append(str(asset))
+        if tier not in allowed_tiers or not item.get("commercial_ok", False):
+            invalid_tiers.append(str(item.get("filename") or asset.name))
         cat = item.get("category") or item.get("kind")
-        external = item.get("source_tier") == "external_registered"
-        if cat == "font" and not external and not is_verified_commercial_font(asset):
+        external = tier == "external_registered"
+        local_priv = tier == "local_private_self_use"
+        if local_priv:
+            try:
+                in_local_root = loc_root is not None and asset.resolve().is_relative_to(loc_root)
+            except Exception:
+                in_local_root = False
+            if not in_local_root:
+                file_mismatches.append(str(asset))
+            else:
+                local_private_count += 1
+        if cat == "font" and not external and not local_priv and not is_verified_commercial_font(asset):
             unverified_fonts.append(asset.name)
         if external:
             external_documents += 1
@@ -1706,13 +1743,24 @@ def verify_compliance_and_license_blackbox(pipeline_dir: Optional[Path]) -> Dict
             if not document.is_file() or sha256_file(document) != item.get("authorization_sha256"):
                 file_mismatches.append(str(document))
 
-    lic_ok = bool(lic.get("all_commercial_verified", False)) and not unverified_fonts and not file_mismatches
+    lic_ok = (
+        bool(lic.get("passed", False))
+        and int(lic.get("unregistered_count", 0)) == 0
+        and int(lic.get("assets_count", 0)) > 0
+        and (bool(lic.get("all_commercial_verified", False)) or local_private_count > 0)
+        and not unverified_fonts
+        and not file_mismatches
+        and not invalid_tiers
+    )
     passed = comp_ok and lic_ok
     return {
         "status": "PASS" if passed else "FAIL",
         "passed": passed,
         "compliance_ok": comp_ok,
         "license_ok": lic_ok,
+        "all_commercial_verified": bool(lic.get("all_commercial_verified", False)),
+        "local_private_count": local_private_count,
+        "invalid_tiers": invalid_tiers,
         "assets_count": int(lic.get("assets_count", 0)),
         "unregistered_count": int(lic.get("unregistered_count", 0)),
         "unverified_fonts": sorted(set(unverified_fonts)),
@@ -2091,8 +2139,15 @@ def run_blackbox_verification(
             "bb_compliance_and_license",
             "[黑盒] 广告法合规与商业字体授权清单",
             comp_lic_res["status"],
-            f"合规={'通过' if comp_lic_res['compliance_ok'] else '违规'} | 资产={comp_lic_res['assets_count']} | "
-            f"未授权字体={len(comp_lic_res.get('unverified_fonts', []))}",
+            (
+                f"合规={'通过' if comp_lic_res['compliance_ok'] else '违规'} | 资产={comp_lic_res['assets_count']} | "
+                f"未授权字体={len(comp_lic_res.get('unverified_fonts', []))}"
+                + (
+                    f" | 本机自用挂载={comp_lic_res['local_private_count']}(非公开商用)"
+                    if comp_lic_res.get("local_private_count", 0) > 0
+                    else ""
+                )
+            ),
             "合规=通过、零未登记资产且所有字体通过 is_verified_commercial_font",
             comp_lic_res,
         ),

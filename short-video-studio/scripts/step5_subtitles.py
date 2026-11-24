@@ -522,13 +522,33 @@ def _compute_authoritative_subtitle_bbox(
     """
     base_fs = int(tpl.get("font_size", 62))
     kw_scale = float(tpl.get("keyword_scale", 1.133))
-    eff_fs = int(round(base_fs * min(1.20, max(1.0, (1.0 + kw_scale) * 0.5))))
+    dual_banner = bool(tpl.get("dual_line_banner"))
     safe_w_cap = SUBTITLE_SYMMETRIC_MAX_W  # 640px ([220, 860]，中心严格锁定 540px)
     center_x = SUBTITLE_CENTER_X  # 540px
 
-    est_w, est_h = _measure_text_px(text, font_path, eff_fs)
-    box_w = min(safe_w_cap, max(160, est_w + 32))
-    box_h = min(220, max(84, est_h + 16))
+    clean_len = len(str(text or "").replace("\n", "").strip())
+    if dual_banner and ("\n" in str(text or "") or clean_len >= 5):
+        raw_t = str(text or "").strip()
+        if "\n" not in raw_t:
+            cut_at = (len(raw_t) + 1) // 2
+            l1, l2 = raw_t[:cut_at], raw_t[cut_at:]
+        else:
+            parts = raw_t.splitlines()
+            l1, l2 = parts[0], (parts[1] if len(parts) > 1 else "")
+        eff_fs = min(84, max(62, int(round(base_fs * min(1.15, max(1.0, (1.0 + kw_scale) * 0.5))))))
+        w1, h1 = _measure_text_px(l1, font_path, eff_fs)
+        w2, h2 = _measure_text_px(l2 or l1, font_path, eff_fs)
+        est_w = max(w1, w2)
+        est_h_2 = max(h1, h2) * 2 + 12
+        box_w = min(safe_w_cap, max(180, est_w + 56))
+        box_h = min(284, max(168, est_h_2 + 24))
+    else:
+        eff_fs = int(round(base_fs * min(1.20, max(1.0, (1.0 + kw_scale) * 0.5))))
+        if dual_banner:
+            eff_fs = min(100, eff_fs)
+        est_w, est_h = _measure_text_px(text, font_path, eff_fs)
+        box_w = min(safe_w_cap, max(160, est_w + 32))
+        box_h = min(220, max(84, est_h + 16))
     # 水平中心 100% 锁定画布正中央 540px，且 box_w <= 640 保证永不触发右侧 860px 单侧推偏
     box_x = center_x - box_w // 2
 
@@ -686,7 +706,38 @@ def _merge_short_chunks(
             second["text"] = merged_txt
             second["start_sec"] = min(float(first["start_sec"]), float(second["start_sec"]))
             second["words"] = list(first.get("words") or []) + list(second.get("words") or [])
+            second["keywords"] = list(dict.fromkeys(list(first.get("keywords") or []) + list(second.get("keywords") or [])))
             out.pop(0)
+    # 句内扫尾兜底：若仍留有 <=3 字残块（如句内呼吸间隔 >0.50s 跳过上面分支），优先并入更短的相邻块（放宽到句内 gap<=1.20s，绝不留单挂碎字）
+    changed = True
+    while changed and len(out) >= 2:
+        changed = False
+        for k in range(len(out)):
+            cur_t = str(out[k].get("text") or "").replace(" ", "")
+            if len(cur_t) >= min_chars:
+                continue
+            cand_neighbors: List[Tuple[int, int]] = []
+            if k - 1 >= 0:
+                gap_prev = float(out[k]["start_sec"]) - float(out[k - 1]["end_sec"])
+                if gap_prev <= 1.20:
+                    cand_neighbors.append((len(str(out[k - 1].get("text") or "").replace(" ", "")), k - 1))
+            if k + 1 < len(out):
+                gap_next = float(out[k + 1]["start_sec"]) - float(out[k]["end_sec"])
+                if gap_next <= 1.20:
+                    cand_neighbors.append((len(str(out[k + 1].get("text") or "").replace(" ", "")), k + 1))
+            for _, nb_i in sorted(cand_neighbors):
+                lo, hi = (nb_i, k) if nb_i < k else (k, nb_i)
+                m_txt = str(out[lo].get("text") or "") + str(out[hi].get("text") or "")
+                if len(m_txt.replace(" ", "")) <= 12 and not _too_wide(m_txt):
+                    out[lo]["text"] = m_txt
+                    out[lo]["end_sec"] = max(float(out[lo]["end_sec"]), float(out[hi]["end_sec"]))
+                    out[lo]["words"] = list(out[lo].get("words") or []) + list(out[hi].get("words") or [])
+                    out[lo]["keywords"] = list(dict.fromkeys(list(out[lo].get("keywords") or []) + list(out[hi].get("keywords") or [])))
+                    out.pop(hi)
+                    changed = True
+                    break
+            if changed:
+                break
     return out
 
 
@@ -1039,6 +1090,10 @@ def run_step5(
     tpl_max_chars = max(4, min(tpl_char_cap, int(tpl.get("max_chars_per_line", 10)), _chars_by_font))
     kw_scale_f = float(tpl.get("keyword_scale", 1.133))
     eff_measure_fs = int(round(base_fs * max(1.0, (1.0 + kw_scale_f) * 0.5)))
+    dual_banner = bool(tpl.get("dual_line_banner"))
+    chunk_fs = min(84, max(62, eff_measure_fs)) if dual_banner else eff_measure_fs
+    chunk_px = int(_line_px * 1.85) if dual_banner else _line_px
+    chunk_max_chars = max(tpl_max_chars, min(tpl_char_cap, max(8, int(tpl.get("max_chars_per_line", 10))))) if dual_banner else tpl_max_chars
 
     # 实测痛点 #12 根治：合并相邻极短无强标点碎句（<0.85s 且间隔 <0.35s），避免“大约有二十”+“五张左右”被强行硬拆
     merged_sentences: List[Dict[str, Any]] = []
@@ -1052,13 +1107,19 @@ def run_step5(
             p_dur = float(prev_s.get("end_sec", 0.0)) - float(prev_s.get("start_sec", 0.0))
             c_dur = float(s_copy.get("end_sec", 0.0)) - float(s_copy.get("start_sec", 0.0))
             gap = float(s_copy.get("start_sec", 0.0)) - float(prev_s.get("end_sec", 0.0))
+            same_source = str(prev_s.get("source_media") or "") == str(s_copy.get("source_media") or "")
             if (
-                (p_dur < 0.85 or c_dur < 0.85)
+                same_source
+                and (p_dur < 0.85 or c_dur < 0.85)
                 and 0.0 <= gap <= 0.35
                 and p_txt
                 and not p_txt.endswith(("。", "？", "！", "?", "!"))
                 and len(p_txt) + len(c_txt) <= tpl_max_chars * 2 + 4
             ):
+                mids = list(prev_s.get("merged_sentence_ids") or ([prev_s["id"]] if prev_s.get("id") else []))
+                if s_copy.get("id") and s_copy["id"] not in mids:
+                    mids.append(s_copy["id"])
+                prev_s["merged_sentence_ids"] = mids
                 prev_s["text"] = p_txt + c_txt
                 prev_s["end_sec"] = max(float(prev_s.get("end_sec", 0.0)), float(s_copy.get("end_sec", 0.0)))
                 prev_s["words"] = list(prev_s.get("words") or []) + list(s_copy.get("words") or [])
@@ -1111,15 +1172,16 @@ def run_step5(
         _chunks = _merge_short_chunks(
             list(split_sentence_into_chunks(
                 sent_eff,
-                max_chars=tpl_max_chars,
+                max_chars=chunk_max_chars,
                 font_path=font_path,
-                font_size=eff_measure_fs,
+                font_size=chunk_fs,
+                max_safe_px=chunk_px,
                 strip_punct=strip_punct,
                 protected_terms=sent_prot,
             )),
-            max_px=_line_px,
+            max_px=chunk_px,
             font_path=font_path,
-            font_size=eff_measure_fs,
+            font_size=chunk_fs,
         )
         for ch in _chunks:
             st_sec = round(float(ch["start_sec"]), 4)
@@ -1160,6 +1222,8 @@ def run_step5(
                 "safe_msg": safe_msg,
                 "suppressed": suppressed,
             }
+            if sent.get("merged_sentence_ids"):
+                entry_obj["merged_sentence_ids"] = list(sent["merged_sentence_ids"])
             if suppressed:
                 entry_obj["suppressed_by"] = suppressed_by
                 entry_obj["suppress_reason"] = "B9_code_broll_dual_channel_dedup"

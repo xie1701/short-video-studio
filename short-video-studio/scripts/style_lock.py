@@ -260,6 +260,31 @@ def audit_pipeline(pipeline_dir: Path) -> Dict[str, Any]:
             "expected": ["硬切（源 draft 转场数 = 0，全片零转场）"], "actual": tr,
         })
 
+    # ---- 4. 调色 LUT 一致性：07_color_plan.json / applied vs 库 color_and_lut.lut_file ----
+    exp_lut_name = Path(str((entry.get("color_and_lut") or {}).get("lut_file") or "")).name
+    if exp_lut_name:
+        app_lut_raw = (applied.get("color_and_lut") or {}).get("lut_file") if isinstance(applied, dict) else None
+        if app_lut_raw:
+            app_lut_name = Path(str(app_lut_raw)).name
+            if app_lut_name and app_lut_name.lower() != exp_lut_name.lower():
+                deviations.append({
+                    "field": "color_and_lut.lut_file", "cn": "调色 LUT 文件",
+                    "expected": exp_lut_name, "actual": app_lut_name,
+                })
+        cp_p = pipeline_dir / "07_color_plan.json"
+        if cp_p.is_file():
+            try:
+                cp_doc = read_json(cp_p) or {}
+            except Exception:
+                cp_doc = {}
+            act_lut_name = Path(str(cp_doc.get("lut_name") or cp_doc.get("source_lut_path") or "")).name
+            if act_lut_name and act_lut_name.lower() != exp_lut_name.lower():
+                if not any(d.get("field") == "color_and_lut.lut_file" for d in deviations):
+                    deviations.append({
+                        "field": "color_and_lut.lut_file", "cn": "调色 LUT 文件",
+                        "expected": exp_lut_name, "actual": act_lut_name,
+                    })
+
     # ---- 豁免：只认点名字段，且必须写着是用户同意的
     waiver_p = pipeline_dir / WAIVER_NAME
     waiver = read_json(waiver_p) if waiver_p.exists() else {}

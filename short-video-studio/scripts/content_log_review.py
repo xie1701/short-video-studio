@@ -238,6 +238,15 @@ def generate_weekly_review(log_dir: Path, out_md: Optional[Path] = None, track: 
         for name, (numerator, denominator) in sorted(metrics.items()):
             label = METRIC_NAMES.get(name, name)
             lines.append(f"  - {label}：{numerator}/{denominator}（{numerator / denominator:.2%}）")
+    tagged_rows = [row for row in recent if str(row.get("attribution_code") or "").strip()]
+    if tagged_rows:
+        lines.extend(["", "## 已关联出片归因码的视频", ""])
+        for row in tagged_rows:
+            plat_zh = PLATFORM_NAMES.get(str(row.get("platform") or "").casefold(), str(row.get("platform") or ""))
+            lines.append(
+                f"- `{row['attribution_code']}` · 《{row.get('title', '未命名')}》"
+                + (f"（{plat_zh}）" if plat_zh else "")
+            )
     if diagnoses:
         lines.extend(["", "## 观众滑走最集中的画面时间点（建议下次优先改这里）", ""])
         for item in diagnoses:
@@ -277,6 +286,7 @@ def generate_weekly_review(log_dir: Path, out_md: Optional[Path] = None, track: 
         "track": track, "record_count": len(records), "weekly_record_count": len(recent),
         "account_profile_json": str(active_path.resolve()), "weekly_review_md": str(out_md.resolve()),
         "drop_diagnoses": diagnoses, "candidates": candidates,
+        "attribution_codes": [str(r["attribution_code"]) for r in tagged_rows],
     }
 
 

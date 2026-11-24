@@ -1081,18 +1081,32 @@ def render_template_packaging_png(
             d = ImageDraw.Draw(tag)
             d.rounded_rectangle([(8, 7), (16, tag.height - 8)], radius=3, fill=(*pal["accent"], 255))
             layers.append(tag)
-        if elem_kind == "center_burst_title":
+        chosen_font = font_path or serif_font
+        try:
+            req_fs = int(float(elem.get("font_size_px") or 0) or 0)
+        except (TypeError, ValueError):
+            req_fs = 0
+        is_giant_role = str(elem.get("display_role") or "") == "giant_text"
+        if elem_kind == "center_burst_title" or is_giant_role:
+            if is_giant_role:
+                layers.clear()  # 因果分级大字直接独立砸屏，不强制叠门店小签
+            g_fs = max(104, min(520, req_fs)) if req_fs > 0 else 104
+            g_max_w = 960 if is_giant_role else 860
+            g_depth = max(6, min(14, int(round(g_fs / 28.0))))
             layers.append(
                 _draw_gradient_3d_text(
-                    l1 or main_text[:8], serif_font, 860, font_size=104,
+                    l1 or main_text[:8], chosen_font, g_max_w, font_size=g_fs,
                     top_rgb=pal["text"], mid_rgb=pal["light"], bot_rgb=pal["accent"],
-                    extrude_rgb=_shade(pal["accent"], 0.62), stroke_rgb=_shade(pal["accent"], 0.86), depth_px=6,
+                    extrude_rgb=_shade(pal["accent"], 0.62), stroke_rgb=_shade(pal["accent"], 0.86), depth_px=g_depth,
                 )
             )
         else:
+            if elem_kind == "end_card_cta" and (not sub_text or sub_text == main_text):
+                layers.clear()  # 片尾卡无独立副标时不叠冗余默认小签
+            e_fs = max(72, min(160, req_fs)) if req_fs > 0 else 88
             layers.append(
                 _text_sprite(
-                    l1 or main_text[:10], serif_font, 860, 88, (*pal["accent"], 255),
+                    l1 or main_text[:10], chosen_font, 860, e_fs, (*pal["accent"], 255),
                     stroke_rgba=(*_shade(pal["accent"], 0.90), 210), stroke_w=4,
                     shadow_rgba=(0, 0, 0, 145), shadow_dy=4, spacing_px=letter_spacing(ov_style, 2.0),
                 )

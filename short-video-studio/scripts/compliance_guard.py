@@ -23,7 +23,7 @@ _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
-from common import ASSETS_DIR, is_verified_commercial_font, read_json, sha256_file, write_json
+from common import ASSETS_DIR, is_verified_commercial_font, local_assets_dir, read_json, sha256_file, write_json
 
 EXEMPT_PHRASES = (
     "最近", "最后", "最怕", "最常", "最早", "最晚", "最初", "起初", "一开始",
@@ -323,6 +323,19 @@ def _classify_asset_license(path: Path, asset_kind: str, pipeline_dir: Path,
     resolved = path.resolve()
     if ASSETS_DIR.resolve() in resolved.parents:
         return {"source_tier": "builtin_svs", "license": "见 assets-attribution.md", "commercial_ok": True}
+    loc_root = local_assets_dir()
+    if loc_root is not None:
+        try:
+            loc_res = loc_root.resolve()
+            if resolved == loc_res or loc_res in resolved.parents:
+                return {
+                    "source_tier": "local_private_self_use",
+                    "license": "本机自用/复刻私有挂载资产（非公开仓库 CC0，公开发布商用前请自行确认授权）",
+                    "commercial_ok": True,
+                    "commercial_verified": False,
+                }
+        except Exception:
+            pass
     if asset_kind == "font" and is_verified_commercial_font(str(resolved)):
         return {
             "source_tier": "verified_commercial_font",
@@ -505,11 +518,17 @@ def build_asset_license_manifest(
             unregistered.append(f"lut:{derived.name} 缺少可核对的底表授权或派生文件")
 
     all_ok = (len(unregistered) == 0 and len(unverified_fonts) == 0 and len(entries) > 0)
+    local_priv_cnt = sum(1 for e in entries if e.get("source_tier") == "local_private_self_use")
     warnings: List[str] = [tts_commercial_notice] if tts_commercial_notice else []
+    if local_priv_cnt > 0:
+        warnings.append(
+            f"本片使用了本机私有挂载目录中的 {local_priv_cnt} 个音画资产（仅限自用/复刻参考，公开发布商用前请核验版权）"
+        )
     manifest = {
         "step": "asset_license_manifest",
         "passed": all_ok,
-        "all_commercial_verified": all_ok,
+        "all_commercial_verified": bool(all_ok and local_priv_cnt == 0),
+        "local_private_self_use_count": local_priv_cnt,
         "assets_count": len(entries),
         "total_assets": len(entries),
         "unregistered_count": len(unregistered),

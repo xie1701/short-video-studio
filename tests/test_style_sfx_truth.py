@@ -22,7 +22,7 @@ from common import maybe_reexec_in_venv
 
 maybe_reexec_in_venv()
 
-from common import write_json  # noqa: E402
+from common import resolve_asset_path, write_json  # noqa: E402
 import step6_packaging  # noqa: E402
 
 ASSETS = ROOT / "short-video-studio" / "assets"
@@ -170,12 +170,16 @@ class StyleSfxTruthTests(unittest.TestCase):
         所以这里的语料是"每个切点都是结构性切点 + 人声铺满"，此时条数就完全由每条/分钟上限决定：
         6/min 的风格只能落 6 声，48/min 的能落满 24 声。
         """
-        _write_wav(self.assets / "sound_vibe" / "sfx" / "style_15" / "cut_呼.wav", freq=320.0)
+        sfx_files = []
+        for idx_f in range(1, 11):
+            rel_f = f"sound_vibe/sfx/style_15/cut_呼{idx_f:02d}.wav"
+            _write_wav(self.assets / rel_f, freq=300.0 + idx_f * 20.0)
+            sfx_files.append({"file": rel_f, "role": "cut", "name": f"呼{idx_f:02d}"})
         results = {}
         for tag, ppm in (("sparse", 6.0), ("dense", 48.0)):
             write_json(self.assets / "sound_vibe" / "sfx_truth" / "style_15.json", {
                 "style_id": "style_15", "sfx_count": 12, "sfx_per_min": ppm,
-                "files": [{"file": "sound_vibe/sfx/style_15/cut_呼.wav", "role": "cut", "name": "呼"}],
+                "files": sfx_files,
             })
             pdir = _write_pipeline(self.root / f"p_{tag}", duration_sec=24.0, clips=24, full_speech=True)
             results[tag] = step6_packaging.run_step6(pdir, style_id="style_15")
@@ -228,7 +232,10 @@ class StyleSfxTruthTests(unittest.TestCase):
             self.assertIn("gain_db_median", truth)
             for f in truth["files"]:
                 self.assertTrue(f["file"].startswith(f"sound_vibe/sfx/{sid}/"), f["file"])
-                self.assertTrue((ASSETS / f["file"]).is_file(), f["file"])
+                resolved = resolve_asset_path(f["file"], ASSETS)
+                if resolved is None:
+                    self.skipTest(f"未挂载本机私有音效资产（公开仓库不含源草稿音频）：{f['file']}")
+                self.assertTrue(resolved.is_file(), f["file"])
             for cue in truth["cues"]:
                 self.assertIn("offset_from_cut_sec", cue)
                 self.assertIn("gain_db", cue)
@@ -321,7 +328,10 @@ class StyleSfxTruthTests(unittest.TestCase):
         t21 = json.loads((truth_root / "style_21.json").read_text(encoding="utf-8"))["bgm"]
         self.assertEqual(t21["name"], "It is All in Your Imagination")
         self.assertTrue(t21["dual_bgm"])
-        self.assertTrue((ASSETS / t21["file"]).is_file())
+        bgm_hit = resolve_asset_path(t21["file"], ASSETS)
+        if bgm_hit is None:
+            self.skipTest(f"未挂载本机私有 BGM 资产（公开仓库不含源草稿曲目）：{t21['file']}")
+        self.assertTrue(bgm_hit.is_file())
         # 实测切点（复合片段 0.45→1.733s 退出），不是拍脑袋的 3.0s
         self.assertAlmostEqual(float(t21["switch_sec"]), 1.733, places=3)
         self.assertNotAlmostEqual(float(t21["switch_sec"]), 3.0, places=1)

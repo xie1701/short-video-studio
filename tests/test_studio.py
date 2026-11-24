@@ -647,7 +647,8 @@ class StudioTests(unittest.TestCase):
                 "giant_numeric_trio",
                 "giant_vertical_seal",
             }, f"Invalid giant_text_spec on {sid}")
-            self.assertGreaterEqual(int(giant_spec.get("font_size_px") or 0), 120, f"Giant text too small on {sid}")
+            # style_17 字幕 50px，草稿实测巨字中位 112px（2.25× 字幕基准），下限放宽到 100px
+            self.assertGreaterEqual(int(giant_spec.get("font_size_px") or 0), 100, f"Giant text too small on {sid}")
         self.assertEqual(whitebox_cnt, 24)
         self.assertEqual(
             high_broll_targets,
@@ -5040,6 +5041,631 @@ class ScriptPolishTests(unittest.TestCase):
             got = SP.plan_lines(p)
         self.assertEqual([x["text"] for x in got], ["第一句。", "第二句。"])
         self.assertEqual(got[1]["segs"], ["seg_004", "seg_001"])   # 顺序照成稿，不按时间重排
+
+
+class CommercialComplianceAndLocalAssetsTests(unittest.TestCase):
+    """公开仓库仅携带 5 款开源商用字体与 CC0 音频；本机私有复刻资产从 local_assets 自动挂载。"""
+
+    OPEN_FONTS = {
+        "AlimamaShuHeiTi-Bold.otf",
+        "MaShanZheng-Regular.ttf",
+        "SmileySans-Oblique.ttf",
+        "SourceHanSerifCN-Bold.otf",
+        "SourceHanSerifCN-Heavy.otf",
+        "font_aliases.json",
+    }
+
+    def test_repo_fonts_are_strictly_open_commercial_only(self):
+        fonts_dir = ROOT / "short-video-studio" / "assets" / "fonts"
+        self.assertFalse((fonts_dir / "jianying").exists(), "公开仓库不允许保留剪映私有字体目录")
+        actual = {p.name for p in fonts_dir.rglob("*") if p.is_file() and not p.name.startswith(".")}
+        self.assertEqual(actual, self.OPEN_FONTS)
+        if (ROOT / ".git").exists():
+            out = subprocess.check_output(
+                ["git", "ls-files", "-z", "short-video-studio/assets/fonts/"], cwd=str(ROOT)
+            )
+            tracked = {Path(p).name for p in out.decode("utf-8").split("\0") if p}
+            self.assertEqual(tracked, self.OPEN_FONTS)
+
+    def test_repo_sound_vibe_has_no_source_draft_audio(self):
+        sv_dir = ROOT / "short-video-studio" / "assets" / "sound_vibe"
+        self.assertEqual(list((sv_dir / "bgm").glob("*.mp3")), [], "源草稿提取 BGM (.mp3) 不应滞留公开资产目录")
+        style_sfx_dirs = [p for p in (sv_dir / "sfx").glob("style_*") if p.is_dir()]
+        self.assertEqual(style_sfx_dirs, [], "源草稿提取 SFX 子目录不应滞留公开资产目录")
+
+    def test_local_assets_mount_and_test_isolation(self):
+        import common
+        import step6_packaging as S6
+
+        # 隔离测试：传入非默认 ASSETS_DIR 且未设置环境变量时，不穿透到真实 HOME
+        old_env = os.environ.pop("SVS_LOCAL_ASSETS_DIR", None)
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                td_p = Path(td)
+                self.assertIsNone(common.local_assets_dir(td_p / "isolated_assets"))
+
+                # 显式设置 SVS_LOCAL_ASSETS_DIR 时可自动挂载私有字体与音效
+                loc = td_p / "local_assets"
+                (loc / "fonts" / "jianying").mkdir(parents=True)
+                (loc / "fonts" / "jianying" / "ProbeCustom.ttf").write_bytes(b"font")
+                (loc / "sound_vibe" / "sfx" / "style_21").mkdir(parents=True)
+                (loc / "sound_vibe" / "sfx" / "style_21" / "cut_测试.wav").write_bytes(b"wav")
+                os.environ["SVS_LOCAL_ASSETS_DIR"] = str(loc)
+
+                self.assertEqual(common.local_assets_dir(), loc)
+                self.assertIn(loc / "fonts" / "jianying", common._font_search_dirs())
+                orig_assets = S6.ASSETS_DIR
+                S6.ASSETS_DIR = td_p / "empty_assets"
+                try:
+                    pool = S6.scan_style_sfx("style_21")
+                    self.assertTrue(pool.get("cut"), "应从 SVS_LOCAL_ASSETS_DIR 自动挂载 style_21 音效")
+                    import compliance_guard as CG
+                    loc_cls = CG._classify_asset_license(
+                        loc / "sound_vibe" / "sfx" / "style_21" / "cut_测试.wav",
+                        "sfx", td_p / "pipe", {}, "fakehash",
+                    )
+                    self.assertEqual(loc_cls["source_tier"], "local_private_self_use")
+                    self.assertTrue(loc_cls["commercial_ok"])
+                    self.assertFalse(loc_cls["commercial_verified"])
+                    ext_p = td_p / "external_unknown.wav"
+                    ext_p.write_bytes(b"wav")
+                    ext_cls = CG._classify_asset_license(ext_p, "sfx", td_p / "pipe", {}, "fakehash2")
+                    self.assertEqual(ext_cls["source_tier"], "unregistered_external")
+                    self.assertFalse(ext_cls["commercial_ok"])
+                finally:
+                    S6.ASSETS_DIR = orig_assets
+        finally:
+            if old_env is not None:
+                os.environ["SVS_LOCAL_ASSETS_DIR"] = old_env
+            else:
+                os.environ.pop("SVS_LOCAL_ASSETS_DIR", None)
+
+
+class ProductionPipelineV48Tests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+
+    def test_style_library_decontaminated_specs_and_giant_tiers(self):
+        from common import ASSETS_DIR, read_json
+
+        lib = read_json(ASSETS_DIR / "style_spectrum" / "style_spectrum_library.json")
+        self.assertEqual(lib.get("version"), "4.8.0")
+        by_id = {s["style_id"]: s for s in lib["styles"]}
+        for sid in ("style_03", "style_05", "style_09", "style_13", "style_17", "style_19", "style_21"):
+            sub = by_id[sid]["subtitle_spec"]
+            mc = int(sub["max_chars_per_line"])
+            self.assertGreaterEqual(mc, 6, f"{sid} max_chars_per_line 过小: {mc}")
+            self.assertLessEqual(mc, 22, f"{sid} max_chars_per_line 疑似污染: {mc}")
+        gt21 = by_id["style_21"]["giant_text_spec"]
+        self.assertEqual(int(gt21["font_size_px"]), 249)
+        self.assertEqual(gt21.get("size_tiers_px"), {"1-2": 488, "3": 325, "4": 200, "5+": 150})
+
+    def test_layered_cutout_edl_with_faces_and_missing_cutout_audit_fail(self):
+        from unittest import mock
+        import element_rules
+        from common import write_json
+        from step4_build_edl import run_step4
+
+        ar_p = self.root / "ar_face.mp4"
+        br_p = self.root / "br_kitchen.mp4"
+        ar_p.write_bytes(b"fake-aroll")
+        br_p.write_bytes(b"fake-broll")
+        pdir = self.root / "layered_s21"
+        pdir.mkdir()
+        write_json(pdir / "01_manifest.json", {
+            "items": [
+                {
+                    "id": "a1", "filename": "ar_face.mp4", "role": "a_roll",
+                    "video_grade": "usable", "normalized_mp4": str(ar_p), "duration_sec": 18.0,
+                    "faces": [{"bbox": {"x": 0.35, "y": 0.22, "w": 0.24, "h": 0.24}}],
+                },
+                {
+                    "id": "b1", "filename": "br_kitchen.mp4", "role": "b_roll",
+                    "video_grade": "usable", "normalized_mp4": str(br_p), "duration_sec": 18.0,
+                    "best_in_sec": 0.0, "semantic_tags": ["门店", "现炒", "食材", "备菜"],
+                    "description": "门店实拍清晨备菜、现炒锅气与新鲜食材特写",
+                },
+            ]
+        })
+        sents_l = [
+            {"id": "s1", "text": "门店清晨备菜直接看细节", "keywords": ["门店", "备菜"], "start_sec": 0.0, "end_sec": 2.0, "start_frame": 0, "end_frame": 60, "source_media": str(ar_p), "source_in_sec": 0.0, "source_out_sec": 2.0, "emotion_or_info": "hook"},
+            {"id": "s2", "text": "每天现炒锅气满满不隔夜", "keywords": ["现炒", "锅气"], "start_sec": 2.0, "end_sec": 4.0, "start_frame": 60, "end_frame": 120, "source_media": str(ar_p), "source_in_sec": 2.0, "source_out_sec": 4.0, "emotion_or_info": "info"},
+            {"id": "s3", "text": "新鲜食材每天早晨准时到店", "keywords": ["食材"], "start_sec": 4.0, "end_sec": 6.0, "start_frame": 120, "end_frame": 180, "source_media": str(ar_p), "source_in_sec": 4.0, "source_out_sec": 6.0, "emotion_or_info": "info"},
+            {"id": "s4", "text": "你看这个招牌菜上桌效果", "keywords": ["效果"], "start_sec": 6.0, "end_sec": 8.0, "start_frame": 180, "end_frame": 240, "source_media": str(ar_p), "source_in_sec": 6.0, "source_out_sec": 8.0, "emotion_or_info": "info"},
+        ]
+        evts_l = []
+        for i, s in enumerate(sents_l):
+            evts_l.append({"id": f"e{i*2+1}", "type": "sentence_start", "time_sec": s["start_sec"], "frame": s["start_frame"], "sentence_id": s["id"]})
+            evts_l.append({"id": f"e{i*2+2}", "type": "keyword_accent", "time_sec": s["start_sec"] + 1.0, "frame": s["start_frame"] + 30, "sentence_id": s["id"]})
+        write_json(pdir / "03_audio_events.json", {
+            "locked_duration_sec": 8.0,
+            "locked_duration_frames": 240,
+            "sentences": sents_l,
+            "events": evts_l,
+        })
+        with mock.patch("face_framing.anchor_for", return_value={"cx": 0.5, "cy": 0.3, "w": 0.24, "h": 0.24}):
+            edl = run_step4(pdir, track="store", style_id="style_21")
+        layered = [c for c in edl["clips"] if (c.get("pip_layout") or {}).get("mode") == "layered_cutout_over_broll"]
+        self.assertTrue((edl.get("layered_model") or {}).get("enabled"))
+        self.assertGreaterEqual(len(layered), 1)
+        for lc in layered:
+            self.assertTrue(lc.get("cutout"))
+            self.assertTrue(lc.get("b_roll_overlay"))
+            self.assertNotEqual((lc.get("pip_layout") or {}).get("secondary_media_path"), lc.get("media_path"))
+            self.assertNotIn("看这个", str(lc.get("sentence_text") or ""))
+
+        # 若缺失抠像，element_rules.audit 必须 FAIL 检出 cutout 缺席
+        bad_p = self.root / "audit_no_cutout"
+        bad_p.mkdir()
+        write_json(bad_p / "03_audio_events.json", {"locked_duration_sec": 12.0, "sentences": []})
+        write_json(bad_p / "04_edl.json", {
+            "style_id": "style_21",
+            "clips": [
+                {"clip_id": "c1", "track_role": "a_roll", "duration_sec": 6.0, "cutout": False, "pip_layout": None},
+                {"clip_id": "c2", "track_role": "b_roll", "duration_sec": 6.0, "cutout": False, "pip_layout": None},
+            ],
+        })
+        write_json(bad_p / "06_packaging.json", {"style_id": "style_21", "sfx_cues": [], "visual_elements": []})
+        aud = element_rules.audit(bad_p)
+        self.assertFalse(aud["passed"])
+        self.assertGreaterEqual(int(aud["fails"]), 1)
+        self.assertTrue(any(r.get("element") == "cutout" for r in aud["fail_rows"]), aud["fail_rows"])
+
+    def test_style21_tiered_giant_text_and_sfx_60s_cap(self):
+        import wave
+        from common import write_json
+        import step6_packaging as S6
+
+        # 验证字号分级映射函数
+        spec21 = {"font_size_px": 249, "size_tiers_px": {"1-2": 488, "3": 325, "4": 200, "5+": 150}}
+        self.assertEqual(S6._pick_giant_tier_px("太贵", spec21), 488)
+        self.assertEqual(S6._pick_giant_tier_px("三大坑", spec21), 325)
+        self.assertEqual(S6._pick_giant_tier_px("成本真相", spec21), 200)
+        self.assertEqual(S6._pick_giant_tier_px("实拍揭秘版", spec21), 150)
+        self.assertEqual(S6._trim_giant_phrase("我系牛哥我", 5), "我系牛哥")
+
+        # 验证 rotate_sfx 在 60s 内严控同一音效 <= 2 次
+        assets_iso = self.root / "assets_sfx"
+        sfx_dir = assets_iso / "sound_vibe" / "sfx" / "style_21"
+        sfx_dir.mkdir(parents=True)
+        for nm in ("cut_呼A.wav", "cut_呼B.wav", "accent_叮.wav", "info_翻页.wav"):
+            with wave.open(str(sfx_dir / nm), "w") as wf:
+                wf.setnchannels(2)
+                wf.setsampwidth(2)
+                wf.setframerate(48000)
+                wf.writeframes(b"\x00\x01\x00\x01" * 4800)
+
+        orig_assets = S6.ASSETS_DIR
+        orig_local = os.environ.get("SVS_LOCAL_ASSETS_DIR")
+        os.environ["SVS_LOCAL_ASSETS_DIR"] = str(self.root / "nonexistent_local")
+        S6.ASSETS_DIR = assets_iso
+        try:
+            pdir = self.root / "pkg_s21"
+            pdir.mkdir()
+            sents = [
+                {"id": "s1", "text": "揭秘18元真成本", "keywords": ["成本"], "start_sec": 0.0, "end_sec": 2.5, "start_frame": 0, "end_frame": 75, "emotion_or_info": "hook"},
+                {"id": "s2", "text": "很多人只看第一眼价格", "keywords": ["价格"], "start_sec": 2.6, "end_sec": 5.5, "start_frame": 78, "end_frame": 165, "emotion_or_info": "info"},
+                {"id": "s3", "text": "三大用料差别摆在这里", "keywords": ["三大用料"], "start_sec": 5.6, "end_sec": 9.0, "start_frame": 168, "end_frame": 270, "emotion_or_info": "twist"},
+                {"id": "s4", "text": "其实后厨当天现切成本很高", "keywords": ["当天现切"], "start_sec": 9.1, "end_sec": 12.6, "start_frame": 273, "end_frame": 378, "emotion_or_info": "info"},
+                {"id": "s5", "text": "评论区留言聊聊你的看法", "keywords": ["评论区"], "start_sec": 12.7, "end_sec": 16.0, "start_frame": 381, "end_frame": 480, "emotion_or_info": "cta"},
+            ]
+            clips = [
+                {
+                    "clip_id": f"c{i+1}", "track_role": "a_roll" if i % 2 == 0 else "b_roll",
+                    "media_path": "", "timeline_in_sec": i * 2.0, "timeline_out_sec": (i + 1) * 2.0,
+                    "timeline_in_frame": i * 60, "timeline_out_frame": (i + 1) * 60,
+                    "cut_event_frame": i * 60, "cut_event_id": f"e{i+1}", "cut_event_type": "sentence_start",
+                }
+                for i in range(8)
+            ]
+            write_json(pdir / "03_audio_events.json", {
+                "locked_duration_sec": 16.0,
+                "sentences": sents,
+                "events": [{"id": f"e{i+1}", "type": "sentence_start", "time_sec": s["start_sec"], "frame": s["start_frame"], "sentence_id": s["id"]} for i, s in enumerate(sents)],
+            })
+            write_json(pdir / "04_edl.json", {"style_id": "style_21", "fps": 30, "clips": clips})
+            res = S6.run_step6(pdir, style_id="style_21")
+
+            vis = res["visual_elements"]
+            kinds = [v["kind"] for v in vis]
+            self.assertNotIn("flower_text", kinds)
+            self.assertNotIn("stamp_tag", kinds)
+            self.assertIn("center_burst_title", kinds)
+            self.assertIn("end_card_cta", kinds)
+            giants = [v for v in vis if v["kind"] == "center_burst_title"]
+            for g in giants:
+                self.assertEqual(g.get("display_role"), "giant_text")
+                self.assertLessEqual(len(str(g.get("text_or_asset") or "")), 5)
+                self.assertGreaterEqual(float(g.get("read_hold_sec") or 0), 1.35)
+                bb = g["final_bbox"]
+                self.assertLessEqual(bb["y"] + bb["h"], 1120)
+
+            from collections import Counter
+            name_counts = Counter(c["sfx_name"] for c in res["sfx_cues"])
+            self.assertTrue(all(cnt <= 2 for cnt in name_counts.values()), name_counts)
+        finally:
+            S6.ASSETS_DIR = orig_assets
+            if orig_local is not None:
+                os.environ["SVS_LOCAL_ASSETS_DIR"] = orig_local
+            else:
+                os.environ.pop("SVS_LOCAL_ASSETS_DIR", None)
+
+    def test_style_lock_lut_file_and_step7_neutral_saturation(self):
+        from common import ASSETS_DIR, read_json, write_json
+        from step7_color_grade import _SAT_NEUTRAL_PCT, _derive_style_color
+        from style_lock import audit_pipeline
+        from apply_style_spectrum import apply_to_pipeline, load_library
+
+        # 中性饱和度 _SAT_NEUTRAL_PCT 不再被默认压暗成 0.94
+        c21 = _derive_style_color("style_21")
+        s21 = next(s for s in read_json(ASSETS_DIR / "style_spectrum" / "style_spectrum_library.json")["styles"] if s["style_id"] == "style_21")
+        sat21 = float((s21.get("color_and_lut") or {}).get("sat_mean_pct") or _SAT_NEUTRAL_PCT)
+        expected_sat = round(max(0.88, min(1.14, 1.0 + (sat21 - _SAT_NEUTRAL_PCT) / 220.0)), 3)
+        self.assertEqual(c21["saturation_scale"], expected_sat)
+        self.assertAlmostEqual(1.0 + (_SAT_NEUTRAL_PCT - _SAT_NEUTRAL_PCT) / 220.0, 1.0)
+
+        # style_lock 检查 07_color_plan.json lut_name 篡改必须 FAIL，豁免后 PASS
+        pdir = self.root / "lock_lut"
+        pdir.mkdir()
+        apply_to_pipeline(load_library(), "style_21", pdir)
+        write_json(pdir / "07_color_plan.json", {"style_id": "style_21", "lut_name": "wrong_other.cube"})
+        bad = audit_pipeline(pdir)
+        self.assertFalse(bad["ok"])
+        self.assertTrue(any(d["field"] == "color_and_lut.lut_file" for d in bad["deviations"]), bad["deviations"])
+
+        write_json(pdir / "00_style_waiver.json", {"style_id": "style_21", "fields": {"color_and_lut.lut_file": "用户指定换 LUT"}})
+        ok = audit_pipeline(pdir)
+        self.assertTrue(ok["ok"], ok)
+        self.assertIn("color_and_lut.lut_file", ok["waived"])
+
+    def test_cli_entry_publish_ops_review_and_confirm_lint(self):
+        from common import write_json
+        from content_log_review import append_record, generate_weekly_review
+        from step9_title_cover import _make_attribution_code, build_publish_copy_pack, write_publish_ops_doc
+        from workflow_guard import write_confirm_plan_doc
+
+        # CLI 分组与 --entry 参数
+        out = subprocess.check_output(
+            [sys.executable, str(ROOT / "short-video-studio" / "scripts" / "run_pipeline.py"), "--help"],
+            text=True,
+        )
+        self.assertIn("--entry", out)
+        self.assertIn("1. 核心入口与项目定位", out)
+        self.assertIn("4. 高级门禁、入口3动画与调试开关", out)
+
+        # 归因码 + 3 问自测卡 + 复盘归因
+        pdir = self.root / "ops_pipe"
+        pdir.mkdir()
+        code = _make_attribution_code(pdir, "成本大公开", "style_21")
+        self.assertRegex(code, r"^SVS-\d{8}-[0-9A-F]{4}$")
+        pack = build_publish_copy_pack(
+            pdir, title_seed="成本大公开", hook_text="今天把真成本算给你看",
+            sentences=[{"text": "今天把真成本算给你看"}, {"text": "一线实拍给你算细账"}],
+            keywords=["真成本"], track="store", attribution_code=code,
+        )
+        self.assertEqual(pack["attribution_code"], code)
+        self.assertIn(code, (pdir / "09_publish_copy_pack.md").read_text(encoding="utf-8"))
+        ops_p = write_publish_ops_doc(pdir, attribution_code=code, preferred_title=pack["preferred_title"], style_id="style_21", track="store")
+        ops_txt = ops_p.read_text(encoding="utf-8")
+        self.assertIn(code, ops_txt)
+        self.assertIn("关掉声音看前 3 秒", ops_txt)
+
+        log_dir = self.root / "review_log"
+        append_record(log_dir, {
+            "video_id": code, "attribution_code": code, "date": "2026-11-24",
+            "track": "store", "platform": "douyin", "traffic_source": "local_feed",
+            "observation_hours": 48, "duration_sec": 35, "published_at": "2026-11-24T10:00:00+08:00",
+            "captured_at": "2026-11-26T10:00:00+08:00", "title": "成本大公开", "style_id": "style_21",
+            "metrics": {"retention_3s": {"numerator": 500, "denominator": 1000}},
+        })
+        rev = generate_weekly_review(log_dir, track="store")
+        self.assertIn(code, rev["attribution_codes"])
+        self.assertIn(code, Path(rev["weekly_review_md"]).read_text(encoding="utf-8"))
+
+        # Entry 1 确认单红线提醒
+        conf_pdir = self.root / "confirm_lint"
+        conf_pdir.mkdir()
+        write_json(conf_pdir / "02c_script_final.json", {
+            "total_dur": 12.0,
+            "lines": [{"text": "我们的产品全网第一100%有效包治一切问题", "dur": 4.0}],
+        })
+        doc_p = write_confirm_plan_doc(conf_pdir, style_id="style_21")
+        doc_txt = doc_p.read_text(encoding="utf-8")
+        self.assertIn("证据与表达红线提醒", doc_txt)
+
+    def test_blackbox_license_local_private_self_use_and_anti_bypass(self):
+        from common import ASSETS_DIR, sha256_file, write_json
+        from independent_verifier import verify_compliance_and_license_blackbox
+
+        loc_dir = self.root / "loc_assets"
+        sfx_p = loc_dir / "sound_vibe" / "sfx" / "style_21" / "cut_自用.mp3"
+        sfx_p.parent.mkdir(parents=True)
+        sfx_p.write_bytes(b"local-sfx-bytes")
+        font_p = ASSETS_DIR / "fonts" / "SourceHanSerifCN-Heavy.otf"
+
+        pdir = self.root / "bb_local_ok"
+        pdir.mkdir()
+        write_json(pdir / "00_compliance_report.json", {"passed": True, "unacked_warn_count": 0})
+        write_json(pdir / "asset_license_manifest.json", {
+            "step": "asset_license_manifest",
+            "passed": True,
+            "all_commercial_verified": False,
+            "local_private_self_use_count": 1,
+            "assets_count": 2,
+            "unregistered_count": 0,
+            "assets": [
+                {
+                    "kind": "font",
+                    "category": "font",
+                    "filename": font_p.name,
+                    "path": str(font_p),
+                    "sha256": sha256_file(font_p),
+                    "source_tier": "builtin_svs",
+                    "commercial_ok": True,
+                    "commercial_verified": True,
+                },
+                {
+                    "kind": "sfx",
+                    "category": "sfx",
+                    "filename": sfx_p.name,
+                    "path": str(sfx_p),
+                    "sha256": sha256_file(sfx_p),
+                    "source_tier": "local_private_self_use",
+                    "commercial_ok": True,
+                    "commercial_verified": False,
+                },
+            ],
+        })
+
+        orig_env = os.environ.get("SVS_LOCAL_ASSETS_DIR")
+        os.environ["SVS_LOCAL_ASSETS_DIR"] = str(loc_dir)
+        try:
+            res_ok = verify_compliance_and_license_blackbox(pdir)
+            self.assertEqual(res_ok["status"], "PASS", res_ok)
+            self.assertEqual(res_ok["local_private_count"], 1)
+            self.assertFalse(res_ok["all_commercial_verified"])
+
+            # 伪造路径不在 local_assets_dir() 内时必须被黑盒拦截 FAIL
+            outside_p = self.root / "outside.mp3"
+            outside_p.write_bytes(b"outside-sfx")
+            write_json(pdir / "asset_license_manifest.json", {
+                "step": "asset_license_manifest",
+                "passed": True,
+                "all_commercial_verified": False,
+                "local_private_self_use_count": 1,
+                "assets_count": 1,
+                "unregistered_count": 0,
+                "assets": [{
+                    "kind": "sfx",
+                    "category": "sfx",
+                    "filename": outside_p.name,
+                    "path": str(outside_p),
+                    "sha256": sha256_file(outside_p),
+                    "source_tier": "local_private_self_use",
+                    "commercial_ok": True,
+                    "commercial_verified": False,
+                }],
+            })
+            res_spoof = verify_compliance_and_license_blackbox(pdir)
+            self.assertEqual(res_spoof["status"], "FAIL", res_spoof)
+            self.assertIn(str(outside_p), res_spoof["file_mismatches"])
+
+            # 未知外源/非法分层就算 passed 篡改也必须 FAIL
+            write_json(pdir / "asset_license_manifest.json", {
+                "step": "asset_license_manifest",
+                "passed": True,
+                "all_commercial_verified": False,
+                "local_private_self_use_count": 0,
+                "assets_count": 1,
+                "unregistered_count": 0,
+                "assets": [{
+                    "kind": "sfx",
+                    "category": "sfx",
+                    "filename": outside_p.name,
+                    "path": str(outside_p),
+                    "sha256": sha256_file(outside_p),
+                    "source_tier": "unregistered_external",
+                    "commercial_ok": False,
+                }],
+            })
+            res_ext = verify_compliance_and_license_blackbox(pdir)
+            self.assertEqual(res_ext["status"], "FAIL", res_ext)
+        finally:
+            if orig_env is None:
+                os.environ.pop("SVS_LOCAL_ASSETS_DIR", None)
+            else:
+                os.environ["SVS_LOCAL_ASSETS_DIR"] = orig_env
+
+    def test_step4_cross_sentence_pause_does_not_freeze_previous_aroll(self):
+        from common import write_json
+        from step4_build_edl import run_step4
+
+        ar02 = self.root / "norm_02_prev.mp4"
+        ar06 = self.root / "norm_06_next.mp4"
+        br01 = self.root / "norm_80_broll.mp4"
+        for p in (ar02, ar06, br01):
+            p.write_bytes(b"fake-media")
+
+        pdir = self.root / "step4_gap_freeze"
+        pdir.mkdir()
+        write_json(pdir / "01_manifest.json", {
+            "items": [
+                {"id": "a1", "filename": ar02.name, "role": "a_roll", "video_grade": "usable", "normalized_mp4": str(ar02), "duration_sec": 28.02},
+                {"id": "a2", "filename": ar06.name, "role": "a_roll", "video_grade": "usable", "normalized_mp4": str(ar06), "duration_sec": 20.0},
+                {"id": "b1", "filename": br01.name, "role": "b_roll", "video_grade": "usable", "normalized_mp4": str(br01), "duration_sec": 15.0, "best_in_sec": 0.0, "semantic_tags": ["茶楼", "卡座"], "description": "门店实拍茶楼中空灯笼"},
+            ]
+        })
+        write_json(pdir / "03_audio_events.json", {
+            "locked_duration_sec": 11.2,
+            "locked_duration_frames": 336,
+            "sentences": [
+                {"id": "sent_001", "text": "我系牛哥", "keywords": [], "start_sec": 0.0, "end_sec": 1.07, "start_frame": 0, "end_frame": 32, "source_media": str(ar02), "source_in_sec": 22.93, "source_out_sec": 24.01, "emotion_or_info": "hook"},
+                {"id": "sent_002", "text": "花咗三百万喺金湾开茶楼", "keywords": ["三百万"], "start_sec": 1.07, "end_sec": 4.72, "start_frame": 32, "end_frame": 142, "source_media": str(ar02), "source_in_sec": 24.37, "source_out_sec": 28.02, "emotion_or_info": "info"},
+                {"id": "sent_003", "text": "中间", "keywords": [], "start_sec": 4.89, "end_sec": 5.63, "start_frame": 147, "end_frame": 169, "source_media": str(ar06), "source_in_sec": 3.13, "source_out_sec": 3.88, "emotion_or_info": "info"},
+                {"id": "sent_004", "text": "上边摆好多卡座一个中空", "keywords": ["中空"], "start_sec": 5.62, "end_sec": 11.20, "start_frame": 169, "end_frame": 336, "source_media": str(ar06), "source_in_sec": 4.17, "source_out_sec": 9.75, "emotion_or_info": "info"},
+            ],
+            "events": [
+                {"id": "e1", "type": "sentence_start", "time_sec": 0.0, "frame": 0, "sentence_id": "sent_001"},
+                {"id": "e2", "type": "sentence_start", "time_sec": 1.07, "frame": 32, "sentence_id": "sent_002"},
+                {"id": "e3", "type": "keyword_accent", "time_sec": 4.73, "frame": 142, "sentence_id": "sent_002"},
+                {"id": "e4", "type": "sentence_start", "time_sec": 4.89, "frame": 147, "sentence_id": "sent_003"},
+                {"id": "e5", "type": "sentence_start", "time_sec": 5.62, "frame": 169, "sentence_id": "sent_004"},
+            ],
+        })
+        edl = run_step4(pdir, track="store", style_id="style_01")
+        for c in edl["clips"]:
+            if c.get("timeline_in_sec", 0.0) >= 4.70 and c.get("timeline_out_sec", 0.0) >= 6.0:
+                self.assertNotEqual(c.get("sentence_id"), "sent_002", c)
+            if c.get("track_role") == "a_roll":
+                src_span = float(c["source_out_sec"]) - float(c["source_in_sec"])
+                self.assertGreaterEqual(src_span, float(c["duration_sec"]) - 1.2, c)
+
+    def test_skin_mask_high_red_and_dual_banner_bbox_alignment(self):
+        import numpy as np
+        from common import SKIN_YCBCR_RANGE, SUBTITLE_SAFE_ZONE, SUBTITLE_SYMMETRIC_MAX_W, load_subtitle_templates, find_commercial_font
+        from step7_color_grade import _compute_masked_skin_ycbcr_from_rgb, _skin_in_sector
+        from step5_subtitles import _compute_authoritative_subtitle_bbox, _merge_short_chunks, split_sentence_into_chunks
+        from render_mp4 import render_subtitle_png
+
+        # 1. 高红脸 cr≈215 绝不能被粗掩膜裁盲
+        red_face = np.zeros((160, 120, 3), dtype=np.uint8)
+        red_face[:, :] = (240, 65, 25)  # 过曝红偏色皮肤
+        res_skin = _compute_masked_skin_ycbcr_from_rgb(red_face, {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0})
+        self.assertIsNotNone(res_skin)
+        self.assertGreater(res_skin["skin_cr"], SKIN_YCBCR_RANGE["cr_max"])
+        self.assertFalse(_skin_in_sector(res_skin))
+
+        # 2. style_02 dual_line_banner 切分与权威 bbox / PNG 实寸严格对齐 <=284px
+        tpls = load_subtitle_templates()
+        tpl2 = tpls["style_02"]
+        fnt_p = find_commercial_font(tpl2.get("font_candidates"))
+        sent = {
+            "id": "s_test",
+            "text": "花咗三百万喺金湾开咗一间六百平嘅点赞茶楼",
+            "keywords": ["三百万", "六百平", "点赞茶楼"],
+            "start_sec": 0.0,
+            "end_sec": 4.2,
+            "words": [
+                {"word": ch, "start_sec": round(i * 0.2, 3), "end_sec": round((i + 1) * 0.2, 3), "is_keyword": ch in "三百万六百平点赞茶楼"}
+                for i, ch in enumerate("花咗三百万喺金湾开咗一间六百平嘅点赞茶楼")
+            ],
+        }
+        chunks = _merge_short_chunks(
+            split_sentence_into_chunks(sent, max_chars=8, font_path=fnt_p, font_size=84, max_safe_px=1120),
+            max_px=1120, font_path=fnt_p, font_size=84,
+        )
+        for ch in chunks:
+            self.assertGreaterEqual(len(ch["text"]), 4, ch)
+            bb, _ = _compute_authoritative_subtitle_bbox(ch["text"], tpl2, fnt_p, [])
+            self.assertLessEqual(bb["w"], SUBTITLE_SYMMETRIC_MAX_W)
+            self.assertLessEqual(bb["h"], 284)
+            self.assertGreaterEqual(bb["y"], SUBTITLE_SAFE_ZONE["y_min"])
+            self.assertLessEqual(bb["y"] + bb["h"], SUBTITLE_SAFE_ZONE["y_max"])
+            png_p = self.root / f"sub_dual_{len(ch['text'])}.png"
+            pw, ph = render_subtitle_png(ch, tpl2, fnt_p, png_p)
+            self.assertLessEqual(pw, SUBTITLE_SYMMETRIC_MAX_W)
+            self.assertLessEqual(ph, 284)
+
+    def test_skin_guard_margin_and_dynamic_face_matching(self):
+        from unittest.mock import patch
+        import step7_color_grade as s7
+
+        borderline_skin = {"skin_cb": 100.0, "skin_cr": 171.9}
+        self.assertEqual(s7._skin_excess(borderline_skin, margin=0.0), 0.0)
+        self.assertGreater(s7._skin_excess(borderline_skin, margin=s7.SKIN_GUARD_MARGIN), 0.0)
+
+        fb_early = {"x": 0.15, "y": 0.20, "w": 0.25, "h": 0.30}
+        fb_late = {"x": 0.55, "y": 0.28, "w": 0.24, "h": 0.29}
+        recorded: list[tuple[float, dict[str, float]]] = []
+
+        def fake_probe(media_path, face_bbox, at_sec=0.2, extra_vf=None):
+            recorded.append((float(at_sec), dict(face_bbox)))
+            return {"skin_y": 140.0, "skin_cb": 108.0, "skin_cr": 152.0, "mask_ratio": 0.8}
+
+        with patch.object(s7, "probe_face_skin_ycbcr", side_effect=fake_probe):
+            res = s7._probe_skin_series(
+                self.root / "dummy.mp4",
+                None,
+                [18.10, 18.55, 18.68],
+                "eq=saturation=1.0",
+                face_by_time=[(18.00, fb_early), (18.70, fb_late)],
+            )
+
+        self.assertEqual(len(res), 3)
+        self.assertEqual(recorded[0][1], fb_early)
+        self.assertEqual(recorded[1][1], fb_late)
+        self.assertEqual(recorded[2][1], fb_late)
+
+    def test_step5_no_cross_media_sentence_merge_and_step7_long_clip_probe_times(self):
+        from common import write_json
+        from step5_subtitles import run_step5
+        import step7_color_grade as s7
+
+        pdir = self.root / "pipe_cross_media_sub"
+        pdir.mkdir(parents=True, exist_ok=True)
+        write_json(pdir / "03_audio_events.json", {
+            "sentences": [
+                {
+                    "id": "sent_002",
+                    "text": "花咗三百万喺金湾开咗一间六百平嘅点赞茶楼",
+                    "source_media": str(pdir / "norm_02.mp4"),
+                    "start_sec": 1.0626,
+                    "end_sec": 4.7181,
+                    "keywords": ["三百万", "六百平"],
+                    "words": [
+                        {
+                            "word": ch,
+                            "start_sec": round(1.115 + i * 0.165, 4),
+                            "end_sec": round(1.115 + (i + 1) * 0.165, 4),
+                            "is_keyword": False,
+                        }
+                        for i, ch in enumerate("花咗三百万喺金湾开咗一间六百平嘅点赞茶楼")
+                    ],
+                },
+                {
+                    "id": "sent_003",
+                    "text": "中间",
+                    "source_media": str(pdir / "norm_06.mp4"),
+                    "start_sec": 4.8881,
+                    "end_sec": 5.6310,
+                    "keywords": [],
+                    "words": [
+                        {"word": "中", "start_sec": 4.995, "end_sec": 5.175, "is_keyword": False},
+                        {"word": "间", "start_sec": 5.175, "end_sec": 5.415, "is_keyword": False},
+                    ],
+                },
+            ]
+        })
+
+        res5 = run_step5(pdir, track="store", template_id="style_03")
+        entries = res5["entries"]
+        sent002_entries = [e for e in entries if e["sentence_id"] == "sent_002"]
+        sent003_entries = [e for e in entries if e["sentence_id"] == "sent_003"]
+        self.assertTrue(sent002_entries)
+        self.assertEqual(len(sent003_entries), 1)
+        self.assertEqual(sent003_entries[0]["text"], "中间")
+        for e in sent002_entries:
+            self.assertLessEqual(float(e["end_sec"]), 4.7181 + 0.05)
+
+        long_times = s7._guard_probe_times(21.49, 2.90)
+        self.assertEqual(len(long_times), 5)
+        self.assertEqual(long_times, [round(21.49 + f * 2.90, 2) for f in (0.15, 0.32, 0.50, 0.68, 0.85)])
+        short_times = s7._guard_probe_times(10.00, 1.20)
+        self.assertEqual(len(short_times), 3)
+        self.assertEqual(short_times, [round(10.00 + f * 1.20, 2) for f in (0.25, 0.50, 0.75)])
+
+    def test_step7_lut_backoff_respects_70pct_truth_floor(self):
+        from step7_color_grade import _lut_backoff_candidates
+
+        cands_17 = _lut_backoff_candidates(0.73)
+        self.assertEqual(cands_17, [0.73, 0.55, 0.52])
+        self.assertGreaterEqual(min(cands_17), 0.73 * 0.70)
+        self.assertEqual(_lut_backoff_candidates(0.60), [0.60, 0.55, 0.45])
+        self.assertEqual(_lut_backoff_candidates(0.85), [0.85, 0.60])
+        self.assertEqual(_lut_backoff_candidates(0.35), [0.35])
+
 
 
 if __name__ == "__main__":
