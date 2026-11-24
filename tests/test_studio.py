@@ -577,7 +577,10 @@ class StudioTests(unittest.TestCase):
         self.assertIsNone(re.search(r"/(?:Users|home)/[A-Za-z0-9._-]+", raw_lib_text))
         self.assertNotIn("com." + "lveditor.draft", raw_lib_text)
         lib = read_json(lib_path)
-        self.assertEqual(lib.get("version"), "4.1.0")
+        # 版本号不许散落多处各写各的：库与 SKILL 必须同一版（单源在库，SKILL 跟它）
+        skill_ver = re.search(r"^version:\s*(\S+)", (ROOT / "short-video-studio" / "SKILL.md").read_text(encoding="utf-8"), re.M)
+        self.assertIsNotNone(skill_ver, "SKILL.md 必须声明 version")
+        self.assertEqual(lib.get("version"), skill_ver.group(1), "库版本与 SKILL 版本必须一致")
         self.assertEqual(lib.get("default_style_id"), "style_01")
         styles = lib.get("styles") or []
         self.assertEqual(len(styles), 24)
@@ -1965,7 +1968,7 @@ class StudioTests(unittest.TestCase):
         from step4_build_edl import run_step4
 
         lib = read_json(ASSETS_DIR / "style_spectrum" / "style_spectrum_library.json")
-        self.assertEqual(lib.get("version"), "4.1.0")
+        self.assertTrue(str(lib.get("version") or "").strip(), "库必须声明版本")
         by_id = {s["style_id"]: s for s in lib["styles"]}
         for sid, s in by_id.items():
             ab = s.get("ab_switch_spec") or {}
