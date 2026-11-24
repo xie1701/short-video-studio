@@ -34610,7 +34610,9 @@
        "line",
        "beat"
       ],
-      "not_when": [],
+      "not_when": [
+       "四类锚点这套都用过（flower / cut / line / beat）——没有'绝对不响'的位置，只有密度与最小间隔在约束它"
+      ],
       "evidence": "33 条 sound 段 / 30.567s；触发 flower 48% / cut 24% / line 15% / free 9% / beat 3%；锚点偏移中位 0.0s（≈0 帧@30fps）、|偏移| 最大 0.038s；其中 12% 同时贴切点与花字"
      },
      "value_drivers": [
@@ -46878,7 +46880,9 @@
        "beat",
        "line"
       ],
-      "not_when": [],
+      "not_when": [
+       "四类锚点这套都用过（flower / cut / beat / line）——没有'绝对不响'的位置，只有密度与最小间隔在约束它"
+      ],
       "evidence": "24 条 sound 段 / 30.7s；触发 flower 42% / cut 38% / beat 8% / free 8% / line 4%；锚点偏移中位 0.0s（≈0 帧@30fps）、|偏移| 最大 0.04s；其中 29% 同时贴切点与花字"
      },
      "value_drivers": [
