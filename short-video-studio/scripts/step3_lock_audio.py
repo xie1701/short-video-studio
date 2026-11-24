@@ -507,6 +507,47 @@ def run_step3(
     if not valid_segments:
         raise ValueError("转写稿过滤废话与淘汰 NG 后无有效口播句子。")
 
+    # 按 Agent 整理好的成稿剪（2026-11-24）：02c_script_final.json 是用户核过的那 10 句，
+    # 其余 80 多句逐字稿是口癖、重拍版本和半截句。不认这份，砍掉的句子照样会被剪进去。
+    try:
+        import script_polish as _SP
+        _plan = _SP.plan_lines(pipeline_dir)
+    except Exception:
+        _plan = []
+    if _plan:
+        _by_id = {str(s.get("id")): s for s in all_segments}
+        _merged: List[Dict[str, Any]] = []
+        _missing: List[str] = []
+        for _ln in _plan:
+            _segs = [_by_id[i] for i in _ln["segs"] if i in _by_id]
+            _missing += [i for i in _ln["segs"] if i not in _by_id]
+            if not _segs:
+                continue
+            _base = dict(_segs[0])
+            _st = min(float(x["start_sec"]) for x in _segs)
+            _en = max(float(x["end_sec"]) for x in _segs)
+            _base.update({
+                "start_sec": _st,
+                "end_sec": _en,
+                "text": _ln["text"],
+                "is_filler": False,
+                "plan_line": True,
+                "plan_src_segs": [str(x.get("id")) for x in _segs],
+            })
+            _gap = 0.0
+            for _a, _b in zip(_segs, _segs[1:]):
+                _gap = max(_gap, float(_b["start_sec"]) - float(_a["end_sec"]))
+            if _gap > 1.5:
+                print(f"[step3] [WARN] 这一行中间空了 {_gap:.1f}s（原声里有半句没上屏）：{_ln['text'][:18]}")
+            _merged.append(_base)
+        if _missing:
+            print(f"[step3] [WARN] 成稿里有 {len(_missing)} 个转写段找不到：{_missing[:5]}")
+        if _merged:
+            _plan_dur = sum(float(x["end_sec"]) - float(x["start_sec"]) for x in _merged)
+            _raw_dur = sum(float(x["end_sec"]) - float(x["start_sec"]) for x in valid_segments)
+            print(f"[step3] 按成稿剪：{len(_merged)} 句 / {_plan_dur:.1f} 秒（原始逐字稿 {len(valid_segments)} 句 / {_raw_dur:.1f} 秒）")
+            valid_segments = _merged
+
     for seg in all_segments:
         sa = seg.get("source_audio") or transcript.get("primary_audio")
         if sa and Path(sa).exists():

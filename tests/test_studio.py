@@ -4994,6 +4994,28 @@ class ScriptPolishTests(unittest.TestCase):
         self.assertEqual(len(doc["lines"]), 1)
         self.assertEqual(doc["lines"][0]["segs"], ["seg_002"])
 
+    def test_step3_cuts_by_the_polished_script(self):
+        """下剪刀的地方必须认 02c 成稿，否则砍掉的句子照样被剪进去（2026-11-24 实测踩过）。"""
+        from pathlib import Path
+        src = (Path(self.scripts) / "step3_lock_audio.py").read_text(encoding="utf-8")
+        self.assertIn("script_polish", src)
+        self.assertIn("plan_lines(pipeline_dir)", src)
+        # 成稿一行可能跨多个转写段：要按并集切，文字用整理后的那句
+        self.assertIn('"plan_src_segs"', src)
+
+    def test_plan_lines_keeps_order_and_text(self):
+        import script_polish as SP
+        import tempfile, json
+        with tempfile.TemporaryDirectory() as td:
+            p = self._pipeline(td)
+            (p / SP.FINAL_NAME).write_text(json.dumps({"lines": [
+                {"text": "第一句。", "segs": ["seg_002"]},
+                {"text": "第二句。", "segs": ["seg_004", "seg_001"]},
+            ]}, ensure_ascii=False), encoding="utf-8")
+            got = SP.plan_lines(p)
+        self.assertEqual([x["text"] for x in got], ["第一句。", "第二句。"])
+        self.assertEqual(got[1]["segs"], ["seg_004", "seg_001"])   # 顺序照成稿，不按时间重排
+
 
 if __name__ == "__main__":
     unittest.main()

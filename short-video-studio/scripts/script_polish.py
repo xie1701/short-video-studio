@@ -190,3 +190,24 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+def plan_lines(pipeline_dir: Path) -> List[Dict[str, Any]]:
+    """读 02c 成稿，返回「一行 = 一句要上屏的话」的顺序清单。
+
+    下剪刀的地方（step3）必须认这份，否则砍掉的句子还会被剪进去。
+    每项：{"text": 上屏文字, "segs": [原始转写段 id, ...]}
+    """
+    p = Path(pipeline_dir) / FINAL_NAME
+    if not p.is_file():
+        return []
+    try:
+        doc = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    out: List[Dict[str, Any]] = []
+    for line in doc.get("lines") or []:
+        text = str((line or {}).get("text") or "").strip()
+        segs = [str(x) for x in ((line or {}).get("segs") or [])]
+        if text and segs:
+            out.append({"text": text, "segs": segs})
+    return out
