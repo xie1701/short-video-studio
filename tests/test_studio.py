@@ -4920,5 +4920,80 @@ class SenseVoiceAndVisionStepTests(unittest.TestCase):
             self.assertIsNone(RP._ensure_vision_package(p, p))
 
 
+class ScriptPolishTests(unittest.TestCase):
+    """文案整理：ASR 逐字稿 → 能上屏的一行一句（2026-11-24 真实素材：96 句 → 27 句）。"""
+
+    def setUp(self):
+        import sys
+        from pathlib import Path
+        self.scripts = Path(__file__).resolve().parents[1] / "short-video-studio" / "scripts"
+        if str(self.scripts) not in sys.path:
+            sys.path.insert(0, str(self.scripts))
+
+    def _pipeline(self, td):
+        import json
+        from pathlib import Path
+        p = Path(td)
+        (p / "02_transcript.json").write_text(json.dumps({
+            "segments": [
+                {"id": "seg_001", "text": "系咪", "start_sec": 0.0, "end_sec": 0.5,
+                 "source_media": "a.mp4"},
+                {"id": "seg_002", "text": "我系牛哥花咗三百万开咗一间六百平嘅茶楼",
+                 "start_sec": 2.0, "end_sec": 8.0, "source_media": "a.mp4"},
+                {"id": "seg_003", "text": "重拍的废版本", "start_sec": 9.0, "end_sec": 10.0,
+                 "source_media": "a.mp4", "drop_reason": "ng_retake"},
+                {"id": "seg_004", "text": "今日用四张图片同大家介绍下布局", "start_sec": 11.0,
+                 "end_sec": 16.0, "source_media": "b.mp4"},
+            ]
+        }, ensure_ascii=False), encoding="utf-8")
+        return p
+
+    def test_tasks_only_list_kept_segments_and_flag_suspects(self):
+        import script_polish as SP
+        from pathlib import Path
+        import tempfile, json
+        with tempfile.TemporaryDirectory() as td:
+            p = self._pipeline(td)
+            out = SP.build_tasks(p)
+            doc = json.loads(out.read_text(encoding="utf-8"))
+        ids = [x["id"] for x in doc["lines"]]
+        self.assertEqual(ids, ["seg_001", "seg_002", "seg_004"])   # NG 版本不进清单
+        # 过短的会被标成可疑，但**不替 Agent 决定**删除
+        self.assertTrue(doc["lines"][0]["auto_suspect"])
+        self.assertIn("不改事实", " ".join(doc["rules"]))
+
+    def test_apply_writes_final_script_with_speech_duration(self):
+        import script_polish as SP
+        import tempfile, json
+        with tempfile.TemporaryDirectory() as td:
+            p = self._pipeline(td)
+            (p / SP.LABELS_NAME).write_text(json.dumps({"lines": [
+                {"text": "我系牛哥，花咗三百万开咗一间六百平嘅茶楼。", "segs": ["seg_002"]},
+                {"text": "今日用四张图片同大家介绍下布局。", "segs": ["seg_004"],
+                 "note": "「四张」这个数字你核一下"},
+                {"text": "不要的", "segs": ["seg_001"], "keep": False},
+            ]}, ensure_ascii=False), encoding="utf-8")
+            dst = SP.apply_labels(p)
+            doc = json.loads(dst.read_text(encoding="utf-8"))
+        self.assertEqual([x["text"][:3] for x in doc["lines"]], ["我系牛", "今日用"])
+        self.assertEqual(doc["lines"][0]["dur"], 6.0)          # 说了 6 秒
+        self.assertEqual(len(doc["notes"]), 1)                 # 待核项单独留着
+        self.assertEqual(doc["total_lines"], 2)
+
+    def test_cross_source_merge_is_refused(self):
+        import script_polish as SP
+        import tempfile, json
+        with tempfile.TemporaryDirectory() as td:
+            p = self._pipeline(td)
+            (p / SP.LABELS_NAME).write_text(json.dumps({"lines": [
+                {"text": "跨文件硬合并", "segs": ["seg_002", "seg_004"]},
+            ]}, ensure_ascii=False), encoding="utf-8")
+            dst = SP.apply_labels(p)
+            doc = json.loads(dst.read_text(encoding="utf-8"))
+        # 一行只能来自同一段原声：跨来源时保留最长那段，绝不把两段画面拼成一句话
+        self.assertEqual(len(doc["lines"]), 1)
+        self.assertEqual(doc["lines"][0]["segs"], ["seg_002"])
+
+
 if __name__ == "__main__":
     unittest.main()

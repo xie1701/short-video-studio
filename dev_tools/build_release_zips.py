@@ -96,11 +96,22 @@ def _download_wheels(target_key: str, wheel_dir: Path, include_ml: bool = True) 
             cmd.extend(["--platform", plat])
         cmd.extend(pkgs)
         print(f"[build-zip:{target_key}] 下载离线 wheels ({mirror or 'official PyPI'}) ...")
-        res = subprocess.run(cmd, check=False)
+        # 这台机器 shell 带 socks5 代理，pip 会去找 SOCKSProxyManager 而崩（实测 2026-11-24：
+        # 三个镜像全 ERROR: Exception，最后「已收集 0 个离线 Python 包」却照样继续打包）。
+        # 离线 wheel 下载必须绕开代理，并且真的检查结果。
+        clean_env = {k: v for k, v in os.environ.items()
+                     if k.lower() not in ("http_proxy", "https_proxy", "all_proxy", "ftp_proxy")}
+        res = subprocess.run(cmd + ["--proxy", ""], check=False, env=clean_env)
         if res.returncode == 0:
             break
     whls = list(wheel_dir.glob("*.whl")) + list(wheel_dir.glob("*.tar.gz"))
     print(f"[build-zip:{target_key}] 已收集 {len(whls)} 个离线 Python 包 -> {wheel_dir}")
+    names = " ".join(w.name for w in whls)
+    for pkg in ("sherpa_onnx", "faster_whisper", "PIL", "numpy", "scipy"):
+        if pkg.lower() not in names.lower():
+            print(f"[build-zip:{target_key}] [WARN] 离线 wheel 里没有 {pkg} —— 装到目标机时会缺依赖")
+    if not whls:
+        raise SystemExit(f"[build-zip:{target_key}] 一个 wheel 都没下到，停止打包（别产出一个装不上的包）")
     return len(whls)
 
 

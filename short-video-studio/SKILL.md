@@ -148,6 +148,20 @@ python3 scripts/tag_frames.py --apply --out <pipeline>/vision
 `00_confirm_plan.md` 的「画面依据」一栏会明写**大模型还没判、选画面只能靠文件名**——
 不许假装看过画面。
 
+**3) 文案：ASR 只给逐字稿，上屏前必须整理一遍。**
+SenseVoice 的好处是专名准、方言自判，代价是**逐字原话**——口癖、半截句、同一句的四个重拍版本、
+现场口令 `三二一组` 全都留着。实测 96 句里能直接用的只有 20 出头。所以有第三步：
+
+```bash
+python3 scripts/script_polish.py --pipeline-dir <pipeline> --tasks   # run_pipeline 会自动跑；出任务清单
+# Agent 按清单整理：只去口癖、合并被停顿切碎的半句、补标点；不改事实、粤语保持粤语
+# 判定写 02b_polish_labels.json 后：
+python3 scripts/script_polish.py --pipeline-dir <pipeline> --apply   # -> 02c_script_final.json
+```
+
+整理后的成稿是确认单、字幕、剪辑共同读的那份；听不准的地方必须写进 `note`，
+确认单会单列成「需要你核一下的地方」，**不许猜**。`--no-polish` 可关（不建议）。
+
 完整中间文件契约见 [references/pipeline-schemas.md](references/pipeline-schemas.md)，安全区与居中字幕规范见 [references/platform-safe-zones.md](references/platform-safe-zones.md)。
 
 一键跑通端到端流水线（默认全局/门店轨 `style_01` / 博主轨 `style_11`，自动落盘 `out/` 并清理大体积临时文件）：

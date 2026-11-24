@@ -863,6 +863,38 @@ def _run_code_video_branch(
     )
 
 
+def _ensure_polish_package(pipeline_dir: Path) -> Optional[Path]:
+    """把「文案整理」变成流程的一步：ASR 只给逐字稿，上屏前必须由 Agent 整理一遍。
+
+    2026-11-24 实测（19 条真实口播）：SenseVoice 转出 96 句，能直接用的只有 20 出头，
+    其余是同一句的四个重拍版本、`用钱`、`点讲`、`系咪` 这类碎片，还有现场口令 `三二一组`。
+    把这种东西摊在确认单上，等于让用户替我收拾残局。
+    """
+    final_p = pipeline_dir / "02c_script_final.json"
+    if final_p.is_file():
+        return None
+    script = SCRIPTS_DIR / "script_polish.py"
+    if not script.is_file():
+        print(f"[polish] [WARN] 找不到 {script}，跳过文案整理")
+        return None
+    try:
+        res = subprocess.run([sys.executable, str(script), "--pipeline-dir", str(pipeline_dir), "--tasks"],
+                             capture_output=True, text=True)
+    except Exception as exc:
+        print(f"[polish] [WARN] 生成文案整理清单失败：{exc}")
+        return None
+    for line in (res.stdout or "").splitlines():
+        if line.startswith("[polish]"):
+            print(line)
+    tasks = pipeline_dir / "02b_polish_tasks.json"
+    if res.returncode == 0 and tasks.is_file():
+        print("[polish] 下一步：Agent 按 02b_polish_tasks.json 里的规则整理一遍，"
+              "判定写 02b_polish_labels.json，再跑 script_polish.py --apply --pipeline-dir <该目录>")
+        print("[polish] 没整理之前，确认单列出来的就是 ASR 逐字稿（含口癖与重拍版本）")
+        return tasks
+    return None
+
+
 def _ensure_vision_package(raw_dir: Path, pipeline_dir: Path) -> Optional[Path]:
     """把「抽密帧 → 交大模型判画面」变成流水线的一步，而不是靠人记得手动跑。
 
@@ -1224,6 +1256,10 @@ def main() -> None:
     parser.add_argument(
         "--asr-engine", choices=["auto", "sensevoice", "whisper"], default="auto",
         help="ASR 引擎：auto（默认，SenseVoice 优先，方言自判）/ sensevoice / whisper",
+    )
+    parser.add_argument(
+        "--no-polish", action="store_true",
+        help="不生成文案整理任务清单（ASR 逐字稿会直接进确认单，含口癖与重拍版本）",
     )
     parser.add_argument(
         "--no-vision-package", action="store_true",
@@ -1684,6 +1720,8 @@ def main() -> None:
             multi_speaker=args.multi_speaker,
             glossary_dirs=[eff_raw, project_dir],
         )
+        if not args.no_polish:
+            _ensure_polish_package(pipeline_dir)
         tr_data = read_json(pipeline_dir / "02_transcript.json") if (pipeline_dir / "02_transcript.json").is_file() else {}
         mf_data = read_json(pipeline_dir / "01_manifest.json") if (pipeline_dir / "01_manifest.json").is_file() else {}
         gaps = detect_script_media_gaps(

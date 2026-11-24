@@ -325,6 +325,11 @@ def write_confirm_plan_doc(
     broll_items = [x for x in items if x.get("role") != "a_roll" and x.get("video_grade", "usable") != "ng" and x.get("usable", True) is not False]
     ng_items = [x for x in items if x.get("video_grade") == "ng" or x.get("usable") is False]
 
+    # 优先用 Agent 整理过的成稿（02c_script_final.json）：ASR 逐字稿里塞满了口癖、重拍版本、
+    # 现场口令，直接列给用户看等于让他替我收拾残局（实测 2026-11-24：73 句里只有 20 出头能用）。
+    final_p = pipeline_dir / "02c_script_final.json"
+    final_doc = read_json(final_p) if final_p.is_file() else {}
+    polished_lines = final_doc.get("lines") or []
     raw_segs = tr.get("kept_segments") or tr.get("segments") or []
     # 确认单要列的是「真正要上屏的句子」。曾经直接把全部 segments 列出来，
     # 结果 NG 重拍的 4 个版本、画外导演声全被当成「计划保留的文案」摊给用户看（实测 2026-11-24）。
@@ -334,7 +339,9 @@ def write_confirm_plan_doc(
     ]
     est_dur = sum(max(0.2, float(s.get("end_sec", 0.0)) - float(s.get("start_sec", 0.0))) for s in raw_segs)
     if not eta_summary:
-        eta_summary = estimate_task_eta("full_edit", duration_sec=max(15.0, est_dur), clip_count=max(1, len(items)))
+        # 估时按「要剪进成片的长度」算，不是按原始素材跨度（后者把静音和重拍也算进去，会虚高 3 倍）
+        et = float(final_doc.get("total_dur") or 0.0) if polished_lines else est_dur
+        eta_summary = estimate_task_eta("full_edit", duration_sec=max(15.0, et), clip_count=max(1, len(items)))
 
     lines = [
         "# 开剪前文案与剪辑方案确认单",
@@ -347,10 +354,22 @@ def write_confirm_plan_doc(
         f"- **已拦截/标记作废镜头**：{len(ng_items)} 段（不会进入成片）",
         f"- **本次默认采用画面风格**：`{style_id}`（可随时要求更换其他款式）",
         f"- **预计开剪后耗时**：**{eta_summary.get('eta_cn', '约 1～2 分钟')}**（{eta_summary.get('note', '含声音修顺、配画面、字幕与导出')}）",
+        (f"- **文案口径**：Agent 已按「去口癖、合并半句、不改事实」整理过，共 **{len(polished_lines)} 句**"
+         f"（原始逐字稿 {len(tr.get('segments') or [])} 句），说满 **{final_doc.get('total_dur', 0):.0f} 秒**"
+         if polished_lines else ""),
         "",
         "## 2. 计划保留的说话文案（逐句核对）",
     ]
-    if raw_segs:
+    if polished_lines:
+        for idx, ln in enumerate(polished_lines, start=1):
+            txt = str(ln.get("text") or "").strip()
+            if not txt:
+                continue
+            dur = float(ln.get("dur") or 0.0)
+            note = str(ln.get("note") or "").strip()
+            mark = "　⚠️ 待核" if note else ""
+            lines.append(f"{idx}. {txt}　`{dur:.1f}s`{mark}")
+    elif raw_segs:
         for idx, seg in enumerate(raw_segs, start=1):
             txt = str(seg.get("text") or "").strip()
             if txt:
@@ -369,9 +388,17 @@ def write_confirm_plan_doc(
     else:
         lines.append("- ✅ 台词提到的重点对象在素材池中基本有对应画面，可以直接开剪。")
 
+    # 听不准的地方单独列出来让用户核，而不是藏在正文里让他自己发现
+    notes = [n for n in (final_doc.get("notes") or []) if str(n.get("note") or "").strip()]
+    if notes:
+        lines.append("")
+        lines.append("## 4. 需要你核一下的地方（听不准/我按上下文删了）")
+        for n in notes:
+            lines.append(f"- 「{n.get('text')}」：{n.get('note')}")
+
     lines.extend([
         "",
-        "## 4. 下一步只需要回复一个选项",
+        f"## {5 if notes else 4}. 下一步只需要回复一个选项",
         "- **回 A**：文案和方案都没问题，直接按这个开剪出片",
         "- **回 B**：有哪一句想删掉/改字，或者某段镜头（如第几秒）不要放进去，直接告诉我",
         "- **回 C**：想先换一套画面风格，或者补几段特写素材再剪",
