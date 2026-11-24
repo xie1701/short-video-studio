@@ -706,7 +706,15 @@ def split_sentence_into_chunks(
     words = _clean_word_tokens(list(sent.get("words") or []), strip_punct=strip_punct)
     # 字形按成稿订正（只换字，不增删词），避免「四大轩王」这种同音误听印上屏
     words = _retarget_words_to_text(words, str(sent.get("text") or ""))
-    sent_kws = list(sent.get("keywords") or [])
+    # 关键词只用来给字幕挑重音色，必须是这句**真说出来的字**：step3 已经把「只在正文里出现过的词」
+    # 过滤进 `display_keywords`（2026-11-24 实测：原样沿用逐字稿 keywords 会把口令「三二一组」
+    # 一起写进字幕条目，虽然画不出来，但会顺着下游产物漏到工程文件里）。
+    _disp_kws = sent.get("display_keywords")
+    if isinstance(_disp_kws, list):
+        sent_kws = [str(k) for k in _disp_kws if str(k).strip()]
+    else:
+        _txt = str(sent.get("text") or "")
+        sent_kws = [str(k) for k in (sent.get("keywords") or []) if str(k).strip() and str(k) in _txt]
     # 字幕文字一律跟**嘴上说的**走（逐词时间戳来自 ASR 词表）。
     # 2026-11-24 实测教训：成稿那一行是「整理后」的文字（去口癖、合并半句），跟原始录音并不逐字一致；
     # 拿它去覆盖字幕，屏幕上就会出现「𠮶边就系我哋嘅厨房」而观众听到的是「同大家介绍下啦…」，
