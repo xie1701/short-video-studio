@@ -915,6 +915,8 @@ def inspect_video(
         md_lines.append(f"| {i} | {c['name']} | {st_label} | {measured} | {c['threshold']} |")
     md_lines.append("</details>")
 
+    md_lines.extend(_per_frame_detail_section(report))
+
     if "benchmark_comparison" in report:
         bc = report["benchmark_comparison"]
         md_lines.extend([
@@ -927,6 +929,100 @@ def inspect_video(
     _write_blind_review_pack(pipeline_dir, video_path, report, edl, subs, audio_events)
     print(f"[qa] {len(checks)} 项质检：{pass_cnt} PASS / {fail_cnt} FAIL / {skip_cnt} SKIP -> 10_qa_report.md")
     return report
+
+
+def _per_frame_detail_section(report: Dict[str, Any]) -> List[str]:
+    """把三项字幕/肤色黑盒检查的**逐帧实测**落成可读小节（用户要求：具体哪几帧、什么原因）。"""
+    bb = {c["id"]: c for c in (report.get("blackbox_details", {}) or {}).get("checks") or []}
+    lines: List[str] = ["", "## 二、 逐帧实测明细（字幕层 / 可读性 / 肤色）"]
+
+    sub = (bb.get("bb_ocr_av_loop") or {}).get("detail") or {}
+    if sub:
+        lines.extend([
+            "",
+            "### 2.1 字幕层（只计我们自己渲染的字幕层）",
+            f"- 判据范围：`{sub.get('scope_cn', '05_subtitles.final_bbox')}`",
+            f"- 字幕条数：`{sub.get('entries_total')}` 条，实测样本 `{sub.get('entries_sampled')}` 条，裁切 OCR `{sub.get('crop_ocr_calls')}` 次",
+            f"- 最大居中偏差：`{sub.get('max_subtitle_center_dev_px')}`px；语音帧字幕覆盖：`{round(float(sub.get('speech_sub_ocr_ratio') or 0)*100, 1)}%`；内容匹配：`{round(float(sub.get('sub_ocr_content_recall') or 0)*100, 1)}%`",
+            f"- 画面自带文字（招牌/美术字）与其他非字幕层文字：`{sub.get('excluded_texts_count', 0)}` 处，**不计入本项判定**",
+        ])
+        rows = sub.get("frames") or []
+        if rows:
+            lines.extend(["", "<details>", f"<summary>展开逐帧字幕实测表（{len(rows)} 帧）</summary>", "",
+                          "| 帧 | 时间 | 期望字幕 | 裁切OCR | bbox | 居中偏差 | 安全区 | 来源 |",
+                          "|:--:|:--:|:---|:---|:---|:--:|:--:|:--|"])
+            for row in rows:
+                subs_row = row.get("subs") or []
+                if not subs_row:
+                    lines.append(f"| {row.get('frame')} | {row.get('t_sec')}s | （无字幕） | - | - | - | - | - |")
+                    continue
+                for s in subs_row:
+                    box = s.get("text_bbox") or [0, 0, 0, 0]
+                    lines.append(
+                        f"| {row.get('frame')} | {row.get('t_sec')}s | {s.get('expected_text', '')} | "
+                        f"{s.get('ocr_text') or '（未识出）'} | {box[0]},{box[1]}+{box[2]}x{box[3]} | "
+                        f"{s.get('center_dev_px')}px | {'OK' if s.get('in_safe_zone') else '✗越界'} | our_subtitle |"
+                    )
+            lines.append("</details>")
+
+    read = (bb.get("bb_pixel_readability") or {}).get("detail") or {}
+    if read:
+        lines.extend([
+            "",
+            "### 2.2 字幕可读性（WCAG 前景 vs 紧邻背景）",
+            f"- 判据范围：`{read.get('scope_cn', '只判字幕层')}`",
+            f"- 均值对比度 `{read.get('wcag_mean_contrast')}:1`（样本 {read.get('wcag_samples')}），需 ≥4.5；单帧底线 ≥3.8",
+            f"- 人字最大 IoU `{read.get('max_face_text_iou')}`（阈值 ≤0.02）",
+        ])
+        pkg_hits = read.get("packaging_face_hits") or []
+        if pkg_hits:
+            lines.append(f"- 包装花字压脸（不是字幕层，单列不计入判定）：" + "；".join(pkg_hits))
+        rows = [r for r in (read.get("frames") or []) if r.get("contrast_ratio") is not None]
+        if rows:
+            low = [r for r in rows if float(r["contrast_ratio"]) < 3.8]
+            lines.extend(["", "<details>", f"<summary>展开逐帧可读性表（{len(rows)} 帧，低于 3.8 的 {len(low)} 帧）</summary>", "",
+                          "| 帧 | 时间 | 字幕 | 字幕框 | 人脸框 | IoU | 对比度 | 背景亮度 |",
+                          "|:--:|:--:|:---|:---|:---|:--:|:--:|:--:|"])
+            for r in rows:
+                tb = r.get("text_bbox") or [0, 0, 0, 0]
+                fb = r.get("face_bbox")
+                lines.append(
+                    f"| {r.get('frame')} | {r.get('t_sec')}s | {r.get('text')} | {tb[0]},{tb[1]}+{tb[2]}x{tb[3]} | "
+                    f"{('%d,%d+%dx%d' % tuple(fb)) if fb else '无'} | {r.get('iou')} | {r.get('contrast_ratio')} | {r.get('bg_luma')} |"
+                )
+            lines.append("</details>")
+
+    color = (bb.get("bb_color_scope") or {}).get("detail") or {}
+    if color:
+        rng = color.get("skin_sector_range") or {}
+        lines.extend([
+            "",
+            "### 2.3 肤色与曝光逐镜像素实测",
+            f"- 判据：BT.709 矩阵 + `common.SKIN_YCBCR_RANGE`（cb {rng.get('cb_min')}~{rng.get('cb_max')}，cr {rng.get('cr_min')}~{rng.get('cr_max')}），只对 yy≥40 的有效肤色像素判定",
+            f"- 实测 {color.get('skin_samples_checked')} 个含脸帧：违规 {color.get('skin_sector_violations')}，素材限制标 `source_limited` {color.get('skin_source_limited')}",
+            f"- `{color.get('scope_cn', '')}`",
+        ])
+        rows = color.get("frames") or []
+        if rows:
+            lines.extend(["", "<details>", f"<summary>展开逐帧肤色表（{len(rows)} 帧）</summary>", "",
+                          "| 帧 | 时间 | cb | cr | 亮度p50 | 肤色像素 | 判定 | 原因 |",
+                          "|:--:|:--:|:--:|:--:|:--:|:--:|:--|:--|"])
+            for r in rows:
+                if r.get("source_limited"):
+                    verdict = "source_limited"
+                    why = r.get("source_limited_reason") or "素材限制"
+                elif r.get("in_sector"):
+                    verdict = "OK"
+                    why = "-"
+                else:
+                    verdict = "✗违规"
+                    why = "调色把肤色推出健康扇区"
+                lines.append(
+                    f"| {r.get('frame')} | {r.get('t_sec')}s | {r.get('cb')} | {r.get('cr')} | {r.get('y_median')} | "
+                    f"{r.get('skin_px_count')} | {verdict} | {why} |"
+                )
+            lines.append("</details>")
+    return lines
 
 
 def _write_blind_review_pack(

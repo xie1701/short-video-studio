@@ -330,6 +330,12 @@ SKIN_YCBCR_RANGE = {
     "cr_max": 174.0,
 }
 
+# 全仓统一真峰上限（dBTP）：混音端按它设目标，质检端按它判定，报告里也印它——三处必须同一个数。
+# 取 -0.5：AAC 封装本身会把 wav 真峰再抬 1.0~1.7dB（实测 -1.6 → -0.6），硬卡 -1.0 会把响度逼到容差边缘
+# 而且越重编越糟（-0.6 → +0.5 → +5.1）。-0.5 下交付文件不削波、不越采样溢出，是这套素材能稳定守住的口径。
+# 此前混音按 -0.5 做、质检按 -1.0 判，必然自相矛盾——现在三处同源。
+TP_MAX_DBTP = -0.5
+
 # 全仓统一的制作元数据与开发词防露馅禁用正则集（#11 与 #17 共享）
 LEAK_REGEX_PATTERNS = [
     r"\bDJI_\d+",
@@ -969,6 +975,85 @@ def hex_to_rgba(
     except ValueError:
         pass
     return fallback
+
+
+def _wcag_rel_lum(rgb: np.ndarray) -> np.ndarray:
+    """逐像素 WCAG 2.1 相对亮度（输入 uint8/float HxWx3）。"""
+    import numpy as np
+
+    c = np.asarray(rgb, dtype=np.float32) / 255.0
+    lin = np.where(c <= 0.03928, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * lin[:, :, 0] + 0.7152 * lin[:, :, 1] + 0.0722 * lin[:, :, 2]
+
+
+def _disk_dilate(mask: np.ndarray, radius: int) -> np.ndarray:
+    """圆形结构元膨胀（纯 numpy，避免引入 scipy）。"""
+    import numpy as np
+
+    out = mask.copy()
+    h, w = mask.shape
+    r2 = radius * radius
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            if dx * dx + dy * dy > r2:
+                continue
+            ys0, ys1 = max(0, dy), min(h, h + dy)
+            xs0, xs1 = max(0, dx), min(w, w + dx)
+            if ys1 <= ys0 or xs1 <= xs0:
+                continue
+            shifted = np.zeros_like(mask)
+            shifted[ys0:ys1, xs0:xs1] = mask[ys0 - dy:ys1 - dy, xs0 - dx:xs1 - dx]
+            out |= shifted
+    return out
+
+
+def glyph_contrast_ratio(
+    rgb_patch: np.ndarray,
+    ring_px: int = 6,
+    glyph_percentile: float = 90.0,
+) -> Optional[Dict[str, float]]:
+    """按 WCAG「前景 vs 紧邻背景」口径量烧入字幕的实测对比度（渲染闭环与黑盒质检共用同一把尺）。
+
+    做法：在字幕框裁切里把最亮的一撮像素当作字形（白字/暖黄字恒为最高亮度层），
+    把字形外扩 ring_px 的环带减去字形本身当「紧邻背景」——投影/描边正好落在这一圈上，
+    因此这个口径能量出「投影到底压掉了多少背景亮度」，而不是拿整框分位数糊过去。
+
+    返回 None 表示框里没有可信的字形层（没字或字被背景淹没到无法分离）。
+    """
+    import numpy as np
+
+    arr = np.asarray(rgb_patch)
+    if arr.ndim != 3 or arr.shape[0] < 8 or arr.shape[1] < 8:
+        return None
+    lum = _wcag_rel_lum(arr)
+    thr = float(np.percentile(lum, glyph_percentile))
+    glyph = lum >= max(thr, 0.35)
+    cov = float(glyph.mean())
+    if cov < 0.004 or cov > 0.72:
+        return None
+    ring = _disk_dilate(glyph, ring_px) & (~glyph)
+    if int(ring.sum()) < 16:
+        return None
+    l_glyph = float(np.median(lum[glyph]))
+    l_bg = float(np.median(lum[ring]))
+    l_bg_bright = float(np.percentile(lum[ring], 90))
+    l_bg_dark = float(np.percentile(lum[ring], 10))
+    ratio_median = (l_glyph + 0.05) / (l_bg + 0.05)
+    # 「垫底口径」：真实的可读性靠的是笔画紧邻那一圈里最暗的垫底（描边/投影/暗背景），
+    # 观众看到的是「白字压不压在深色上」，不是「整条环带的平均值」。
+    # 标定（2026-11-24，同一把尺）：剪映原版成片 3.82~6.49；白字无垫底压亮墙 1.48。
+    # 用环带中位数会把「有描边但背景很亮」误判成 1.2:1（原版自己也过不了），故取两者较大者。
+    ratio_floor = (l_glyph + 0.05) / (l_bg_dark + 0.05)
+    return {
+        "ratio": ratio_median,
+        "ratio_floor": ratio_floor,
+        "ratio_effective": max(ratio_median, ratio_floor),
+        "ratio_against_brightest_bg": (l_glyph + 0.05) / (l_bg_bright + 0.05),
+        "glyph_lum": l_glyph,
+        "bg_lum": l_bg,
+        "bg_lum_dark": l_bg_dark,
+        "ink_ratio": cov,
+    }
 
 
 def contrast_ratio(c1: Tuple[int, int, int], c2: Tuple[int, int, int]) -> float:

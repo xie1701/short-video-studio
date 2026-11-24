@@ -51,6 +51,10 @@ if __name__ == "__main__":
 
 import numpy as np
 from step3_lock_audio import SR, load_stereo_wav_np, save_stereo_wav_np
+from flower_policy import NUM_MEASURE_RE, FlowerPolicy, text_quality_issue
+from flower_policy import format_table as format_flower_table
+from sfx_policy import SfxPolicy
+from sfx_policy import format_table as format_sfx_table
 
 
 _SFX_ROLES = ("cut", "hook", "info", "accent", "receipt", "misc")
@@ -233,6 +237,19 @@ def _cut_at_word_boundary(text: str, max_len: int) -> str:
     if len(out) >= 2:
         return out
     return t[:max_len]
+
+
+def _flower_label_for_style(label: str, chars_max: int) -> str:
+    """花字文案收口：有数字就压成数字核心（三百万/六百平），否则按词边界收到该风格字数上限。"""
+    t = str(label or "").strip()
+    m = NUM_MEASURE_RE.search(t)
+    if m:
+        core = re.sub(r"[嘅的]$", "", m.group(0))
+        if 2 <= len(core) <= max(2, chars_max):
+            return core
+    if len(t) > chars_max:
+        t = _cut_at_word_boundary(t, chars_max)
+    return t
 
 
 def _display_keywords(sent: Dict[str, Any]) -> List[str]:
@@ -505,107 +522,182 @@ def run_step6(
             sfx_files[emo_key] = [cand_p]
             break
 
-    used_frames: List[int] = []
+    # ─────────────── 触发条件闸门：花字先行 → 音效跟随 ───────────────
+    # 用户实测原话：「音效过于密集，感觉没有任何缘由就出现……」。旧版只按密度在每个切点上撒，
+    # 这一版每条 cue 都必须挂到一个可观测锚点上（结构性切点 / 花字出现 / 字幕换行 / BGM 拍点），
+    # 挂不上就不出。规则来自 24 套源草稿的实测表：forensic/style_trigger_rules_sfx_flower.json。
+    sentences_all = audio_events["sentences"]
+    raw_intel_p = pipeline_dir / "00_raw_intel.json"
+    raw_pain_kws = [str(k) for k in ((read_json(raw_intel_p).get("pain_keywords") or [])
+                                    if raw_intel_p.is_file() else []) if str(k).strip()]
+
+    clip_bounds: List[Tuple[int, int, str, float]] = []
+    for c in edl.get("clips", []):
+        role_c = str(c.get("track_role") or "a_roll")
+        if role_c == "code_broll":
+            role_c = "b_roll"  # 代码/图形叠加在花字作用域里等同 B-roll
+        clip_bounds.append((int(c["timeline_in_frame"]), int(c["timeline_out_frame"]),
+                            role_c, float(c.get("duration_sec") or 0.0)))
+
+    def _shot_at(t: float) -> Tuple[str, float]:
+        f_t = float(t) * fps
+        for a_f, b_f, role_c, dur_c in clip_bounds:
+            if a_f <= f_t < b_f:
+                return role_c, dur_c
+        return "a_roll", 0.0
+
+    _shot_lens = sorted(d for _a, _b, _r, d in clip_bounds if d > 0)
+    shot_median_sec = _shot_lens[len(_shot_lens) // 2] if _shot_lens else 0.0
+
+    cut_events: List[Dict[str, Any]] = []
+    for c in edl["clips"][1:]:
+        role_c = str(c.get("track_role") or "a_roll")
+        if role_c == "code_broll":
+            role_c = "b_roll"
+        cut_events.append({
+            "time_sec": round(int(c["cut_event_frame"]) / float(fps), 4),
+            "type": c.get("cut_event_type"),
+            "shot_type": role_c,
+            "event_id": c.get("cut_event_id"),
+        })
+    cut_times_list = [e["time_sec"] for e in cut_events]
+    line_starts = [round(float(s.get("start_sec", 0.0)), 4) for s in sentences_all]
+    beat_times = [float(b) for b in ((audio_events.get("bgm") or {}).get("beat_times_sec") or [])]
+    sent_spans = [{"start_sec": float(s.get("start_sec", 0.0)),
+                   "end_sec": float(s.get("end_sec", 0.0)),
+                   "text": str(s.get("text") or "")} for s in sentences_all]
+
+    # 「这一版会不会有花字上屏」先定下来：不上屏的花字不能当音效的锚点，
+    # 否则音效会以"花字出现"为理由响，而画面上根本没有那张字。
+    suppress_top_dup = False
+    try:
+        from render_template_overlays import get_style_blueprint
+        bp_ov = (get_style_blueprint(style_id).get("overlay_style") or {})
+        suppress_top_dup = bool(bp_ov.get("suppress_top_duplicate_flower", False))
+    except Exception:
+        suppress_top_dup = False
+    _emit_flowers = not no_flower_text and not (suppress_top_dup and not (keep_manual_texts and prev_visuals))
+
+    # ① 花字候选：一句一张，文案从这句人声里提炼（不再拿音效 cue 当花字锚点）
+    flower_pol = FlowerPolicy(style_id)
+    _fchars_max = int(flower_pol.chars_max)
+    flower_cands: List[Dict[str, Any]] = []
+    for s in sentences_all:
+        t0 = float(s.get("start_sec", 0.0))
+        label = _extract_clean_flower_phrase(s, raw_pain_kws=raw_pain_kws, max_len=max(8, _fchars_max))
+        label = _flower_label_for_style(label, _fchars_max)
+        role_s, shot_len_s = _shot_at(t0)
+        flower_cands.append({
+            "text": label,
+            "start_sec": t0,
+            "sentence_id": s.get("id"),
+            "sentence_text": str(s.get("text") or ""),
+            "shot_type": role_s,
+            "origin": "sentence",
+            "long_turn": bool(shot_median_sec and shot_len_s >= 1.8 * shot_median_sec),
+        })
+    flower_res = flower_pol.evaluate(flower_cands, {
+        "cut_times": cut_times_list,
+        "line_starts": line_starts,
+        "sentences": sent_spans,
+        "duration_sec": total_dur,
+    })
+    flower_specs: List[Dict[str, Any]] = list(flower_res["accepted"]) if _emit_flowers else []
+    # 音效可以贴"花字出现/退出"，但只能贴**真的会上屏**的那几张：
+    # 片头巨字占位（0~2.2s）与片尾 1.35s 内不上花字，这些候选不能当锚点，
+    # 否则音效会以"花字出现"为理由响，而画面上根本没有那张字。
+    _hook_guard_f = min(int(2.2 * fps), int(total_dur * fps)) + int(2.2 * fps)
+    flower_anchor_specs: List[Dict[str, Any]] = [
+        f for f in flower_specs
+        if int(round(float(f.get("start_sec") or 0.0) * fps)) >= _hook_guard_f
+        and float(f.get("start_sec") or 0.0) <= total_dur - 1.35
+    ]
+
+    # ② 音效候选：结构性切点 + 花字出现/退出 + 字幕换行 + BGM 拍点（去重后交给策略判定）
+    sfx_cands: List[Dict[str, Any]] = []
+    _seen_t: set = set()
+
+    def _add_cand(t: float, **kw: Any) -> None:
+        try:
+            key = round(float(t), 2)
+        except (TypeError, ValueError):
+            return
+        if key in _seen_t:
+            return
+        _seen_t.add(key)
+        sfx_cands.append({"time_sec": round(float(t), 4), **kw})
+
+    for ev in cut_events:
+        _add_cand(ev["time_sec"], origin="cut", event_type=ev["type"],
+                  shot_type=ev["shot_type"], event_id=ev["event_id"])
+    for fl in flower_anchor_specs:
+        _add_cand(fl["start_sec"], origin="flower", event_type="sentence_start")
+        if fl.get("end_sec"):
+            _add_cand(fl["end_sec"], origin="flower_exit", event_type="sentence_start")
+    sfx_pol = SfxPolicy(style_id)
+    # 候选只按该风格真正允许的锚点类型生成，避免"撒一堆注定被拒的点"把依据表淹掉
+    if "line" in sfx_pol.allowed_triggers:
+        for t_line in line_starts:
+            _add_cand(t_line, origin="line", event_type="sentence_start")
+    if "beat" in sfx_pol.allowed_triggers:
+        for t_beat in beat_times:
+            _add_cand(t_beat, origin="beat", event_type="bgm_beat")
+
+    sfx_res = sfx_pol.evaluate(sfx_cands, {
+        "cut_events": cut_events,
+        "cut_times": cut_times_list,
+        "flower_starts": [f["start_sec"] for f in flower_anchor_specs],
+        "flower_ends": [f.get("end_sec") for f in flower_anchor_specs if f.get("end_sec")],
+        "line_starts": line_starts,
+        "beats": beat_times,
+        "sentences": sent_spans,
+        "duration_sec": total_dur,
+    })
+    if not sfx_pool:
+        sfx_res["accepted"] = []
+    # 沿用既有契约：视觉/音效预算上限是硬上限（下游 budget.used<=max 有断言），超出的记进依据表
+    if len(sfx_res["accepted"]) > max_sfx_budget:
+        for extra in sfx_res["accepted"][max_sfx_budget:]:
+            sfx_res["dropped"].append({
+                "time_sec": extra.get("time_sec"), "reason": extra.get("reason"),
+                "anchor_time": extra.get("anchor_time"), "dropped_because": "budget_cap",
+                "detail": f"超过该风格每分密度换算的预算 {max_sfx_budget} 条",
+            })
+            sfx_res["rows"].append({"time_sec": extra.get("time_sec"), "decision": "drop",
+                                    "trigger": extra.get("reason"), "anchor_time": extra.get("anchor_time"),
+                                    "offset_sec": extra.get("offset_sec"), "why": "budget_cap"})
+        sfx_res["accepted"] = sfx_res["accepted"][:max_sfx_budget]
+        sfx_res["n_accepted"] = len(sfx_res["accepted"])
+
+    sfx_cues: List[Dict[str, Any]] = []
     last_sfx_name: Optional[str] = None
-
-    def can_place_sfx(frame: int) -> bool:
-        return len(sfx_cues) < max_sfx_budget and all(abs(frame - f) >= min_sfx_gap for f in used_frames)
-
-    # 音效 cue 一律取自本风格真音效池（assets/sound_vibe/sfx/<style_id>/），
-    # 池子为空时一条都不出，绝不借别的风格的音效来凑数。
-    if sfx_pool:
-        for clip in edl["clips"][1:]:
-            role = clip.get("track_role", "b_roll")
-            ev_frame = int(clip.get("timeline_in_frame", clip["cut_event_frame"])) if role == "code_broll" else int(clip["cut_event_frame"])
-            is_end_receipt = (clip is edl["clips"][-1]) and bool(sfx_files["cta"])
-            if role != "code_broll" and not is_end_receipt:
-                continue
-            if not can_place_sfx(ev_frame):
-                continue
-            cand_list = sfx_files["cta"] if is_end_receipt else [
-                *sfx_files["info"],
-                *sfx_files["cut"],
-                *sfx_files["hook"],
-            ]
-            sf = rotate_sfx(cand_list, last_sfx_name)
-            if sf is None:
-                continue
-            last_sfx_name = sf.name
-            cue_gain = round(max(-14.0, min(-3.5, base_gain_db + 1.5)), 1)
-            sfx_cues.append({
-                "id": f"sfx_{len(sfx_cues)+1:03d}",
-                "file": str(sf.resolve()),
-                "sfx_name": sf.name,
-                "time_sec": frames_to_sec(ev_frame, fps),
-                "frame": ev_frame,
-                "gain_db": cue_gain,
-                "event_id": clip["cut_event_id"],
-                "reason": f"{style_id} 账单小票收尾提示" if is_end_receipt else f"{style_id} 信息卡片物理提示",
-            })
-            used_frames.append(ev_frame)
-
-        # 本风格真音效轮换池（按角色顺序铺开，同角色内多音色轮转；含 accent 才接近源草稿的听感）
-        cut_palette: List[Path] = []
-        for _role_key in ("cut", "info", "hook", "accent"):
-            for p in sfx_files.get(_role_key) or []:
-                if p not in cut_palette:
-                    cut_palette.append(p)
-        if not cut_palette:
-            cut_palette = [p for _r in _SFX_ROLES for p in sfx_pool.get(_r, [])]
-        cut_rot = 0
-        # 优先选在句首/停顿缝隙切点安放 SFX，确保听感清爽且避免被重读浊音完全掩蔽，第二遍再补足其余切点
-        prioritized_clips = [
-            c for c in edl["clips"][1:]
-            if str(c.get("cut_event_type", "")) in ("sentence_start", "pause_start", "pause_end", "bgm_downbeat")
-        ] + [
-            c for c in edl["clips"][1:]
-            if str(c.get("cut_event_type", "")) not in ("sentence_start", "pause_start", "pause_end", "bgm_downbeat")
-        ]
-        for clip in prioritized_clips:
-            ev_frame = int(clip["cut_event_frame"])
-            if not can_place_sfx(ev_frame):
-                continue
-            rotated_pool = cut_palette[cut_rot % len(cut_palette):] + cut_palette[:cut_rot % len(cut_palette)]
-            sf = rotate_sfx(rotated_pool, last_sfx_name)
-            if sf is None:
-                continue
-            last_sfx_name = sf.name
-            cut_rot += 1
-            cue_gain = round(max(-14.0, min(-4.0, base_gain_db + 0.5)), 1)
-            sfx_cues.append({
-                "id": f"sfx_{len(sfx_cues)+1:03d}",
-                "file": str(sf.resolve()),
-                "sfx_name": sf.name,
-                "time_sec": frames_to_sec(ev_frame, fps),
-                "frame": ev_frame,
-                "gain_db": cue_gain,
-                "event_id": clip["cut_event_id"],
-                "reason": f"{style_id} 流派真音效转场",
-            })
-            used_frames.append(ev_frame)
-
-        for ev in events:
-            if ev["type"] == "sentence_start" and can_place_sfx(ev["frame"]):
-                sent = sentences_map.get(ev.get("sentence_id", ""), {})
-                emo = sent.get("emotion_or_info", "info")
-                if emo not in ("hook", "twist", "persona", "cta"):
-                    continue
-                sf = rotate_sfx([*sfx_files.get(emo, sfx_files["info"]), *sfx_files["cut"]], last_sfx_name)
-                if sf is None:
-                    continue
-                last_sfx_name = sf.name
-                cue_gain = round(max(-15.0, min(-4.5, base_gain_db - 1.2)), 1)
-                sfx_cues.append({
-                    "id": f"sfx_{len(sfx_cues)+1:03d}",
-                    "file": str(sf.resolve()),
-                    "sfx_name": sf.name,
-                    "time_sec": ev["time_sec"],
-                    "frame": ev["frame"],
-                    "gain_db": cue_gain,
-                    "event_id": ev["id"],
-                    "reason": f"{emo} 句首节点轻量提示",
-                })
-                used_frames.append(ev["frame"])
+    _REASON_TRIM = {"cut": 0.5, "flower": 1.0, "line": -1.2, "beat": -1.6, "free": -1.6}
+    for acc in sfx_res["accepted"]:
+        role_pick = str(acc.get("role") or "misc")
+        cand_list = (sfx_files.get(role_pick)
+                     or sfx_files.get("cut")
+                     or [p for _r in _SFX_ROLES for p in sfx_pool.get(_r, [])])
+        sf = rotate_sfx(cand_list, last_sfx_name)
+        if sf is None:
+            continue
+        last_sfx_name = sf.name
+        frame_c = int(round(float(acc["time_sec"]) * fps))
+        cue_gain = round(max(-14.0, min(-3.5, base_gain_db + _REASON_TRIM.get(str(acc.get("reason")), 0.0))), 1)
+        sfx_cues.append({
+            "id": "",
+            "file": str(sf.resolve()),
+            "sfx_name": sf.name,
+            "time_sec": round(frame_c / float(fps), 4),
+            "frame": frame_c,
+            "gain_db": cue_gain,
+            "event_id": acc.get("event_id"),
+            "role": role_pick,
+            "reason": acc.get("reason"),
+            "anchor": {"kind": acc.get("reason"), "time_sec": acc.get("anchor_time"),
+                       "offset_sec": acc.get("offset_sec"), "origin": acc.get("origin")},
+            "anchor_time": acc.get("anchor_time"),
+            "policy": acc.get("policy"),
+        })
 
     sfx_cues.sort(key=lambda x: x["frame"])
     for idx_cue, cue in enumerate(sfx_cues, start=1):
@@ -716,21 +808,10 @@ def run_step6(
     giant_count_target = giant_count_from_source(style_id, total_dur, pkg_tech)
     use_multi_tag = bool(pkg_tech.get("multi_tag_burst") or flower_spec.get("multi_tag_burst"))
 
-    raw_intel_p = pipeline_dir / "00_raw_intel.json"
-    raw_pain_kws = [str(k) for k in ((read_json(raw_intel_p).get("pain_keywords") or []) if raw_intel_p.is_file() else []) if str(k).strip()]
-
     first_sent = audio_events["sentences"][0] if audio_events["sentences"] else {"text": "核心亮点", "keywords": []}
     hook_badge_text = _extract_clean_flower_phrase(first_sent, raw_pain_kws=raw_pain_kws, max_len=8)
     top_ef = min(int(min(4.2, total_dur * 0.45) * fps), int(total_dur * fps))
     hook_ef = min(int(2.2 * fps), int(total_dur * fps))
-
-    suppress_top_dup = False
-    try:
-        from render_template_overlays import get_style_blueprint
-        bp_ov = (get_style_blueprint(style_id).get("overlay_style") or {})
-        suppress_top_dup = bool(bp_ov.get("suppress_top_duplicate_flower", False))
-    except Exception:
-        suppress_top_dup = False
 
     if no_flower_text or (suppress_top_dup and not (keep_manual_texts and prev_visuals)):
         visual_elements = []
@@ -774,6 +855,8 @@ def run_step6(
                 "jianying_anim_name": default_jy_anim,
                 "anim_duration_ms": int(matched_pair.get("anim_duration_ms", 400)),
                 "paired_jianying_sfx": str(matched_pair.get("jianying_sfx_name", "提示音")),
+                "trigger": "hook",
+                "policy": f"{style_id} 顶部常驻标语（源草稿 packaging 结构件，按整条停留，不受花字密度约束）",
                 "reason": f"{style_id} 顶部常驻主题标语栏",
             })
 
@@ -827,6 +910,8 @@ def run_step6(
                 "jianying_anim_name": default_jy_anim,
                 "anim_duration_ms": int(matched_pair.get("anim_duration_ms", 400)),
                 "paired_jianying_sfx": str(matched_pair.get("jianying_sfx_name", "“呼”的转场音效")),
+                "trigger": "hook",
+                "policy": f"{style_id} 开场巨字（片头 0~{round(hook_ef / float(fps), 2)}s 的结构件，不是撒花字）",
                 "reason": f"{style_id} 开场 {giant_fs}px 砸屏巨字冲击 ({giant_mode})",
             })
         max_pkg_w = SUBTITLE_SYMMETRIC_MAX_W
@@ -836,21 +921,33 @@ def run_step6(
         stamp_zone_ys = (280, 820, 230, 890)
         stamp_seq = 0
         has_end_cta = False
-        for cue in sfx_cues:
+        # 花字只走策略认可的候选（每张都带 trigger/出处），不再从音效 cue 反推位置
+        def _flower_skip(spec: Dict[str, Any], why: str) -> None:
+            rec = {"start_sec": spec.get("start_sec"), "text": spec.get("text"),
+                   "trigger": spec.get("trigger"), "dropped_because": "layout_skip", "detail": why}
+            flower_res["dropped"].append(rec)
+            flower_res["rows"].append({"start_sec": spec.get("start_sec"), "text": spec.get("text"),
+                                       "decision": "drop", "trigger": spec.get("trigger"), "why": why})
+            flower_res["n_dropped"] = len(flower_res["dropped"])
+
+        for spec in flower_specs:
             if len(visual_elements) >= max_visual_budget:
-                break
-            sf = int(cue["frame"])
-            if sf < last_vis_end or sf > int((total_dur - 1.35) * fps):
+                _flower_skip(spec, "视觉包装预算已满")
                 continue
-            sent = next((s for s in audio_events["sentences"] if s["start_frame"] <= sf <= s["end_frame"] + 15), first_sent)
-            if sent.get("emotion_or_info") not in ("hook", "info", "twist", "persona", "cta"):
+            sf = int(round(float(spec["start_sec"]) * fps))
+            ef = int(round(float(spec.get("end_sec") or 0.0) * fps))
+            if ef <= sf:
+                ef = min(int(total_dur * fps), sf + int(math.ceil(float(spec.get("hold_sec") or 2.0) * fps)))
+            if sf < last_vis_end or sf > int((total_dur - 1.35) * fps):
+                _flower_skip(spec, "与上一张花字/开场巨字重叠，或落在片尾 1.35s 内")
+                continue
+            sent = sentences_map.get(str(spec.get("sentence_id"))) or next(
+                (s for s in audio_events["sentences"] if s["start_frame"] <= sf <= s["end_frame"] + 15), first_sent)
+            if (ef - sf) / float(fps) < 1.35 or overlaps_code(sf, ef):
+                _flower_skip(spec, "停留不足 1.35s，或压在代码/图形 B-roll 上")
                 continue
 
-            kw_label = _extract_clean_flower_phrase(sent, raw_pain_kws=raw_pain_kws, max_len=8)
-            est_hold = estimate_read_hold_sec(kw_label, min_sec=2.0, max_sec=3.0)
-            ef = min(int(total_dur * fps), sf + int(math.ceil(est_hold * fps)))
-            if (ef - sf) / float(fps) < 1.35 or overlaps_code(sf, ef):
-                continue
+            kw_label = str(spec.get("text") or "") or _extract_clean_flower_phrase(sent, raw_pain_kws=raw_pain_kws, max_len=8)
             is_end_cta = bool(is_borderless_flower and last_sent and sent.get("id") == last_sent.get("id"))
             is_quote_item = bool(use_quote_card and not is_end_cta and stamp_seq == 0)
             box_max_w = SUBTITLE_SYMMETRIC_MAX_W
@@ -896,7 +993,13 @@ def run_step6(
                 "jianying_anim_name": default_jy_anim,
                 "anim_duration_ms": int(matched_pair.get("anim_duration_ms", 400)),
                 "paired_jianying_sfx": str(matched_pair.get("jianying_sfx_name", "“呼”的转场音效")),
-                "reason": cue["reason"],
+                "trigger": spec.get("trigger"),
+                "anchor": {"kind": spec.get("anchor_kind"), "time_sec": spec.get("anchor_time"),
+                           "offset_sec": spec.get("anchor_offset_sec")},
+                "anchor_time": spec.get("anchor_time"),
+                "evidence_text": spec.get("evidence_text"),
+                "policy": spec.get("policy"),
+                "reason": f"花字 {spec.get('trigger')}｜出处「{str(spec.get('evidence_text') or '')[:12]}」",
             }
             if is_end_cta:
                 elem_obj["subtext"] = "评论区聊聊你的看法"
@@ -911,7 +1014,10 @@ def run_step6(
             ls_sf = int(last_sent.get("start_frame", 0))
             ls_ef = min(int(total_dur * fps), max(ls_sf + int(1.45 * fps), int(last_sent.get("end_frame", ls_sf))))
             if ls_sf >= last_vis_end and (ls_ef - ls_sf) / float(fps) >= 1.40 and not overlaps_code(ls_sf, ls_ef):
-                cta_label = _extract_clean_flower_phrase(last_sent, raw_pain_kws=raw_pain_kws, max_len=8) or "欢迎评论聊聊"
+                _cta_raw = _flower_label_for_style(
+                    _extract_clean_flower_phrase(last_sent, raw_pain_kws=raw_pain_kws, max_len=8),
+                    _fchars_max)
+                cta_label = _cta_raw if _cta_raw and not text_quality_issue(_cta_raw) else "评论区聊聊你的看法"
                 bw = _measure_pkg_badge_width(cta_label, pkg_font_path, max_pkg_w, target_fs=54, min_w=240)
                 bx = SUBTITLE_CENTER_X - bw // 2
                 active_f = []
@@ -941,6 +1047,8 @@ def run_step6(
                     "jianying_anim_name": default_jy_anim,
                     "anim_duration_ms": int(matched_pair.get("anim_duration_ms", 400)),
                     "paired_jianying_sfx": str(matched_pair.get("jianying_sfx_name", "“呼”的转场音效")),
+                    "trigger": "ending",
+                    "policy": f"{style_id} 片尾互动召唤（收束结构件，绑定末句起声帧，不受花字密度约束）",
                     "reason": "片尾收束互动召唤大字（绑定末句起声帧）",
                 })
 
@@ -1005,6 +1113,8 @@ def run_step6(
                     "jianying_anim_name": default_jy_anim,
                     "anim_duration_ms": int(matched_pair.get("anim_duration_ms", 400)),
                     "paired_jianying_sfx": str(matched_pair.get("jianying_sfx_name", "“呼”的转场音效")),
+                    "trigger": "ending",
+                    "policy": "片尾收尾补位卡（话没说完时补一张，打 deviation_from_style_source 标）",
                     "reason": f"片尾收尾补位：{ending['reason']}",
                     # 这一条不是源草稿里的语法，是为了"话没说完"补的内容件，单独打标好审好删
                     "deviation_from_style_source": True,
@@ -1035,13 +1145,34 @@ def run_step6(
             "used_sfx_cues": len(sfx_cues),
         },
         "sfx_cues": sfx_cues,
+        "sfx_dropped": sfx_res.get("dropped") or [],
+        "sfx_justification": {
+            "rules_used": sfx_res.get("rules_used"),
+            "n_candidates": sfx_res.get("n_candidates"),
+            "n_accepted": sfx_res.get("n_accepted"),
+            "rows": sfx_res.get("rows"),
+        },
+        "flower_dropped": flower_res.get("dropped") or [],
+        "flower_justification": {
+            "rules_used": flower_res.get("rules_used"),
+            "n_candidates": flower_res.get("n_candidates"),
+            "n_accepted": flower_res.get("n_accepted"),
+            "rows": flower_res.get("rows"),
+        },
         "visual_elements": visual_elements,
         "ending_plan": ending,
     }
     write_json(pipeline_dir / "06_packaging.json", packaging)
+    # 依据清单：每条音效/花字出或不出、凭什么、参照哪个锚点，全部打印出来备查
+    if not sfx_pool:
+        print(f"[step6] 音效关闭：{sfx_disabled_reason}")
+    elif sfx_cues:
+        print(format_sfx_table(sfx_res, limit=400))
+    print(format_flower_table(flower_res, limit=400))
     print(
-        f"[step6] 包装完成：音效 {len(sfx_cues)}/{max_sfx_budget} 个，"
-        f"视觉包装 {len(visual_elements)}/{max_visual_budget} 个（±0 帧对齐）-> 06_packaging.json"
+        f"[step6] 包装完成：音效 {len(sfx_cues)}/{max_sfx_budget} 个（候选 {sfx_res.get('n_candidates')}，"
+        f"每条都挂锚点），视觉包装 {len(visual_elements)}/{max_visual_budget} 个"
+        f"（花字候选 {flower_res.get('n_candidates')}，每条都有出处）-> 06_packaging.json"
     )
     return packaging
 

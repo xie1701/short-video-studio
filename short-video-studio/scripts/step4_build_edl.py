@@ -38,6 +38,7 @@ import os
 
 import broll_match
 import pip_policy
+import treatment_policy
 from broll_semantics import describe_clip, legacy_score
 from edit_grammar import check_edl, load_grammar, plan_shot_budget, select_cuts
 from generate_code_broll import render_broll_clip_pillow, render_code_clip, resolve_style_palette
@@ -1855,16 +1856,89 @@ def run_step4(
     except Exception as exc:  # 没有 ffmpeg / 没有视觉检测时不许假装做过
         print(f"[step4] [WARN] 人脸锚点未计算（{exc}），小窗将按画面正中取景")
 
-    # 抠像内容门槛：风格会抠像 ≠ 每一镜都该抠（2026-11-24 用户实测「讲解效果图的地方，把讲解图给扣没了」）
+    # 抠像触发条件：风格会抠像 ≠ 每一镜都该抠（2026-11-24 用户实测「讲解效果图的地方，把讲解图给扣没了」）。
+    # 决策口唯一是 `treatment_policy`（规则来自 forensic/style_trigger_rules_visual.json），
+    # 降级写口唯一是 `pip_policy.apply_cutout_gate`（本模块通过 post_decide 把改判交给它，不另写一套）。
     try:
-        cutout_gate = pip_policy.apply_cutout_gate(clips, style_entry, pipeline_dir)
-        print(pip_policy.summarize_for_log(cutout_gate))
+        cutout_gate = treatment_policy.apply_cutout_policy(clips, style_entry, pipeline_dir, style_id)
+        print(treatment_policy.summarize_cutout(cutout_gate))
         for _r in cutout_gate.get("rows") or []:
             if not _r.get("allowed"):
-                print(f"[step4]   抠像降级 @{_r['timeline_in_sec']:6.2f}s {_r['media']}：{_r['reason']}")
+                print(f"[step4]   不抠 @{float(_r.get('timeline_in_sec') or 0):6.2f}s "
+                      f"{_r.get('media')}：{_r.get('reason')}")
     except Exception as _pe:
-        cutout_gate = {"error": str(_pe)}
-        print(f"[step4] [WARN] 抠像门槛未执行（{_pe}），按风格原指令执行")
+        # 门槛坏了就保守不抠：宁可少一个手法，也不能把观众要看的东西抠没
+        for _c in clips:
+            _lay = _c.get("pip_layout")
+            if isinstance(_lay, dict) and _lay.get("cutout"):
+                _lay["cutout"] = False
+                _lay["cutout_gated_reason"] = f"抠像触发条件判定异常（{_pe}），保守不抠"
+        cutout_gate = {"error": str(_pe), "candidates": 0, "allowed": 0, "dropped": 0, "rows": []}
+        print(f"[step4] [WARN] 抠像触发条件未执行（{_pe}），本片一律不抠")
+
+    # 变速触发条件：只压 B-roll 的无信息等待；A-roll 口播永远原速（规则同样来自 24 套真值）。
+    try:
+        speed_plan = treatment_policy.apply_speed_policy(clips, style_entry, pipeline_dir, style_id, manifest)
+        print(treatment_policy.summarize_speed(speed_plan))
+        for _r in speed_plan.get("rows") or []:
+            if _r.get("allowed"):
+                print(f"[step4]   变速 {_r.get('speed')}× @{_r.get('clip_id')}：{_r.get('reason')}")
+    except Exception as _se:
+        for _c in clips:
+            if _c.get("speed") not in (None, 1.0):
+                _c["speed"] = 1.0
+        speed_plan = {"error": str(_se), "applied": 0, "rows": []}
+        print(f"[step4] [WARN] 变速触发条件未执行（{_se}），全片原速")
+
+    # 转场 / 叠加层 / 画面特效：step4 不铺它们（铺在套用端），但要把「这一片一处都没套」和为什么记下来，
+    # 否则报告里看不出到底是「没这个能力」还是「按条件拒绝了」。
+    _vrules = treatment_policy.style_rules(style_id)
+    _n_boundaries = max(0, len(clips) - 1)
+    try:
+        _rules_rel = str(treatment_policy.RULES_PATH.resolve().relative_to(
+            Path(__file__).resolve().parents[2]))
+    except Exception:
+        _rules_rel = str(treatment_policy.RULES_PATH)
+    treatment_plan = {
+        "rules_source": _rules_rel,
+        "style_id": style_id,
+        "transition": {
+            "applied": 0,
+            "dropped": _n_boundaries,
+            "default": "hard_cut",
+            "reason": (_vrules["transition"].get("default_reason")
+                       or "默认硬切（这套风格源草稿转场数 = 0）"),
+            "allow_when": (_vrules["transition"].get("scope") or {}).get("allow"),
+            "forbid": (_vrules["transition"].get("scope") or {}).get("forbid"),
+            "scope": (_vrules["transition"].get("scope") or {}).get("forbid_note"),
+        },
+        "cutout": {
+            "enabled": cutout_gate.get("enabled"),
+            "candidates": cutout_gate.get("candidates"),
+            "allowed": cutout_gate.get("allowed"),
+            "dropped": cutout_gate.get("dropped"),
+            "used_sec": cutout_gate.get("used_sec"),
+            "policy": cutout_gate.get("policy"),
+            "scope": cutout_gate.get("scope"),
+            "rows_moved_to": "cutout_gate.rows",
+            "note_cn": cutout_gate.get("note_cn"),
+        },
+        "speed": speed_plan,
+        "overlay": {
+            "applicable": False,
+            "enabled": bool(_vrules["overlay"].get("enabled")),
+            "reason": "step4 不铺贴纸/叠加层；贴纸在套用端（apply_replica_template）按同一份规则判",
+            "limits": _vrules["overlay"].get("limits"),
+        },
+        "effect": {
+            "applicable": False,
+            "enabled": bool(_vrules["effect"].get("enabled")),
+            "reason": "step4 不铺画面特效；特效在套用端（apply_replica_template）按同一份规则判",
+            "limits": _vrules["effect"].get("limits"),
+        },
+        "note_cn": ("每一项视觉处理都过 forensic/style_trigger_rules_visual.json 的条件："
+                    "没满足就不套，理由逐镜记在对应 rows 里。"),
+    }
 
     # 真实测算首帧视觉密度：文件存在且非废画、且非低对比死黑
     first_c = clips[0] if clips else {}
@@ -1927,6 +2001,7 @@ def run_step4(
         "first_frame_density_ok": first_clip_ok,
         "first_3s_visual_changes": first_3s_changes,
         "clip_count": len(clips),
+        "treatment_policy": treatment_plan,
         "clips": clips,
     }
     # 把「实际用的预算 vs 最终跑出来的指标」写进 EDL，下游与门禁都能直接读

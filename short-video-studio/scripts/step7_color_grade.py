@@ -509,7 +509,11 @@ def _compute_masked_skin_ycbcr_from_rgb(
     cb = 128.0 + (-0.114572 * r - 0.385428 * g + 0.5 * b) * (224.0 / 255.0)
     cr = 128.0 + (0.5 * r - 0.454153 * g - 0.045847 * b) * (224.0 / 255.0)
 
-    skin_mask = (cb >= 77.0) & (cb <= 136.0) & (cr >= 125.0) & (cr <= 178.0) & (y_val >= 35.0) & (y_val <= 235.0)
+    # 掩膜只用来「去掉背景/衣服/头发」，不能顺手把要检测的值裁掉：
+    # 旧掩膜写着 cr <= 178，而 BT.709 健康扇区的上限是 174 —— 于是「肤色已经跑到 178」这件事
+    # 在掩膜这一步就被夹回 167，守门永远看不见（2026-11-24 实测：同一帧窄掩膜 cr=167.6、
+    # 宽掩膜 cr=178.1，成片实测 180）。掩膜范围一律放宽到扇区之外，判定仍用 SKIN_YCBCR_RANGE。
+    skin_mask = (cb >= 70.0) & (cb <= 150.0) & (cr >= 110.0) & (cr <= 195.0) & (y_val >= 35.0) & (y_val <= 235.0)
     if int(np.sum(skin_mask)) >= 8:
         return {
             "skin_y": round(float(np.median(y_val[skin_mask])), 1),
@@ -773,6 +777,70 @@ def calibrate_clip_curve(
     return vf, [round(v * 255.0, 1) for v in adj], residual
 
 
+def _retune_eq_saturation(vf: str, sat: float) -> str:
+    """只改 eq 里的饱和度，其余链原样保留（饱和度不改变亮度，曲线标定结果依旧成立）。"""
+    return re.sub(
+        r"(eq=brightness=[-0-9.]+:contrast=[-0-9.]+:saturation=)[-0-9.]+",
+        lambda m: f"{m.group(1)}{float(sat):.3f}",
+        vf,
+        count=1,
+    )
+
+
+def _skin_in_sector(skin: Optional[Dict[str, float]], margin: float = 0.0) -> bool:
+    if not skin:
+        return False
+    return (
+        SKIN_YCBCR_RANGE["cb_min"] + margin <= float(skin["skin_cb"]) <= SKIN_YCBCR_RANGE["cb_max"] - margin
+        and SKIN_YCBCR_RANGE["cr_min"] + margin <= float(skin["skin_cr"]) <= SKIN_YCBCR_RANGE["cr_max"] - margin
+    )
+
+
+def _guard_probe_times(c_in: float, c_dur: float) -> List[float]:
+    """肤色守门采样点：镜头的 25% / 50% / 75%，单点会漏掉镜内换光（实测 t=0~5s 就是这样漏的）。"""
+    d = max(0.1, float(c_dur))
+    return [round(float(c_in) + frac * d, 2) for frac in (0.25, 0.50, 0.75)]
+
+
+def _probe_skin_series(media_path: Path, face_bbox: Dict[str, float], times: List[float], vf: str) -> List[Tuple[float, Dict[str, float]]]:
+    out: List[Tuple[float, Dict[str, float]]] = []
+    for at in times:
+        s = probe_face_skin_ycbcr(media_path, face_bbox, at_sec=at, extra_vf=vf)
+        if s:
+            out.append((float(at), s))
+    return out
+
+
+def _skin_excess(skin: Dict[str, float]) -> float:
+    """出扇区的「超限量」（0 = 健康），用于挑最差样本。"""
+    cb, cr = float(skin["skin_cb"]), float(skin["skin_cr"])
+    return max(
+        0.0,
+        SKIN_YCBCR_RANGE["cb_min"] - cb,
+        cb - SKIN_YCBCR_RANGE["cb_max"],
+        SKIN_YCBCR_RANGE["cr_min"] - cr,
+        cr - SKIN_YCBCR_RANGE["cr_max"],
+    )
+
+
+def _all_in_sector(series: List[Tuple[float, Dict[str, float]]], margin: float = 0.0) -> bool:
+    return bool(series) and all(_skin_in_sector(s, margin=margin) for _t, s in series)
+
+
+def _worst_skin(series: List[Tuple[float, Dict[str, float]]]) -> Dict[str, Any]:
+    if not series:
+        return {}
+    t_w, s_w = max(series, key=lambda ts: _skin_excess(ts[1]))
+    return {
+        "t": round(float(t_w), 2),
+        "cb": s_w["skin_cb"],
+        "cr": s_w["skin_cr"],
+        "y": s_w["skin_y"],
+        "mask_ratio": s_w.get("mask_ratio"),
+        "excess": round(_skin_excess(s_w), 1),
+    }
+
+
 def run_step7(
     pipeline_dir: Path,
     track: str = "store",
@@ -941,6 +1009,63 @@ def run_step7(
             mp, c_in, c_dur, corr, style_color, blended_lut, eff_strength, is_broll,
             clip_window=clip_win,
         )
+        # 肤色扇区闭环守门（用户实测 2026-11-24）：本片 cr 从素材 167 被调色链推到 176~180，
+        # 根因是 tone_curve 的提亮（逐通道凸曲线把暖肤的 R−B 差距同步放大），colorbalance 几乎拉不动，
+        # 能真正回拉的只有色彩饱和度。因此逐镜量一次「上了整条链之后的真实肤色」，出扇区就沿
+        # 1.0/0.95/0.90/0.85 阶梯降本镜饱和度（只降不升，不碰亮度与曲线），每个镜头实际用了哪一档写进 07_color_plan.json。
+        skin_guard: Optional[Dict[str, Any]] = None
+        guard_faces = parse_manifest_faces(manifest_by_mp4[mp]) if mp in manifest_by_mp4 else []
+        if guard_faces:
+            g_times = _guard_probe_times(c_in, c_dur)
+            g_pre = _probe_skin_series(Path(mp), guard_faces[0], g_times, vf_str)
+            if g_pre:
+                applied_scale, applied_sat = 1.0, float(corr["saturation"])
+                chosen = g_pre
+                best_effort = False
+                if not _all_in_sector(g_pre):
+                    last: Optional[Tuple[float, float, str, List[Tuple[float, Dict[str, float]]]]] = None
+                    for g_scale in (0.95, 0.90, 0.85, 0.80):
+                        g_sat = round(float(corr["saturation"]) * g_scale, 3)
+                        g_vf = _retune_eq_saturation(vf_str, g_sat)
+                        g_post = _probe_skin_series(Path(mp), guard_faces[0], g_times, g_vf)
+                        if not g_post:
+                            continue
+                        chosen = g_post
+                        last = (g_scale, g_sat, g_vf, g_post)
+                        if _all_in_sector(g_post):
+                            corr = dict(corr)
+                            corr["saturation"] = g_sat
+                            vf_str = g_vf
+                            applied_scale, applied_sat = g_scale, g_sat
+                            break
+                    else:
+                        # 阶梯走完还出不来的（实测 178 → 最低档 172.7），也要用上最低那档：
+                        # 旧写法在这一步什么都不改，于是「明明能改善 5 个单位」的白等一场，
+                        # 成片照样 178 出扇区。这里如实记 best_effort。
+                        if last is not None:
+                            g_scale, g_sat, g_vf, g_post = last
+                            corr = dict(corr)
+                            corr["saturation"] = g_sat
+                            vf_str = g_vf
+                            applied_scale, applied_sat = g_scale, g_sat
+                            chosen = g_post
+                            best_effort = True
+                worst = _worst_skin(chosen)
+                skin_guard = {
+                    "probe_sec": g_times,
+                    "pre_worst": _worst_skin(g_pre),
+                    "post_worst": worst,
+                    "samples": [
+                        {"t": t, "cb": s["skin_cb"], "cr": s["skin_cr"], "y": s["skin_y"], "mask_ratio": s["mask_ratio"]}
+                        for t, s in chosen
+                    ],
+                    "saturation_scale": applied_scale,
+                    "saturation_applied": applied_sat,
+                    "applied": bool(applied_scale < 1.0),
+                    "in_sector_after": _all_in_sector(chosen),
+                    "best_effort": best_effort,
+                    "source_limited": bool(float(worst.get("y") or 0.0) < 45.0),
+                }
         clip_plans.append({
             "clip_id": clip["clip_id"],
             "track_role": clip["track_role"],
@@ -948,6 +1073,12 @@ def run_step7(
             "apply_color_grade": True,
             "measured_stats": stats,
             "base_correction": corr,
+            "grade_strength": {
+                "lut": round(float(eff_strength), 2),
+                "contrast": corr["contrast"],
+                "saturation": corr["saturation"],
+            },
+            "skin_guard": skin_guard,
             "tone_curve_weight": float((style_color.get("tone_curve") or {}).get("curve_weight") or 0.0),
             "curve_calibration": {
                 "targets_255": cal_targets,

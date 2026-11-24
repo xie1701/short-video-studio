@@ -548,6 +548,25 @@ def run_step3(
     if not valid_segments:
         raise ValueError("转写稿过滤废话与淘汰 NG 后无有效口播句子。")
 
+    # 谁在说话（2026-11-24）：主讲人对着无线麦，电平稳定；导演/摄影师在几米外插话，
+    # 电平会掉 20–35dB。这是确定性信号，比「按文字猜」靠谱。硬档（≥18dB）的字一律不算口播。
+    try:
+        import off_mic as _OM
+        # 整理成稿那一步（script_polish）已经标过就复用，别把 500 多秒音频再解一遍
+        if any("off_mic_spans" in s for s in all_segments):
+            _n = sum(len(s.get("off_mic_spans") or []) for s in all_segments)
+            _sec = sum(float(sp.get("dur_sec") or 0.0) for s in all_segments for sp in (s.get("off_mic_spans") or []))
+            _mic = {"spans": _n, "sec": round(_sec, 3), "hard_spans": _n, "hard_sec": round(_sec, 3),
+                    "soft_spans": 0, "soft_sec": 0.0, "failures": []}
+            print(f"[step3] 复用成稿阶段标好的离麦插话：{_n} 段 / {_sec:.1f} 秒")
+        else:
+            _mic = _OM.annotate_segments(all_segments)
+        print(f"[step3] {_OM.format_report(_mic)}")
+        for _f in (_mic.get("failures") or [])[:3]:
+            print(f"[step3] [WARN] 离麦检测读不到音频：{_f}")
+    except Exception as _e:
+        print(f"[step3] [WARN] 离麦检测不可用（{_e}）")
+
     # 按 Agent 整理好的成稿剪（2026-11-24）：02c_script_final.json 是用户核过的那 10 句，
     # 其余 80 多句逐字稿是口癖、重拍版本和半截句。不认这份，砍掉的句子照样会被剪进去。
     try:
@@ -577,6 +596,7 @@ def run_step3(
                 # 跨多段的成稿行要把各段的逐字时间戳接起来，否则只有第一段有词表，
                 # 后半句的字幕只能按比例瞎分（2026-11-24 实测）
                 "words": [w for x in _segs for w in (x.get("words") or [])],
+                "off_mic_spans": [sp for x in _segs for sp in (x.get("off_mic_spans") or [])],
             })
             _gap = 0.0
             for _a, _b in zip(_segs, _segs[1:]):
@@ -596,7 +616,10 @@ def run_step3(
                 _cut_total = 0.0
                 _trim_notes: List[str] = []
                 for _m in _merged:
-                    _r = _SA.keep_intervals(str(_m.get("text") or ""), _m.get("words") or [])
+                    _r = _SA.keep_intervals(
+                        str(_m.get("text") or ""), _m.get("words") or [],
+                        off_mic_spans=_m.get("off_mic_spans") or [],
+                    )
                     _ivs = _r.get("intervals") or []
                     if not _ivs:
                         print(f"[step3] [WARN] 这一行对不上逐字稿，按原窗口保留：{str(_m.get('text'))[:16]}")

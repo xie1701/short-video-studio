@@ -99,6 +99,58 @@ def _uid() -> str:
     return str(uuid.uuid4()).upper()
 
 
+# ── 视觉处理的触发条件（转场/抠像/变速/贴纸/特效）────────────────────────
+# 规则在 `forensic/style_trigger_rules_visual.json`（从 24 套真源草稿反推），
+# 判定口统一在 `scripts/treatment_policy.py`。这里只做「问 + 记账 + 不满足就不套」，
+# 不在这份文件里写任何一套风格的阈值——否则又回到「硬植入」。
+def _tp_module():
+    """延迟导入：渲染侧独立跑时缺规则文件也只能「不套」，不能把整条渲染拖崩。"""
+    try:
+        import treatment_policy  # noqa: PLC0415
+        return treatment_policy
+    except Exception:
+        return None
+
+
+def _tp_allow(treatment: str, style_id: Optional[str], ctx: Dict[str, Any]):
+    """问一句「这个处理在这一处能不能套」→ (allowed, reason, scope)。"""
+    tp = _tp_module()
+    if tp is None:
+        return False, "规则模块不可用（treatment_policy 未载入），按不套处理", {}
+    fn = {
+        "speed": tp.allow_speed, "overlay": tp.allow_overlay,
+        "effect": tp.allow_effect, "transition": tp.allow_transition,
+        "cutout": tp.allow_cutout,
+    }.get(treatment)
+    if fn is None:
+        return False, f"未知处理类型 {treatment}", {}
+    if not tp.style_known(style_id):
+        # 没有该风格规则时只能「按模版真值执行」：模版本身就是这套风格的真身，
+        # 拿不到规则不等于要砍掉结构；但要如实标注「未做风格校验」，不能让报告看起来判过了。
+        return True, f"规则里没有该风格（style_id={style_id or '未指定'}），按模版真值执行，未做风格校验", {}
+    c = dict(ctx or {})
+    c.setdefault("style_id", style_id)
+    try:
+        return fn(c)
+    except Exception as exc:  # 判定异常 → 保守不套
+        return False, f"触发条件判定异常（{exc}），按不套处理", {}
+
+
+def _tp_note(rep: dict, treatment: str, key: str, allowed: bool, reason: str,
+             scope: Optional[dict], **extra: Any) -> None:
+    """把「套了 / 没套 + 为何」逐条记到报告里，事后能核到段。"""
+    blk = rep.setdefault("treatment_policy", {}).setdefault(
+        treatment, {"applied": 0, "dropped": 0, "rows": []})
+    if allowed:
+        blk["applied"] += 1
+    else:
+        blk["dropped"] += 1
+    row = {"key": key, "allowed": bool(allowed), "reason": reason,
+           "scope": (scope or {}).get("allow") if isinstance(scope, dict) else None}
+    row.update({k: v for k, v in extra.items() if v is not None})
+    blk["rows"].append(row)
+
+
 def _asset_ref(path: str) -> str:
     """素材 → 脱敏引用（报告里只出现这个，绝不写文件路径/文件名）。"""
     return "as" + hashlib.sha1(str(path).encode("utf-8")).hexdigest()[:10]
@@ -2443,6 +2495,66 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
                            "src_in": pc["src_in"], "asset": pc["asset"], "pieces": None}
             segments_for_write.append(clone)
 
+    # 贴纸/特效判定要用的两个坐标：新时间线上的「画面切点」与当刻「有没有文案」。
+    # 真值里贴纸是跟着切点进场的（起点几乎零偏移），所以用切点距作为硬依据；
+    # 「与花字同框」用模版文字段【旧时间线】与贴纸【旧起点】相交判断（文字位时间不因换素材而变）。
+    _plan_video_starts = sorted({
+        round(float(v.get("start") or 0.0), 3) for v in plan.values()
+        if v.get("kind") in ("video", "photo", "compound")
+    })
+    _text_spans_old = [
+        (float(s.get("start_sec") or 0.0),
+         float(s.get("start_sec") or 0.0) + float(s.get("duration_sec") or 0.0))
+        for s in segments if s.get("kind") == "text"
+    ]
+
+    def _cut_dist_new(t: float) -> Optional[float]:
+        return min((abs(float(t) - x) for x in _plan_video_starts), default=None)
+
+    def _text_at_old(a: float, b: float) -> bool:
+        return any(min(b, e) - max(a, s0) > 0.05 for s0, e in _text_spans_old)
+
+    def _cutout_layer_allowed(key: str, p: dict, seg: dict) -> bool:
+        """抠像层能不能重建：这套风格真值根本不用抠像（enabled=False）就不重建。
+
+        逐镜内容门槛（有没有人脸、是不是正在给人看东西）在 step4 的
+        `treatment_policy.apply_cutout_policy` 里已过；这里只负责「这套风格到底用不用抠像」。
+        """
+        tp = _tp_module()
+        if tp is None:
+            _tp_note(rep, "cutout", key, False, "规则模块不可用，按不抠像处理", {})
+            return False
+        if not tp.style_known(style_id):
+            _tp_note(rep, "cutout", key, True,
+                     f"规则里没有该风格（style_id={style_id or '未指定'}），按模版真值重建，未做风格校验", {})
+            return True
+        sec = tp.style_rules(style_id).get("cutout") or {}
+        if not sec.get("enabled", False):
+            n = (sec.get("evidence") or {}).get("truth_segments")
+            _tp_note(rep, "cutout", key, False,
+                     f"这套风格真值 {n if n is not None else 0} 段抠像，整片不抠", sec.get("scope"))
+            return False
+        _tp_note(rep, "cutout", key, True,
+                 "风格真值有抠像，按模版结构重建（逐镜内容门槛在 step4 已过）", sec.get("scope"))
+        return True
+
+    # ── 转场：默认硬切。模版就算带转场素材，也不往成片里写（素材拷不过来，而且真值 0）。──
+    _tpl_trans = template.get("transitions") or []
+    _trans_kept = 0
+    for _i, _tr in enumerate(_tpl_trans):
+        _tr_ok, _tr_reason, _tr_scope = _tp_allow("transition", style_id, {
+            "cut_kind": str((_tr or {}).get("cut_kind") or "mid_sentence"),
+            "user_explicit": bool((_tr or {}).get("user_explicit")),
+            "chapter_break": bool((_tr or {}).get("chapter_break")),
+            "silence_sec": float((_tr or {}).get("silence_sec") or 0.0),
+            "source_native_overlap": bool((_tr or {}).get("source_native_overlap")),
+        })
+        _tp_note(rep, "transition", f"tpl_transition:{_i}", _tr_ok, _tr_reason, _tr_scope)
+        _trans_kept += 1 if _tr_ok else 0
+    _tp_trans = rep.setdefault("treatment_policy", {}).setdefault(
+        "transition", {"applied": 0, "dropped": 0, "rows": []})
+    _tp_trans.setdefault("note_cn", "转场默认硬切；套用端不合成转场素材（剪映转场指向本机缓存路径，拷不走）")
+
     for seg in sorted(segments_for_write, key=lambda s: (s["track_index"], s.get("start_sec") or 0.0)):
         p = plan.get(seg["key"])
         if not p:
@@ -2451,12 +2563,46 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
         t_role = next((t.get("role") for t in tracks if t["index"] == t_i), None)
         if t_role == "effect":
             continue
+        # ── 贴纸/叠加层：过触发条件（贴切点 + 与花字同框 + 不超条数/时长）──
+        if p["kind"] == "sticker":
+            _old0 = float(seg.get("start_sec") or 0.0)
+            _ov_ok, _ov_reason, _ov_scope = _tp_allow("overlay", style_id, {
+                "kind": "sticker",
+                "track_role": "sticker",
+                "duration_sec": float(p["dur"]),
+                "timeline_in_sec": float(p.get("start") or 0.0),
+                "total_duration_sec": float(total_old or 0.0),
+                "at_cut_dist": _cut_dist_new(float(p.get("start") or 0.0)),
+                "has_text": _text_at_old(_old0, _old0 + float(p["dur"])),
+                "used_count": (rep.get("treatment_policy", {}).get("overlay", {}) or {}).get("applied", 0),
+            })
+            _tp_note(rep, "overlay", seg["key"], _ov_ok, _ov_reason, _ov_scope)
+            if not _ov_ok:
+                rep["sticker_gated"] = rep.get("sticker_gated", 0) + 1
+                continue
         geometry = dict(seg.get("geometry") or {})
         extra_refs: List[str] = []
         src_in = float(p.get("src_in") or 0.0)
         # 源段长度按「真吃进的素材秒」写；倍速由 speed 字段与 target_timerange 一起决定
         src_dur = float(p.get("src_take") or p["dur"])
         _sp_out = float(p.get("speed") or 1.0)
+        # ── 变速：过触发条件（真值没变速的风格一律原速；A-roll 硬禁）──
+        if abs(_sp_out - 1.0) > 1e-4 and p["kind"] not in ("text", "sticker", "effect"):
+            _asset0 = p.get("asset") or {}
+            _head = max(0.0, float(_asset0.get("take") or 0.0) - src_in) if _asset0 else 0.0
+            _sp_ok, _sp_reason, _sp_scope = _tp_allow("speed", style_id, {
+                "track_role": p.get("role") or t_role or "",
+                "duration_sec": float(p["dur"]),
+                "speed": _sp_out,
+                "source_headroom_sec": _head,
+                "total_duration_sec": float(total_old or 0.0),
+            })
+            _tp_note(rep, "speed", seg["key"], _sp_ok, _sp_reason, _sp_scope,
+                     want=_sp_out, applied=None if _sp_ok else 1.0)
+            if not _sp_ok:
+                _sp_out = 1.0
+                src_dur = float(p.get("dur"))
+                rep["speed_gated"] = rep.get("speed_gated", 0) + 1
         mat_id = None
         is_audio = False
 
@@ -2482,6 +2628,9 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
             # 抠像层要一份**自己的**素材条目（带 matting 结构）：和主轨用同一个文件，但素材
             # 的 matting 是逐素材的，共用一份会把主轨也变成抠像层。
             mat_block = _matting_block(p.get("matting"), root_uuid) if p.get("cutout") else None
+            if mat_block and not _cutout_layer_allowed("cutout-layer", p, seg):
+                mat_block = None
+                rep["cutout_layers_style_gated"] = rep.get("cutout_layers_style_gated", 0) + 1
             mk = f"{key}|{json.dumps(crop_use or {}, sort_keys=True)}"
             if mat_block:
                 mk += "|cutout:" + json.dumps(mat_block, sort_keys=True)
@@ -2567,15 +2716,34 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
             mask_mats.append(mask_mat)
             extra_refs.append(mask_mat["id"])
         if seg.get("effects"):
-            for fx in seg["effects"]:
-                fx_mat = {"adjust_params": fx.get("adjust_params") or [],
-                          "category_id": "100000", "category_name": "画面特效",
-                          "effect_id": fx.get("effect_id"), "id": _uid(),
-                          "name": fx.get("name"), "path": "",
-                          "render_index": fx.get("render_index") or 11000,
-                          "resource_id": "", "type": "video_effect", "value": 1.0}
-                vfx_mats.append(fx_mat)
-                extra_refs.append(fx_mat["id"])
+            # ── 画面特效：过触发条件（该风格真值有特效 / 瞬时类必须贴切点 / 不超覆盖与条数）──
+            _fx_dur = float(p["dur"])
+            _fx_ok, _fx_reason, _fx_scope = _tp_allow("effect", style_id, {
+                "track_role": p.get("role") or t_role or "",
+                "duration_sec": _fx_dur,
+                "timeline_in_sec": float(p.get("start") or 0.0),
+                "total_duration_sec": float(total_old or 0.0),
+                "at_cut_dist": _cut_dist_new(float(p.get("start") or 0.0)),
+                "used_count": (rep.get("treatment_policy", {}).get("effect", {}) or {}).get("applied", 0),
+                "used_sec": sum(float(r.get("dur") or 0.0)
+                                for r in (rep.get("treatment_policy", {}).get("effect", {}) or {}).get("rows") or []
+                                if r.get("allowed")),
+            })
+            _tp_note(rep, "effect", seg["key"], _fx_ok, _fx_reason, _fx_scope,
+                     names=[str(fx.get("name")) for fx in seg["effects"]],
+                     dur=round(_fx_dur, 3))
+            if _fx_ok:
+                for fx in seg["effects"]:
+                    fx_mat = {"adjust_params": fx.get("adjust_params") or [],
+                              "category_id": "100000", "category_name": "画面特效",
+                              "effect_id": fx.get("effect_id"), "id": _uid(),
+                              "name": fx.get("name"), "path": "",
+                              "render_index": fx.get("render_index") or 11000,
+                              "resource_id": "", "type": "video_effect", "value": 1.0}
+                    vfx_mats.append(fx_mat)
+                    extra_refs.append(fx_mat["id"])
+            else:
+                rep["effect_gated"] = rep.get("effect_gated", 0) + 1
 
         kfs = _keyframes_of(seg, p["dur"], src_in)
         new_seg = _segment(

@@ -502,13 +502,24 @@ def _measure_text_px(text: str, font_path: Optional[str], font_size: int) -> Tup
     return int(len(text) * font_size * 1.04), int(font_size * 1.35 + 24)
 
 
+# 避脸微移：只允许在 SUBTITLE_SAFE_ZONE 内上下挪，且上限 ±60px（用户实测 2026-11-24：
+# 再大的位移会把字幕甩到胸口/腰部，观感比轻微压脸更差）。优先级：原地不动 > 近处不重叠 > IoU 最小。
+FACE_AVOID_MAX_SHIFT_PX = 60
+FACE_AVOID_STEP_PX = 15
+FACE_AVOID_IOU_LIMIT = 0.01
+
+
 def _compute_authoritative_subtitle_bbox(
     text: str,
     tpl: Dict[str, Any],
     font_path: Optional[str],
     face_boxes_px: List[Dict[str, Any]],
-) -> Dict[str, int]:
-    """按画布绝对正中 x=540 对称安全带 [220, 860] 计算尺寸并仅在垂直方向避开人脸五官，产出四端统一 final_bbox。"""
+) -> Tuple[Dict[str, int], int]:
+    """按画布绝对正中 x=540 对称安全带 [220, 860] 计算尺寸并仅在垂直方向避开人脸五官，产出四端统一 final_bbox。
+
+    返回 (final_bbox, face_avoid_dy)。水平中心永远锁在 540px（位移只走垂直方向，居中不会被破坏），
+    face_avoid_dy 会写回 05_subtitles.json，供渲染/工程/质检三端对账。
+    """
     base_fs = int(tpl.get("font_size", 62))
     kw_scale = float(tpl.get("keyword_scale", 1.133))
     eff_fs = int(round(base_fs * min(1.20, max(1.0, (1.0 + kw_scale) * 0.5))))
@@ -526,34 +537,30 @@ def _compute_authoritative_subtitle_bbox(
     box_y = max(SUBTITLE_SAFE_ZONE["y_min"], min(SUBTITLE_SAFE_ZONE["y_max"] - box_h, safe_yc - box_h // 2))
     cand = {"x": int(box_x), "y": int(box_y), "w": int(box_w), "h": int(box_h)}
 
+    face_avoid_dy = 0
     if face_boxes_px:
         cur_iou = max(bbox_iou(cand, fb) for fb in face_boxes_px)
-        if cur_iou > 0.01:
+        if cur_iou > FACE_AVOID_IOU_LIMIT:
             y_lo = SUBTITLE_SAFE_ZONE["y_min"]
-            y_hi = SUBTITLE_SAFE_ZONE["y_max"] - box_h
-            try_ys = [
-                y_hi,
-                y_lo,
-                max(y_lo, box_y - 110),
-                min(y_hi, box_y + 110),
-                max(y_lo, y_lo + 60),
-                min(y_hi, y_hi - 60),
-                (y_lo + y_hi) // 2,
-            ]
-            best_cand = cand
-            best_iou = cur_iou
-            for ty in try_ys:
-                ty_c = max(y_lo, min(y_hi, int(ty)))
-                alt = dict(cand, y=ty_c)
+            y_hi = max(y_lo, SUBTITLE_SAFE_ZONE["y_max"] - box_h)
+            offsets: List[int] = [0]
+            d = FACE_AVOID_STEP_PX
+            while d <= FACE_AVOID_MAX_SHIFT_PX:
+                offsets.extend([d, -d])
+                d += FACE_AVOID_STEP_PX
+            best_cand, best_iou, best_dy = cand, cur_iou, 0
+            for dy in offsets:
+                ty = max(y_lo, min(y_hi, box_y + dy))
+                alt = dict(cand, y=int(ty))
                 iou_v = max(bbox_iou(alt, fb) for fb in face_boxes_px)
-                if iou_v <= 0.01:
-                    best_cand = alt
+                if iou_v <= FACE_AVOID_IOU_LIMIT:
+                    best_cand, best_iou, best_dy = alt, iou_v, int(ty) - int(box_y)
                     break
                 if iou_v < best_iou:
-                    best_iou = iou_v
-                    best_cand = alt
+                    best_cand, best_iou, best_dy = alt, iou_v, int(ty) - int(box_y)
             cand = best_cand
-    return cand
+            face_avoid_dy = int(best_dy)
+    return cand, face_avoid_dy
 
 
 def _norm_tokens(s: Any) -> str:
@@ -631,37 +638,113 @@ def _retarget_words_to_text(words: List[Dict[str, Any]], text: str) -> List[Dict
         out.append(nw)
     return out
 
-def _merge_short_chunks(chunks: List[Dict[str, Any]], min_chars: int = MIN_CHUNK_CHARS) -> List[Dict[str, Any]]:
-    """把 2~3 个字的残句并进相邻块。
+def _merge_short_chunks(
+    chunks: List[Dict[str, Any]],
+    min_chars: int = MIN_CHUNK_CHARS,
+    max_px: Optional[int] = None,
+    font_path: Optional[str] = None,
+    font_size: int = 62,
+) -> List[Dict[str, Any]]:
+    """把 2~3 个字的残句并进相邻块（**并完必须仍在对称安全带内**）。
 
     为什么：字号修到真值（75px）后一行只放得下 8 个字，句尾常被切出一个「仲有」「去制造」，
     单占一屏既难看也被平台安全区体检判成「残句」。
+
+    2026-11-24 实测补充：这里以前只管字数不管宽度，「三分之一」+「两百平去制造」被并成
+    10 字 640px 的满宽行，渲染器只能靠溢出兑底把整行缩字，字号和居中都被带偏。
+    现在合并前先量宽，超过对称安全带（max_px）就不并。
     """
+    def _too_wide(txt: str) -> bool:
+        if not max_px:
+            return False
+        w, _ = _measure_text_px(str(txt or ""), font_path, font_size)
+        return w > int(max_px)
+
     out: List[Dict[str, Any]] = []
     for ch in chunks:
         txt = str(ch.get("text") or "").replace(" ", "")
         if out and len(txt) < min_chars:
             prev = out[-1]
             gap = float(ch["start_sec"]) - float(prev["end_sec"])
-            if gap <= 0.50:
-                prev["text"] = str(prev.get("text") or "") + str(ch.get("text") or "")
+            merged_txt = str(prev.get("text") or "") + str(ch.get("text") or "")
+            if gap <= 0.50 and not _too_wide(merged_txt):
+                prev["text"] = merged_txt
                 prev["end_sec"] = max(float(prev["end_sec"]), float(ch["end_sec"]))
                 prev["words"] = list(prev.get("words") or []) + list(ch.get("words") or [])
                 prev["keywords"] = list(dict.fromkeys(list(prev.get("keywords") or []) + list(ch.get("keywords") or [])))
                 continue
         out.append(dict(ch))
-    # 并不到一起的残块（中间隔了停顿）如果这一句还有别的块，就别单独占一屏
+    # 并不到一起的残块：**绝不允许丢字**。以前这里直接 filter 掉，实测「去制造」三个字被静默吐掉；
+    # 现在改成先从邻块按整字挪一两个字过来凑成能单独上屏的短句，实在挪不动就保留（宁可短一屏也不丢词）。
     if len(out) >= 2:
-        out = [c for c in out if len(str(c.get("text") or "").replace(" ", "")) >= min_chars] or out
+        out = _rebalance_short_chunks(out, min_chars, max_px, font_path, font_size)
     # 头一块太短（第一块就只剩两个字）并到后一块
     if len(out) >= 2 and len(str(out[0].get("text") or "")) < min_chars:
         first, second = out[0], out[1]
-        if float(second["start_sec"]) - float(first["end_sec"]) <= 0.50:
-            second["text"] = str(first.get("text") or "") + str(second.get("text") or "")
+        merged_txt = str(first.get("text") or "") + str(second.get("text") or "")
+        if float(second["start_sec"]) - float(first["end_sec"]) <= 0.50 and not _too_wide(merged_txt):
+            second["text"] = merged_txt
             second["start_sec"] = min(float(first["start_sec"]), float(second["start_sec"]))
             second["words"] = list(first.get("words") or []) + list(second.get("words") or [])
             out.pop(0)
     return out
+
+
+def _rebalance_short_chunks(
+    chunks: List[Dict[str, Any]],
+    min_chars: int,
+    max_px: Optional[int],
+    font_path: Optional[str],
+    font_size: int,
+) -> List[Dict[str, Any]]:
+    """不足 min_chars 的残句：从邻块按整字挪到刚好够长，保证「不丢字 + 不超宽 + 不单占一屏」三者兼得。"""
+    def _chars(txt: str) -> int:
+        return len(str(txt or "").replace(" ", ""))
+
+    def _too_wide(txt: str) -> bool:
+        if not max_px:
+            return False
+        w, _ = _measure_text_px(str(txt or ""), font_path, font_size)
+        return w > int(max_px)
+
+    for i in range(len(chunks)):
+        cur = chunks[i]
+        while _chars(cur.get("text")) < min_chars:
+            moved = False
+            for j, take_from_head in ((i - 1, False), (i + 1, True)):
+                if not (0 <= j < len(chunks)):
+                    continue
+                nb = chunks[j]
+                nb_words = list(nb.get("words") or [])
+                cur_words = list(cur.get("words") or [])
+                if not nb_words or not cur_words:
+                    continue
+                if _chars(nb.get("text")) - 1 < min_chars:
+                    continue  # 邻块本身就快没了，别再抽
+                donor = nb_words[0] if take_from_head else nb_words[-1]
+                cand_nb_words = nb_words[1:] if take_from_head else nb_words[:-1]
+                cand_cur_words = cur_words + [donor] if take_from_head else [donor] + cur_words
+                cand_nb_text = "".join(str(w.get("word") or "") for w in cand_nb_words)
+                cand_cur_text = "".join(str(w.get("word") or "") for w in cand_cur_words)
+                if _chars(cand_cur_text) >= min_chars and _too_wide(cand_cur_text):
+                    continue
+                if _too_wide(cand_nb_text) or _too_wide(cand_cur_text):
+                    continue
+                nb["words"] = cand_nb_words
+                nb["text"] = cand_nb_text
+                cur["words"] = cand_cur_words
+                cur["text"] = cand_cur_text
+                if take_from_head:
+                    nb["start_sec"] = float(cand_nb_words[0]["start_sec"])
+                    cur["end_sec"] = float(donor["end_sec"])
+                else:
+                    nb["end_sec"] = float(cand_nb_words[-1]["end_sec"])
+                    cur["start_sec"] = float(donor["start_sec"])
+                moved = True
+                break
+            if not moved:
+                break  # 挪不动就保留这一屏，绝不删字
+    return chunks
 
 
 def _confirm_chunk_text(chunk: Dict[str, Any], sent_text: str, cursor: int = 0) -> Tuple[Dict[str, Any], int]:
@@ -1025,14 +1108,19 @@ def run_step5(
                             search_i = hit_end
                     sent_eff["words"] = new_ws
         sent_prot = load_protected_terms(None, extra_terms=[*prot_terms, *(sent_eff.get("keywords") or [])])
-        _chunks = _merge_short_chunks(list(split_sentence_into_chunks(
-            sent_eff,
-            max_chars=tpl_max_chars,
+        _chunks = _merge_short_chunks(
+            list(split_sentence_into_chunks(
+                sent_eff,
+                max_chars=tpl_max_chars,
+                font_path=font_path,
+                font_size=eff_measure_fs,
+                strip_punct=strip_punct,
+                protected_terms=sent_prot,
+            )),
+            max_px=_line_px,
             font_path=font_path,
             font_size=eff_measure_fs,
-            strip_punct=strip_punct,
-            protected_terms=sent_prot,
-        )))
+        )
         for ch in _chunks:
             st_sec = round(float(ch["start_sec"]), 4)
             en_sec = round(float(ch["end_sec"]), 4)
@@ -1044,7 +1132,7 @@ def run_step5(
                 if float(c["timeline_in_sec"]) < en_sec and float(c["timeline_out_sec"]) > st_sec:
                     active_faces.extend(faces_by_mp4.get(str(c.get("media_path", "")), []))
 
-            final_bbox = _compute_authoritative_subtitle_bbox(ch["text"], tpl, font_path, active_faces)
+            final_bbox, face_avoid_dy = _compute_authoritative_subtitle_bbox(ch["text"], tpl, font_path, active_faces)
             safe_ok, safe_msg = check_bbox_in_safe_zone(final_bbox)
 
             suppressed = False
@@ -1067,6 +1155,7 @@ def run_step5(
                 "words": ch["words"],
                 "bbox": final_bbox,
                 "final_bbox": final_bbox,
+                "face_avoid_dy": int(face_avoid_dy),
                 "safe_zone_ok": safe_ok,
                 "safe_msg": safe_msg,
                 "suppressed": suppressed,

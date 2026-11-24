@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 # ── 默认门槛（风格模版可在 pip_composition_spec.cutout_policy 里覆盖）─────────
 DEFAULT_POLICY: Dict[str, Any] = {
@@ -168,10 +168,16 @@ def apply_cutout_gate(
     clips: List[Dict[str, Any]],
     style_entry: Optional[Dict[str, Any]],
     pipeline_dir: Path,
+    post_decide: Optional[Callable[[Dict[str, Any], float], Optional[str]]] = None,
 ) -> Dict[str, Any]:
     """在剪辑表上批量执行抠像门槛：不合规的「抠像」降级为「只推近/只摆窗口」，并逐镜记理由。
 
     必须在人脸锚点算完之后调用（`face_anchor` 是本模块的第一道依据）。
+
+    `post_decide(clip, timeline_in_sec) -> Optional[str]`：内容门槛放行之后的**第二道判定**，
+    由 `treatment_policy` 提供（风格密度预算 / 台词是否在指认画面 / 单段上限…）。
+    返回字符串 = 改判为「不抠」，该字符串就是逐镜理由。降级动作仍只在这里执行，
+    所以「改判」和「降级」不会各写一套逻辑。
     """
     spec = (style_entry or {}).get("pip_composition_spec") or {}
     policy = dict(spec.get("cutout_policy") or {})
@@ -193,6 +199,10 @@ def apply_cutout_gate(
         tin = float(c.get("timeline_in_sec") or 0.0)
         vtext = texts.get(_norm_name(c.get("media_path")), "")
         verdict = decide(c, pol, vtext, lay.get("face_anchor"))
+        if verdict["allowed"] and post_decide is not None:
+            extra = post_decide(c, tin)
+            if extra:
+                verdict = {"allowed": False, "basis": "treatment_policy", "reason": extra}
         if verdict["allowed"]:
             if allowed >= max_n:
                 verdict = {"allowed": False, "basis": "cap",

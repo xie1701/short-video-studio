@@ -45,8 +45,13 @@ def _write_wav(path: Path, seconds: float = 0.30, freq: float = 440.0, sr: int =
     return path
 
 
-def _write_pipeline(pdir: Path, duration_sec: float = 12.0, clips: int = 12, fps: int = 30) -> Path:
-    """造一份最小可跑的 step6 输入（音效足够密，才能体现密度差异）。"""
+def _write_pipeline(pdir: Path, duration_sec: float = 12.0, clips: int = 12, fps: int = 30,
+                    full_speech: bool = False) -> Path:
+    """造一份最小可跑的 step6 输入（音效足够密，才能体现密度差异）。
+
+    `full_speech=True` 时人声覆盖整片——音效策略会把"没有人声的空白"判成纯静音段禁响，
+    要测密度上限就必须给满人声。
+    """
     pdir.mkdir(parents=True, exist_ok=True)
     clip_len = duration_sec / clips
     clip_rows = []
@@ -68,8 +73,9 @@ def _write_pipeline(pdir: Path, duration_sec: float = 12.0, clips: int = 12, fps
         "locked_duration_sec": duration_sec,
         "sentences": [{
             "id": "s1", "text": "这一句用来测试音效密度", "keywords": ["音效密度"],
-            "start_sec": 0.0, "end_sec": min(3.0, duration_sec),
-            "start_frame": 0, "end_frame": int(min(3.0, duration_sec) * fps),
+            "start_sec": 0.0, "end_sec": duration_sec if full_speech else min(3.0, duration_sec),
+            "start_frame": 0,
+            "end_frame": int((duration_sec if full_speech else min(3.0, duration_sec)) * fps),
             "emotion_or_info": "hook",
         }],
         "events": [
@@ -158,16 +164,21 @@ class StyleSfxTruthTests(unittest.TestCase):
 
     # ── 4. 密度跟 sfx_truth 走 ───────────────────────────────────────────
     def test_density_follows_sfx_truth(self):
-        _write_wav(self.assets / "sound_vibe" / "sfx" / "style_08" / "cut_呼.wav", freq=320.0)
-        # 只有 lib 里的旧 target 参与时两轮结果会一样；这里只用 truth 区分
+        """密度是**上限**，不是撒点器。
+
+        2026-11-24 起音效必须挂在可归因锚点上（切点/花字/换行/拍点），密度只决定"最多能响几次"。
+        所以这里的语料是"每个切点都是结构性切点 + 人声铺满"，此时条数就完全由每条/分钟上限决定：
+        6/min 的风格只能落 6 声，48/min 的能落满 24 声。
+        """
+        _write_wav(self.assets / "sound_vibe" / "sfx" / "style_15" / "cut_呼.wav", freq=320.0)
         results = {}
         for tag, ppm in (("sparse", 6.0), ("dense", 48.0)):
-            write_json(self.assets / "sound_vibe" / "sfx_truth" / "style_08.json", {
-                "style_id": "style_08", "sfx_count": 12, "sfx_per_min": ppm,
-                "files": [{"file": "sound_vibe/sfx/style_08/cut_呼.wav", "role": "cut", "name": "呼"}],
+            write_json(self.assets / "sound_vibe" / "sfx_truth" / "style_15.json", {
+                "style_id": "style_15", "sfx_count": 12, "sfx_per_min": ppm,
+                "files": [{"file": "sound_vibe/sfx/style_15/cut_呼.wav", "role": "cut", "name": "呼"}],
             })
-            pdir = _write_pipeline(self.root / f"p_{tag}", duration_sec=24.0, clips=24)
-            results[tag] = step6_packaging.run_step6(pdir, style_id="style_08")
+            pdir = _write_pipeline(self.root / f"p_{tag}", duration_sec=24.0, clips=24, full_speech=True)
+            results[tag] = step6_packaging.run_step6(pdir, style_id="style_15")
 
         self.assertEqual(results["sparse"]["sfx_per_min_target"], 6.0)
         self.assertEqual(results["dense"]["sfx_per_min_target"], 48.0)

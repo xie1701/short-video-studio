@@ -23,6 +23,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from common import (
     BT709_FFMPEG_ARGS,
@@ -34,6 +36,7 @@ from common import (
     SUBTITLE_CENTER_X,
     SUBTITLE_SAFE_ZONE,
     SUBTITLE_SYMMETRIC_MAX_W,
+    TP_MAX_DBTP,
     compute_centered_crop_frac,
     compute_crop_transform,
     compute_segment_cache_key,
@@ -46,10 +49,12 @@ from common import (
     frames_to_sec,
     get_cached_font,
     get_wav_duration_sec,
+    glyph_contrast_ratio,
     hex_to_rgba,
     load_style_applied,
     load_style_spectrum_entry,
     load_subtitle_templates,
+    measure_lufs_ebur128,
     maybe_reexec_in_venv,
     parse_manifest_faces,
     parse_video_stream_geometry,
@@ -125,14 +130,19 @@ def _flower_duplicates_subtitle(text: str, s_t: float, e_t: float, subs: List[Di
 
 
 def compute_subtitle_place_xy(img_w: int, img_h: int, tpl: Dict[str, Any]) -> Tuple[int, int]:
-    """按画布绝对水平正中 x=540px 居中放置字幕（通宽底条模式贴满 0..1080，其余严守对称安全带 [220, 860]）。"""
+    """按画布绝对水平正中 x=540px 居中放置字幕（通宽底条模式贴满 0..1080，其余严守对称安全带 [220, 860]）。
+
+    长行（>640px）以前会被「贴着 860 右边界往回推」，反而把整行推偏一半；现在宁可保持口径居中，
+    只在平台安全区内做对称夹紧——真正的修法在 step5（换行/断句把行宽压进 640px），这里只是兼底。
+    """
     y_center = int(tpl.get("safe_y_center", tpl.get("y_center", 1310)))
     if bool(tpl.get("full_width_bar")) and img_w >= CANVAS_WIDTH - 4:
         px = 0
     else:
         px = SUBTITLE_CENTER_X - img_w // 2
         if img_w > SUBTITLE_SYMMETRIC_MAX_W:
-            px = max(SUBTITLE_SAFE_ZONE["x_min"], min(px, SUBTITLE_SAFE_ZONE["x_max"] - img_w))
+            # 超宽兼底：宁可保口径居中（对称溢出），也不把整行推到一侧；真正的修法在 step5 把行宽压进 640px
+            px = max(0, min(px, CANVAS_WIDTH - img_w))
     py = max(SUBTITLE_SAFE_ZONE["y_min"], min(y_center - img_h // 2, SUBTITLE_SAFE_ZONE["y_max"] - img_h))
     return int(px), int(py)
 
@@ -204,8 +214,14 @@ def render_subtitle_png(
     tpl: Dict[str, Any],
     font_path: Optional[str],
     out_png: Path,
+    shadow_boost: float = 1.0,
+    stroke_extra: int = 0,
 ) -> Tuple[int, int]:
-    """按模板样式与字词高亮信息渲染透明字幕 PNG：整行按真实墨迹包围盒严格几何居中，且宽度严格 <=640px 保绝对居中。"""
+    """按模板样式与字词高亮信息渲染透明字幕 PNG：整行按真实墨迹包围盒严格几何居中，且宽度严格 <=640px 保绝对居中。
+
+    shadow_boost / stroke_extra 只服务于「亮底自适应增强」闭环：默认值 1.0 / 0 与标定值逐像素一致
+    （暗底永不动），只有投影在同族系数上限内加强仍达不到 WCAG 3.8 时才补细描边。
+    """
     words = entry.get("words") or []
     raw_text = str(entry.get("text") or "").strip()
     if not raw_text and words:
@@ -259,6 +275,8 @@ def render_subtitle_png(
         base_sz -= 2
 
     stroke_w = 0 if orig_stroke_w <= 0 else max(1, int(round(orig_stroke_w * max(0.75, base_sz / float(orig_fs)))))
+    if int(stroke_extra) > 0:
+        stroke_w = max(stroke_w, int(stroke_extra))
     primary_rgba = parse_hex_rgba(tpl.get("primary_color", "#FFFFFF"))
     kw_rgba = parse_hex_rgba(tpl.get("keyword_color", "#FFE28A"))
     stroke_rgba = parse_hex_rgba(tpl.get("stroke_color", "#000000"))
@@ -348,6 +366,17 @@ def render_subtitle_png(
         sh_dx = int(round(sh_dx_raw * sz_scale))
         sh_dy = int(round(sh_dy_raw * sz_scale))
         sh_blur = float(sh_blur_raw * sz_scale)
+    if float(shadow_boost) > 1.0:
+        # 亮底自适应增强：偏移与虚化按同族系数放大（σ 放大封顶 1.6，再大就从「投影」糊成「灰蒙」）
+        sh_dx = int(round(sh_dx * float(shadow_boost)))
+        sh_dy = int(round(sh_dy * float(shadow_boost)))
+        sh_blur = float(sh_blur) * min(float(shadow_boost), 1.6)
+        shadow_rgba = (
+            shadow_rgba[0],
+            shadow_rgba[1],
+            shadow_rgba[2],
+            int(min(255, round(shadow_rgba[3] * (1.0 + 0.5 * (float(shadow_boost) - 1.0))))),
+        )
     use_shadow = bool(tpl.get("shadow", False)) and shadow_rgba[3] > 0 and (sh_dx or sh_dy or sh_blur)
 
     # 先将每行单独渲染至临时透明层并精确裁出真实墨迹包围盒，消除字形左轴承/末字尾距造成的不对称偏移
@@ -450,6 +479,143 @@ def render_subtitle_png(
     out_png.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(out_png)
     return total_w, total_h
+
+
+# ── 亮底自适应投影闭环（同一套风格，只把「投影/描边」的强度往上调）──
+# 用户实测 2026-11-24：白字压在亮墙/白鱼身上时 WCAG 单帧只有 1.3~3.2:1，字看不清。
+# 做法：先按标定值（boost=1.0）量一次；不够就沿同族系数阶梯加强投影，投影到顶仍不够才补细描边。
+# 目标取 4.2（高于质检硬门槛 3.8，给 H.264 缩放后的软化留余量）；暗底 boost 永远保持 1.0 不动标定值。
+# AAC 首编时挂真峰守门：交付文件的真峰由这一步封口（step8 限的是 wav，AAC 封装会再抬 1~1.7dB）
+DELIVERY_AUDIO_VF = "alimiter=limit=0.68:level=disabled:attack=1.5:release=40:latency=true"
+SUBTITLE_CONTRAST_TARGET = 4.2
+SUBTITLE_SHADOW_BOOST_STEPS = (1.0, 1.4, 2.2)
+# 增强阶梯：按「偏离标定值从小到大」排，先加深投影（同族系数），投影到顶仍不行才补细描边（描边不是 style_21 的 DNA，
+# 只在亮底逼到没办法时才用，且封顶 4px）。实测（2026-11-24，base 轨真背景）：只放投影最多把 1.37:1 拉到 1.62:1
+# （均匀亮底上偏移投影只盖住一个角），2px 描边→2.3~6.1、4px→7.3~21，因此阶梯最后必须允许到 4px 才能守住 3.8。
+SUBTITLE_ENHANCE_LADDER: Tuple[Tuple[float, int], ...] = (
+    (1.4, 0),
+    (2.2, 0),
+    (1.4, 2),
+    (2.2, 2),
+    (1.4, 3),
+    (2.2, 3),
+    (1.4, 4),
+    (2.2, 4),
+    (1.4, 6),
+    (2.2, 6),
+    (2.2, 8),
+)
+SUBTITLE_BRIGHT_BG_LUM = 0.18  # 环带背景亮度低于此值视为「暗底」，不启动增强
+
+
+def _subtitle_bg_strip(
+    ffmpeg_bin: str,
+    video_path: Path,
+    at_sec: float,
+    y0: int,
+    y1: int,
+    cache_dir: Path,
+    tag: str,
+) -> Optional[np.ndarray]:
+    """抽一帧成片（已调色、无字幕的 base 轨）并裁出字幕所在横条，供投影闭环现场合图度量。"""
+    y0 = max(0, min(CANVAS_HEIGHT - 8, int(y0)))
+    y1 = max(y0 + 8, min(CANVAS_HEIGHT, int(y1)))
+    out_jpg = cache_dir / f"bg_{tag}.jpg"
+    res = run_cmd([
+        ffmpeg_bin, "-y", "-hide_banner", "-loglevel", "error",
+        "-ss", f"{max(0.0, float(at_sec)):.3f}", "-i", str(video_path),
+        "-frames:v", "1",
+        "-vf", f"crop={CANVAS_WIDTH}:{y1 - y0}:0:{y0}",
+        "-q:v", "2", str(out_jpg),
+    ], check=False)
+    if res.returncode != 0 or not out_jpg.is_file():
+        return None
+    with Image.open(out_jpg) as im:
+        return np.asarray(im.convert("RGB"))
+
+
+def render_subtitle_png_adaptive(
+    entry: Dict[str, Any],
+    tpl: Dict[str, Any],
+    font_path: Optional[str],
+    out_png: Path,
+    bg_strip: Optional[np.ndarray] = None,
+    bg_strip_y0: int = 0,
+    place_xy: Optional[Any] = None,
+    target_ratio: float = SUBTITLE_CONTRAST_TARGET,
+    allow_stroke: bool = True,
+) -> Tuple[int, int, Dict[str, Any]]:
+    """渲字幕 PNG 并在真实背景上闭度量对比度，不够就同族加强投影（必要时补细描边）。
+
+    返回 (w, h, meta)。meta 里记原始/增强后的实测对比度与用了哪一档，供 05_subtitle_render_log.json 与质检对账。
+    bg_strip 为 None（拿不到底图）时按标定值渲一次，不造假度量。
+    """
+    meta: Dict[str, Any] = {
+        "shadow_boost": 1.0,
+        "stroke_extra": 0,
+        "contrast_before": None,
+        "contrast_after": None,
+        "bg_lum": None,
+    }
+
+    def _measure(w: int, h: int) -> Optional[Dict[str, float]]:
+        if bg_strip is None or place_xy is None:
+            return None
+        px, py = place_xy(w, h)
+        top = int(py) - int(bg_strip_y0)
+        left = int(px)
+        if top < 0 or left < 0:
+            return None
+        if top + h > bg_strip.shape[0] or left + w > bg_strip.shape[1]:
+            return None
+        with Image.open(out_png) as png:
+            layer = png.convert("RGBA")
+            patch = Image.fromarray(bg_strip[top : top + h, left : left + w]).convert("RGBA")
+            canvas = Image.alpha_composite(patch, layer)
+            return glyph_contrast_ratio(np.asarray(canvas.convert("RGB")))
+
+    sw, sh = render_subtitle_png(entry, tpl, font_path, out_png)
+    base_metric = _measure(sw, sh)
+    if base_metric is None:
+        return sw, sh, meta
+    base_eff = float(base_metric.get("ratio_effective", base_metric["ratio"]))
+    meta["contrast_before"] = round(base_eff, 2)
+    meta["contrast_median"] = round(float(base_metric["ratio"]), 2)
+    meta["bg_lum"] = round(float(base_metric["bg_lum"]), 3)
+    if base_metric["bg_lum"] < SUBTITLE_BRIGHT_BG_LUM or base_eff >= target_ratio:
+        # 暗底或本来就够清楚：保持已标定的 1:1 参数，一个像素都不动
+        meta["contrast_after"] = meta["contrast_before"]
+        return sw, sh, meta
+
+    best = (sw, sh, 1.0, 0, base_eff)
+    for boost, extra in (SUBTITLE_ENHANCE_LADDER if allow_stroke else tuple(c for c in SUBTITLE_ENHANCE_LADDER if c[1] == 0)):
+        cand_w, cand_h = render_subtitle_png(
+            entry, tpl, font_path, out_png, shadow_boost=boost, stroke_extra=extra
+        )
+        m = _measure(cand_w, cand_h)
+        if m is None:
+            continue
+        cand_eff = float(m.get("ratio_effective", m["ratio"]))
+        if cand_eff > best[4]:
+            best = (cand_w, cand_h, boost, extra, cand_eff)
+        if cand_eff >= target_ratio:
+            meta.update({
+                "shadow_boost": float(boost),
+                "stroke_extra": int(extra),
+                "contrast_after": round(cand_eff, 2),
+            })
+            return cand_w, cand_h, meta
+    # 到顶仍不够：用跑到的最好一档（不撒谎，实测值照记）
+    bw, bh, bboost, bextra, bratio = best
+    if (bboost, bextra) != (1.0, 0):
+        render_subtitle_png(entry, tpl, font_path, out_png, shadow_boost=bboost, stroke_extra=bextra)
+    meta.update({
+        "shadow_boost": float(bboost),
+        "stroke_extra": int(bextra),
+        "contrast_after": round(float(bratio), 2),
+        "below_target": True,
+    })
+    return bw, bh, meta
 
 
 def _resolve_packaging_palette(style_id: str, track: str = "store") -> Dict[str, Tuple[int, int, int, int]]:
@@ -876,6 +1042,10 @@ def _place_from_final_bbox(
         by = int(fb["y"]) + (int(fb["h"]) - ph) // 2
         px = max(zone["x_min"], min(bx, zone["x_max"] - pw))
         py = max(zone["y_min"], min(by, zone["y_max"] - ph))
+        # 风格给的落位也要让脸：花字/贴纸压在人脸上，观众第一眼看到的就是糊字压脸
+        #（实测 52.5s/53.0s『绝对品质』压脸 IoU 0.17）。能避开就沿 y 挪，避不开才回原位。
+        if faces:
+            px, py = _avoid_face_boxes(int(px), int(py), pw, ph, faces, zone["y_min"], zone["y_max"])
         return int(px), int(py)
     return _avoid_face_boxes(default_xy[0], default_xy[1], pw, ph, faces, zone["y_min"], zone["y_max"])
 
@@ -922,6 +1092,73 @@ def _manifest_lookups(manifest: Dict[str, Any]) -> Tuple[Dict[str, List[Dict[str
     return faces_by_mp4, eye_by_mp4
 
 
+def _seg_frame_count(ffmpeg_bin: str, seg_path: Path) -> Optional[int]:
+    """读单个分镜 mp4 的实际帧数（优先流元数据，拿不到就量时长×帧率）。"""
+    ffprobe_bin = find_bin("ffprobe") or "ffprobe"
+    res = run_cmd([
+        ffprobe_bin, "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=nb_frames,avg_frame_rate,duration",
+        "-of", "json", str(seg_path),
+    ], check=False)
+    if res.returncode != 0:
+        return None
+    try:
+        st = (json.loads(res.stdout or "{}").get("streams") or [{}])[0]
+    except Exception:
+        return None
+    nb = st.get("nb_frames")
+    if nb and str(nb).isdigit():
+        return int(nb)
+    rate = str(st.get("avg_frame_rate") or "")
+    try:
+        num, den = rate.split("/")
+        fps_v = float(num) / float(den) if float(den) else 0.0
+    except Exception:
+        fps_v = 0.0
+    dur = st.get("duration")
+    if fps_v > 0 and dur:
+        return int(round(float(dur) * fps_v))
+    return None
+
+
+def _pad_short_segments(
+    ffmpeg_bin: str,
+    seg_files: List[Path],
+    clip_nom_frames: List[int],
+    extra_xf: List[int],
+    fps: int,
+) -> int:
+    """把短出计划帧数的分镜用末帧克隆补齐（最多补 1 秒，异常偏差不硬补）。返回补过的镜头数。"""
+    padded = 0
+    for idx, seg_p in enumerate(seg_files):
+        if not seg_p.is_file():
+            continue
+        want = clip_nom_frames[idx] + (extra_xf[idx] if idx < len(extra_xf) else 0)
+        have = _seg_frame_count(ffmpeg_bin, seg_p)
+        if have is None or have >= want or have <= 0:
+            continue
+        deficit = want - have
+        if deficit > fps:
+            print(f"[render_mp4] [WARN] {seg_p.name} 少 {deficit} 帧，超 1 秒，不硬补（请查素材时长）", flush=True)
+            continue
+        tmp = seg_p.with_suffix(".pad.mp4")
+        cmd = [
+            ffmpeg_bin, "-y", "-i", str(seg_p),
+            "-vf", f"tpad=stop_mode=clone:stop_duration={frames_to_sec(deficit, fps):.4f}",
+            "-frames:v", str(want),
+            "-c:v", "libx264", "-preset", "medium", "-crf", "15",
+            "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS,
+            str(tmp),
+        ]
+        res = run_cmd(cmd, check=False)
+        if res.returncode == 0 and tmp.is_file() and (_seg_frame_count(ffmpeg_bin, tmp) or 0) >= want:
+            tmp.replace(seg_p)
+            padded += 1
+        else:
+            tmp.unlink(missing_ok=True)
+    return padded
+
+
 def _compute_base_cache_key(
     edl: Dict[str, Any],
     color_plan: Dict[str, Any],
@@ -931,7 +1168,7 @@ def _compute_base_cache_key(
     eye_by_mp4: Dict[str, Any],
 ) -> str:
     payload = {
-        "version": 4,
+        "version": 6,  # v6：逐镜取整零头摊回最后一镜 + 短镜末帧补帧（音视频流等长）
         "edl": edl,
         "color_plan": color_plan,
         "sources": source_hashes,
@@ -1923,6 +2160,22 @@ def build_base_video_track(
             xf_edges.append(bool(long_enough and non_tight_lip))
     else:
         xf_edges = [False] * max(0, len(clips) - 1)
+    # 逐镜取整的零头必须摊回最后一镜：每镜向下取整丢 0.x 帧，51 镜能短 1~2 帧，
+    # 短掉的部分没人补，成片视频流就比音频流短（实测 60.83s vs 60.89s = 1.75 帧）。
+    if clip_nom_frames:
+        _n_xf_edge = sum(1 for e in xf_edges if e)
+        _want = target_frames + _n_xf_edge * xf_frames
+        _resid = _want - sum(clip_nom_frames)
+        _i = len(clip_nom_frames) - 1
+        while _resid != 0 and _i >= 0:
+            if _resid > 0:
+                clip_nom_frames[_i] += _resid
+                _resid = 0
+            else:
+                _take = min(clip_nom_frames[_i] - 1, -_resid)
+                clip_nom_frames[_i] -= _take
+                _resid += _take
+                _i -= 1
     use_xfade = any(xf_edges)
 
     def _pip_summary() -> Dict[str, Any]:
@@ -2065,6 +2318,16 @@ def build_base_video_track(
         else:
             with ThreadPoolExecutor(max_workers=min(2, len(render_jobs))) as pool:
                 list(pool.map(_exec_seg, render_jobs))
+
+    # 逐镜补帧：素材不够长 / seek 取整会让某一镜少出 1~2 帧，拼起来视频流就比音频短
+    # （实测 seg_003 要 37 帧只见 35，全片 60.83s vs 音频 60.89s = 1.75 帧，质检 #4 判脱节）。
+    padded_segs = _pad_short_segments(
+        ffmpeg_bin, seg_files, clip_nom_frames,
+        [xf_frames if (idx < len(xf_edges) and xf_edges[idx]) else 0 for idx in range(len(seg_files))],
+        fps,
+    )
+    if padded_segs:
+        print(f"[render_mp4] 补帧 {padded_segs} 镜（末帧克隆到计划帧数，保证音视频流等长）", flush=True)
 
     exact_dur = frames_to_sec(target_frames, fps)
     if use_xfade and len(seg_files) >= 2:
@@ -2286,6 +2549,20 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
             s_t, e_t, blur_rect, fade_in, is_video_ov,
         ))
 
+    # 字幕闭环必须量在「真实的底片」上：先前把 base + 所有非字幕图层合成为 stage A，
+    # 再从 stage A 抽帧量对比度。否则投影/描边是按一张没有贴纸/花字/卡片的假底图在算，
+    # 实测同一时刻量出来能差 3~4 倍（16.0s：假底 0.302 vs 真底 0.775），闭环等于白跑。
+    ov_non_sub = len(overlays)
+    subtitles_present = any(not e.get("suppressed") for e in (subs_data.get("entries") or []))
+    probe_src: Path = base_mp4
+    if subtitles_present and ov_non_sub:
+        probe_src = work_dir / ("stage_a_preview.mp4" if preview else "stage_a.mp4")
+        _composite_layers(
+            ffmpeg_bin, base_mp4, overlays[:ov_non_sub], probe_src, work_dir,
+            fps=fps, preview=preview, audio_in=None, dur=exact_dur, tag="a",
+        )
+
+    subtitle_render_log: List[Dict[str, Any]] = []
     for idx, sub in enumerate(subs_data.get("entries") or []):
         if sub.get("suppressed"):
             continue
@@ -2294,22 +2571,48 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
         if e_t <= s_t:
             continue
         sub_png = work_dir / f"sub_{idx:03d}.png"
-        sw_px, sh_px = render_subtitle_png(sub, tpl, font_path, sub_png)
+
+        def _place_for(w: int, h: int) -> Tuple[int, int]:
+            d_x, d_y = compute_subtitle_place_xy(w, h, tpl)
+            if bool(tpl.get("full_width_bar")) and w >= CANVAS_WIDTH - 4:
+                return 0, d_y
+            p_x, p_y = _place_from_final_bbox(sub, w, h, SUBTITLE_SAFE_ZONE, (d_x, d_y), _faces_at_time(s_t))
+            if w <= SUBTITLE_SYMMETRIC_MAX_W:
+                p_x = SUBTITLE_CENTER_X - w // 2
+            return int(p_x), int(p_y)
+
+        # 亮底自适应投影闭环：拿 base 轨（已调色、无字幕）在字幕框位置的真实背景量对比度
+        fb = sub.get("final_bbox") or sub.get("bbox") or {}
+        bg_strip, bg_y0 = None, 0
+        if fb:
+            bg_y0 = max(0, int(fb.get("y", 0)) - 40)
+            bg_y1 = min(CANVAS_HEIGHT, int(fb.get("y", 0)) + int(fb.get("h", 0)) + 40)
+            bg_strip = _subtitle_bg_strip(
+                ffmpeg_bin, probe_src, (s_t + e_t) / 2.0, bg_y0, bg_y1, work_dir, f"{idx:03d}"
+            )
+        sw_px, sh_px, sub_meta = render_subtitle_png_adaptive(
+            sub, tpl, font_path, sub_png,
+            bg_strip=bg_strip, bg_strip_y0=bg_y0, place_xy=_place_for,
+        )
+        if sub_meta.get("contrast_before") is not None:
+            subtitle_render_log.append({
+                "id": sub.get("id"),
+                "text": sub.get("text"),
+                "start_sec": round(s_t, 3),
+                "end_sec": round(e_t, 3),
+                **sub_meta,
+            })
         # 同步写入 .key 指纹，供 export_jianying.py 零重复渲染直接命中字幕 PNG 缓存
         sub_cache_key = compute_segment_cache_key({
             "text": sub.get("text"),
             "words": sub.get("words"),
             "tpl": tpl,
             "font_path": font_path,
+            "shadow_boost": sub_meta.get("shadow_boost"),
+            "stroke_extra": sub_meta.get("stroke_extra"),
         })
         (work_dir / f"sub_{idx:03d}.key").write_text(sub_cache_key, encoding="utf-8")
-        def_x, def_y = compute_subtitle_place_xy(sw_px, sh_px, tpl)
-        if bool(tpl.get("full_width_bar")) and sw_px >= CANVAS_WIDTH - 4:
-            px, py = 0, def_y
-        else:
-            px, py = _place_from_final_bbox(sub, sw_px, sh_px, SUBTITLE_SAFE_ZONE, (def_x, def_y), _faces_at_time(s_t))
-            if sw_px <= SUBTITLE_SYMMETRIC_MAX_W:
-                px = SUBTITLE_CENTER_X - sw_px // 2
+        px, py = _place_for(sw_px, sh_px)
         overlays.append((
             _scale_png_for_preview(sub_png, f"s{idx}"),
             int(round(px * scale_k)),
@@ -2317,21 +2620,91 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
             s_t, e_t, None, False, False,
         ))
 
-    if not overlays:
+    if subtitle_render_log:
+        boosted = [r for r in subtitle_render_log if float(r.get("shadow_boost") or 1.0) > 1.0]
+        write_json(work_dir.parent / "05_subtitle_render_log.json", {
+            "step": "render_mp4.subtitle_shadow_calibration",
+            "metric": "common.glyph_contrast_ratio（字形 vs 紧邻环带背景，同一把尺供渲染闭环与黑盒质检共用）",
+            "target_ratio": SUBTITLE_CONTRAST_TARGET,
+            "entries": subtitle_render_log,
+            "boosted_count": len(boosted),
+            "min_contrast_after": min((r["contrast_after"] for r in subtitle_render_log if r.get("contrast_after")), default=None),
+        })
+
+    if probe_src != base_mp4:
+        final_src, final_overlays = probe_src, overlays[ov_non_sub:]
+    else:
+        final_src, final_overlays = base_mp4, overlays
+
+    if not final_overlays:
         run_cmd([
             ffmpeg_bin, "-y",
-            "-i", str(base_mp4),
+            "-i", str(final_src),
             "-i", str(master_wav),
             "-map", "0:v:0", "-map", "1:a:0",
             "-c:v", "copy",
+            "-af", DELIVERY_AUDIO_VF,
             "-c:a", "aac", "-b:a", "128k" if preview else "192k", "-ar", "48000",
             "-t", f"{exact_dur:.4f}",
             "-movflags", "+faststart",
             str(out_mp4),
         ])
-        return out_mp4
+        return _enforce_delivery_true_peak(ffmpeg_bin, out_mp4, preview=preview)
 
-    cmd = [ffmpeg_bin, "-y", "-i", str(base_mp4), "-i", str(master_wav)]
+    _composite_layers(
+        ffmpeg_bin, final_src, final_overlays, out_mp4, work_dir,
+        fps=fps, preview=preview, audio_in=master_wav, dur=exact_dur, tag="f",
+    )
+    return _enforce_delivery_true_peak(ffmpeg_bin, out_mp4, preview=preview)
+
+
+def _enforce_delivery_true_peak(ffmpeg_bin: str, mp4_path: Path, preview: bool = False) -> Path:
+    """量「交付文件自己的」真峰：AAC 编码会把 wav 的 -1.6dBTP 抬到 -0.6dBTP。
+
+    step8 限的是 wav，质检量的是 mp4 里的 AAC 流——两者差 1dB 时质检必挂。
+    这里在封装后用同一把尺（ebur128 peak=true）再量一次，超线就只把音频重编码一次压回来（视频流不动）。
+    """
+    try:
+        m = measure_lufs_ebur128(mp4_path, raise_on_error=False)
+    except Exception:
+        return mp4_path
+    tp = float(m.get("true_peak_dbtp") or -99.0)
+    # 注意：这里「不」靠再编一次把峰值压回来——实测 AAC 每编一代就多抬 1dB 真峰
+    # （原片 -0.6 → 重编 +0.5 → 带 -0.6dB 增益重编 +5.1），越压越糟。
+    # 真正的修法在 step8 的母带目标里扣掉 AAC 余量；这里只把交付文件的实测值写进日志，供质检对账。
+    if m.get("valid", True):
+        write_json(mp4_path.parent / "08_delivery_loudness.json", {
+            "file": mp4_path.name,
+            "integrated_lufs": round(float(m.get("integrated_lufs") or -99.0), 2),
+            "true_peak_dbtp": round(tp, 2),
+            "tp_max_dbtp": TP_MAX_DBTP,
+            "ok": bool(tp <= TP_MAX_DBTP),
+        })
+        if tp > TP_MAX_DBTP:
+            print(f"[render_mp4] [WARN] 交付文件真峰 {tp:.2f}dBTP 高于 {TP_MAX_DBTP:g}dBTP（AAC 封装抬升）", flush=True)
+    return mp4_path
+
+
+def _composite_layers(
+    ffmpeg_bin: str,
+    video_in: Path,
+    overlays: List[Tuple[Any, int, int, float, float, Optional[Any], bool, bool]],
+    out_path: Path,
+    work_dir: Path,
+    fps: int,
+    preview: bool,
+    audio_in: Optional[Path],
+    dur: float,
+    tag: str = "f",
+) -> Path:
+    """把一组图层按时间窗叠到 video_in 上；audio_in 为 None 时只出画面（供字幕闭环取真底片）。"""
+    out_path = Path(out_path)
+    if not overlays:
+        raise ValueError("_composite_layers 需要至少一个图层")
+    base_idx = 2 if audio_in else 1
+    cmd = [ffmpeg_bin, "-y", "-i", str(video_in)]
+    if audio_in:
+        cmd.extend(["-i", str(audio_in)])
     for ov_p, _px, _py, s_t, e_t, _blur_rect, fade_in, is_video_ov in overlays:
         if is_video_ov:
             cmd.extend(["-i", str(ov_p)])
@@ -2344,7 +2717,7 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
     cur_label = "[0:v]"
     step_idx = 0
     for i, (_, px, py, s_t, e_t, blur_rect, fade_in, is_video_ov) in enumerate(overlays):
-        in_idx = i + 2
+        in_idx = i + base_idx
         if blur_rect is not None:
             bx, by, bw, bh = blur_rect
             bw = max(40, min(CANVAS_WIDTH, int(bw)))
@@ -2389,7 +2762,7 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
         step_idx += 1
 
     filter_str = ";\n".join(filter_chains)
-    filter_script = work_dir / "overlay_filter.txt"
+    filter_script = work_dir / f"overlay_filter_{tag}.txt"
     filter_script.write_text(filter_str, encoding="utf-8")
 
     if len(filter_str) < 32768:
@@ -2402,16 +2775,16 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
     cmd.extend([
         *fc_args,
         "-map", "[vout]",
-        "-map", "1:a:0",
+        *(["-map", "1:a:0"] if audio_in else ["-an"]),
         "-c:v", "libx264", "-preset", "ultrafast" if preview else "medium", "-crf", "26" if preview else "17",
         *([] if preview else BT709_FFMPEG_ARGS),
-        "-c:a", "aac", "-b:a", "128k" if preview else "192k", "-ar", "48000",
-        "-t", f"{exact_dur:.4f}",
-        "-movflags", "+faststart",
-        str(out_mp4),
+        *(["-af", DELIVERY_AUDIO_VF, "-c:a", "aac", "-b:a", "128k" if preview else "192k", "-ar", "48000"] if audio_in else []),
+        "-t", f"{dur:.4f}",
+        *(["-movflags", "+faststart"] if audio_in else []),
+        str(out_path),
     ])
     run_cmd(cmd)
-    return out_mp4
+    return out_path
 
 
 def main() -> None:

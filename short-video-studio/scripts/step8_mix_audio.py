@@ -23,6 +23,7 @@ if _SCRIPTS_DIR not in sys.path:
 
 from common import (
     TARGET_LUFS,
+    TP_MAX_DBTP,
     compute_sfx_band_windows,
     find_bin,
     load_style_applied,
@@ -41,6 +42,9 @@ from step3_lock_audio import SR, load_stereo_wav_np, save_stereo_wav_np
 
 
 LIMITER_LIMIT = 0.68  # 母带/分轨统一峰值上限（-3.35 dBFS）：过采样真峰实测比样本峰高约 1 dB
+# AAC 封装代真峰抬升实测 1.0~1.1dB（2026-11-24：wav -1.6dBTP → 成片 -0.6dBTP），母带按扣掉余量的目标卡
+AAC_TP_HEADROOM_DB = 1.2
+_MASTER_TP_TARGET = TP_MAX_DBTP  # 真正的封口在 render 封装那次（AAC 首编时挂 alimiter），母带这里只按交付目标卡
 
 
 def _estimate_raw_noise_floor_db(pipeline_dir: Path, fallback_voice: np.ndarray) -> float:
@@ -382,10 +386,12 @@ def run_step8(
             # 过采样读出来的真峰恒在 -0.8 ~ -1.4 之间 → 每一轮都判「峰值超标」只降不升，
             # 响度一路掉到 -16.5 / -17.4 LUFS（2026-11-24 两次实测）。峰值交给 limiter，
             # 响度这一侧只在真峰越过 -0.5 dBTP 时才让路。
-            if abs(err) <= 0.35 and metrics["true_peak_dbtp"] <= -0.5:
+            # AAC 封装会把真峰再抬 ~1.0~1.1dB（实测 wav -1.6 → mp4 -0.6，再编一次 +0.5），
+            # 所以母带要按 TP 目标 - AAC_TP_HEADROOM_DB 来卡，交付文件才不会在质检那侧超线。
+            if abs(err) <= 0.35 and metrics["true_peak_dbtp"] <= _MASTER_TP_TARGET:
                 break
-            if metrics["true_peak_dbtp"] > -0.5:
-                cur_gain_db -= max(0.5, metrics["true_peak_dbtp"] + 0.5)
+            if metrics["true_peak_dbtp"] > _MASTER_TP_TARGET:
+                cur_gain_db -= max(0.3, metrics["true_peak_dbtp"] - _MASTER_TP_TARGET)
             else:
                 cur_gain_db += err
             cur_gain_db = max(-24.0, min(24.0, cur_gain_db))

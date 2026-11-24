@@ -51,6 +51,10 @@ RULES = [
     "同一句话重拍了好几版时，留最完整、最顺的一版，其余 keep=false 并写 note=重拍。",
     "听不准的地方不要猜，把可疑词写在 note 里（确认单会显示「你核一下」）。",
     "一行控制在 20 秒以内，超了就按意思拆成两行。",
+    # 2026-11-24 用户实测：「仲有好多人中意我哋嘅干炒蚝，同埋」是导演/摄影师的话，要去掉。
+    # 根因不是 ASR 听错，而是有人离麦很远插话（电平差 15–33dB），ASR 照样听成了通顺的一句。
+    "只留**主讲人对着麦说的话**：现场其他人的提示、附和、提问、指令（哪怕听着通顺）一律不进成稿；"
+    "任务清单里 `off_mic` 标出来的那几段就是别的声源，逐条核过再决定 keep。",
 ]
 
 
@@ -71,6 +75,16 @@ def build_tasks(pipeline_dir: Path) -> Path:
     if not tr_p.is_file():
         raise FileNotFoundError(f"缺少 {tr_p}")
     tr = json.loads(tr_p.read_text("utf-8"))
+    # 先标出「谁在说话」（离麦电平，见 off_mic.py）：整理成稿时就必须知道哪几段是别人的话，
+    # 不然整理出来的稿子会把导演/摄影师的插话写成主讲人的口播（2026-11-24 实测栽过）。
+    try:
+        import off_mic as _OM
+        if not any("off_mic_spans" in s for s in (tr.get("segments") or [])):
+            mic = _OM.annotate_segments(tr.get("segments") or [])
+            tr_p.write_text(json.dumps(tr, ensure_ascii=False, indent=1), encoding="utf-8")
+            print(f"[polish] {_OM.format_report(mic)}")
+    except Exception as e:
+        print(f"[polish] [WARN] 离麦检测不可用（{e}），整理成稿时无法区分别人的话")
     segs = kept_segments(tr)
     lines = []
     for s in segs:
@@ -83,7 +97,19 @@ def build_tasks(pipeline_dir: Path) -> Path:
             "dur": round(dur, 2),
             "source": Path(str(s.get("source_media") or "")).name,
             "asr_lang": s.get("asr_lang"),
-            "auto_suspect": _suspects(_seg_text(s), dur),
+            "auto_suspect": _suspects(_seg_text(s), dur) + _mic_suspects(s),
+            # 离麦段原样带出去：`text` 是那几段别的声源听到的字，Agent 据此逐条核
+            "off_mic": [
+                {
+                    "start_sec": sp.get("start_sec"),
+                    "end_sec": sp.get("end_sec"),
+                    "dur": sp.get("dur_sec"),
+                    "drop_db": sp.get("drop_db"),
+                    "severity": sp.get("severity"),
+                    "text": sp.get("text"),
+                }
+                for sp in (s.get("off_mic_spans") or [])
+            ],
         })
     doc = {
         "step": "script_polish",
@@ -101,6 +127,20 @@ def build_tasks(pipeline_dir: Path) -> Path:
     out.write_text(json.dumps(doc, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"[polish] 任务清单 -> {out}（{len(lines)} 句，{doc['total_dur']} 秒）")
     return out
+
+
+def _mic_suspects(seg: Dict[str, Any]) -> List[str]:
+    """离麦插话提示（2026-11-24）：不是主讲人对着麦说的话，不该进成稿。
+
+    判定在 `off_mic.py`（电平差 + 持续时间），这里只把结果翻成人话给 Agent 看。
+    """
+    hard = [s for s in (seg.get("off_mic_spans") or []) if str(s.get("severity") or "hard") == "hard"]
+    if not hard:
+        return []
+    worst = max(float(s.get("drop_db") or 0.0) for s in hard)
+    secs = sum(float(s.get("dur_sec") or 0.0) for s in hard)
+    sample = "、".join(str(s.get("text") or "") for s in hard[:3])
+    return [f"有 {len(hard)} 段离麦插话共 {secs:.1f} 秒（最大落差 {worst:.0f}dB）：{sample} —— 不是主讲人对着麦说的，别进成稿"]
 
 
 def _suspects(text: str, dur: float) -> List[str]:

@@ -1,0 +1,6291 @@
+{
+ "version": 1,
+ "generated_at": "2026-11-24",
+ "what": "24 套风格的音效/花字「出现条件」真值：触发类型配比、最小间隔、密度上限、角色、作用域、证据",
+ "method": {
+  "anchors": [
+   "主轨切点(main_segments)",
+   "花字出现/退出(非字幕文字轨段)",
+   "字幕换行(text_beats)",
+   "BGM 节拍网格(自相关 BPM 估计)"
+  ],
+  "tolerance_sec": {
+   "cut": 0.12,
+   "flower": 0.12,
+   "line": 0.12,
+   "beat": 0.08
+  },
+  "reason_priority": [
+   "cut",
+   "flower",
+   "line",
+   "beat"
+  ],
+  "free_policy": "挂不上任何锚点的 cue 记为 free；free 比例是风格允许的「无理由」额度上限"
+ },
+ "n_styles": 24,
+ "styles": {
+  "style_01": {
+   "style_id": "style_01",
+   "source_ref": "wb_65546d8b2143",
+   "duration_sec": 68.5,
+   "beat": {
+    "bpm": 89.1,
+    "confidence": 0.881,
+    "source": "bgm_autocorr",
+    "n_beats": 104
+   },
+   "anchors": {
+    "n_cuts": 24,
+    "n_flower_spans": 2,
+    "n_lines": 49,
+    "n_beats": 104
+   },
+   "sfx": {
+    "n_cues": 1,
+    "per_min": 0.9,
+    "trigger_mix": {
+     "cut": 1,
+     "flower": 0,
+     "line": 0,
+     "beat": 0,
+     "free": 0
+    },
+    "trigger_share": {
+     "cut": 1.0,
+     "flower": 0.0,
+     "line": 0.0,
+     "beat": 0.0,
+     "free": 0.0
+    },
+    "tol_sec": 0.12,
+    "allowed_triggers": [
+     "cut"
+    ],
+    "max_per_min": 1,
+    "max_per_sec": 0.015,
+    "max_free_per_min": 0.0,
+    "min_gap_sec": null,
+    "gap_median_sec": null,
+    "gap_p90_sec": null,
+    "max_per_min_by_role": {
+     "misc": 0.88
+    },
+    "roles": {
+     "misc": {
+      "n": 1,
+      "triggers": {
+       "cut": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.066,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 0.88
+     }
+    },
+    "role_for_trigger": {
+     "cut": "misc"
+    },
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll"
+     ],
+     "broll_share": 1.0,
+     "silence_ban": true,
+     "silence_share": 0.0,
+     "midline_ban": true,
+     "structural_cut_only": true,
+     "cut_shot_len_p25_sec": 1.466,
+     "all_shot_len_p25_sec": 1.183
+    },
+    "evidence": {
+     "n_cues": 1,
+     "attributable": 1,
+     "hit_rate": 1.0,
+     "offset_median_sec": 0.066,
+     "offset_p90_sec": 0.066,
+     "role_trigger_crosstab": {
+      "cut": {
+       "misc": 1
+      }
+     }
+    }
+   },
+   "flower": {
+    "n_cues": 11,
+    "n_visuals": 2,
+    "per_min": 1.8,
+    "per_min_segments": 9.6,
+    "trigger_mix": {
+     "number": 0,
+     "chapter": 1,
+     "keyword": 2,
+     "line_echo": 0,
+     "cut": 0,
+     "card": 6,
+     "fragment": 2,
+     "free": 0
+    },
+    "trigger_share": {
+     "number": 0.0,
+     "chapter": 0.091,
+     "keyword": 0.182,
+     "line_echo": 0.0,
+     "cut": 0.0,
+     "card": 0.545,
+     "fragment": 0.182,
+     "free": 0.0
+    },
+    "allowed_triggers": [
+     "chapter",
+     "keyword"
+    ],
+    "always_allowed_triggers": [
+     "number"
+    ],
+    "max_per_min": 2,
+    "max_per_min_note": "",
+    "fallback_hold_sec": [
+     1.3,
+     3.0
+    ],
+    "min_gap_sec": 65.733,
+    "gap_median_sec": 65.733,
+    "chars_min": 1,
+    "chars_max": 8,
+    "chars_median": 5,
+    "chars_mean": 4.8,
+    "hold_sec_min": 2.81,
+    "hold_sec_max": 2.95,
+    "hold_sec_median": 2.88,
+    "layout_mix": {
+     "middle": 5,
+     "bottom": 5,
+     "top": 1
+    },
+    "colors": {
+     "center_burst_color": "#B71C1C",
+     "flank_color": "#FFFFFF",
+     "stamp_color": "#B71C1C",
+     "end_card_color": "#FF4C2C",
+     "stroke_color": "#000000"
+    },
+    "fonts": [
+     [
+      "字语圆体",
+      5
+     ],
+     [
+      "封神榜书",
+      2
+     ],
+     [
+      "JYyoumo",
+      2
+     ],
+     [
+      "FZQKBYSJW",
+      1
+     ]
+    ],
+    "anims_top": [
+     [
+      "in:渐显",
+      3
+     ],
+     [
+      "loop:晃动",
+      2
+     ],
+     [
+      "in:生长 II",
+      1
+     ],
+     [
+      "in:向右滑动",
+      1
+     ],
+     [
+      "in:向左滑动",
+      1
+     ]
+    ],
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll"
+     ],
+     "broll_share": 0.909,
+     "zones": [
+      "middle",
+      "bottom"
+     ]
+    },
+    "evidence": {
+     "n_cues": 11,
+     "n_visuals": 2,
+     "attributable": 11,
+     "unexecutable_share": 0.727,
+     "unexecutable_kinds": "card=文字面板/清单, fragment=逐字弹字的单字碎片, free=既无出处也不贴锚点",
+     "note": "",
+     "hit_rate": 1.0,
+     "number_share": 0.0,
+     "chapter_share": 0.091,
+     "card_share": 0.545,
+     "fragment_share": 0.182,
+     "keyword_share": 0.182,
+     "line_echo_share": 0.0,
+     "cut_share": 0.0,
+     "free_share": 0.0
+    }
+   },
+   "unmeasured": []
+  },
+  "style_02": {
+   "style_id": "style_02",
+   "source_ref": "wb_c138c02ab6f3",
+   "duration_sec": 29.467,
+   "beat": {
+    "bpm": 99.38,
+    "confidence": 0.901,
+    "source": "bgm_autocorr",
+    "n_beats": 51
+   },
+   "anchors": {
+    "n_cuts": 25,
+    "n_flower_spans": 6,
+    "n_lines": 22,
+    "n_beats": 51
+   },
+   "sfx": {
+    "n_cues": 20,
+    "per_min": 40.7,
+    "trigger_mix": {
+     "cut": 12,
+     "flower": 6,
+     "line": 2,
+     "beat": 0,
+     "free": 0
+    },
+    "trigger_share": {
+     "cut": 0.6,
+     "flower": 0.3,
+     "line": 0.1,
+     "beat": 0.0,
+     "free": 0.0
+    },
+    "tol_sec": 0.12,
+    "allowed_triggers": [
+     "cut",
+     "flower",
+     "line"
+    ],
+    "max_per_min": 41,
+    "max_per_sec": 0.679,
+    "max_free_per_min": 0.0,
+    "min_gap_sec": 0.6,
+    "gap_median_sec": 1.234,
+    "gap_p90_sec": 2.5,
+    "max_per_min_by_role": {
+     "misc": 38.69,
+     "info": 2.04
+    },
+    "roles": {
+     "misc": {
+      "n": 19,
+      "triggers": {
+       "cut": 11,
+       "flower": 6,
+       "line": 2
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.6,
+      "gap_median_sec": 1.267,
+      "per_min": 38.69
+     },
+     "info": {
+      "n": 1,
+      "triggers": {
+       "cut": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 2.04
+     }
+    },
+    "role_for_trigger": {
+     "cut": "misc",
+     "flower": "misc",
+     "line": "misc"
+    },
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.15,
+     "silence_ban": true,
+     "silence_share": 0.05,
+     "midline_ban": true,
+     "structural_cut_only": true,
+     "cut_shot_len_p25_sec": 0.8,
+     "all_shot_len_p25_sec": 0.833
+    },
+    "evidence": {
+     "n_cues": 20,
+     "attributable": 20,
+     "hit_rate": 1.0,
+     "offset_median_sec": 0.0,
+     "offset_p90_sec": 0.007,
+     "role_trigger_crosstab": {
+      "cut": {
+       "misc": 11,
+       "info": 1
+      },
+      "flower": {
+       "misc": 6
+      },
+      "line": {
+       "misc": 2
+      }
+     }
+    }
+   },
+   "flower": {
+    "n_cues": 19,
+    "n_visuals": 6,
+    "per_min": 12.2,
+    "per_min_segments": 38.7,
+    "trigger_mix": {
+     "number": 0,
+     "chapter": 13,
+     "keyword": 1,
+     "line_echo": 0,
+     "cut": 4,
+     "card": 0,
+     "fragment": 0,
+     "free": 1
+    },
+    "trigger_share": {
+     "number": 0.0,
+     "chapter": 0.684,
+     "keyword": 0.053,
+     "line_echo": 0.0,
+     "cut": 0.211,
+     "card": 0.0,
+     "fragment": 0.0,
+     "free": 0.053
+    },
+    "allowed_triggers": [
+     "chapter",
+     "keyword",
+     "cut"
+    ],
+    "always_allowed_triggers": [
+     "number"
+    ],
+    "max_per_min": 13,
+    "max_per_min_note": "",
+    "fallback_hold_sec": [
+     1.0,
+     1.4
+    ],
+    "min_gap_sec": 1.466,
+    "gap_median_sec": 5.567,
+    "chars_min": 2,
+    "chars_max": 8,
+    "chars_median": 5,
+    "chars_mean": 5.0,
+    "hold_sec_min": 1.0,
+    "hold_sec_max": 3.63,
+    "hold_sec_median": 2.82,
+    "layout_mix": {
+     "bottom": 16,
+     "top": 2,
+     "middle": 1
+    },
+    "colors": {
+     "center_burst_color": "#BCFF00",
+     "flank_color": "#FFFFFF",
+     "stamp_color": "#B71C1C",
+     "end_card_color": "#B71C1C",
+     "stroke_color": "#000000"
+    },
+    "fonts": [
+     [
+      "思源宋体-Bold",
+      23
+     ],
+     [
+      "zh-hans",
+      23
+     ]
+    ],
+    "anims_top": [
+     [
+      "loop:弹幕滚动",
+      3
+     ],
+     [
+      "in:向右集合",
+      2
+     ],
+     [
+      "in:开幕",
+      2
+     ],
+     [
+      "in:激光雕刻",
+      2
+     ],
+     [
+      "in:随机上升",
+      2
+     ],
+     [
+      "in:渐显",
+      1
+     ],
+     [
+      "in:缩小 II",
+      1
+     ],
+     [
+      "in:滚入",
+      1
+     ]
+    ],
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.158,
+     "zones": [
+      "bottom",
+      "top"
+     ]
+    },
+    "evidence": {
+     "n_cues": 19,
+     "n_visuals": 6,
+     "attributable": 18,
+     "unexecutable_share": 0.053,
+     "unexecutable_kinds": "card=文字面板/清单, fragment=逐字弹字的单字碎片, free=既无出处也不贴锚点",
+     "note": "",
+     "hit_rate": 0.947,
+     "number_share": 0.0,
+     "chapter_share": 0.684,
+     "card_share": 0.0,
+     "fragment_share": 0.0,
+     "keyword_share": 0.053,
+     "line_echo_share": 0.0,
+     "cut_share": 0.211,
+     "free_share": 0.053
+    }
+   },
+   "unmeasured": []
+  },
+  "style_03": {
+   "style_id": "style_03",
+   "source_ref": "wb_509526dc2af4",
+   "duration_sec": 126.867,
+   "beat": {
+    "bpm": 172.27,
+    "confidence": 0.687,
+    "source": "bgm_autocorr",
+    "n_beats": 367
+   },
+   "anchors": {
+    "n_cuts": 49,
+    "n_flower_spans": 11,
+    "n_lines": 82,
+    "n_beats": 367
+   },
+   "sfx": {
+    "n_cues": 53,
+    "per_min": 25.1,
+    "trigger_mix": {
+     "cut": 19,
+     "flower": 28,
+     "line": 6,
+     "beat": 0,
+     "free": 0
+    },
+    "trigger_share": {
+     "cut": 0.358,
+     "flower": 0.528,
+     "line": 0.113,
+     "beat": 0.0,
+     "free": 0.0
+    },
+    "tol_sec": 0.12,
+    "allowed_triggers": [
+     "cut",
+     "flower",
+     "line"
+    ],
+    "max_per_min": 26,
+    "max_per_sec": 0.418,
+    "max_free_per_min": 0.0,
+    "min_gap_sec": 0.0,
+    "gap_median_sec": 1.492,
+    "gap_p90_sec": 5.87,
+    "max_per_min_by_role": {
+     "misc": 19.39,
+     "hook": 1.42,
+     "cut": 3.31,
+     "accent": 0.95
+    },
+    "roles": {
+     "misc": {
+      "n": 41,
+      "triggers": {
+       "cut": 14,
+       "flower": 25,
+       "line": 2
+      },
+      "primary_trigger": "flower",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.716,
+      "gap_median_sec": 1.591,
+      "per_min": 19.39
+     },
+     "hook": {
+      "n": 3,
+      "triggers": {
+       "cut": 3
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 58.484,
+      "gap_median_sec": 60.917,
+      "per_min": 1.42
+     },
+     "cut": {
+      "n": 7,
+      "triggers": {
+       "flower": 3,
+       "line": 2,
+       "cut": 2
+      },
+      "primary_trigger": "flower",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 1.5,
+      "gap_median_sec": 15.584,
+      "per_min": 3.31
+     },
+     "accent": {
+      "n": 2,
+      "triggers": {
+       "line": 2
+      },
+      "primary_trigger": "line",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 61.967,
+      "gap_median_sec": 61.967,
+      "per_min": 0.95
+     }
+    },
+    "role_for_trigger": {
+     "cut": "misc",
+     "flower": "misc",
+     "line": "misc"
+    },
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.226,
+     "silence_ban": false,
+     "silence_share": 0.17,
+     "midline_ban": true,
+     "structural_cut_only": true,
+     "cut_shot_len_p25_sec": 1.159,
+     "all_shot_len_p25_sec": 1.716
+    },
+    "evidence": {
+     "n_cues": 53,
+     "attributable": 53,
+     "hit_rate": 1.0,
+     "offset_median_sec": 0.0,
+     "offset_p90_sec": 0.0,
+     "role_trigger_crosstab": {
+      "cut": {
+       "misc": 14,
+       "hook": 3,
+       "cut": 2
+      },
+      "flower": {
+       "misc": 25,
+       "cut": 3
+      },
+      "line": {
+       "misc": 2,
+       "cut": 2,
+       "accent": 2
+      }
+     }
+    }
+   },
+   "flower": {
+    "n_cues": 53,
+    "n_visuals": 10,
+    "per_min": 4.7,
+    "per_min_segments": 25.1,
+    "trigger_mix": {
+     "number": 7,
+     "chapter": 2,
+     "keyword": 12,
+     "line_echo": 0,
+     "cut": 10,
+     "card": 0,
+     "fragment": 0,
+     "free": 22
+    },
+    "trigger_share": {
+     "number": 0.132,
+     "chapter": 0.038,
+     "keyword": 0.226,
+     "line_echo": 0.0,
+     "cut": 0.189,
+     "card": 0.0,
+     "fragment": 0.0,
+     "free": 0.415
+    },
+    "allowed_triggers": [
+     "number",
+     "chapter",
+     "keyword",
+     "cut"
+    ],
+    "always_allowed_triggers": [
+     "number"
+    ],
+    "max_per_min": 5,
+    "max_per_min_note": "",
+    "fallback_hold_sec": [
+     1.0,
+     2.91
+    ],
+    "min_gap_sec": 2.617,
+    "gap_median_sec": 5.9,
+    "chars_min": 2,
+    "chars_max": 15,
+    "chars_median": 6,
+    "chars_mean": 6.5,
+    "hold_sec_min": 1.0,
+    "hold_sec_max": 5.56,
+    "hold_sec_median": 2.61,
+    "layout_mix": {
+     "bottom": 20,
+     "top": 33
+    },
+    "colors": {
+     "center_burst_color": "#FFFFFF",
+     "flank_color": "#FFF589",
+     "stamp_color": "#B71C1C",
+     "end_card_color": "#FFFFFF",
+     "stroke_color": "#000000"
+    },
+    "fonts": [
+     [
+      "FZCuJinLJW",
+      65
+     ],
+     [
+      "特黑体",
+      24
+     ],
+     [
+      "Aa研宋",
+      5
+     ],
+     [
+      "Aa未来黑",
+      4
+     ],
+     [
+      "特黑体-思源黑体1号",
+      1
+     ]
+    ],
+    "anims_top": [
+     [
+      "in:冰雪飘动",
+      9
+     ],
+     [
+      "in:逐字显影",
+      7
+     ],
+     [
+      "in:向上滑动",
+      7
+     ],
+     [
+      "out:消散",
+      7
+     ],
+     [
+      "in:发光模糊",
+      5
+     ],
+     [
+      "in:打字光标",
+      5
+     ],
+     [
+      "in:雪光模糊",
+      4
+     ],
+     [
+      "in:模糊发光",
+      4
+     ]
+    ],
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.189,
+     "zones": [
+      "top",
+      "bottom"
+     ]
+    },
+    "evidence": {
+     "n_cues": 53,
+     "n_visuals": 10,
+     "attributable": 31,
+     "unexecutable_share": 0.415,
+     "unexecutable_kinds": "card=文字面板/清单, fragment=逐字弹字的单字碎片, free=既无出处也不贴锚点",
+     "note": "本套花字多为编辑自行改写/总结，或与字幕轨不同源，字面不可溯；pipeline 只产出可溯源的花字，故不复制这部分",
+     "hit_rate": 0.585,
+     "number_share": 0.132,
+     "chapter_share": 0.038,
+     "card_share": 0.0,
+     "fragment_share": 0.0,
+     "keyword_share": 0.226,
+     "line_echo_share": 0.0,
+     "cut_share": 0.189,
+     "free_share": 0.415
+    }
+   },
+   "unmeasured": []
+  },
+  "style_04": {
+   "style_id": "style_04",
+   "source_ref": "wb_20fdae6b98ca",
+   "duration_sec": 19.5,
+   "beat": {
+    "bpm": 60.09,
+    "confidence": 0.515,
+    "source": "bgm_autocorr",
+    "n_beats": 22
+   },
+   "anchors": {
+    "n_cuts": 6,
+    "n_flower_spans": 7,
+    "n_lines": 17,
+    "n_beats": 22
+   },
+   "sfx": {
+    "n_cues": 13,
+    "per_min": 40.0,
+    "trigger_mix": {
+     "cut": 3,
+     "flower": 6,
+     "line": 4,
+     "beat": 0,
+     "free": 0
+    },
+    "trigger_share": {
+     "cut": 0.231,
+     "flower": 0.462,
+     "line": 0.308,
+     "beat": 0.0,
+     "free": 0.0
+    },
+    "tol_sec": 0.12,
+    "allowed_triggers": [
+     "cut",
+     "flower",
+     "line"
+    ],
+    "max_per_min": 40,
+    "max_per_sec": 0.667,
+    "max_free_per_min": 0.0,
+    "min_gap_sec": 0.433,
+    "gap_median_sec": 1.083,
+    "gap_p90_sec": 2.747,
+    "max_per_min_by_role": {
+     "cut": 3.08,
+     "misc": 36.92
+    },
+    "roles": {
+     "cut": {
+      "n": 1,
+      "triggers": {
+       "cut": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 3.08
+     },
+     "misc": {
+      "n": 12,
+      "triggers": {
+       "flower": 6,
+       "cut": 2,
+       "line": 4
+      },
+      "primary_trigger": "flower",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.433,
+      "gap_median_sec": 1.1,
+      "per_min": 36.92
+     }
+    },
+    "role_for_trigger": {
+     "cut": "misc",
+     "flower": "misc",
+     "line": "misc"
+    },
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.385,
+     "silence_ban": false,
+     "silence_share": 0.231,
+     "midline_ban": true,
+     "structural_cut_only": true,
+     "cut_shot_len_p25_sec": 2.083,
+     "all_shot_len_p25_sec": 1.609
+    },
+    "evidence": {
+     "n_cues": 13,
+     "attributable": 13,
+     "hit_rate": 1.0,
+     "offset_median_sec": 0.0,
+     "offset_p90_sec": 0.0,
+     "role_trigger_crosstab": {
+      "cut": {
+       "cut": 1,
+       "misc": 2
+      },
+      "flower": {
+       "misc": 6
+      },
+      "line": {
+       "misc": 4
+      }
+     }
+    }
+   },
+   "flower": {
+    "n_cues": 8,
+    "n_visuals": 7,
+    "per_min": 21.5,
+    "per_min_segments": 24.6,
+    "trigger_mix": {
+     "number": 0,
+     "chapter": 8,
+     "keyword": 0,
+     "line_echo": 0,
+     "cut": 0,
+     "card": 0,
+     "fragment": 0,
+     "free": 0
+    },
+    "trigger_share": {
+     "number": 0.0,
+     "chapter": 1.0,
+     "keyword": 0.0,
+     "line_echo": 0.0,
+     "cut": 0.0,
+     "card": 0.0,
+     "fragment": 0.0,
+     "free": 0.0
+    },
+    "allowed_triggers": [
+     "chapter"
+    ],
+    "always_allowed_triggers": [
+     "number"
+    ],
+    "max_per_min": 22,
+    "max_per_min_note": "",
+    "fallback_hold_sec": [
+     1.0,
+     1.2
+    ],
+    "min_gap_sec": 1.6,
+    "gap_median_sec": 2.284,
+    "chars_min": 2,
+    "chars_max": 13,
+    "chars_median": 5.0,
+    "chars_mean": 5.5,
+    "hold_sec_min": 1.0,
+    "hold_sec_max": 1.2,
+    "hold_sec_median": 1.2,
+    "layout_mix": {
+     "bottom": 5,
+     "top": 2,
+     "middle": 1
+    },
+    "colors": {
+     "center_burst_color": "#FFF589",
+     "flank_color": "#FFFFFF",
+     "stamp_color": "#B71C1C",
+     "end_card_color": "#B71C1C",
+     "stroke_color": "#000000"
+    },
+    "fonts": [
+     [
+      "SourceHanSerifCN-Heavy",
+      15
+     ]
+    ],
+    "anims_top": [
+     [
+      "in:缩小",
+      3
+     ],
+     [
+      "in:开幕",
+      3
+     ],
+     [
+      "in:收拢",
+      2
+     ],
+     [
+      "in:打字光标",
+      2
+     ],
+     [
+      "in:向下露出",
+      2
+     ],
+     [
+      "in:吸入",
+      1
+     ],
+     [
+      "in:向右露出",
+      1
+     ]
+    ],
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.375,
+     "zones": [
+      "bottom",
+      "top"
+     ]
+    },
+    "evidence": {
+     "n_cues": 8,
+     "n_visuals": 7,
+     "attributable": 8,
+     "unexecutable_share": 0.0,
+     "unexecutable_kinds": "card=文字面板/清单, fragment=逐字弹字的单字碎片, free=既无出处也不贴锚点",
+     "note": "",
+     "hit_rate": 1.0,
+     "number_share": 0.0,
+     "chapter_share": 1.0,
+     "card_share": 0.0,
+     "fragment_share": 0.0,
+     "keyword_share": 0.0,
+     "line_echo_share": 0.0,
+     "cut_share": 0.0,
+     "free_share": 0.0
+    }
+   },
+   "unmeasured": []
+  },
+  "style_05": {
+   "style_id": "style_05",
+   "source_ref": "wb_da07ca0d991a",
+   "duration_sec": 22.467,
+   "beat": {
+    "bpm": 60.09,
+    "confidence": 0.969,
+    "source": "bgm_autocorr",
+    "n_beats": 25
+   },
+   "anchors": {
+    "n_cuts": 16,
+    "n_flower_spans": 6,
+    "n_lines": 18,
+    "n_beats": 25
+   },
+   "sfx": {
+    "n_cues": 10,
+    "per_min": 26.7,
+    "trigger_mix": {
+     "cut": 8,
+     "flower": 2,
+     "line": 0,
+     "beat": 0,
+     "free": 0
+    },
+    "trigger_share": {
+     "cut": 0.8,
+     "flower": 0.2,
+     "line": 0.0,
+     "beat": 0.0,
+     "free": 0.0
+    },
+    "tol_sec": 0.12,
+    "allowed_triggers": [
+     "cut",
+     "flower"
+    ],
+    "max_per_min": 27,
+    "max_per_sec": 0.445,
+    "max_free_per_min": 0.0,
+    "min_gap_sec": 0.5,
+    "gap_median_sec": 2.166,
+    "gap_p90_sec": 4.45,
+    "max_per_min_by_role": {
+     "misc": 21.36,
+     "info": 2.67,
+     "hook": 2.67
+    },
+    "roles": {
+     "misc": {
+      "n": 8,
+      "triggers": {
+       "cut": 7,
+       "flower": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.5,
+      "gap_median_sec": 2.85,
+      "per_min": 21.36
+     },
+     "info": {
+      "n": 1,
+      "triggers": {
+       "cut": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 2.67
+     },
+     "hook": {
+      "n": 1,
+      "triggers": {
+       "flower": 1
+      },
+      "primary_trigger": "flower",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 2.67
+     }
+    },
+    "role_for_trigger": {
+     "cut": "misc",
+     "flower": "hook"
+    },
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.3,
+     "silence_ban": true,
+     "silence_share": 0.0,
+     "midline_ban": true,
+     "structural_cut_only": true,
+     "cut_shot_len_p25_sec": 0.795,
+     "all_shot_len_p25_sec": 1.092
+    },
+    "evidence": {
+     "n_cues": 10,
+     "attributable": 10,
+     "hit_rate": 1.0,
+     "offset_median_sec": 0.0,
+     "offset_p90_sec": 0.0,
+     "role_trigger_crosstab": {
+      "cut": {
+       "misc": 7,
+       "info": 1
+      },
+      "flower": {
+       "hook": 1,
+       "misc": 1
+      }
+     }
+    }
+   },
+   "flower": {
+    "n_cues": 9,
+    "n_visuals": 5,
+    "per_min": 13.4,
+    "per_min_segments": 24.0,
+    "trigger_mix": {
+     "number": 0,
+     "chapter": 0,
+     "keyword": 0,
+     "line_echo": 0,
+     "cut": 6,
+     "card": 0,
+     "fragment": 0,
+     "free": 3
+    },
+    "trigger_share": {
+     "number": 0.0,
+     "chapter": 0.0,
+     "keyword": 0.0,
+     "line_echo": 0.0,
+     "cut": 0.667,
+     "card": 0.0,
+     "fragment": 0.0,
+     "free": 0.333
+    },
+    "allowed_triggers": [
+     "cut"
+    ],
+    "always_allowed_triggers": [
+     "number"
+    ],
+    "max_per_min": 14,
+    "max_per_min_note": "",
+    "fallback_hold_sec": [
+     1.0,
+     1.43
+    ],
+    "min_gap_sec": 1.6,
+    "gap_median_sec": 3.409,
+    "chars_min": 2,
+    "chars_max": 6,
+    "chars_median": 4,
+    "chars_mean": 4.0,
+    "hold_sec_min": 1.0,
+    "hold_sec_max": 1.69,
+    "hold_sec_median": 1.43,
+    "layout_mix": {
+     "top": 2,
+     "bottom": 6,
+     "middle": 1
+    },
+    "colors": {
+     "center_burst_color": "#FFBF17",
+     "flank_color": "#FFBF17",
+     "stamp_color": "#B71C1C",
+     "end_card_color": "#FFBF17",
+     "stroke_color": "#000000"
+    },
+    "fonts": [
+     [
+      "得意黑",
+      19
+     ],
+     [
+      "造字工房俊雅体",
+      11
+     ],
+     [
+      "黄令东齐伋复刻体",
+      5
+     ],
+     [
+      "HelloFont_ID_JianSong_95",
+      2
+     ],
+     [
+      "FZCuJinLJW",
+      1
+     ]
+    ],
+    "anims_top": [
+     [
+      "in:放大",
+      5
+     ],
+     [
+      "in:生长 II",
+      1
+     ],
+     [
+      "in:折叠",
+      1
+     ],
+     [
+      "in:吸入",
+      1
+     ],
+     [
+      "in:冰雪飘动",
+      1
+     ],
+     [
+      "in:向右露出",
+      1
+     ],
+     [
+      "in:滚入",
+      1
+     ],
+     [
+      "in:缩小",
+      1
+     ]
+    ],
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.333,
+     "zones": [
+      "bottom",
+      "top"
+     ]
+    },
+    "evidence": {
+     "n_cues": 9,
+     "n_visuals": 5,
+     "attributable": 6,
+     "unexecutable_share": 0.333,
+     "unexecutable_kinds": "card=文字面板/清单, fragment=逐字弹字的单字碎片, free=既无出处也不贴锚点",
+     "note": "",
+     "hit_rate": 0.667,
+     "number_share": 0.0,
+     "chapter_share": 0.0,
+     "card_share": 0.0,
+     "fragment_share": 0.0,
+     "keyword_share": 0.0,
+     "line_echo_share": 0.0,
+     "cut_share": 0.667,
+     "free_share": 0.333
+    }
+   },
+   "unmeasured": []
+  },
+  "style_06": {
+   "style_id": "style_06",
+   "source_ref": "wb_2138c457a3a0",
+   "duration_sec": 21.667,
+   "beat": {
+    "bpm": 66.26,
+    "confidence": 0.655,
+    "source": "bgm_autocorr",
+    "n_beats": 26
+   },
+   "anchors": {
+    "n_cuts": 4,
+    "n_flower_spans": 1,
+    "n_lines": 10,
+    "n_beats": 26
+   },
+   "sfx": {
+    "n_cues": 13,
+    "per_min": 36.0,
+    "trigger_mix": {
+     "cut": 1,
+     "flower": 7,
+     "line": 5,
+     "beat": 0,
+     "free": 0
+    },
+    "trigger_share": {
+     "cut": 0.077,
+     "flower": 0.538,
+     "line": 0.385,
+     "beat": 0.0,
+     "free": 0.0
+    },
+    "tol_sec": 0.12,
+    "allowed_triggers": [
+     "cut",
+     "flower",
+     "line"
+    ],
+    "max_per_min": 36,
+    "max_per_sec": 0.6,
+    "max_free_per_min": 0.0,
+    "min_gap_sec": 0.767,
+    "gap_median_sec": 1.283,
+    "gap_p90_sec": 3.02,
+    "max_per_min_by_role": {
+     "misc": 30.46,
+     "cut": 5.54
+    },
+    "roles": {
+     "misc": {
+      "n": 11,
+      "triggers": {
+       "line": 5,
+       "flower": 6
+      },
+      "primary_trigger": "flower",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.767,
+      "gap_median_sec": 1.283,
+      "per_min": 30.46
+     },
+     "cut": {
+      "n": 2,
+      "triggers": {
+       "cut": 1,
+       "flower": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 1.8,
+      "gap_median_sec": 1.8,
+      "per_min": 5.54
+     }
+    },
+    "role_for_trigger": {
+     "line": "misc",
+     "flower": "misc",
+     "cut": "cut"
+    },
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll"
+     ],
+     "broll_share": 1.0,
+     "silence_ban": false,
+     "silence_share": 0.231,
+     "midline_ban": true,
+     "structural_cut_only": true,
+     "cut_shot_len_p25_sec": 3.534,
+     "all_shot_len_p25_sec": 2.059
+    },
+    "evidence": {
+     "n_cues": 13,
+     "attributable": 13,
+     "hit_rate": 1.0,
+     "offset_median_sec": 0.0,
+     "offset_p90_sec": 0.0,
+     "role_trigger_crosstab": {
+      "line": {
+       "misc": 5
+      },
+      "flower": {
+       "misc": 6,
+       "cut": 1
+      },
+      "cut": {
+       "cut": 1
+      }
+     }
+    }
+   },
+   "flower": {
+    "n_cues": 11,
+    "n_visuals": 1,
+    "per_min": 15.2,
+    "per_min_segments": 30.5,
+    "trigger_mix": {
+     "number": 0,
+     "chapter": 6,
+     "keyword": 0,
+     "line_echo": 0,
+     "cut": 0,
+     "card": 4,
+     "fragment": 0,
+     "free": 1
+    },
+    "trigger_share": {
+     "number": 0.0,
+     "chapter": 0.545,
+     "keyword": 0.0,
+     "line_echo": 0.0,
+     "cut": 0.0,
+     "card": 0.364,
+     "fragment": 0.0,
+     "free": 0.091
+    },
+    "allowed_triggers": [
+     "chapter"
+    ],
+    "always_allowed_triggers": [
+     "number"
+    ],
+    "max_per_min": 16,
+    "max_per_min_note": "整片一条常驻文字轨，按文案更换率的一半估",
+    "fallback_hold_sec": [
+     1.0,
+     2.07
+    ],
+    "min_gap_sec": 1.97,
+    "gap_median_sec": null,
+    "chars_min": 3,
+    "chars_max": 53,
+    "chars_median": 7,
+    "chars_mean": 11.8,
+    "hold_sec_min": 1.0,
+    "hold_sec_max": 2.07,
+    "hold_sec_median": 1.73,
+    "layout_mix": {
+     "top": 2,
+     "bottom": 7,
+     "middle": 2
+    },
+    "colors": {
+     "center_burst_color": "#FFF589",
+     "flank_color": "#FFFFFF",
+     "stamp_color": "#B71C1C",
+     "end_card_color": "#FFF589",
+     "stroke_color": "#000000"
+    },
+    "fonts": [
+     [
+      "喜鹊古字典体(字节试用版)",
+      15
+     ],
+     [
+      "思源宋体-Bold",
+      8
+     ],
+     [
+      "默陌专辑手写体",
+      2
+     ],
+     [
+      "猫啃网烟波宋-B",
+      1
+     ],
+     [
+      "Aa研宋",
+      1
+     ]
+    ],
+    "anims_top": [
+     [
+      "in:逐字显影",
+      2
+     ],
+     [
+      "in:轻微放大",
+      2
+     ],
+     [
+      "in:随机上升",
+      2
+     ],
+     [
+      "in:冰雪飘动",
+      2
+     ],
+     [
+      "out:渐隐",
+      1
+     ],
+     [
+      "in:水墨晕开",
+      1
+     ],
+     [
+      "in:开幕",
+      1
+     ],
+     [
+      "in:向右缓入",
+      1
+     ]
+    ],
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.818,
+     "zones": [
+      "bottom",
+      "top"
+     ]
+    },
+    "evidence": {
+     "n_cues": 11,
+     "n_visuals": 1,
+     "attributable": 10,
+     "unexecutable_share": 0.455,
+     "unexecutable_kinds": "card=文字面板/清单, fragment=逐字弹字的单字碎片, free=既无出处也不贴锚点",
+     "note": "",
+     "hit_rate": 0.909,
+     "number_share": 0.0,
+     "chapter_share": 0.545,
+     "card_share": 0.364,
+     "fragment_share": 0.0,
+     "keyword_share": 0.0,
+     "line_echo_share": 0.0,
+     "cut_share": 0.0,
+     "free_share": 0.091
+    }
+   },
+   "unmeasured": []
+  },
+  "style_07": {
+   "style_id": "style_07",
+   "source_ref": "wb_4ad0b7cffe7d",
+   "duration_sec": 28.133,
+   "beat": {
+    "bpm": 60.09,
+    "confidence": 0.969,
+    "source": "bgm_autocorr",
+    "n_beats": 31
+   },
+   "anchors": {
+    "n_cuts": 17,
+    "n_flower_spans": 9,
+    "n_lines": 20,
+    "n_beats": 31
+   },
+   "sfx": {
+    "n_cues": 20,
+    "per_min": 42.7,
+    "trigger_mix": {
+     "cut": 12,
+     "flower": 4,
+     "line": 0,
+     "beat": 1,
+     "free": 3
+    },
+    "trigger_share": {
+     "cut": 0.6,
+     "flower": 0.2,
+     "line": 0.0,
+     "beat": 0.05,
+     "free": 0.15
+    },
+    "tol_sec": 0.12,
+    "allowed_triggers": [
+     "cut",
+     "flower",
+     "beat"
+    ],
+    "max_per_min": 43,
+    "max_per_sec": 0.711,
+    "max_free_per_min": 6.4,
+    "min_gap_sec": 0.0,
+    "gap_median_sec": 1.333,
+    "gap_p90_sec": 3.01,
+    "max_per_min_by_role": {
+     "cut": 23.46,
+     "hook": 2.13,
+     "misc": 12.8,
+     "accent": 2.13,
+     "info": 2.13
+    },
+    "roles": {
+     "cut": {
+      "n": 11,
+      "triggers": {
+       "cut": 6,
+       "free": 2,
+       "flower": 2,
+       "beat": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.3,
+      "gap_median_sec": 2.058,
+      "per_min": 23.46
+     },
+     "hook": {
+      "n": 1,
+      "triggers": {
+       "cut": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 2.13
+     },
+     "misc": {
+      "n": 6,
+      "triggers": {
+       "flower": 2,
+       "cut": 3,
+       "free": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 1.333,
+      "gap_median_sec": 5.35,
+      "per_min": 12.8
+     },
+     "accent": {
+      "n": 1,
+      "triggers": {
+       "cut": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 2.13
+     },
+     "info": {
+      "n": 1,
+      "triggers": {
+       "cut": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 2.13
+     }
+    },
+    "role_for_trigger": {
+     "cut": "cut",
+     "flower": "cut",
+     "beat": "cut"
+    },
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.85,
+     "silence_ban": true,
+     "silence_share": 0.1,
+     "midline_ban": true,
+     "structural_cut_only": true,
+     "cut_shot_len_p25_sec": 1.4,
+     "all_shot_len_p25_sec": 0.883
+    },
+    "evidence": {
+     "n_cues": 20,
+     "attributable": 17,
+     "hit_rate": 0.85,
+     "offset_median_sec": 0.0,
+     "offset_p90_sec": 0.02,
+     "role_trigger_crosstab": {
+      "cut": {
+       "cut": 6,
+       "hook": 1,
+       "misc": 3,
+       "accent": 1,
+       "info": 1
+      },
+      "flower": {
+       "cut": 2,
+       "misc": 2
+      },
+      "beat": {
+       "cut": 1
+      }
+     }
+    }
+   },
+   "flower": {
+    "n_cues": 9,
+    "n_visuals": 9,
+    "per_min": 19.2,
+    "per_min_segments": 19.2,
+    "trigger_mix": {
+     "number": 0,
+     "chapter": 9,
+     "keyword": 0,
+     "line_echo": 0,
+     "cut": 0,
+     "card": 0,
+     "fragment": 0,
+     "free": 0
+    },
+    "trigger_share": {
+     "number": 0.0,
+     "chapter": 1.0,
+     "keyword": 0.0,
+     "line_echo": 0.0,
+     "cut": 0.0,
+     "card": 0.0,
+     "fragment": 0.0,
+     "free": 0.0
+    },
+    "allowed_triggers": [
+     "chapter"
+    ],
+    "always_allowed_triggers": [
+     "number"
+    ],
+    "max_per_min": 20,
+    "max_per_min_note": "",
+    "fallback_hold_sec": [
+     1.4,
+     1.74
+    ],
+    "min_gap_sec": 2.134,
+    "gap_median_sec": 3.1,
+    "chars_min": 4,
+    "chars_max": 7,
+    "chars_median": 5,
+    "chars_mean": 4.8,
+    "hold_sec_min": 1.4,
+    "hold_sec_max": 1.74,
+    "hold_sec_median": 1.53,
+    "layout_mix": {
+     "bottom": 3,
+     "top": 3,
+     "middle": 3
+    },
+    "colors": {
+     "center_burst_color": "#FFBF17",
+     "flank_color": "#B71C1C",
+     "stamp_color": "#B71C1C",
+     "end_card_color": "#FF0000",
+     "stroke_color": "#000000"
+    },
+    "fonts": [
+     [
+      "Aa研宋",
+      9
+     ],
+     [
+      "造字工房俊雅体",
+      2
+     ]
+    ],
+    "anims_top": [
+     [
+      "in:流光扩散",
+      3
+     ],
+     [
+      "in:轻微放大",
+      2
+     ],
+     [
+      "in:发光模糊",
+      2
+     ],
+     [
+      "in:滚入",
+      2
+     ],
+     [
+      "in:冰雪飘动",
+      1
+     ],
+     [
+      "in:向左模糊",
+      1
+     ],
+     [
+      "out:滚出",
+      1
+     ]
+    ],
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.778,
+     "zones": [
+      "bottom",
+      "top"
+     ]
+    },
+    "evidence": {
+     "n_cues": 9,
+     "n_visuals": 9,
+     "attributable": 9,
+     "unexecutable_share": 0.0,
+     "unexecutable_kinds": "card=文字面板/清单, fragment=逐字弹字的单字碎片, free=既无出处也不贴锚点",
+     "note": "",
+     "hit_rate": 1.0,
+     "number_share": 0.0,
+     "chapter_share": 1.0,
+     "card_share": 0.0,
+     "fragment_share": 0.0,
+     "keyword_share": 0.0,
+     "line_echo_share": 0.0,
+     "cut_share": 0.0,
+     "free_share": 0.0
+    }
+   },
+   "unmeasured": []
+  },
+  "style_08": {
+   "style_id": "style_08",
+   "source_ref": "wb_450376d4c991",
+   "duration_sec": 58.467,
+   "beat": {
+    "bpm": 69.84,
+    "confidence": 0.639,
+    "source": "bgm_autocorr",
+    "n_beats": 71
+   },
+   "anchors": {
+    "n_cuts": 2,
+    "n_flower_spans": 1,
+    "n_lines": 37,
+    "n_beats": 71
+   },
+   "sfx": {
+    "n_cues": 29,
+    "per_min": 29.8,
+    "trigger_mix": {
+     "cut": 1,
+     "flower": 24,
+     "line": 4,
+     "beat": 0,
+     "free": 0
+    },
+    "trigger_share": {
+     "cut": 0.034,
+     "flower": 0.828,
+     "line": 0.138,
+     "beat": 0.0,
+     "free": 0.0
+    },
+    "tol_sec": 0.12,
+    "allowed_triggers": [
+     "flower",
+     "line"
+    ],
+    "max_per_min": 30,
+    "max_per_sec": 0.496,
+    "max_free_per_min": 0.0,
+    "min_gap_sec": 0.434,
+    "gap_median_sec": 1.234,
+    "gap_p90_sec": 4.633,
+    "max_per_min_by_role": {
+     "misc": 28.73,
+     "cut": 1.03
+    },
+    "roles": {
+     "misc": {
+      "n": 28,
+      "triggers": {
+       "cut": 1,
+       "flower": 23,
+       "line": 4
+      },
+      "primary_trigger": "flower",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.434,
+      "gap_median_sec": 1.533,
+      "per_min": 28.73
+     },
+     "cut": {
+      "n": 1,
+      "triggers": {
+       "flower": 1
+      },
+      "primary_trigger": "flower",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 1.03
+     }
+    },
+    "role_for_trigger": {
+     "cut": "misc",
+     "flower": "misc",
+     "line": "misc"
+    },
+    "scope": {
+     "allowed_shot_types": [
+      "a_roll"
+     ],
+     "broll_share": 0.0,
+     "silence_ban": false,
+     "silence_share": 0.586,
+     "midline_ban": true,
+     "structural_cut_only": true,
+     "cut_shot_len_p25_sec": 49.4,
+     "all_shot_len_p25_sec": 19.15
+    },
+    "evidence": {
+     "n_cues": 29,
+     "attributable": 29,
+     "hit_rate": 1.0,
+     "offset_median_sec": 0.0,
+     "offset_p90_sec": 0.0,
+     "role_trigger_crosstab": {
+      "cut": {
+       "misc": 1
+      },
+      "flower": {
+       "misc": 23,
+       "cut": 1
+      },
+      "line": {
+       "misc": 4
+      }
+     }
+    }
+   },
+   "flower": {
+    "n_cues": 31,
+    "n_visuals": 1,
+    "per_min": 15.9,
+    "per_min_segments": 31.8,
+    "trigger_mix": {
+     "number": 0,
+     "chapter": 3,
+     "keyword": 3,
+     "line_echo": 0,
+     "cut": 2,
+     "card": 0,
+     "fragment": 0,
+     "free": 23
+    },
+    "trigger_share": {
+     "number": 0.0,
+     "chapter": 0.097,
+     "keyword": 0.097,
+     "line_echo": 0.0,
+     "cut": 0.065,
+     "card": 0.0,
+     "fragment": 0.0,
+     "free": 0.742
+    },
+    "allowed_triggers": [
+     "chapter",
+     "keyword",
+     "cut"
+    ],
+    "always_allowed_triggers": [
+     "number"
+    ],
+    "max_per_min": 16,
+    "max_per_min_note": "整片一条常驻文字轨，按文案更换率的一半估",
+    "fallback_hold_sec": [
+     1.0,
+     1.8
+    ],
+    "min_gap_sec": 1.89,
+    "gap_median_sec": null,
+    "chars_min": 2,
+    "chars_max": 11,
+    "chars_median": 4,
+    "chars_mean": 4.4,
+    "hold_sec_min": 1.0,
+    "hold_sec_max": 1.8,
+    "hold_sec_median": 1.2,
+    "layout_mix": {
+     "bottom": 21,
+     "top": 1,
+     "middle": 9
+    },
+    "colors": {
+     "center_burst_color": "#FFDE00",
+     "flank_color": "#FFFFFF",
+     "stamp_color": "#FF1837",
+     "end_card_color": "#FFDE00",
+     "stroke_color": "#000000"
+    },
+    "fonts": [
+     [
+      "zh-hans",
+      30
+     ],
+     [
+      "方正超粗黑繁体",
+      29
+     ],
+     [
+      "HYXinRenWenSong65F",
+      1
+     ]
+    ],
+    "anims_top": [
+     [
+      "in:缩小",
+      4
+     ],
+     [
+      "in:跃进",
+      3
+     ],
+     [
+      "in:向右缓入",
+      3
+     ],
+     [
+      "in:随机上升",
+      3
+     ],
+     [
+      "in:晕开",
+      2
+     ],
+     [
+      "in:模糊发光",
+      2
+     ],
+     [
+      "in:日出",
+      2
+     ],
+     [
+      "in:吸入",
+      1
+     ]
+    ],
+    "scope": {
+     "allowed_shot_types": [
+      "a_roll"
+     ],
+     "broll_share": 0.0,
+     "zones": [
+      "bottom",
+      "middle"
+     ]
+    },
+    "evidence": {
+     "n_cues": 31,
+     "n_visuals": 1,
+     "attributable": 8,
+     "unexecutable_share": 0.742,
+     "unexecutable_kinds": "card=文字面板/清单, fragment=逐字弹字的单字碎片, free=既无出处也不贴锚点",
+     "note": "本套花字多为编辑自行改写/总结，或与字幕轨不同源，字面不可溯；pipeline 只产出可溯源的花字，故不复制这部分",
+     "hit_rate": 0.258,
+     "number_share": 0.0,
+     "chapter_share": 0.097,
+     "card_share": 0.0,
+     "fragment_share": 0.0,
+     "keyword_share": 0.097,
+     "line_echo_share": 0.0,
+     "cut_share": 0.065,
+     "free_share": 0.742
+    }
+   },
+   "unmeasured": []
+  },
+  "style_09": {
+   "style_id": "style_09",
+   "source_ref": "wb_f695f22cfe5d",
+   "duration_sec": 42.5,
+   "beat": {
+    "bpm": 172.27,
+    "confidence": 0.723,
+    "source": "bgm_autocorr",
+    "n_beats": 125
+   },
+   "anchors": {
+    "n_cuts": 27,
+    "n_flower_spans": 1,
+    "n_lines": 27,
+    "n_beats": 125
+   },
+   "sfx": {
+    "n_cues": 17,
+    "per_min": 24.0,
+    "trigger_mix": {
+     "cut": 13,
+     "flower": 3,
+     "line": 1,
+     "beat": 0,
+     "free": 0
+    },
+    "trigger_share": {
+     "cut": 0.765,
+     "flower": 0.176,
+     "line": 0.059,
+     "beat": 0.0,
+     "free": 0.0
+    },
+    "tol_sec": 0.12,
+    "allowed_triggers": [
+     "cut",
+     "flower",
+     "line"
+    ],
+    "max_per_min": 24,
+    "max_per_sec": 0.4,
+    "max_free_per_min": 0.0,
+    "min_gap_sec": 0.65,
+    "gap_median_sec": 2.175,
+    "gap_p90_sec": 4.016,
+    "max_per_min_by_role": {
+     "misc": 16.94,
+     "cut": 2.82,
+     "accent": 1.41,
+     "info": 1.41,
+     "hook": 1.41
+    },
+    "roles": {
+     "misc": {
+      "n": 12,
+      "triggers": {
+       "cut": 10,
+       "flower": 2
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.65,
+      "gap_median_sec": 3.333,
+      "per_min": 16.94
+     },
+     "cut": {
+      "n": 2,
+      "triggers": {
+       "cut": 1,
+       "line": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 32.833,
+      "gap_median_sec": 32.833,
+      "per_min": 2.82
+     },
+     "accent": {
+      "n": 1,
+      "triggers": {
+       "cut": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 1.41
+     },
+     "info": {
+      "n": 1,
+      "triggers": {
+       "cut": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 1.41
+     },
+     "hook": {
+      "n": 1,
+      "triggers": {
+       "flower": 1
+      },
+      "primary_trigger": "flower",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 1.41
+     }
+    },
+    "role_for_trigger": {
+     "cut": "misc",
+     "flower": "misc",
+     "line": "cut"
+    },
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.529,
+     "silence_ban": true,
+     "silence_share": 0.059,
+     "midline_ban": true,
+     "structural_cut_only": true,
+     "cut_shot_len_p25_sec": 0.967,
+     "all_shot_len_p25_sec": 1.083
+    },
+    "evidence": {
+     "n_cues": 17,
+     "attributable": 17,
+     "hit_rate": 1.0,
+     "offset_median_sec": 0.0,
+     "offset_p90_sec": 0.0,
+     "role_trigger_crosstab": {
+      "cut": {
+       "misc": 10,
+       "cut": 1,
+       "accent": 1,
+       "info": 1
+      },
+      "flower": {
+       "misc": 2,
+       "hook": 1
+      },
+      "line": {
+       "cut": 1
+      }
+     }
+    }
+   },
+   "flower": {
+    "n_cues": 18,
+    "n_visuals": 1,
+    "per_min": 12.7,
+    "per_min_segments": 25.4,
+    "trigger_mix": {
+     "number": 4,
+     "chapter": 5,
+     "keyword": 3,
+     "line_echo": 0,
+     "cut": 4,
+     "card": 0,
+     "fragment": 0,
+     "free": 2
+    },
+    "trigger_share": {
+     "number": 0.222,
+     "chapter": 0.278,
+     "keyword": 0.167,
+     "line_echo": 0.0,
+     "cut": 0.222,
+     "card": 0.0,
+     "fragment": 0.0,
+     "free": 0.111
+    },
+    "allowed_triggers": [
+     "number",
+     "chapter",
+     "keyword",
+     "cut"
+    ],
+    "always_allowed_triggers": [
+     "number"
+    ],
+    "max_per_min": 13,
+    "max_per_min_note": "整片一条常驻文字轨，按文案更换率的一半估",
+    "fallback_hold_sec": [
+     1.05,
+     3.77
+    ],
+    "min_gap_sec": 2.36,
+    "gap_median_sec": null,
+    "chars_min": 2,
+    "chars_max": 34,
+    "chars_median": 5.0,
+    "chars_mean": 7.2,
+    "hold_sec_min": 1.05,
+    "hold_sec_max": 3.77,
+    "hold_sec_median": 2.01,
+    "layout_mix": {
+     "middle": 9,
+     "bottom": 5,
+     "top": 4
+    },
+    "colors": {
+     "center_burst_color": "#FFFFFF",
+     "flank_color": "#FFFFFF",
+     "stamp_color": "#FF1837",
+     "end_card_color": "#FFFFFF",
+     "stroke_color": "#000000"
+    },
+    "fonts": [
+     [
+      "得意黑",
+      21
+     ],
+     [
+      "SourceHanSerifCN-Heavy",
+      4
+     ]
+    ],
+    "anims_top": [
+     [
+      "in:渐显",
+      5
+     ],
+     [
+      "in:向左模糊",
+      2
+     ],
+     [
+      "in:雪光模糊",
+      2
+     ],
+     [
+      "in:打字光标",
+      2
+     ],
+     [
+      "in:缩小",
+      2
+     ],
+     [
+      "in:新年打字机",
+      1
+     ],
+     [
+      "in:生长",
+      1
+     ],
+     [
+      "in:滚入",
+      1
+     ]
+    ],
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.611,
+     "zones": [
+      "middle",
+      "bottom"
+     ]
+    },
+    "evidence": {
+     "n_cues": 18,
+     "n_visuals": 1,
+     "attributable": 16,
+     "unexecutable_share": 0.111,
+     "unexecutable_kinds": "card=文字面板/清单, fragment=逐字弹字的单字碎片, free=既无出处也不贴锚点",
+     "note": "",
+     "hit_rate": 0.889,
+     "number_share": 0.222,
+     "chapter_share": 0.278,
+     "card_share": 0.0,
+     "fragment_share": 0.0,
+     "keyword_share": 0.167,
+     "line_echo_share": 0.0,
+     "cut_share": 0.222,
+     "free_share": 0.111
+    }
+   },
+   "unmeasured": []
+  },
+  "style_10": {
+   "style_id": "style_10",
+   "source_ref": "wb_c3d2b641a143",
+   "duration_sec": 18.917,
+   "beat": {
+    "bpm": 112.35,
+    "confidence": 0.675,
+    "source": "bgm_autocorr",
+    "n_beats": 38
+   },
+   "anchors": {
+    "n_cuts": 15,
+    "n_flower_spans": 5,
+    "n_lines": 10,
+    "n_beats": 38
+   },
+   "sfx": {
+    "n_cues": 15,
+    "per_min": 47.6,
+    "trigger_mix": {
+     "cut": 11,
+     "flower": 4,
+     "line": 0,
+     "beat": 0,
+     "free": 0
+    },
+    "trigger_share": {
+     "cut": 0.733,
+     "flower": 0.267,
+     "line": 0.0,
+     "beat": 0.0,
+     "free": 0.0
+    },
+    "tol_sec": 0.12,
+    "allowed_triggers": [
+     "cut",
+     "flower"
+    ],
+    "max_per_min": 48,
+    "max_per_sec": 0.793,
+    "max_free_per_min": 0.0,
+    "min_gap_sec": 0.4,
+    "gap_median_sec": 1.175,
+    "gap_p90_sec": 1.945,
+    "max_per_min_by_role": {
+     "misc": 41.23,
+     "cut": 6.34
+    },
+    "roles": {
+     "misc": {
+      "n": 13,
+      "triggers": {
+       "cut": 10,
+       "flower": 3
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.4,
+      "gap_median_sec": 1.175,
+      "per_min": 41.23
+     },
+     "cut": {
+      "n": 2,
+      "triggers": {
+       "cut": 1,
+       "flower": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 10.017,
+      "gap_median_sec": 10.017,
+      "per_min": 6.34
+     }
+    },
+    "role_for_trigger": {
+     "cut": "misc",
+     "flower": "misc"
+    },
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.867,
+     "silence_ban": false,
+     "silence_share": 0.667,
+     "midline_ban": true,
+     "structural_cut_only": true,
+     "cut_shot_len_p25_sec": 0.817,
+     "all_shot_len_p25_sec": 0.817
+    },
+    "evidence": {
+     "n_cues": 15,
+     "attributable": 15,
+     "hit_rate": 1.0,
+     "offset_median_sec": 0.0,
+     "offset_p90_sec": 0.0,
+     "role_trigger_crosstab": {
+      "cut": {
+       "misc": 10,
+       "cut": 1
+      },
+      "flower": {
+       "misc": 3,
+       "cut": 1
+      }
+     }
+    }
+   },
+   "flower": {
+    "n_cues": 16,
+    "n_visuals": 5,
+    "per_min": 15.9,
+    "per_min_segments": 50.7,
+    "trigger_mix": {
+     "number": 0,
+     "chapter": 7,
+     "keyword": 1,
+     "line_echo": 1,
+     "cut": 4,
+     "card": 0,
+     "fragment": 0,
+     "free": 3
+    },
+    "trigger_share": {
+     "number": 0.0,
+     "chapter": 0.438,
+     "keyword": 0.062,
+     "line_echo": 0.062,
+     "cut": 0.25,
+     "card": 0.0,
+     "fragment": 0.0,
+     "free": 0.188
+    },
+    "allowed_triggers": [
+     "chapter",
+     "keyword",
+     "line_echo",
+     "cut"
+    ],
+    "always_allowed_triggers": [
+     "number"
+    ],
+    "max_per_min": 16,
+    "max_per_min_note": "",
+    "fallback_hold_sec": [
+     1.0,
+     1.95
+    ],
+    "min_gap_sec": 1.45,
+    "gap_median_sec": 4.284,
+    "chars_min": 1,
+    "chars_max": 10,
+    "chars_median": 4.0,
+    "chars_mean": 4.8,
+    "hold_sec_min": 1.28,
+    "hold_sec_max": 4.28,
+    "hold_sec_median": 2.93,
+    "layout_mix": {
+     "top": 10,
+     "middle": 3,
+     "bottom": 3
+    },
+    "colors": {
+     "center_burst_color": "#FFBF17",
+     "flank_color": "#B71C1C",
+     "stamp_color": "#B71C1C",
+     "end_card_color": "#F9F3C4",
+     "stroke_color": "#000000"
+    },
+    "fonts": [
+     [
+      "知新体",
+      19
+     ],
+     [
+      "DINNextW1G-Black",
+      1
+     ],
+     [
+      "zh-hans",
+      1
+     ]
+    ],
+    "anims_top": [
+     [
+      "in:放大",
+      5
+     ],
+     [
+      "in:滚入",
+      2
+     ],
+     [
+      "in:向右模糊 II",
+      2
+     ],
+     [
+      "in:波浪弹入",
+      1
+     ],
+     [
+      "in:折叠",
+      1
+     ],
+     [
+      "out:炸开 II",
+      1
+     ],
+     [
+      "in:向上滑动",
+      1
+     ],
+     [
+      "in:呐喊声波",
+      1
+     ]
+    ],
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.875,
+     "zones": [
+      "top",
+      "middle"
+     ]
+    },
+    "evidence": {
+     "n_cues": 16,
+     "n_visuals": 5,
+     "attributable": 13,
+     "unexecutable_share": 0.188,
+     "unexecutable_kinds": "card=文字面板/清单, fragment=逐字弹字的单字碎片, free=既无出处也不贴锚点",
+     "note": "",
+     "hit_rate": 0.812,
+     "number_share": 0.0,
+     "chapter_share": 0.438,
+     "card_share": 0.0,
+     "fragment_share": 0.0,
+     "keyword_share": 0.062,
+     "line_echo_share": 0.062,
+     "cut_share": 0.25,
+     "free_share": 0.188
+    }
+   },
+   "unmeasured": []
+  },
+  "style_11": {
+   "style_id": "style_11",
+   "source_ref": "wb_e3536e2a1fa1",
+   "duration_sec": 26.4,
+   "beat": {
+    "bpm": 60.09,
+    "confidence": 0.969,
+    "source": "bgm_autocorr",
+    "n_beats": 29
+   },
+   "anchors": {
+    "n_cuts": 19,
+    "n_flower_spans": 5,
+    "n_lines": 21,
+    "n_beats": 29
+   },
+   "sfx": {
+    "n_cues": 13,
+    "per_min": 29.5,
+    "trigger_mix": {
+     "cut": 9,
+     "flower": 2,
+     "line": 2,
+     "beat": 0,
+     "free": 0
+    },
+    "trigger_share": {
+     "cut": 0.692,
+     "flower": 0.154,
+     "line": 0.154,
+     "beat": 0.0,
+     "free": 0.0
+    },
+    "tol_sec": 0.12,
+    "allowed_triggers": [
+     "cut",
+     "flower",
+     "line"
+    ],
+    "max_per_min": 30,
+    "max_per_sec": 0.492,
+    "max_free_per_min": 0.0,
+    "min_gap_sec": 0.6,
+    "gap_median_sec": 1.442,
+    "gap_p90_sec": 4.902,
+    "max_per_min_by_role": {
+     "cut": 9.09,
+     "misc": 18.18,
+     "hook": 2.27
+    },
+    "roles": {
+     "cut": {
+      "n": 4,
+      "triggers": {
+       "cut": 3,
+       "flower": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 1.933,
+      "gap_median_sec": 7.667,
+      "per_min": 9.09
+     },
+     "misc": {
+      "n": 8,
+      "triggers": {
+       "line": 2,
+       "cut": 5,
+       "flower": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.6,
+      "gap_median_sec": 3.467,
+      "per_min": 18.18
+     },
+     "hook": {
+      "n": 1,
+      "triggers": {
+       "cut": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 2.27
+     }
+    },
+    "role_for_trigger": {
+     "cut": "misc",
+     "line": "misc",
+     "flower": "cut"
+    },
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.615,
+     "silence_ban": false,
+     "silence_share": 0.385,
+     "midline_ban": true,
+     "structural_cut_only": true,
+     "cut_shot_len_p25_sec": 1.35,
+     "all_shot_len_p25_sec": 0.791
+    },
+    "evidence": {
+     "n_cues": 13,
+     "attributable": 13,
+     "hit_rate": 1.0,
+     "offset_median_sec": 0.0,
+     "offset_p90_sec": 0.0,
+     "role_trigger_crosstab": {
+      "cut": {
+       "cut": 3,
+       "misc": 5,
+       "hook": 1
+      },
+      "line": {
+       "misc": 2
+      },
+      "flower": {
+       "cut": 1,
+       "misc": 1
+      }
+     }
+    }
+   },
+   "flower": {
+    "n_cues": 8,
+    "n_visuals": 5,
+    "per_min": 11.4,
+    "per_min_segments": 18.2,
+    "trigger_mix": {
+     "number": 0,
+     "chapter": 4,
+     "keyword": 3,
+     "line_echo": 0,
+     "cut": 1,
+     "card": 0,
+     "fragment": 0,
+     "free": 0
+    },
+    "trigger_share": {
+     "number": 0.0,
+     "chapter": 0.5,
+     "keyword": 0.375,
+     "line_echo": 0.0,
+     "cut": 0.125,
+     "card": 0.0,
+     "fragment": 0.0,
+     "free": 0.0
+    },
+    "allowed_triggers": [
+     "chapter",
+     "keyword",
+     "cut"
+    ],
+    "always_allowed_triggers": [
+     "number"
+    ],
+    "max_per_min": 12,
+    "max_per_min_note": "",
+    "fallback_hold_sec": [
+     1.04,
+     2.14
+    ],
+    "min_gap_sec": 5.0,
+    "gap_median_sec": 5.767,
+    "chars_min": 3,
+    "chars_max": 8,
+    "chars_median": 4.0,
+    "chars_mean": 4.6,
+    "hold_sec_min": 1.74,
+    "hold_sec_max": 2.67,
+    "hold_sec_median": 1.97,
+    "layout_mix": {
+     "top": 5,
+     "bottom": 2,
+     "middle": 1
+    },
+    "colors": {
+     "center_burst_color": "#B71C1C",
+     "flank_color": "#FFF589",
+     "stamp_color": "#B71C1C",
+     "end_card_color": "#B71C1C",
+     "stroke_color": "#000000"
+    },
+    "fonts": [
+     [
+      "Aa研宋",
+      10
+     ],
+     [
+      "得意黑",
+      2
+     ],
+     [
+      "尔雅新大黑",
+      2
+     ]
+    ],
+    "anims_top": [
+     [
+      "in:向下露出",
+      3
+     ],
+     [
+      "in:渐显",
+      2
+     ],
+     [
+      "in:向右露出",
+      1
+     ],
+     [
+      "in:发光模糊",
+      1
+     ],
+     [
+      "in:新年打字机",
+      1
+     ],
+     [
+      "in:缩小",
+      1
+     ],
+     [
+      "in:向右擦除",
+      1
+     ],
+     [
+      "in:模糊发光",
+      1
+     ]
+    ],
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.625,
+     "zones": [
+      "top",
+      "bottom"
+     ]
+    },
+    "evidence": {
+     "n_cues": 8,
+     "n_visuals": 5,
+     "attributable": 8,
+     "unexecutable_share": 0.0,
+     "unexecutable_kinds": "card=文字面板/清单, fragment=逐字弹字的单字碎片, free=既无出处也不贴锚点",
+     "note": "",
+     "hit_rate": 1.0,
+     "number_share": 0.0,
+     "chapter_share": 0.5,
+     "card_share": 0.0,
+     "fragment_share": 0.0,
+     "keyword_share": 0.375,
+     "line_echo_share": 0.0,
+     "cut_share": 0.125,
+     "free_share": 0.0
+    }
+   },
+   "unmeasured": []
+  },
+  "style_12": {
+   "style_id": "style_12",
+   "source_ref": "wb_b6ad1c91ce58",
+   "duration_sec": 26.3,
+   "beat": {
+    "bpm": 172.27,
+    "confidence": 0.723,
+    "source": "bgm_autocorr",
+    "n_beats": 78
+   },
+   "anchors": {
+    "n_cuts": 13,
+    "n_flower_spans": 1,
+    "n_lines": 20,
+    "n_beats": 78
+   },
+   "sfx": {
+    "n_cues": 16,
+    "per_min": 36.5,
+    "trigger_mix": {
+     "cut": 10,
+     "flower": 1,
+     "line": 5,
+     "beat": 0,
+     "free": 0
+    },
+    "trigger_share": {
+     "cut": 0.625,
+     "flower": 0.062,
+     "line": 0.312,
+     "beat": 0.0,
+     "free": 0.0
+    },
+    "tol_sec": 0.12,
+    "allowed_triggers": [
+     "cut",
+     "flower",
+     "line"
+    ],
+    "max_per_min": 37,
+    "max_per_sec": 0.608,
+    "max_free_per_min": 0.0,
+    "min_gap_sec": 0.0,
+    "gap_median_sec": 1.45,
+    "gap_p90_sec": 2.933,
+    "max_per_min_by_role": {
+     "misc": 27.38,
+     "cut": 4.56,
+     "hook": 2.28,
+     "info": 2.28
+    },
+    "roles": {
+     "misc": {
+      "n": 12,
+      "triggers": {
+       "cut": 8,
+       "line": 3,
+       "flower": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.0,
+      "gap_median_sec": 1.917,
+      "per_min": 27.38
+     },
+     "cut": {
+      "n": 2,
+      "triggers": {
+       "line": 2
+      },
+      "primary_trigger": "line",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 17.183,
+      "gap_median_sec": 17.183,
+      "per_min": 4.56
+     },
+     "hook": {
+      "n": 1,
+      "triggers": {
+       "cut": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 2.28
+     },
+     "info": {
+      "n": 1,
+      "triggers": {
+       "cut": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 2.28
+     }
+    },
+    "role_for_trigger": {
+     "cut": "misc",
+     "line": "misc",
+     "flower": "misc"
+    },
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.188,
+     "silence_ban": true,
+     "silence_share": 0.125,
+     "midline_ban": true,
+     "structural_cut_only": true,
+     "cut_shot_len_p25_sec": 1.375,
+     "all_shot_len_p25_sec": 1.35
+    },
+    "evidence": {
+     "n_cues": 16,
+     "attributable": 16,
+     "hit_rate": 1.0,
+     "offset_median_sec": 0.0,
+     "offset_p90_sec": 0.0,
+     "role_trigger_crosstab": {
+      "cut": {
+       "misc": 8,
+       "hook": 1,
+       "info": 1
+      },
+      "line": {
+       "cut": 2,
+       "misc": 3
+      },
+      "flower": {
+       "misc": 1
+      }
+     }
+    }
+   },
+   "flower": {
+    "n_cues": 8,
+    "n_visuals": 1,
+    "per_min": 9.2,
+    "per_min_segments": 18.3,
+    "trigger_mix": {
+     "number": 4,
+     "chapter": 0,
+     "keyword": 2,
+     "line_echo": 0,
+     "cut": 2,
+     "card": 0,
+     "fragment": 0,
+     "free": 0
+    },
+    "trigger_share": {
+     "number": 0.5,
+     "chapter": 0.0,
+     "keyword": 0.25,
+     "line_echo": 0.0,
+     "cut": 0.25,
+     "card": 0.0,
+     "fragment": 0.0,
+     "free": 0.0
+    },
+    "allowed_triggers": [
+     "number",
+     "keyword",
+     "cut"
+    ],
+    "always_allowed_triggers": [
+     "number"
+    ],
+    "max_per_min": 10,
+    "max_per_min_note": "整片一条常驻文字轨，按文案更换率的一半估",
+    "fallback_hold_sec": [
+     1.19,
+     5.0
+    ],
+    "min_gap_sec": 3.26,
+    "gap_median_sec": null,
+    "chars_min": 2,
+    "chars_max": 16,
+    "chars_median": 6.5,
+    "chars_mean": 8.9,
+    "hold_sec_min": 1.19,
+    "hold_sec_max": 5.52,
+    "hold_sec_median": 2.9,
+    "layout_mix": {
+     "top": 4,
+     "middle": 4
+    },
+    "colors": {
+     "center_burst_color": "#FFA800",
+     "flank_color": "#FFBF17",
+     "stamp_color": "#B71C1C",
+     "end_card_color": "#FFA800",
+     "stroke_color": "#000000"
+    },
+    "fonts": [
+     [
+      "汉仪天宇风行体W",
+      10
+     ],
+     [
+      "zh-hans",
+      10
+     ],
+     [
+      "后现代体",
+      2
+     ]
+    ],
+    "anims_top": [
+     [
+      "in:雪光模糊",
+      2
+     ],
+     [
+      "in:跃进",
+      2
+     ],
+     [
+      "in:模糊发光",
+      1
+     ],
+     [
+      "in:缩小",
+      1
+     ],
+     [
+      "in:发光模糊",
+      1
+     ],
+     [
+      "in:呐喊声波",
+      1
+     ],
+     [
+      "in:轻微放大",
+      1
+     ]
+    ],
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.25,
+     "zones": [
+      "top",
+      "middle"
+     ]
+    },
+    "evidence": {
+     "n_cues": 8,
+     "n_visuals": 1,
+     "attributable": 8,
+     "unexecutable_share": 0.0,
+     "unexecutable_kinds": "card=文字面板/清单, fragment=逐字弹字的单字碎片, free=既无出处也不贴锚点",
+     "note": "",
+     "hit_rate": 1.0,
+     "number_share": 0.5,
+     "chapter_share": 0.0,
+     "card_share": 0.0,
+     "fragment_share": 0.0,
+     "keyword_share": 0.25,
+     "line_echo_share": 0.0,
+     "cut_share": 0.25,
+     "free_share": 0.0
+    }
+   },
+   "unmeasured": []
+  },
+  "style_13": {
+   "style_id": "style_13",
+   "source_ref": "wb_42a4263a7693",
+   "duration_sec": 30.217,
+   "beat": {
+    "bpm": 172.27,
+    "confidence": 0.723,
+    "source": "bgm_autocorr",
+    "n_beats": 89
+   },
+   "anchors": {
+    "n_cuts": 18,
+    "n_flower_spans": 6,
+    "n_lines": 21,
+    "n_beats": 89
+   },
+   "sfx": {
+    "n_cues": 17,
+    "per_min": 33.8,
+    "trigger_mix": {
+     "cut": 7,
+     "flower": 5,
+     "line": 5,
+     "beat": 0,
+     "free": 0
+    },
+    "trigger_share": {
+     "cut": 0.412,
+     "flower": 0.294,
+     "line": 0.294,
+     "beat": 0.0,
+     "free": 0.0
+    },
+    "tol_sec": 0.12,
+    "allowed_triggers": [
+     "cut",
+     "flower",
+     "line"
+    ],
+    "max_per_min": 34,
+    "max_per_sec": 0.563,
+    "max_free_per_min": 0.0,
+    "min_gap_sec": 0.0,
+    "gap_median_sec": 1.099,
+    "gap_p90_sec": 3.808,
+    "max_per_min_by_role": {
+     "misc": 23.83,
+     "cut": 5.96,
+     "accent": 1.99,
+     "hook": 1.99
+    },
+    "roles": {
+     "misc": {
+      "n": 12,
+      "triggers": {
+       "cut": 6,
+       "flower": 4,
+       "line": 2
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.0,
+      "gap_median_sec": 2.017,
+      "per_min": 23.83
+     },
+     "cut": {
+      "n": 3,
+      "triggers": {
+       "line": 2,
+       "cut": 1
+      },
+      "primary_trigger": "line",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 3.983,
+      "gap_median_sec": 8.559,
+      "per_min": 5.96
+     },
+     "accent": {
+      "n": 1,
+      "triggers": {
+       "flower": 1
+      },
+      "primary_trigger": "flower",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 1.99
+     },
+     "hook": {
+      "n": 1,
+      "triggers": {
+       "line": 1
+      },
+      "primary_trigger": "line",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 1.99
+     }
+    },
+    "role_for_trigger": {
+     "cut": "misc",
+     "line": "cut",
+     "flower": "misc"
+    },
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.529,
+     "silence_ban": true,
+     "silence_share": 0.059,
+     "midline_ban": true,
+     "structural_cut_only": true,
+     "cut_shot_len_p25_sec": 1.333,
+     "all_shot_len_p25_sec": 0.892
+    },
+    "evidence": {
+     "n_cues": 17,
+     "attributable": 17,
+     "hit_rate": 1.0,
+     "offset_median_sec": 0.0,
+     "offset_p90_sec": 0.0,
+     "role_trigger_crosstab": {
+      "cut": {
+       "misc": 6,
+       "cut": 1
+      },
+      "line": {
+       "cut": 2,
+       "hook": 1,
+       "misc": 2
+      },
+      "flower": {
+       "misc": 4,
+       "accent": 1
+      }
+     }
+    }
+   },
+   "flower": {
+    "n_cues": 10,
+    "n_visuals": 6,
+    "per_min": 11.9,
+    "per_min_segments": 19.9,
+    "trigger_mix": {
+     "number": 1,
+     "chapter": 7,
+     "keyword": 0,
+     "line_echo": 0,
+     "cut": 1,
+     "card": 0,
+     "fragment": 0,
+     "free": 1
+    },
+    "trigger_share": {
+     "number": 0.1,
+     "chapter": 0.7,
+     "keyword": 0.0,
+     "line_echo": 0.0,
+     "cut": 0.1,
+     "card": 0.0,
+     "fragment": 0.0,
+     "free": 0.1
+    },
+    "allowed_triggers": [
+     "number",
+     "chapter",
+     "cut"
+    ],
+    "always_allowed_triggers": [
+     "number"
+    ],
+    "max_per_min": 12,
+    "max_per_min_note": "",
+    "fallback_hold_sec": [
+     1.27,
+     2.25
+    ],
+    "min_gap_sec": 2.017,
+    "gap_median_sec": 3.933,
+    "chars_min": 3,
+    "chars_max": 84,
+    "chars_median": 4.0,
+    "chars_mean": 13.9,
+    "hold_sec_min": 1.23,
+    "hold_sec_max": 3.95,
+    "hold_sec_median": 1.89,
+    "layout_mix": {
+     "top": 4,
+     "bottom": 1,
+     "middle": 5
+    },
+    "colors": {
+     "center_burst_color": "#FFBF17",
+     "flank_color": "#FF0000",
+     "stamp_color": "#B71C1C",
+     "end_card_color": "#B71C1C",
+     "stroke_color": "#000000"
+    },
+    "fonts": [
+     [
+      "造字工房俊雅体",
+      10
+     ],
+     [
+      "得意黑",
+      2
+     ]
+    ],
+    "anims_top": [
+     [
+      "in:滚入",
+      3
+     ],
+     [
+      "in:折叠",
+      1
+     ],
+     [
+      "out:向下弹出",
+      1
+     ],
+     [
+      "in:向左模糊",
+      1
+     ],
+     [
+      "in:发光模糊",
+      1
+     ],
+     [
+      "out:滚出",
+      1
+     ],
+     [
+      "in:向右露出",
+      1
+     ],
+     [
+      "in:缩小",
+      1
+     ]
+    ],
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.8,
+     "zones": [
+      "middle",
+      "top"
+     ]
+    },
+    "evidence": {
+     "n_cues": 10,
+     "n_visuals": 6,
+     "attributable": 9,
+     "unexecutable_share": 0.1,
+     "unexecutable_kinds": "card=文字面板/清单, fragment=逐字弹字的单字碎片, free=既无出处也不贴锚点",
+     "note": "",
+     "hit_rate": 0.9,
+     "number_share": 0.1,
+     "chapter_share": 0.7,
+     "card_share": 0.0,
+     "fragment_share": 0.0,
+     "keyword_share": 0.0,
+     "line_echo_share": 0.0,
+     "cut_share": 0.1,
+     "free_share": 0.1
+    }
+   },
+   "unmeasured": []
+  },
+  "style_14": {
+   "style_id": "style_14",
+   "source_ref": "wb_f2eed1052762",
+   "duration_sec": 20.9,
+   "beat": {
+    "bpm": 83.35,
+    "confidence": 0.578,
+    "source": "bgm_autocorr",
+    "n_beats": 32
+   },
+   "anchors": {
+    "n_cuts": 11,
+    "n_flower_spans": 4,
+    "n_lines": 11,
+    "n_beats": 32
+   },
+   "sfx": {
+    "n_cues": 10,
+    "per_min": 28.7,
+    "trigger_mix": {
+     "cut": 5,
+     "flower": 3,
+     "line": 2,
+     "beat": 0,
+     "free": 0
+    },
+    "trigger_share": {
+     "cut": 0.5,
+     "flower": 0.3,
+     "line": 0.2,
+     "beat": 0.0,
+     "free": 0.0
+    },
+    "tol_sec": 0.12,
+    "allowed_triggers": [
+     "cut",
+     "flower",
+     "line"
+    ],
+    "max_per_min": 29,
+    "max_per_sec": 0.478,
+    "max_free_per_min": 0.0,
+    "min_gap_sec": 0.817,
+    "gap_median_sec": 1.3,
+    "gap_p90_sec": 3.117,
+    "max_per_min_by_role": {
+     "misc": 25.84,
+     "cut": 2.87
+    },
+    "roles": {
+     "misc": {
+      "n": 9,
+      "triggers": {
+       "cut": 4,
+       "flower": 3,
+       "line": 2
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.817,
+      "gap_median_sec": 1.234,
+      "per_min": 25.84
+     },
+     "cut": {
+      "n": 1,
+      "triggers": {
+       "cut": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 2.87
+     }
+    },
+    "role_for_trigger": {
+     "cut": "misc",
+     "flower": "misc",
+     "line": "misc"
+    },
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.3,
+     "silence_ban": false,
+     "silence_share": 0.3,
+     "midline_ban": true,
+     "structural_cut_only": true,
+     "cut_shot_len_p25_sec": 1.5,
+     "all_shot_len_p25_sec": 1.35
+    },
+    "evidence": {
+     "n_cues": 10,
+     "attributable": 10,
+     "hit_rate": 1.0,
+     "offset_median_sec": 0.0,
+     "offset_p90_sec": 0.0,
+     "role_trigger_crosstab": {
+      "cut": {
+       "misc": 4,
+       "cut": 1
+      },
+      "flower": {
+       "misc": 3
+      },
+      "line": {
+       "misc": 2
+      }
+     }
+    }
+   },
+   "flower": {
+    "n_cues": 8,
+    "n_visuals": 4,
+    "per_min": 11.5,
+    "per_min_segments": 23.0,
+    "trigger_mix": {
+     "number": 0,
+     "chapter": 2,
+     "keyword": 0,
+     "line_echo": 0,
+     "cut": 3,
+     "card": 0,
+     "fragment": 0,
+     "free": 3
+    },
+    "trigger_share": {
+     "number": 0.0,
+     "chapter": 0.25,
+     "keyword": 0.0,
+     "line_echo": 0.0,
+     "cut": 0.375,
+     "card": 0.0,
+     "fragment": 0.0,
+     "free": 0.375
+    },
+    "allowed_triggers": [
+     "chapter",
+     "cut"
+    ],
+    "always_allowed_triggers": [
+     "number"
+    ],
+    "max_per_min": 12,
+    "max_per_min_note": "",
+    "fallback_hold_sec": [
+     1.12,
+     2.91
+    ],
+    "min_gap_sec": 2.667,
+    "gap_median_sec": 4.166,
+    "chars_min": 5,
+    "chars_max": 11,
+    "chars_median": 5.5,
+    "chars_mean": 6.5,
+    "hold_sec_min": 1.24,
+    "hold_sec_max": 4.16,
+    "hold_sec_median": 2.27,
+    "layout_mix": {
+     "bottom": 4,
+     "top": 2,
+     "middle": 2
+    },
+    "colors": {
+     "center_burst_color": "#FFBF17",
+     "flank_color": "#FFBF17",
+     "stamp_color": "#B71C1C",
+     "end_card_color": "#FFBF17",
+     "stroke_color": "#000000"
+    },
+    "fonts": [
+     [
+      "知新体",
+      13
+     ],
+     [
+      "得意黑",
+      2
+     ]
+    ],
+    "anims_top": [
+     [
+      "in:渐显",
+      4
+     ],
+     [
+      "in:放大",
+      3
+     ],
+     [
+      "in:向上滑动",
+      2
+     ],
+     [
+      "in:雪光模糊",
+      1
+     ],
+     [
+      "in:波浪弹入",
+      1
+     ],
+     [
+      "in:滚入",
+      1
+     ],
+     [
+      "out:滚出",
+      1
+     ],
+     [
+      "in:向右模糊 II",
+      1
+     ]
+    ],
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.125,
+     "zones": [
+      "bottom",
+      "top"
+     ]
+    },
+    "evidence": {
+     "n_cues": 8,
+     "n_visuals": 4,
+     "attributable": 5,
+     "unexecutable_share": 0.375,
+     "unexecutable_kinds": "card=文字面板/清单, fragment=逐字弹字的单字碎片, free=既无出处也不贴锚点",
+     "note": "",
+     "hit_rate": 0.625,
+     "number_share": 0.0,
+     "chapter_share": 0.25,
+     "card_share": 0.0,
+     "fragment_share": 0.0,
+     "keyword_share": 0.0,
+     "line_echo_share": 0.0,
+     "cut_share": 0.375,
+     "free_share": 0.375
+    }
+   },
+   "unmeasured": []
+  },
+  "style_15": {
+   "style_id": "style_15",
+   "source_ref": "wb_37328c877feb",
+   "duration_sec": 30.567,
+   "beat": {
+    "bpm": 66.26,
+    "confidence": 0.611,
+    "source": "bgm_autocorr",
+    "n_beats": 36
+   },
+   "anchors": {
+    "n_cuts": 13,
+    "n_flower_spans": 1,
+    "n_lines": 21,
+    "n_beats": 36
+   },
+   "sfx": {
+    "n_cues": 33,
+    "per_min": 64.8,
+    "trigger_mix": {
+     "cut": 8,
+     "flower": 16,
+     "line": 5,
+     "beat": 1,
+     "free": 3
+    },
+    "trigger_share": {
+     "cut": 0.242,
+     "flower": 0.485,
+     "line": 0.152,
+     "beat": 0.03,
+     "free": 0.091
+    },
+    "tol_sec": 0.12,
+    "allowed_triggers": [
+     "cut",
+     "flower",
+     "line"
+    ],
+    "max_per_min": 65,
+    "max_per_sec": 1.08,
+    "max_free_per_min": 5.89,
+    "min_gap_sec": 0.0,
+    "gap_median_sec": 0.733,
+    "gap_p90_sec": 1.663,
+    "max_per_min_by_role": {
+     "misc": 60.85,
+     "info": 3.93
+    },
+    "roles": {
+     "misc": {
+      "n": 31,
+      "triggers": {
+       "cut": 7,
+       "flower": 16,
+       "line": 5,
+       "free": 2,
+       "beat": 1
+      },
+      "primary_trigger": "flower",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.0,
+      "gap_median_sec": 0.8,
+      "per_min": 60.85
+     },
+     "info": {
+      "n": 2,
+      "triggers": {
+       "cut": 1,
+       "free": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.333,
+      "gap_median_sec": 0.333,
+      "per_min": 3.93
+     }
+    },
+    "role_for_trigger": {
+     "cut": "misc",
+     "flower": "misc",
+     "line": "misc",
+     "beat": "misc"
+    },
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.424,
+     "silence_ban": false,
+     "silence_share": 0.242,
+     "midline_ban": true,
+     "structural_cut_only": true,
+     "cut_shot_len_p25_sec": 1.175,
+     "all_shot_len_p25_sec": 1.233
+    },
+    "evidence": {
+     "n_cues": 33,
+     "attributable": 30,
+     "hit_rate": 0.909,
+     "offset_median_sec": 0.0,
+     "offset_p90_sec": 0.0,
+     "role_trigger_crosstab": {
+      "cut": {
+       "misc": 7,
+       "info": 1
+      },
+      "flower": {
+       "misc": 16
+      },
+      "line": {
+       "misc": 5
+      },
+      "beat": {
+       "misc": 1
+      }
+     }
+    }
+   },
+   "flower": {
+    "n_cues": 28,
+    "n_visuals": 1,
+    "per_min": 27.5,
+    "per_min_segments": 55.0,
+    "trigger_mix": {
+     "number": 0,
+     "chapter": 9,
+     "keyword": 1,
+     "line_echo": 1,
+     "cut": 3,
+     "card": 0,
+     "fragment": 0,
+     "free": 14
+    },
+    "trigger_share": {
+     "number": 0.0,
+     "chapter": 0.321,
+     "keyword": 0.036,
+     "line_echo": 0.036,
+     "cut": 0.107,
+     "card": 0.0,
+     "fragment": 0.0,
+     "free": 0.5
+    },
+    "allowed_triggers": [
+     "chapter",
+     "keyword",
+     "line_echo",
+     "cut"
+    ],
+    "always_allowed_triggers": [
+     "number"
+    ],
+    "max_per_min": 24,
+    "max_per_min_note": "整片一条常驻文字轨，按文案更换率的一半估",
+    "fallback_hold_sec": [
+     1.0,
+     1.65
+    ],
+    "min_gap_sec": 1.09,
+    "gap_median_sec": null,
+    "chars_min": 2,
+    "chars_max": 12,
+    "chars_median": 4.0,
+    "chars_mean": 5.0,
+    "hold_sec_min": 1.0,
+    "hold_sec_max": 1.65,
+    "hold_sec_median": 1.2,
+    "layout_mix": {
+     "middle": 14,
+     "bottom": 13,
+     "top": 1
+    },
+    "colors": {
+     "center_burst_color": "#FFFFFF",
+     "flank_color": "#FFBF17",
+     "stamp_color": "#B71C1C",
+     "end_card_color": "#B71C1C",
+     "stroke_color": "#000000"
+    },
+    "fonts": [
+     [
+      "思源宋体-Bold",
+      25
+     ],
+     [
+      "zh-hans",
+      25
+     ],
+     [
+      "DouyinSansBold",
+      20
+     ]
+    ],
+    "anims_top": [
+     [
+      "in:渐显",
+      8
+     ],
+     [
+      "in:模糊发光",
+      6
+     ],
+     [
+      "in:缩小",
+      3
+     ],
+     [
+      "in:吸入",
+      3
+     ],
+     [
+      "in:跃进",
+      3
+     ],
+     [
+      "in:向右缓入",
+      3
+     ],
+     [
+      "in:打字光标",
+      3
+     ],
+     [
+      "in:随机上升",
+      2
+     ]
+    ],
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.357,
+     "zones": [
+      "middle",
+      "bottom"
+     ]
+    },
+    "evidence": {
+     "n_cues": 28,
+     "n_visuals": 1,
+     "attributable": 14,
+     "unexecutable_share": 0.5,
+     "unexecutable_kinds": "card=文字面板/清单, fragment=逐字弹字的单字碎片, free=既无出处也不贴锚点",
+     "note": "本套花字多为编辑自行改写/总结，或与字幕轨不同源，字面不可溯；pipeline 只产出可溯源的花字，故不复制这部分",
+     "hit_rate": 0.5,
+     "number_share": 0.0,
+     "chapter_share": 0.321,
+     "card_share": 0.0,
+     "fragment_share": 0.0,
+     "keyword_share": 0.036,
+     "line_echo_share": 0.036,
+     "cut_share": 0.107,
+     "free_share": 0.5
+    }
+   },
+   "unmeasured": []
+  },
+  "style_16": {
+   "style_id": "style_16",
+   "source_ref": "wb_3751917c15e4",
+   "duration_sec": 28.333,
+   "beat": {
+    "bpm": 103.36,
+    "confidence": 0.757,
+    "source": "bgm_autocorr",
+    "n_beats": 51
+   },
+   "anchors": {
+    "n_cuts": 15,
+    "n_flower_spans": 3,
+    "n_lines": 14,
+    "n_beats": 51
+   },
+   "sfx": {
+    "n_cues": 13,
+    "per_min": 27.5,
+    "trigger_mix": {
+     "cut": 8,
+     "flower": 5,
+     "line": 0,
+     "beat": 0,
+     "free": 0
+    },
+    "trigger_share": {
+     "cut": 0.615,
+     "flower": 0.385,
+     "line": 0.0,
+     "beat": 0.0,
+     "free": 0.0
+    },
+    "tol_sec": 0.12,
+    "allowed_triggers": [
+     "cut",
+     "flower"
+    ],
+    "max_per_min": 28,
+    "max_per_sec": 0.459,
+    "max_free_per_min": 0.0,
+    "min_gap_sec": 0.7,
+    "gap_median_sec": 1.892,
+    "gap_p90_sec": 3.338,
+    "max_per_min_by_role": {
+     "hook": 2.12,
+     "misc": 19.06,
+     "cut": 6.35
+    },
+    "roles": {
+     "hook": {
+      "n": 1,
+      "triggers": {
+       "cut": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 2.12
+     },
+     "misc": {
+      "n": 9,
+      "triggers": {
+       "flower": 3,
+       "cut": 6
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.7,
+      "gap_median_sec": 2.358,
+      "per_min": 19.06
+     },
+     "cut": {
+      "n": 3,
+      "triggers": {
+       "flower": 2,
+       "cut": 1
+      },
+      "primary_trigger": "flower",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 2.95,
+      "gap_median_sec": 4.333,
+      "per_min": 6.35
+     }
+    },
+    "role_for_trigger": {
+     "cut": "misc",
+     "flower": "misc"
+    },
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.692,
+     "silence_ban": false,
+     "silence_share": 0.231,
+     "midline_ban": true,
+     "structural_cut_only": true,
+     "cut_shot_len_p25_sec": 1.842,
+     "all_shot_len_p25_sec": 1.317
+    },
+    "evidence": {
+     "n_cues": 13,
+     "attributable": 13,
+     "hit_rate": 1.0,
+     "offset_median_sec": 0.0,
+     "offset_p90_sec": 0.0,
+     "role_trigger_crosstab": {
+      "cut": {
+       "hook": 1,
+       "misc": 6,
+       "cut": 1
+      },
+      "flower": {
+       "misc": 3,
+       "cut": 2
+      }
+     }
+    }
+   },
+   "flower": {
+    "n_cues": 13,
+    "n_visuals": 3,
+    "per_min": 6.4,
+    "per_min_segments": 27.5,
+    "trigger_mix": {
+     "number": 1,
+     "chapter": 6,
+     "keyword": 1,
+     "line_echo": 0,
+     "cut": 3,
+     "card": 0,
+     "fragment": 0,
+     "free": 2
+    },
+    "trigger_share": {
+     "number": 0.077,
+     "chapter": 0.462,
+     "keyword": 0.077,
+     "line_echo": 0.0,
+     "cut": 0.231,
+     "card": 0.0,
+     "fragment": 0.0,
+     "free": 0.154
+    },
+    "allowed_triggers": [
+     "number",
+     "chapter",
+     "keyword",
+     "cut"
+    ],
+    "always_allowed_triggers": [
+     "number"
+    ],
+    "max_per_min": 7,
+    "max_per_min_note": "",
+    "fallback_hold_sec": [
+     1.3,
+     3.24
+    ],
+    "min_gap_sec": 8.084,
+    "gap_median_sec": 11.15,
+    "chars_min": 1,
+    "chars_max": 12,
+    "chars_median": 4,
+    "chars_mean": 4.2,
+    "hold_sec_min": 2.8,
+    "hold_sec_max": 6.0,
+    "hold_sec_median": 3.97,
+    "layout_mix": {
+     "bottom": 2,
+     "top": 6,
+     "middle": 5
+    },
+    "colors": {
+     "center_burst_color": "#B71C1C",
+     "flank_color": "#B71C1C",
+     "stamp_color": "#B71C1C",
+     "end_card_color": "#B71C1C",
+     "stroke_color": "#000000"
+    },
+    "fonts": [
+     [
+      "特黑体",
+      10
+     ],
+     [
+      "DouyinSansBold",
+      6
+     ],
+     [
+      "造字工房俊雅体",
+      5
+     ],
+     [
+      "AGaramond-BoldItalic",
+      3
+     ],
+     [
+      "zh-hans",
+      3
+     ]
+    ],
+    "anims_top": [
+     [
+      "in:渐显",
+      4
+     ],
+     [
+      "in:滚入",
+      2
+     ],
+     [
+      "in:缩小",
+      1
+     ],
+     [
+      "out:渐隐",
+      1
+     ],
+     [
+      "in:雪光模糊",
+      1
+     ],
+     [
+      "in:色散拖影",
+      1
+     ],
+     [
+      "out:发光模糊",
+      1
+     ],
+     [
+      "in:打字光标",
+      1
+     ]
+    ],
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.538,
+     "zones": [
+      "top",
+      "middle"
+     ]
+    },
+    "evidence": {
+     "n_cues": 13,
+     "n_visuals": 3,
+     "attributable": 11,
+     "unexecutable_share": 0.154,
+     "unexecutable_kinds": "card=文字面板/清单, fragment=逐字弹字的单字碎片, free=既无出处也不贴锚点",
+     "note": "",
+     "hit_rate": 0.846,
+     "number_share": 0.077,
+     "chapter_share": 0.462,
+     "card_share": 0.0,
+     "fragment_share": 0.0,
+     "keyword_share": 0.077,
+     "line_echo_share": 0.0,
+     "cut_share": 0.231,
+     "free_share": 0.154
+    }
+   },
+   "unmeasured": []
+  },
+  "style_17": {
+   "style_id": "style_17",
+   "source_ref": "wb_52c241bb6cb5",
+   "duration_sec": 16.0,
+   "beat": {
+    "bpm": 60.09,
+    "confidence": 0.515,
+    "source": "bgm_autocorr",
+    "n_beats": 19
+   },
+   "anchors": {
+    "n_cuts": 11,
+    "n_flower_spans": 5,
+    "n_lines": 12,
+    "n_beats": 19
+   },
+   "sfx": {
+    "n_cues": 15,
+    "per_min": 56.2,
+    "trigger_mix": {
+     "cut": 8,
+     "flower": 5,
+     "line": 1,
+     "beat": 0,
+     "free": 1
+    },
+    "trigger_share": {
+     "cut": 0.533,
+     "flower": 0.333,
+     "line": 0.067,
+     "beat": 0.0,
+     "free": 0.067
+    },
+    "tol_sec": 0.12,
+    "allowed_triggers": [
+     "cut",
+     "flower",
+     "line"
+    ],
+    "max_per_min": 57,
+    "max_per_sec": 0.938,
+    "max_free_per_min": 3.75,
+    "min_gap_sec": 0.367,
+    "gap_median_sec": 0.833,
+    "gap_p90_sec": 1.98,
+    "max_per_min_by_role": {
+     "misc": 52.5,
+     "cut": 3.75
+    },
+    "roles": {
+     "misc": {
+      "n": 14,
+      "triggers": {
+       "cut": 7,
+       "flower": 5,
+       "free": 1,
+       "line": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.367,
+      "gap_median_sec": 0.834,
+      "per_min": 52.5
+     },
+     "cut": {
+      "n": 1,
+      "triggers": {
+       "cut": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 3.75
+     }
+    },
+    "role_for_trigger": {
+     "cut": "misc",
+     "flower": "misc",
+     "line": "misc"
+    },
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.267,
+     "silence_ban": false,
+     "silence_share": 0.4,
+     "midline_ban": true,
+     "structural_cut_only": true,
+     "cut_shot_len_p25_sec": 1.183,
+     "all_shot_len_p25_sec": 1.067
+    },
+    "evidence": {
+     "n_cues": 15,
+     "attributable": 14,
+     "hit_rate": 0.933,
+     "offset_median_sec": 0.0,
+     "offset_p90_sec": 0.0,
+     "role_trigger_crosstab": {
+      "cut": {
+       "misc": 7,
+       "cut": 1
+      },
+      "flower": {
+       "misc": 5
+      },
+      "line": {
+       "misc": 1
+      }
+     }
+    }
+   },
+   "flower": {
+    "n_cues": 12,
+    "n_visuals": 5,
+    "per_min": 18.8,
+    "per_min_segments": 45.0,
+    "trigger_mix": {
+     "number": 0,
+     "chapter": 0,
+     "keyword": 0,
+     "line_echo": 0,
+     "cut": 5,
+     "card": 0,
+     "fragment": 0,
+     "free": 7
+    },
+    "trigger_share": {
+     "number": 0.0,
+     "chapter": 0.0,
+     "keyword": 0.0,
+     "line_echo": 0.0,
+     "cut": 0.417,
+     "card": 0.0,
+     "fragment": 0.0,
+     "free": 0.583
+    },
+    "allowed_triggers": [
+     "cut"
+    ],
+    "always_allowed_triggers": [
+     "number"
+    ],
+    "max_per_min": 19,
+    "max_per_min_note": "",
+    "fallback_hold_sec": [
+     1.0,
+     1.5
+    ],
+    "min_gap_sec": 1.4,
+    "gap_median_sec": 1.6,
+    "chars_min": 2,
+    "chars_max": 9,
+    "chars_median": 5.0,
+    "chars_mean": 5.1,
+    "hold_sec_min": 1.0,
+    "hold_sec_max": 2.53,
+    "hold_sec_median": 1.2,
+    "layout_mix": {
+     "bottom": 9,
+     "top": 1,
+     "middle": 2
+    },
+    "colors": {
+     "center_burst_color": "#FFF589",
+     "flank_color": "#FFFFFF",
+     "stamp_color": "#B71C1C",
+     "end_card_color": "#FFDE00",
+     "stroke_color": "#000000"
+    },
+    "fonts": [
+     [
+      "SourceHanSerifCN-Heavy",
+      16
+     ],
+     [
+      "DouyinSansBold",
+      3
+     ]
+    ],
+    "anims_top": [
+     [
+      "in:渐显",
+      6
+     ],
+     [
+      "in:随机上升",
+      3
+     ],
+     [
+      "in:收拢",
+      2
+     ],
+     [
+      "in:缩小",
+      1
+     ],
+     [
+      "in:滚入",
+      1
+     ],
+     [
+      "in:雪光模糊",
+      1
+     ],
+     [
+      "in:轻微放大",
+      1
+     ],
+     [
+      "in:打字光标",
+      1
+     ]
+    ],
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.417,
+     "zones": [
+      "bottom",
+      "middle"
+     ]
+    },
+    "evidence": {
+     "n_cues": 12,
+     "n_visuals": 5,
+     "attributable": 5,
+     "unexecutable_share": 0.583,
+     "unexecutable_kinds": "card=文字面板/清单, fragment=逐字弹字的单字碎片, free=既无出处也不贴锚点",
+     "note": "本套花字多为编辑自行改写/总结，或与字幕轨不同源，字面不可溯；pipeline 只产出可溯源的花字，故不复制这部分",
+     "hit_rate": 0.417,
+     "number_share": 0.0,
+     "chapter_share": 0.0,
+     "card_share": 0.0,
+     "fragment_share": 0.0,
+     "keyword_share": 0.0,
+     "line_echo_share": 0.0,
+     "cut_share": 0.417,
+     "free_share": 0.583
+    }
+   },
+   "unmeasured": []
+  },
+  "style_18": {
+   "style_id": "style_18",
+   "source_ref": "wb_657da9237c20",
+   "duration_sec": 38.2,
+   "beat": {
+    "bpm": 60.09,
+    "confidence": 0.969,
+    "source": "bgm_autocorr",
+    "n_beats": 41
+   },
+   "anchors": {
+    "n_cuts": 25,
+    "n_flower_spans": 6,
+    "n_lines": 26,
+    "n_beats": 41
+   },
+   "sfx": {
+    "n_cues": 21,
+    "per_min": 33.0,
+    "trigger_mix": {
+     "cut": 12,
+     "flower": 6,
+     "line": 3,
+     "beat": 0,
+     "free": 0
+    },
+    "trigger_share": {
+     "cut": 0.571,
+     "flower": 0.286,
+     "line": 0.143,
+     "beat": 0.0,
+     "free": 0.0
+    },
+    "tol_sec": 0.12,
+    "allowed_triggers": [
+     "cut",
+     "flower",
+     "line"
+    ],
+    "max_per_min": 33,
+    "max_per_sec": 0.55,
+    "max_free_per_min": 0.0,
+    "min_gap_sec": 0.0,
+    "gap_median_sec": 1.417,
+    "gap_p90_sec": 4.336,
+    "max_per_min_by_role": {
+     "accent": 3.14,
+     "misc": 20.42,
+     "hook": 1.57,
+     "cut": 7.85
+    },
+    "roles": {
+     "accent": {
+      "n": 2,
+      "triggers": {
+       "cut": 2
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 21.6,
+      "gap_median_sec": 21.6,
+      "per_min": 3.14
+     },
+     "misc": {
+      "n": 13,
+      "triggers": {
+       "flower": 2,
+       "cut": 9,
+       "line": 2
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.8,
+      "gap_median_sec": 2.767,
+      "per_min": 20.42
+     },
+     "hook": {
+      "n": 1,
+      "triggers": {
+       "cut": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 1.57
+     },
+     "cut": {
+      "n": 5,
+      "triggers": {
+       "flower": 4,
+       "line": 1
+      },
+      "primary_trigger": "flower",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.883,
+      "gap_median_sec": 5.542,
+      "per_min": 7.85
+     }
+    },
+    "role_for_trigger": {
+     "cut": "misc",
+     "flower": "cut",
+     "line": "misc"
+    },
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.476,
+     "silence_ban": false,
+     "silence_share": 0.381,
+     "midline_ban": true,
+     "structural_cut_only": true,
+     "cut_shot_len_p25_sec": 1.058,
+     "all_shot_len_p25_sec": 1.083
+    },
+    "evidence": {
+     "n_cues": 21,
+     "attributable": 21,
+     "hit_rate": 1.0,
+     "offset_median_sec": 0.0,
+     "offset_p90_sec": 0.0,
+     "role_trigger_crosstab": {
+      "cut": {
+       "accent": 2,
+       "hook": 1,
+       "misc": 9
+      },
+      "flower": {
+       "misc": 2,
+       "cut": 4
+      },
+      "line": {
+       "misc": 2,
+       "cut": 1
+      }
+     }
+    }
+   },
+   "flower": {
+    "n_cues": 20,
+    "n_visuals": 6,
+    "per_min": 9.4,
+    "per_min_segments": 31.4,
+    "trigger_mix": {
+     "number": 0,
+     "chapter": 5,
+     "keyword": 8,
+     "line_echo": 0,
+     "cut": 5,
+     "card": 0,
+     "fragment": 0,
+     "free": 2
+    },
+    "trigger_share": {
+     "number": 0.0,
+     "chapter": 0.25,
+     "keyword": 0.4,
+     "line_echo": 0.0,
+     "cut": 0.25,
+     "card": 0.0,
+     "fragment": 0.0,
+     "free": 0.1
+    },
+    "allowed_triggers": [
+     "chapter",
+     "keyword",
+     "cut"
+    ],
+    "always_allowed_triggers": [
+     "number"
+    ],
+    "max_per_min": 10,
+    "max_per_min_note": "",
+    "fallback_hold_sec": [
+     1.03,
+     1.92
+    ],
+    "min_gap_sec": 4.2,
+    "gap_median_sec": 4.584,
+    "chars_min": 2,
+    "chars_max": 10,
+    "chars_median": 5.0,
+    "chars_mean": 4.7,
+    "hold_sec_min": 1.85,
+    "hold_sec_max": 3.83,
+    "hold_sec_median": 3.3,
+    "layout_mix": {
+     "bottom": 1,
+     "top": 13,
+     "middle": 6
+    },
+    "colors": {
+     "center_burst_color": "#B71C1C",
+     "flank_color": "#FFFFFF",
+     "stamp_color": "#B71C1C",
+     "end_card_color": "#FFBF17",
+     "stroke_color": "#000000"
+    },
+    "fonts": [
+     [
+      "造字工房俊雅体",
+      15
+     ],
+     [
+      "得意黑",
+      8
+     ],
+     [
+      "默陌专辑手写体",
+      3
+     ],
+     [
+      "尔雅新大黑",
+      1
+     ]
+    ],
+    "anims_top": [
+     [
+      "in:向上露出",
+      4
+     ],
+     [
+      "in:向右模糊 II",
+      2
+     ],
+     [
+      "in:打字光标",
+      2
+     ],
+     [
+      "in:圆柱体滚动",
+      2
+     ],
+     [
+      "in:轻微放大",
+      2
+     ],
+     [
+      "in:向右擦除",
+      2
+     ],
+     [
+      "in:发光模糊",
+      1
+     ],
+     [
+      "in:雪光模糊",
+      1
+     ]
+    ],
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.6,
+     "zones": [
+      "top",
+      "middle"
+     ]
+    },
+    "evidence": {
+     "n_cues": 20,
+     "n_visuals": 6,
+     "attributable": 18,
+     "unexecutable_share": 0.1,
+     "unexecutable_kinds": "card=文字面板/清单, fragment=逐字弹字的单字碎片, free=既无出处也不贴锚点",
+     "note": "",
+     "hit_rate": 0.9,
+     "number_share": 0.0,
+     "chapter_share": 0.25,
+     "card_share": 0.0,
+     "fragment_share": 0.0,
+     "keyword_share": 0.4,
+     "line_echo_share": 0.0,
+     "cut_share": 0.25,
+     "free_share": 0.1
+    }
+   },
+   "unmeasured": []
+  },
+  "style_19": {
+   "style_id": "style_19",
+   "source_ref": "wb_2ff6ef7e74af",
+   "duration_sec": 38.2,
+   "beat": {
+    "bpm": 60.09,
+    "confidence": 0.969,
+    "source": "bgm_autocorr",
+    "n_beats": 41
+   },
+   "anchors": {
+    "n_cuts": 22,
+    "n_flower_spans": 6,
+    "n_lines": 31,
+    "n_beats": 41
+   },
+   "sfx": {
+    "n_cues": 14,
+    "per_min": 22.0,
+    "trigger_mix": {
+     "cut": 11,
+     "flower": 2,
+     "line": 1,
+     "beat": 0,
+     "free": 0
+    },
+    "trigger_share": {
+     "cut": 0.786,
+     "flower": 0.143,
+     "line": 0.071,
+     "beat": 0.0,
+     "free": 0.0
+    },
+    "tol_sec": 0.12,
+    "allowed_triggers": [
+     "cut",
+     "flower",
+     "line"
+    ],
+    "max_per_min": 22,
+    "max_per_sec": 0.366,
+    "max_free_per_min": 0.0,
+    "min_gap_sec": 0.0,
+    "gap_median_sec": 1.433,
+    "gap_p90_sec": 4.06,
+    "max_per_min_by_role": {
+     "hook": 3.14,
+     "misc": 12.57,
+     "accent": 1.57,
+     "info": 3.14,
+     "cut": 1.57
+    },
+    "roles": {
+     "hook": {
+      "n": 2,
+      "triggers": {
+       "cut": 1,
+       "flower": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 5.3,
+      "gap_median_sec": 5.3,
+      "per_min": 3.14
+     },
+     "misc": {
+      "n": 8,
+      "triggers": {
+       "cut": 7,
+       "line": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.933,
+      "gap_median_sec": 2.917,
+      "per_min": 12.57
+     },
+     "accent": {
+      "n": 1,
+      "triggers": {
+       "flower": 1
+      },
+      "primary_trigger": "flower",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 1.57
+     },
+     "info": {
+      "n": 2,
+      "triggers": {
+       "cut": 2
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 3.967,
+      "gap_median_sec": 3.967,
+      "per_min": 3.14
+     },
+     "cut": {
+      "n": 1,
+      "triggers": {
+       "cut": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 1.57
+     }
+    },
+    "role_for_trigger": {
+     "cut": "misc",
+     "flower": "accent",
+     "line": "misc"
+    },
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.571,
+     "silence_ban": true,
+     "silence_share": 0.071,
+     "midline_ban": true,
+     "structural_cut_only": true,
+     "cut_shot_len_p25_sec": 0.9,
+     "all_shot_len_p25_sec": 1.05
+    },
+    "evidence": {
+     "n_cues": 14,
+     "attributable": 14,
+     "hit_rate": 1.0,
+     "offset_median_sec": 0.0,
+     "offset_p90_sec": 0.0,
+     "role_trigger_crosstab": {
+      "cut": {
+       "hook": 1,
+       "misc": 7,
+       "info": 2,
+       "cut": 1
+      },
+      "flower": {
+       "accent": 1,
+       "hook": 1
+      },
+      "line": {
+       "misc": 1
+      }
+     }
+    }
+   },
+   "flower": {
+    "n_cues": 9,
+    "n_visuals": 6,
+    "per_min": 9.4,
+    "per_min_segments": 14.1,
+    "trigger_mix": {
+     "number": 3,
+     "chapter": 1,
+     "keyword": 3,
+     "line_echo": 0,
+     "cut": 1,
+     "card": 0,
+     "fragment": 0,
+     "free": 1
+    },
+    "trigger_share": {
+     "number": 0.333,
+     "chapter": 0.111,
+     "keyword": 0.333,
+     "line_echo": 0.0,
+     "cut": 0.111,
+     "card": 0.0,
+     "fragment": 0.0,
+     "free": 0.111
+    },
+    "allowed_triggers": [
+     "number",
+     "chapter",
+     "keyword",
+     "cut"
+    ],
+    "always_allowed_triggers": [
+     "number"
+    ],
+    "max_per_min": 10,
+    "max_per_min_note": "",
+    "fallback_hold_sec": [
+     1.0,
+     1.73
+    ],
+    "min_gap_sec": 2.834,
+    "gap_median_sec": 4.083,
+    "chars_min": 2,
+    "chars_max": 76,
+    "chars_median": 5,
+    "chars_mean": 12.4,
+    "hold_sec_min": 1.43,
+    "hold_sec_max": 2.92,
+    "hold_sec_median": 2.09,
+    "layout_mix": {
+     "top": 6,
+     "bottom": 3
+    },
+    "colors": {
+     "center_burst_color": "#FFBF17",
+     "flank_color": "#B71C1C",
+     "stamp_color": "#B71C1C",
+     "end_card_color": "#FFBF17",
+     "stroke_color": "#000000"
+    },
+    "fonts": [
+     [
+      "造字工房俊雅体",
+      10
+     ],
+     [
+      "得意黑",
+      2
+     ],
+     [
+      "Aa未来黑",
+      1
+     ]
+    ],
+    "anims_top": [
+     [
+      "in:发光模糊",
+      3
+     ],
+     [
+      "in:向下滑动",
+      1
+     ],
+     [
+      "in:圆柱体滚动",
+      1
+     ],
+     [
+      "loop:扩音器",
+      1
+     ],
+     [
+      "in:呐喊声波",
+      1
+     ],
+     [
+      "in:向左模糊",
+      1
+     ],
+     [
+      "in:缩小",
+      1
+     ],
+     [
+      "in:弹簧",
+      1
+     ]
+    ],
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.667,
+     "zones": [
+      "top",
+      "bottom"
+     ]
+    },
+    "evidence": {
+     "n_cues": 9,
+     "n_visuals": 6,
+     "attributable": 8,
+     "unexecutable_share": 0.111,
+     "unexecutable_kinds": "card=文字面板/清单, fragment=逐字弹字的单字碎片, free=既无出处也不贴锚点",
+     "note": "",
+     "hit_rate": 0.889,
+     "number_share": 0.333,
+     "chapter_share": 0.111,
+     "card_share": 0.0,
+     "fragment_share": 0.0,
+     "keyword_share": 0.333,
+     "line_echo_share": 0.0,
+     "cut_share": 0.111,
+     "free_share": 0.111
+    }
+   },
+   "unmeasured": []
+  },
+  "style_20": {
+   "style_id": "style_20",
+   "source_ref": "wb_007d6d4513cd",
+   "duration_sec": 30.7,
+   "beat": {
+    "bpm": 161.5,
+    "confidence": 0.584,
+    "source": "bgm_autocorr",
+    "n_beats": 85
+   },
+   "anchors": {
+    "n_cuts": 16,
+    "n_flower_spans": 1,
+    "n_lines": 15,
+    "n_beats": 85
+   },
+   "sfx": {
+    "n_cues": 24,
+    "per_min": 46.9,
+    "trigger_mix": {
+     "cut": 9,
+     "flower": 10,
+     "line": 1,
+     "beat": 2,
+     "free": 2
+    },
+    "trigger_share": {
+     "cut": 0.375,
+     "flower": 0.417,
+     "line": 0.042,
+     "beat": 0.083,
+     "free": 0.083
+    },
+    "tol_sec": 0.12,
+    "allowed_triggers": [
+     "cut",
+     "flower",
+     "beat"
+    ],
+    "max_per_min": 47,
+    "max_per_sec": 0.782,
+    "max_free_per_min": 3.91,
+    "min_gap_sec": 0.0,
+    "gap_median_sec": 1.067,
+    "gap_p90_sec": 1.867,
+    "max_per_min_by_role": {
+     "misc": 44.95,
+     "cut": 1.95
+    },
+    "roles": {
+     "misc": {
+      "n": 23,
+      "triggers": {
+       "flower": 10,
+       "cut": 8,
+       "line": 1,
+       "beat": 2,
+       "free": 2
+      },
+      "primary_trigger": "flower",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.0,
+      "gap_median_sec": 1.117,
+      "per_min": 44.95
+     },
+     "cut": {
+      "n": 1,
+      "triggers": {
+       "cut": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 1.95
+     }
+    },
+    "role_for_trigger": {
+     "flower": "misc",
+     "cut": "misc",
+     "line": "misc",
+     "beat": "misc"
+    },
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.208,
+     "silence_ban": false,
+     "silence_share": 0.458,
+     "midline_ban": true,
+     "structural_cut_only": true,
+     "cut_shot_len_p25_sec": 0.933,
+     "all_shot_len_p25_sec": 0.908
+    },
+    "evidence": {
+     "n_cues": 24,
+     "attributable": 22,
+     "hit_rate": 0.917,
+     "offset_median_sec": 0.0,
+     "offset_p90_sec": 0.0,
+     "role_trigger_crosstab": {
+      "flower": {
+       "misc": 10
+      },
+      "cut": {
+       "misc": 8,
+       "cut": 1
+      },
+      "line": {
+       "misc": 1
+      },
+      "beat": {
+       "misc": 2
+      }
+     }
+    }
+   },
+   "flower": {
+    "n_cues": 26,
+    "n_visuals": 1,
+    "per_min": 25.4,
+    "per_min_segments": 50.8,
+    "trigger_mix": {
+     "number": 1,
+     "chapter": 6,
+     "keyword": 3,
+     "line_echo": 0,
+     "cut": 5,
+     "card": 9,
+     "fragment": 0,
+     "free": 2
+    },
+    "trigger_share": {
+     "number": 0.038,
+     "chapter": 0.231,
+     "keyword": 0.115,
+     "line_echo": 0.0,
+     "cut": 0.192,
+     "card": 0.346,
+     "fragment": 0.0,
+     "free": 0.077
+    },
+    "allowed_triggers": [
+     "number",
+     "chapter",
+     "keyword",
+     "cut"
+    ],
+    "always_allowed_triggers": [
+     "number"
+    ],
+    "max_per_min": 24,
+    "max_per_min_note": "整片一条常驻文字轨，按文案更换率的一半估",
+    "fallback_hold_sec": [
+     1.0,
+     2.57
+    ],
+    "min_gap_sec": 1.18,
+    "gap_median_sec": null,
+    "chars_min": 2,
+    "chars_max": 10,
+    "chars_median": 4.0,
+    "chars_mean": 4.9,
+    "hold_sec_min": 1.0,
+    "hold_sec_max": 2.57,
+    "hold_sec_median": 1.33,
+    "layout_mix": {
+     "bottom": 12,
+     "middle": 14
+    },
+    "colors": {
+     "center_burst_color": "#FFFFFF",
+     "flank_color": "#FFF589",
+     "stamp_color": "#B71C1C",
+     "end_card_color": "#FFFFFF",
+     "stroke_color": "#000000"
+    },
+    "fonts": [
+     [
+      "喜鹊古字典体(字节试用版)",
+      26
+     ],
+     [
+      "FZCuJinLJW",
+      10
+     ]
+    ],
+    "anims_top": [
+     [
+      "in:水墨晕开",
+      5
+     ],
+     [
+      "in:冰雪飘动",
+      3
+     ],
+     [
+      "in:向右缓入",
+      2
+     ],
+     [
+      "in:跃进",
+      2
+     ],
+     [
+      "in:晕开",
+      2
+     ],
+     [
+      "in:渐显",
+      1
+     ],
+     [
+      "in:打字光标",
+      1
+     ],
+     [
+      "in:向下滑动",
+      1
+     ]
+    ],
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.231,
+     "zones": [
+      "middle",
+      "bottom"
+     ]
+    },
+    "evidence": {
+     "n_cues": 26,
+     "n_visuals": 1,
+     "attributable": 24,
+     "unexecutable_share": 0.423,
+     "unexecutable_kinds": "card=文字面板/清单, fragment=逐字弹字的单字碎片, free=既无出处也不贴锚点",
+     "note": "",
+     "hit_rate": 0.923,
+     "number_share": 0.038,
+     "chapter_share": 0.231,
+     "card_share": 0.346,
+     "fragment_share": 0.0,
+     "keyword_share": 0.115,
+     "line_echo_share": 0.0,
+     "cut_share": 0.192,
+     "free_share": 0.077
+    }
+   },
+   "unmeasured": []
+  },
+  "style_21": {
+   "style_id": "style_21",
+   "source_ref": "wb_a48e9a9fc06f",
+   "duration_sec": 15.617,
+   "beat": {
+    "bpm": 99.38,
+    "confidence": 0.93,
+    "source": "bgm_autocorr",
+    "n_beats": 28
+   },
+   "anchors": {
+    "n_cuts": 13,
+    "n_flower_spans": 3,
+    "n_lines": 15,
+    "n_beats": 28
+   },
+   "sfx": {
+    "n_cues": 12,
+    "per_min": 46.1,
+    "trigger_mix": {
+     "cut": 7,
+     "flower": 4,
+     "line": 1,
+     "beat": 0,
+     "free": 0
+    },
+    "trigger_share": {
+     "cut": 0.583,
+     "flower": 0.333,
+     "line": 0.083,
+     "beat": 0.0,
+     "free": 0.0
+    },
+    "tol_sec": 0.12,
+    "allowed_triggers": [
+     "cut",
+     "flower",
+     "line"
+    ],
+    "max_per_min": 47,
+    "max_per_sec": 0.768,
+    "max_free_per_min": 0.0,
+    "min_gap_sec": 0.467,
+    "gap_median_sec": 1.5,
+    "gap_p90_sec": 1.967,
+    "max_per_min_by_role": {
+     "accent": 19.21,
+     "cut": 7.68,
+     "info": 15.37,
+     "hook": 3.84
+    },
+    "roles": {
+     "accent": {
+      "n": 5,
+      "triggers": {
+       "cut": 2,
+       "line": 1,
+       "flower": 2
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 2.883,
+      "gap_median_sec": 3.117,
+      "per_min": 19.21
+     },
+     "cut": {
+      "n": 2,
+      "triggers": {
+       "cut": 2
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 3.166,
+      "gap_median_sec": 3.166,
+      "per_min": 7.68
+     },
+     "info": {
+      "n": 4,
+      "triggers": {
+       "cut": 3,
+       "flower": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 2.217,
+      "gap_median_sec": 3.217,
+      "per_min": 15.37
+     },
+     "hook": {
+      "n": 1,
+      "triggers": {
+       "flower": 1
+      },
+      "primary_trigger": "flower",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 3.84
+     }
+    },
+    "role_for_trigger": {
+     "cut": "info",
+     "line": "accent",
+     "flower": "accent"
+    },
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.833,
+     "silence_ban": true,
+     "silence_share": 0.0,
+     "midline_ban": true,
+     "structural_cut_only": true,
+     "cut_shot_len_p25_sec": 0.642,
+     "all_shot_len_p25_sec": 0.9
+    },
+    "evidence": {
+     "n_cues": 12,
+     "attributable": 12,
+     "hit_rate": 1.0,
+     "offset_median_sec": 0.0,
+     "offset_p90_sec": 0.0,
+     "role_trigger_crosstab": {
+      "cut": {
+       "accent": 2,
+       "cut": 2,
+       "info": 3
+      },
+      "line": {
+       "accent": 1
+      },
+      "flower": {
+       "accent": 2,
+       "hook": 1,
+       "info": 1
+      }
+     }
+    }
+   },
+   "flower": {
+    "n_cues": 9,
+    "n_visuals": 3,
+    "per_min": 11.5,
+    "per_min_segments": 34.6,
+    "trigger_mix": {
+     "number": 0,
+     "chapter": 2,
+     "keyword": 6,
+     "line_echo": 0,
+     "cut": 0,
+     "card": 0,
+     "fragment": 0,
+     "free": 1
+    },
+    "trigger_share": {
+     "number": 0.0,
+     "chapter": 0.222,
+     "keyword": 0.667,
+     "line_echo": 0.0,
+     "cut": 0.0,
+     "card": 0.0,
+     "fragment": 0.0,
+     "free": 0.111
+    },
+    "allowed_triggers": [
+     "chapter",
+     "keyword"
+    ],
+    "always_allowed_triggers": [
+     "number"
+    ],
+    "max_per_min": 12,
+    "max_per_min_note": "",
+    "fallback_hold_sec": [
+     1.08,
+     2.3
+    ],
+    "min_gap_sec": 4.85,
+    "gap_median_sec": 5.4,
+    "chars_min": 1,
+    "chars_max": 5,
+    "chars_median": 4,
+    "chars_mean": 3.4,
+    "hold_sec_min": 3.3,
+    "hold_sec_max": 3.98,
+    "hold_sec_median": 3.97,
+    "layout_mix": {
+     "middle": 4,
+     "top": 5
+    },
+    "colors": {
+     "center_burst_color": "#FFF589",
+     "flank_color": "#FFF589",
+     "stamp_color": "#B71C1C",
+     "end_card_color": "#FFF589",
+     "stroke_color": "#000000"
+    },
+    "fonts": [
+     [
+      "造字工房俊雅体",
+      9
+     ]
+    ],
+    "anims_top": [
+     [
+      "in:缩小",
+      3
+     ],
+     [
+      "out:渐隐",
+      2
+     ],
+     [
+      "in:日出",
+      2
+     ],
+     [
+      "in:向右露出",
+      1
+     ],
+     [
+      "in:雪光模糊",
+      1
+     ],
+     [
+      "in:向左滑动",
+      1
+     ],
+     [
+      "in:渐显",
+      1
+     ]
+    ],
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.778,
+     "zones": [
+      "top",
+      "middle"
+     ]
+    },
+    "evidence": {
+     "n_cues": 9,
+     "n_visuals": 3,
+     "attributable": 8,
+     "unexecutable_share": 0.111,
+     "unexecutable_kinds": "card=文字面板/清单, fragment=逐字弹字的单字碎片, free=既无出处也不贴锚点",
+     "note": "",
+     "hit_rate": 0.889,
+     "number_share": 0.0,
+     "chapter_share": 0.222,
+     "card_share": 0.0,
+     "fragment_share": 0.0,
+     "keyword_share": 0.667,
+     "line_echo_share": 0.0,
+     "cut_share": 0.0,
+     "free_share": 0.111
+    }
+   },
+   "unmeasured": []
+  },
+  "style_22": {
+   "style_id": "style_22",
+   "source_ref": "wb_7eac5aca58e3",
+   "duration_sec": 23.483,
+   "beat": {
+    "bpm": 60.09,
+    "confidence": 0.969,
+    "source": "bgm_autocorr",
+    "n_beats": 26
+   },
+   "anchors": {
+    "n_cuts": 18,
+    "n_flower_spans": 6,
+    "n_lines": 24,
+    "n_beats": 26
+   },
+   "sfx": {
+    "n_cues": 13,
+    "per_min": 33.2,
+    "trigger_mix": {
+     "cut": 9,
+     "flower": 3,
+     "line": 1,
+     "beat": 0,
+     "free": 0
+    },
+    "trigger_share": {
+     "cut": 0.692,
+     "flower": 0.231,
+     "line": 0.077,
+     "beat": 0.0,
+     "free": 0.0
+    },
+    "tol_sec": 0.12,
+    "allowed_triggers": [
+     "cut",
+     "flower",
+     "line"
+    ],
+    "max_per_min": 34,
+    "max_per_sec": 0.554,
+    "max_free_per_min": 0.0,
+    "min_gap_sec": 0.517,
+    "gap_median_sec": 1.641,
+    "gap_p90_sec": 2.777,
+    "max_per_min_by_role": {
+     "accent": 5.11,
+     "misc": 25.55,
+     "cut": 2.56
+    },
+    "roles": {
+     "accent": {
+      "n": 2,
+      "triggers": {
+       "cut": 2
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 9.217,
+      "gap_median_sec": 9.217,
+      "per_min": 5.11
+     },
+     "misc": {
+      "n": 10,
+      "triggers": {
+       "flower": 3,
+       "cut": 6,
+       "line": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.517,
+      "gap_median_sec": 1.75,
+      "per_min": 25.55
+     },
+     "cut": {
+      "n": 1,
+      "triggers": {
+       "cut": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": null,
+      "gap_median_sec": null,
+      "per_min": 2.56
+     }
+    },
+    "role_for_trigger": {
+     "cut": "misc",
+     "flower": "misc",
+     "line": "misc"
+    },
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.692,
+     "silence_ban": true,
+     "silence_share": 0.077,
+     "midline_ban": true,
+     "structural_cut_only": true,
+     "cut_shot_len_p25_sec": 0.967,
+     "all_shot_len_p25_sec": 0.571
+    },
+    "evidence": {
+     "n_cues": 13,
+     "attributable": 13,
+     "hit_rate": 1.0,
+     "offset_median_sec": 0.0,
+     "offset_p90_sec": 0.014,
+     "role_trigger_crosstab": {
+      "cut": {
+       "accent": 2,
+       "misc": 6,
+       "cut": 1
+      },
+      "flower": {
+       "misc": 3
+      },
+      "line": {
+       "misc": 1
+      }
+     }
+    }
+   },
+   "flower": {
+    "n_cues": 12,
+    "n_visuals": 6,
+    "per_min": 15.3,
+    "per_min_segments": 30.7,
+    "trigger_mix": {
+     "number": 1,
+     "chapter": 3,
+     "keyword": 5,
+     "line_echo": 0,
+     "cut": 2,
+     "card": 0,
+     "fragment": 0,
+     "free": 1
+    },
+    "trigger_share": {
+     "number": 0.083,
+     "chapter": 0.25,
+     "keyword": 0.417,
+     "line_echo": 0.0,
+     "cut": 0.167,
+     "card": 0.0,
+     "fragment": 0.0,
+     "free": 0.083
+    },
+    "allowed_triggers": [
+     "number",
+     "chapter",
+     "keyword",
+     "cut"
+    ],
+    "always_allowed_triggers": [
+     "number"
+    ],
+    "max_per_min": 16,
+    "max_per_min_note": "",
+    "fallback_hold_sec": [
+     1.11,
+     2.27
+    ],
+    "min_gap_sec": 2.816,
+    "gap_median_sec": 4.1,
+    "chars_min": 2,
+    "chars_max": 17,
+    "chars_median": 2.0,
+    "chars_mean": 3.7,
+    "hold_sec_min": 2.28,
+    "hold_sec_max": 2.77,
+    "hold_sec_median": 2.41,
+    "layout_mix": {
+     "top": 5,
+     "bottom": 1,
+     "middle": 6
+    },
+    "colors": {
+     "center_burst_color": "#B71C1C",
+     "flank_color": "#3982F6",
+     "stamp_color": "#B71C1C",
+     "end_card_color": "#F9F3C4",
+     "stroke_color": "#000000"
+    },
+    "fonts": [
+     [
+      "造字工房俊雅体",
+      12
+     ],
+     [
+      "得意黑",
+      3
+     ],
+     [
+      "SourceHanSerifCN-Heavy",
+      2
+     ]
+    ],
+    "anims_top": [
+     [
+      "in:开幕",
+      2
+     ],
+     [
+      "in:缩小",
+      2
+     ],
+     [
+      "in:向右露出",
+      1
+     ],
+     [
+      "loop:飘起",
+      1
+     ],
+     [
+      "in:打字光标",
+      1
+     ],
+     [
+      "out:向下弹出",
+      1
+     ],
+     [
+      "in:跃进",
+      1
+     ],
+     [
+      "in:向上弹入",
+      1
+     ]
+    ],
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.75,
+     "zones": [
+      "middle",
+      "top"
+     ]
+    },
+    "evidence": {
+     "n_cues": 12,
+     "n_visuals": 6,
+     "attributable": 11,
+     "unexecutable_share": 0.083,
+     "unexecutable_kinds": "card=文字面板/清单, fragment=逐字弹字的单字碎片, free=既无出处也不贴锚点",
+     "note": "",
+     "hit_rate": 0.917,
+     "number_share": 0.083,
+     "chapter_share": 0.25,
+     "card_share": 0.0,
+     "fragment_share": 0.0,
+     "keyword_share": 0.417,
+     "line_echo_share": 0.0,
+     "cut_share": 0.167,
+     "free_share": 0.083
+    }
+   },
+   "unmeasured": []
+  },
+  "style_23": {
+   "style_id": "style_23",
+   "source_ref": "wb_f490b4416c37",
+   "duration_sec": 41.833,
+   "beat": {
+    "bpm": 107.67,
+    "confidence": 0.856,
+    "source": "bgm_autocorr",
+    "n_beats": 78
+   },
+   "anchors": {
+    "n_cuts": 8,
+    "n_flower_spans": 6,
+    "n_lines": 14,
+    "n_beats": 78
+   },
+   "sfx": {
+    "n_cues": 12,
+    "per_min": 17.2,
+    "trigger_mix": {
+     "cut": 4,
+     "flower": 8,
+     "line": 0,
+     "beat": 0,
+     "free": 0
+    },
+    "trigger_share": {
+     "cut": 0.333,
+     "flower": 0.667,
+     "line": 0.0,
+     "beat": 0.0,
+     "free": 0.0
+    },
+    "tol_sec": 0.12,
+    "allowed_triggers": [
+     "cut",
+     "flower"
+    ],
+    "max_per_min": 18,
+    "max_per_sec": 0.287,
+    "max_free_per_min": 0.0,
+    "min_gap_sec": 0.8,
+    "gap_median_sec": 2.6,
+    "gap_p90_sec": 4.667,
+    "max_per_min_by_role": {
+     "misc": 10.04,
+     "cut": 7.17
+    },
+    "roles": {
+     "misc": {
+      "n": 7,
+      "triggers": {
+       "flower": 5,
+       "cut": 2
+      },
+      "primary_trigger": "flower",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.8,
+      "gap_median_sec": 2.616,
+      "per_min": 10.04
+     },
+     "cut": {
+      "n": 5,
+      "triggers": {
+       "cut": 2,
+       "flower": 3
+      },
+      "primary_trigger": "flower",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.833,
+      "gap_median_sec": 1.8,
+      "per_min": 7.17
+     }
+    },
+    "role_for_trigger": {
+     "flower": "misc",
+     "cut": "misc"
+    },
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.583,
+     "silence_ban": false,
+     "silence_share": 0.667,
+     "midline_ban": true,
+     "structural_cut_only": true,
+     "cut_shot_len_p25_sec": 2.634,
+     "all_shot_len_p25_sec": 2.634
+    },
+    "evidence": {
+     "n_cues": 12,
+     "attributable": 12,
+     "hit_rate": 1.0,
+     "offset_median_sec": 0.0,
+     "offset_p90_sec": 0.0,
+     "role_trigger_crosstab": {
+      "flower": {
+       "misc": 5,
+       "cut": 3
+      },
+      "cut": {
+       "misc": 2,
+       "cut": 2
+      }
+     }
+    }
+   },
+   "flower": {
+    "n_cues": 20,
+    "n_visuals": 6,
+    "per_min": 8.6,
+    "per_min_segments": 28.7,
+    "trigger_mix": {
+     "number": 0,
+     "chapter": 14,
+     "keyword": 0,
+     "line_echo": 0,
+     "cut": 2,
+     "card": 0,
+     "fragment": 1,
+     "free": 3
+    },
+    "trigger_share": {
+     "number": 0.0,
+     "chapter": 0.7,
+     "keyword": 0.0,
+     "line_echo": 0.0,
+     "cut": 0.1,
+     "card": 0.0,
+     "fragment": 0.05,
+     "free": 0.15
+    },
+    "allowed_triggers": [
+     "chapter",
+     "cut"
+    ],
+    "always_allowed_triggers": [
+     "number"
+    ],
+    "max_per_min": 9,
+    "max_per_min_note": "",
+    "fallback_hold_sec": [
+     1.17,
+     3.21
+    ],
+    "min_gap_sec": 3.8,
+    "gap_median_sec": 4.434,
+    "chars_min": 1,
+    "chars_max": 9,
+    "chars_median": 3.5,
+    "chars_mean": 4.2,
+    "hold_sec_min": 1.93,
+    "hold_sec_max": 5.27,
+    "hold_sec_median": 2.95,
+    "layout_mix": {
+     "top": 4,
+     "middle": 7,
+     "bottom": 9
+    },
+    "colors": {
+     "center_burst_color": "#FFF589",
+     "flank_color": "#FFFFFF",
+     "stamp_color": "#B71C1C",
+     "end_card_color": "#FFF589",
+     "stroke_color": "#000000"
+    },
+    "fonts": [
+     [
+      "造字工房俊雅体",
+      12
+     ],
+     [
+      "思源宋体-Bold",
+      10
+     ],
+     [
+      "zh-hans",
+      10
+     ]
+    ],
+    "anims_top": [
+     [
+      "in:渐显",
+      15
+     ],
+     [
+      "in:随机上升",
+      3
+     ],
+     [
+      "in:开幕",
+      3
+     ],
+     [
+      "out:渐隐",
+      1
+     ],
+     [
+      "in:吸入",
+      1
+     ]
+    ],
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.6,
+     "zones": [
+      "bottom",
+      "middle"
+     ]
+    },
+    "evidence": {
+     "n_cues": 20,
+     "n_visuals": 6,
+     "attributable": 17,
+     "unexecutable_share": 0.2,
+     "unexecutable_kinds": "card=文字面板/清单, fragment=逐字弹字的单字碎片, free=既无出处也不贴锚点",
+     "note": "",
+     "hit_rate": 0.85,
+     "number_share": 0.0,
+     "chapter_share": 0.7,
+     "card_share": 0.0,
+     "fragment_share": 0.05,
+     "keyword_share": 0.0,
+     "line_echo_share": 0.0,
+     "cut_share": 0.1,
+     "free_share": 0.15
+    }
+   },
+   "unmeasured": []
+  },
+  "style_24": {
+   "style_id": "style_24",
+   "source_ref": "wb_dc88387bda2e",
+   "duration_sec": 36.417,
+   "beat": {
+    "bpm": 60.09,
+    "confidence": 0.518,
+    "source": "bgm_autocorr",
+    "n_beats": 39
+   },
+   "anchors": {
+    "n_cuts": 30,
+    "n_flower_spans": 7,
+    "n_lines": 24,
+    "n_beats": 39
+   },
+   "sfx": {
+    "n_cues": 19,
+    "per_min": 31.3,
+    "trigger_mix": {
+     "cut": 18,
+     "flower": 0,
+     "line": 1,
+     "beat": 0,
+     "free": 0
+    },
+    "trigger_share": {
+     "cut": 0.947,
+     "flower": 0.0,
+     "line": 0.053,
+     "beat": 0.0,
+     "free": 0.0
+    },
+    "tol_sec": 0.12,
+    "allowed_triggers": [
+     "cut",
+     "line"
+    ],
+    "max_per_min": 32,
+    "max_per_sec": 0.522,
+    "max_free_per_min": 0.0,
+    "min_gap_sec": 0.7,
+    "gap_median_sec": 1.225,
+    "gap_p90_sec": 3.963,
+    "max_per_min_by_role": {
+     "misc": 26.36,
+     "cut": 4.94
+    },
+    "roles": {
+     "misc": {
+      "n": 16,
+      "triggers": {
+       "cut": 15,
+       "line": 1
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.7,
+      "gap_median_sec": 1.283,
+      "per_min": 26.36
+     },
+     "cut": {
+      "n": 3,
+      "triggers": {
+       "cut": 3
+      },
+      "primary_trigger": "cut",
+      "offset_median_sec": 0.0,
+      "min_gap_sec": 0.933,
+      "gap_median_sec": 4.242,
+      "per_min": 4.94
+     }
+    },
+    "role_for_trigger": {
+     "cut": "misc",
+     "line": "misc"
+    },
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll",
+      "a_roll"
+     ],
+     "broll_share": 0.789,
+     "silence_ban": false,
+     "silence_share": 0.263,
+     "midline_ban": true,
+     "structural_cut_only": true,
+     "cut_shot_len_p25_sec": 0.958,
+     "all_shot_len_p25_sec": 0.921
+    },
+    "evidence": {
+     "n_cues": 19,
+     "attributable": 19,
+     "hit_rate": 1.0,
+     "offset_median_sec": 0.0,
+     "offset_p90_sec": 0.0,
+     "role_trigger_crosstab": {
+      "cut": {
+       "misc": 15,
+       "cut": 3
+      },
+      "line": {
+       "misc": 1
+      }
+     }
+    }
+   },
+   "flower": {
+    "n_cues": 11,
+    "n_visuals": 7,
+    "per_min": 11.5,
+    "per_min_segments": 18.1,
+    "trigger_mix": {
+     "number": 0,
+     "chapter": 7,
+     "keyword": 0,
+     "line_echo": 0,
+     "cut": 4,
+     "card": 0,
+     "fragment": 0,
+     "free": 0
+    },
+    "trigger_share": {
+     "number": 0.0,
+     "chapter": 0.636,
+     "keyword": 0.0,
+     "line_echo": 0.0,
+     "cut": 0.364,
+     "card": 0.0,
+     "fragment": 0.0,
+     "free": 0.0
+    },
+    "allowed_triggers": [
+     "chapter",
+     "cut"
+    ],
+    "always_allowed_triggers": [
+     "number"
+    ],
+    "max_per_min": 12,
+    "max_per_min_note": "",
+    "fallback_hold_sec": [
+     1.18,
+     2.55
+    ],
+    "min_gap_sec": 2.1,
+    "gap_median_sec": 5.267,
+    "chars_min": 2,
+    "chars_max": 7,
+    "chars_median": 5,
+    "chars_mean": 4.6,
+    "hold_sec_min": 1.19,
+    "hold_sec_max": 3.04,
+    "hold_sec_median": 1.27,
+    "layout_mix": {
+     "bottom": 5,
+     "middle": 2,
+     "top": 4
+    },
+    "colors": {
+     "center_burst_color": "#FFBF17",
+     "flank_color": "#FFDE00",
+     "stamp_color": "#B71C1C",
+     "end_card_color": "#FFF589",
+     "stroke_color": "#000000"
+    },
+    "fonts": [
+     [
+      "FZZJ-JHTJW",
+      18
+     ],
+     [
+      "惊鸿体",
+      16
+     ]
+    ],
+    "anims_top": [
+     [
+      "in:放大",
+      6
+     ],
+     [
+      "in:缩小",
+      4
+     ],
+     [
+      "in:渐显",
+      1
+     ],
+     [
+      "in:向下滑动",
+      1
+     ],
+     [
+      "in:激光雕刻",
+      1
+     ],
+     [
+      "in:波浪弹入",
+      1
+     ],
+     [
+      "loop:扩音器",
+      1
+     ],
+     [
+      "in:轻微放大",
+      1
+     ]
+    ],
+    "scope": {
+     "allowed_shot_types": [
+      "b_roll"
+     ],
+     "broll_share": 0.909,
+     "zones": [
+      "bottom",
+      "top"
+     ]
+    },
+    "evidence": {
+     "n_cues": 11,
+     "n_visuals": 7,
+     "attributable": 11,
+     "unexecutable_share": 0.0,
+     "unexecutable_kinds": "card=文字面板/清单, fragment=逐字弹字的单字碎片, free=既无出处也不贴锚点",
+     "note": "",
+     "hit_rate": 1.0,
+     "number_share": 0.0,
+     "chapter_share": 0.636,
+     "card_share": 0.0,
+     "fragment_share": 0.0,
+     "keyword_share": 0.0,
+     "line_echo_share": 0.0,
+     "cut_share": 0.364,
+     "free_share": 0.0
+    }
+   },
+   "unmeasured": []
+  }
+ },
+ "note": "本文件是运行期用的规则副本，不含逐条 cue 明细与本机草稿目录名；全量取证（含逐条依据）在仓库 forensic/style_trigger_rules_sfx_flower.json"
+}

@@ -42,6 +42,9 @@ FILLER_RATIO_KEEP = 0.60  # 非成稿语音里口癖/语气词占比超过这个
 MIN_RUN_SEC = 0.35        # 一刀下去剩下的碎段比这还短，就不切（段首/段尾的碎段直接丢）
 FILLER_LONG_SEC = 1.20    # 夹在中间的口癖再长也切不下手，但这个长度以上一律当碎话
 MERGE_GAP_SEC = 0.16      # 两段保留内容之间只隔这么点，并成一段
+# 离麦插话真要下刀的额外条件（见 keep_intervals 里的说明）
+OFF_MIC_CUT_MIN_SEC = 0.80      # 连续这么久的离麦话才砍，一两声碰撞/尾音不砍
+OFF_MIC_TEXT_MATCH_MAX = 0.60   # 这段离麦话的字与成稿重合超过这个比例 → 判定为主讲人自己转头，不砍
 MAX_INNER_GAP_SEC = 0.55  # 一句话中间要是空这么久（纯静音、没人说话），片子里就是冷场：
                           # 2026-11-24 实测 ouyangTestCut 32.0–33.0s 有 0.90s 全场没声（人声只剩 -50dB 底噪），
                           # 质检判「超过 0.8s 的静音段 1 段」。这种空档整段剪掉，接 0.17s 呼吸停顿。
@@ -195,6 +198,7 @@ def align_text_to_words(
     text: str,
     words: Sequence[Dict[str, Any]],
     dedupe_repeats: bool = False,
+    blocked_toks: Optional[set] = None,
 ) -> Dict[str, Any]:
     """字符级 DP 对齐。返回 `{"pairs": [(text_idx, tok_idx)], "coverage": float, "n_text": int}`。
 
@@ -219,7 +223,7 @@ def align_text_to_words(
             cur = dp[i][j]
             if cur == INF:
                 continue
-            if i < n and j < m and j not in dup_toks:
+            if i < n and j < m and j not in dup_toks and not (blocked_toks and j in blocked_toks):
                 c = _same_kind(t_chars[i], toks[j]["ch"])
                 if c is not None and cur + c < dp[i + 1][j + 1]:
                     dp[i + 1][j + 1] = cur + c
@@ -260,6 +264,7 @@ def keep_intervals(
     tail_sec: float = TAIL_SEC,
     min_run_sec: float = MIN_RUN_SEC,
     long_cut_sec: float = LONG_CUT_SEC,
+    off_mic_spans: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """把「只保留成稿里那些字」算成具体的时间区间。
 
@@ -272,14 +277,50 @@ def keep_intervals(
 
     返回 `{"intervals": [...], "coverage", "dropped", "cut_notes", "head_trim_sec", "tail_trim_sec", "ok", "low_coverage", "reason"}`
     """
-    al = align_text_to_words(text, words)
+    # 离麦插话（别人在几米外说话）不管文字对不对得上都不许进成片：先把那些字封掉，
+    # DP 只能把它们当「逐字稿有、成稿没有」跳过（2026-11-24 实测：`干炒蚝` 那 1.38 秒
+    # 电平差 32.6dB，是导演在远处接的话，ASR 却把它听成了通顺的一句）。
+    toks = char_tokens(words)
+    blocked: set = set()
+    hard: List[Dict[str, Any]] = []
+    plan_chars = set(strip_punct(text))
+    for span in (off_mic_spans or []):
+        if str(span.get("severity") or "hard") != "hard":
+            continue
+        try:
+            s0 = float(span.get("start_sec"))
+            s1 = float(span.get("end_sec"))
+        except (TypeError, ValueError):
+            continue
+        dur = max(0.0, s1 - s0)
+        # 只用「离麦」一个信号会误砍主讲人自己（转头、弯腰、离麦远一步）：电平照样掉 20dB+，
+        # 但说的就是成稿里的字。2026-11-24 实测栽过：「岭南元素」被切成「岭南元 | 素」、
+        # 「原汁原味」被切成「原 | 汁原味」。所以再加两个条件才真砍：
+        #   ① 够长（>= OFF_MIC_CUT_MIN_SEC），一两声碰撞/尾音不砍；
+        #   ② 这段话在成稿里对不太上（字的重合率 <= OFF_MIC_TEXT_MATCH_MAX）——对得上就是他自己说的。
+        span_words = [str(w.get("word") or "") if isinstance(w, dict) else str(w)
+                      for w in (span.get("words") or [])]
+        span_chars = [c for w in span_words for c in w if c and c not in _PUNCT]
+        if span_chars:
+            hit = sum(1 for c in span_chars if c in plan_chars)
+            match_ratio = hit / float(len(span_chars))
+        else:
+            match_ratio = 0.0
+        if dur < OFF_MIC_CUT_MIN_SEC or match_ratio > OFF_MIC_TEXT_MATCH_MAX:
+            continue
+        hard.append(span)
+        for j, tok in enumerate(toks):
+            mid = (float(tok["start_sec"]) + float(tok["end_sec"])) * 0.5
+            if s0 <= mid <= s1:
+                blocked.add(j)
+
+    al = align_text_to_words(text, words, blocked_toks=blocked)
     if al["coverage"] < MIN_COVERAGE:
-        al2 = align_text_to_words(text, words, dedupe_repeats=True)
+        al2 = align_text_to_words(text, words, dedupe_repeats=True, blocked_toks=blocked)
         if al2["coverage"] >= al["coverage"]:
             al = al2
     pairs = al["pairs"]
     t_chars = strip_punct(text)
-    toks = char_tokens(words)
     if not pairs:
         return {
             "intervals": [], "coverage": 0.0, "dropped": [], "cut_notes": [],
@@ -412,6 +453,8 @@ def keep_intervals(
         "tail_trim_sec": tail_cut,
         "ok": bool(intervals) and cov_raw >= MIN_OK_COVERAGE,
         "low_coverage": cov_raw < MIN_COVERAGE,
+        "off_mic_blocked_chars": len(blocked),
+        "off_mic_sec": round(sum(float(x.get("dur_sec") or 0.0) for x in hard), 3),
         "reason": ("" if cov_raw >= MIN_COVERAGE
                    else f"成稿只对上 {cov_raw:.0%}（这行是压缩改写过的）：句话照样切，但没说的那半句不会有声音"),
     }
