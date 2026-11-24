@@ -3259,6 +3259,191 @@ class VisionAgentEngineTests(unittest.TestCase):
         self.assertIn("user_accepted_local_fallback", VA.LOCAL_VISION_REFUSAL)
 
 
+class VisionLoopEndToEndTests(unittest.TestCase):
+    """实测 2026-11-24：抽密帧 + Agent 判定这条链在三个地方是断的，已修，用测试钉死。
+
+    1) `tag_frames` 读 `meta["duration_sec"]`（ffprobe_media 根本没这个键）→ 时长恒 0 →
+       “每段 4 帧”实际只抽出 1 帧，抽密帧在源头就残了；
+    2) Agent 判完只写 `00_frame_semantics.json`，而盘点只认 `--visual-index` 与《素材说明》，
+       判定回不了主链，配镜还是按文件名盲配；
+    3) 《素材说明》只读素材目录根，且按空格切文件名 —— 手机导出的 `2026-05-29 183554.mov`
+       这种带空格的名字永远匹配不上。
+    """
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def test_media_duration_sec_handles_missing_format_duration(self):
+        from common import media_duration_sec
+
+        # mov 带 edit list 时 format.duration 常见为 None，只能退回流上的 duration
+        self.assertAlmostEqual(media_duration_sec({"format": {}, "streams": [
+            {"codec_type": "video", "duration": "12.60"}, {"codec_type": "audio"}]}), 12.60, places=3)
+        self.assertAlmostEqual(media_duration_sec({"format": {"duration": "8.5"}, "streams": []}), 8.5, places=3)
+        self.assertEqual(media_duration_sec({}), 0.0)
+
+    def test_frame_times_actually_gives_n_frames(self):
+        import tag_frames as TF
+
+        times = TF._frame_times(21.5, 4)
+        self.assertEqual(len(times), 4)
+        self.assertEqual(len(set(times)), 4, "4 帧必须是 4 个不同时间点")
+        self.assertTrue(all(0 <= t < 21.5 for t in times))
+
+    def test_media_notes_read_from_workspace_dir_with_spaced_filenames(self):
+        import inventory_media as IM
+
+        ws = self.root / "_SVS工作区"
+        ws.mkdir()
+        (ws / "素材说明_待填写.txt").write_text(
+            "# 一行一条\n2026-05-29 183554.mov 海鲜区活鱼水族箱\nIMG_0001.MOV 后厨包饺子\n"
+            "2026-06-17 130512.mov （待 Agent 判定）\n", encoding="utf-8")
+        notes = IM.load_media_notes(self.root)
+        self.assertEqual(notes.get("2026-05-29 183554.mov"), "海鲜区活鱼水族箱")
+        self.assertEqual(notes.get("IMG_0001.MOV"), "后厨包饺子")
+        self.assertNotIn("2026-06-17 130512.mov", notes, "占位符不是内容，不许当说明用")
+
+    def test_agent_labels_become_a_visual_index_inventory_can_read(self):
+        import vision_agent as VA
+        import inventory_media as IM
+
+        write_json(self.root / VA.SEMANTICS_NAME, {"clips": [
+            {"file": "a.MOV", "frames": 4},
+            {"file": "b.MOV", "frames": 4}]})
+        write_json(self.root / VA.LABELS_NAME, {"clips": [
+            {"file": "a.MOV", "summary": "后厨师傅在穿串", "tags": ["后厨", "穿串"]}]})
+        VA.merge_labels(self.root)
+        vi = VA.write_visual_index(self.root)
+        self.assertIsNotNone(vi)
+        m = IM._load_visual_index_map(vi)
+        self.assertIn("a.MOV", m)
+        self.assertEqual(m["a.MOV"]["semantic_tags"], ["后厨", "穿串"])
+        self.assertNotIn("b.MOV", m, "没判的段落不许伪造语义")
+
+    def test_run_pipeline_discovers_labels_under_vision_subdir(self):
+        import vision_agent as VA
+        import run_pipeline as RP
+
+        pipeline = self.root / "pipeline"
+        sub = pipeline / "vision"
+        sub.mkdir(parents=True)
+        write_json(sub / VA.SEMANTICS_NAME, {"clips": [{"file": "a.MOV", "frames": 4}]})
+        write_json(sub / VA.LABELS_NAME, {"clips": [{"file": "a.MOV", "summary": "水族箱活鱼", "tags": ["海鲜"]}]})
+        vi = RP._discover_agent_visual_index(pipeline)
+        self.assertIsNotNone(vi)
+        self.assertEqual(vi.name, "00_visual_index.json")
+        self.assertTrue(vi.is_file())
+        self.assertEqual(json.loads(vi.read_text(encoding="utf-8"))["clips"][0]["filename"], "a.MOV")
+
+    def test_no_labels_means_no_index_not_a_fake_one(self):
+        import vision_agent as VA
+        import run_pipeline as RP
+
+        pipeline = self.root / "pipeline2"
+        pipeline.mkdir()
+        write_json(pipeline / VA.SEMANTICS_NAME, {"clips": [{"file": "a.MOV"}]})
+        self.assertIsNone(RP._discover_agent_visual_index(pipeline))
+
+
+    def test_skeleton_with_empty_descriptions_never_becomes_a_description(self):
+        """骨架里「文件名 + 空描述」的行以前会被收成「全目录通用说明」，
+        结果每个文件的描述都变成一串文件名拼接——比没说明更坑。"""
+        import inventory_media as IM
+
+        ws = self.root / "_SVS工作区"
+        ws.mkdir()
+        (ws / "素材说明_待填写.txt").write_text(
+            "# 注释\n"
+            "647f615d_raw.mp4 \n"
+            "DJI_0477_D.MP4 \n"
+            "2026-05-29 183554.mov 海鲜区活鱼水族箱\n", encoding="utf-8")
+        notes = IM.load_media_notes(self.root)
+        self.assertEqual(notes, {"2026-05-29 183554.mov": "海鲜区活鱼水族箱"})
+        self.assertEqual(IM._note_for(notes, "DJI_0477_D.MP4", "素材/DJI_0477_D.MP4"), "")
+
+    def test_agent_tags_fill_scene_tags_not_pending(self):
+        """视觉索引里的 Agent 判定必须落到 `scene_tags_zh` 与 `scene_labels_source=agent`；
+        以前这里只认本地分类，Agent 判完被当成 pending_agent 丢掉，配镜还是盲配。"""
+        src = (ROOT / "short-video-studio" / "scripts" / "inventory_media.py").read_text(encoding="utf-8")
+        self.assertIn('scene_labels_source"] = "agent"', src)
+        self.assertIn("agent_tags = ", src)
+
+
+    def test_prompt_echo_segments_are_dropped(self):
+        """实测：Whisper 会把 initial_prompt 当台词念回来（「请准确识别数字、价格专有名词,」），
+        这种段绝不能当字幕上屏。"""
+        import step2_transcribe as S2
+
+        segs = [
+            {"id": "s1", "text": "准确识别数字、"},
+            {"id": "s2", "text": "请准确识别数字、价格专有名词,"},
+            {"id": "s3", "text": "价格专有名词,价格专有名词,价格专有名词,价格专有名词。"},
+            {"id": "s4", "text": "因为我觉得纯手工是我们的根本，所以厨房一定要大"},
+        ]
+        kept = S2._drop_prompt_echo(segs, "prompt seed")
+        self.assertEqual([s["id"] for s in kept], ["s4"])
+        self.assertIsNone(S2._drop_prompt_echo([], "x") or None)
+
+    def test_prompt_suffix_is_a_noun_seed_not_an_instruction(self):
+        """提示词里写「请准确识别……」就是回声的根源；只能是名词/句子样本。"""
+        import asr_glossary as G
+
+        suffix = G.asr_prompt_suffix({"terms": ["点赞茶楼", "卡座", "厨房"], "background": "一楼卡座、二楼包房。"})
+        self.assertIn("点赞茶楼", suffix)
+        for bad in ("请准确识别", "请按原样识别", "专有名词请"):
+            self.assertNotIn(bad, suffix)
+
+    def test_glossary_and_background_read_from_workspace_subdir(self):
+        import asr_glossary as G
+
+        ws = self.root / "_SVS工作区"
+        ws.mkdir()
+        (ws / "术语表.txt").write_text("点赞茶楼\n柱房 => 厨房\n", encoding="utf-8")
+        (ws / "背景资料.md").write_text("六百坪，纯手工点心。", encoding="utf-8")
+        g = G.load_glossary([self.root / "_SVS工作区"])
+        self.assertIn("点赞茶楼", g["terms"])
+        self.assertEqual(g["replacements"].get("柱房"), "厨房")
+        self.assertIn("纯手工", g["background"])
+
+
+    def test_asr_sanitizer_kills_repeat_loops_prefix_dups_and_kana(self):
+        """实测 2026-11-24：转写里有重复环「二楼有 8 张，二楼有 8 张」、
+        递增前缀「周边邻居、」→「周边邻居、附近办公、」、以及「纯手工て」这种假名垃圾。"""
+        import step2_transcribe as S2
+
+        segs = [
+            {"source_audio": "a", "text": "二楼有8张，二楼有8张。"},
+            {"source_audio": "a", "text": "二楼有8张，二楼有8张。"},
+            {"source_audio": "a", "text": "周边邻居、"},
+            {"source_audio": "a", "text": "周边邻居、附近办公、"},
+            {"source_audio": "a", "text": "纯手工て"},
+            {"source_audio": "a", "text": "因为我觉得纯手工是我们的根本"},
+        ]
+        st = S2.sanitize_asr_segments(segs)
+        self.assertEqual(st["repeat_loop_dropped"], 1)
+        self.assertEqual(st["prefix_dup_dropped"], 1)
+        self.assertEqual(st["garbage_dropped"], 1)
+        self.assertEqual([s["text"] for s in segs],
+                         ["二楼有8张，二楼有8张。", "周边邻居、附近办公、", "因为我觉得纯手工是我们的根本"])
+
+    def test_whisper_model_can_live_in_user_level_dir(self):
+        """多 Agent 共用一份仓库时，1.5G 的模型必须要能放在用户级目录而不是仓库里。"""
+        import os
+        from unittest import mock
+
+        from common import resolve_bundled_whisper_model
+
+        user_models = self.root / "models"
+        (user_models / "faster-whisper-medium").mkdir(parents=True)
+        (user_models / "faster-whisper-medium" / "model.bin").write_bytes(b"x")
+        with mock.patch.dict(os.environ, {"SVS_WHISPER_MODELS_DIR": str(user_models)}):
+            hit = resolve_bundled_whisper_model("medium")
+        self.assertIsNotNone(hit)
+        self.assertTrue(str(hit).endswith("faster-whisper-medium"))
+
+
 class AdaptiveWorkersTests(unittest.TestCase):
     def test_never_takes_every_core_and_respects_item_count(self):
         from common import adaptive_workers
@@ -4517,6 +4702,222 @@ class WiringRegressionTests(unittest.TestCase):
                 for w in c["words"]:
                     self.assertNotIn("_sent_end", w, "内部标记不许落盘")
 
+
+
+class SpeedChainTests(unittest.TestCase):
+    """变速全链：提取记了 speed，套用端写死 1.0、渲染端根本不读——三层各丢一次。
+
+    全库 112 套草稿实测 122 段非 1.0 倍速，取值 0.1969 ~ 12.0。这里锁三件事：
+      ① `atempo` 必须拆链（单实例只吃 0.5–100，0.1969 会让整条母带合成失败、成片没声）；
+      ② 变速时滤镜**顺序**是「裁素材 → 压时间戳 → 落帧率」，反过来会少帧/复用相邻帧；
+      ③ 模版套用端落地倍速可以比原版慢（素材不够长），但不许比原版快，且必须如实计数。
+    """
+
+    def test_atempo_chain_covers_full_range(self):
+        from common import atempo_chain
+        for speed, want in ((0.1969, 0.1969), (0.37, 0.37), (0.41, 0.41), (0.49, 0.49),
+                            (1.1083, 1.1083), (1.2, 1.2), (2.0, 2.0), (12.0, 12.0)):
+            chain = atempo_chain(speed)
+            parts = [x for x in chain.split(",") if x]
+            self.assertTrue(parts, f"{speed} 必须产生 atempo")
+            prod = 1.0
+            for part in parts:
+                self.assertTrue(part.startswith("atempo="), chain)
+                factor = float(part.split("=", 1)[1])
+                # ffmpeg 的硬边界：单实例 atempo 只吃 0.5–100
+                self.assertGreaterEqual(factor, 0.5, f"{speed} → {chain}")
+                self.assertLessEqual(factor, 100.0, f"{speed} → {chain}")
+                prod *= factor
+            self.assertAlmostEqual(prod, want, places=4, msg=f"{speed} → {chain}")
+
+    def test_atempo_chain_noop_at_1x(self):
+        from common import atempo_chain
+        for value in (1.0, None, "", 0, -2):
+            self.assertEqual(atempo_chain(value), "", f"{value!r} 不该产生变速链")
+
+    def test_speed_helpers(self):
+        from common import clamp_speed, source_span_for, speed_setpts
+        self.assertEqual(clamp_speed(None), 1.0)
+        self.assertEqual(clamp_speed("abc"), 1.0)
+        self.assertEqual(clamp_speed(0), 1.0)
+        self.assertEqual(speed_setpts(1.0), "")
+        self.assertIn("/2.000000", speed_setpts(2.0))
+        self.assertAlmostEqual(source_span_for(1.3333, 2.0), 2.6666, places=4)
+        self.assertAlmostEqual(source_span_for(1.0, 0.197), 0.197, places=6)
+
+    def test_filter_order_for_speed(self):
+        """倍速链必须「trim → setpts/speed → fps」；1 倍速保持历史链条一字不动。"""
+        from render_mp4 import speed_time_parts
+        parts = speed_time_parts(2.0, 2.666, 60)
+        self.assertTrue(parts[0].startswith("trim=duration="), parts)
+        self.assertIn("setpts=(PTS-STARTPTS)/2.000000", parts[0])
+        self.assertEqual(parts[1], "fps=fps=60")
+        legacy = speed_time_parts(1.0, 1.33, 60)
+        self.assertEqual(legacy, ["fps=fps=60", "trim=duration=1.3300,setpts=PTS-STARTPTS"])
+
+    def test_edl_carries_speed(self):
+        src = (ROOT / "dev_tools" / "render_replica_from_draft.py").read_text(encoding="utf-8")
+        self.assertIn('"speed": round(speed, 6)', src,
+                      "复刻渲染器必须把段倍速显式写进 EDL（渲染端不许反解）")
+
+    def test_template_resolve_take(self):
+        from apply_replica_template import _resolve_take
+        # 素材给足：倍速照原版、只吃需要的素材秒数（不许悄悄加速）
+        ach, take = _resolve_take(2.0, 2.0, 10.0)
+        self.assertAlmostEqual(ach, 2.0)
+        self.assertAlmostEqual(take, 4.0)
+        # 素材只给 3 秒：时间线仍 2 秒，倍速降到 1.5（落地慢于原版，由调用方计 speed_shortened）
+        ach, take = _resolve_take(2.0, 2.0, 3.0)
+        self.assertAlmostEqual(ach, 1.5)
+        self.assertAlmostEqual(take, 3.0)
+        # 慢速段：只吃 0.4 秒素材
+        ach, take = _resolve_take(2.0, 0.2, 5.0)
+        self.assertAlmostEqual(ach, 0.2)
+        self.assertAlmostEqual(take, 0.4)
+
+    def test_template_writes_real_speed(self):
+        from apply_replica_template import _segment, _speed_material, _tpl_speed
+        self.assertEqual(_tpl_speed({"speed": 2.0}), 2.0)
+        self.assertEqual(_tpl_speed({"speed": None}), 1.0)
+        self.assertEqual(_tpl_speed({"speed": 0}), 1.0)
+        self.assertEqual(_speed_material(2.0)["speed"], 2.0)
+        seg = _segment(mat_id="M", tl_start=0.0, dur=1.0, src_in=0.0, src_dur=2.0,
+                       geometry={}, keyframes=[], extra_refs=[], track_index=0, speed=2.0)
+        self.assertEqual(seg["speed"], 2.0)
+        # 草稿自洽：source_timerange.duration / target_timerange.duration == speed
+        self.assertEqual(seg["source_timerange"]["duration"], 2_000_000)
+        self.assertEqual(seg["target_timerange"]["duration"], 1_000_000)
+
+    def test_template_speed_counters_reported(self):
+        import apply_replica_template as A
+        rep = {}
+        A._note_speed(rep, 1.0, 1.0)          # 原速不计
+        self.assertNotIn("speed_applied", rep)
+        A._note_speed(rep, 2.0, 2.0)          # 套上了
+        self.assertEqual(rep["speed_applied"], 1)
+        A._note_speed(rep, 2.0, 1.5)          # 素材不够，落地变慢 → 必须如实计
+        self.assertEqual(rep["speed_shortened"], 1)
+        self.assertEqual(rep["speed_shortened_detail"][0]["achieved"], 1.5)
+
+
+class SenseVoiceAndVisionStepTests(unittest.TestCase):
+    """主引擎换 SenseVoice + 「抽密帧交大模型」变成流水线一步，这两件事的钉子。"""
+
+    def setUp(self):
+        import sys
+        from pathlib import Path
+        self.scripts = Path(__file__).resolve().parents[1] / "short-video-studio" / "scripts"
+        if str(self.scripts) not in sys.path:
+            sys.path.insert(0, str(self.scripts))
+
+    def test_sensevoice_segments_split_on_pause_and_keep_punctuation(self):
+        import asr_sensevoice as SV
+        toks = ["我", "系", "牛", "哥", "，", "我", "花", "咗", "三", "百", "万",
+                "全", "金", "湾", "开", "咗", "一", "间", "六", "百", "平", "嘅", "茶", "楼", "。"]
+        # 前 4 个字 1.0s 内；中间停 0.9s（超过 PAUSE_SPLIT_SEC=0.42）→ 必须切成两句
+        ts = [0.0, 0.2, 0.4, 0.6, 0.7] + [2.0 + 0.15 * i for i in range(20)]
+        segs = SV.segments_from_tokens(toks, ts)
+        self.assertEqual(len(segs), 2)
+        self.assertIn("牛哥", segs[0]["text"])
+        self.assertIn("六百平", segs[1]["text"])
+        self.assertGreaterEqual(segs[1]["start_sec"], 1.9)
+        # 每个字都要有时间，否则字幕无法逐字对齐
+        self.assertTrue(all(w["end_sec"] > w["start_sec"] for w in segs[1]["words"]))
+        # 标点不进 words
+        self.assertNotIn("，", [w["word"] for w in segs[1]["words"]])
+
+    def test_sensevoice_model_lookup_talks_instead_of_silently_failing(self):
+        import asr_sensevoice as SV
+        ok, why = SV.available()
+        self.assertIsInstance(ok, bool)
+        # 不管装没装，都必须给出一句人能看懂的原因
+        self.assertTrue(why.strip())
+
+    def test_director_cue_prefix_and_tail_are_stripped(self):
+        import step2_transcribe as S2
+        self.assertEqual(S2.clean_cue_noise("系三二一组我系牛哥，我花咗三百万"), "我系牛哥，我花咗三百万")
+        self.assertEqual(S2.clean_cue_noise("二一组今日我就用四张图片"), "今日我就用四张图片")
+        self.assertEqual(S2.clean_cue_noise("第三一组今日我就用四张图片"), "今日我就用四张图片")
+        self.assertEqual(S2.clean_cue_noise("最全做全金湾最正嘅广东早茶ok"), "最全做全金湾最正嘅广东早茶")
+
+    def test_cue_cleanup_never_eats_real_trailing_punctuation(self):
+        import step2_transcribe as S2
+        self.assertEqual(S2.clean_cue_noise("二楼有8张，二楼有8张。"), "二楼有8张，二楼有8张。")
+        self.assertEqual(S2.clean_cue_noise("我哋一共有四个门口。"), "我哋一共有四个门口。")
+
+    def test_glossary_never_rewrites_numbers_by_one_char_rule(self):
+        import asr_glossary as G
+        g = {"terms": ["两百平"], "replacements": {"六百坪": "六百平"}, "background": ""}
+        # 「六百平」比术语「两百平」只差一个字——数字绝不能被这样改（门店面积会改错）
+        self.assertEqual(G.correct_text("我去咗一间六百平嘅茶楼", g)[0], "我去咗一间六百平嘅茶楼")
+        # 硬映射照常生效
+        self.assertEqual(G.correct_text("我去咗一间六百坪嘅茶楼", g)[0], "我去咗一间六百平嘅茶楼")
+
+    def test_terms_that_are_also_wrong_spellings_are_dropped(self):
+        import asr_glossary as G
+        from pathlib import Path
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / "术语表.txt"
+            f.write_text("六百坪\n六百坪 => 六百平\n", encoding="utf-8")
+            g = G.load_glossary([Path(td)])
+        self.assertNotIn("六百坪", g["terms"])
+        self.assertEqual(g["replacements"].get("六百坪"), "六百平")
+
+    def test_confirm_plan_vision_line_reflects_reality(self):
+        import workflow_guard as W
+        from pathlib import Path
+        import tempfile, json
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td)
+            # ① 没抽帧、没判定
+            st, note = W._vision_coverage(p)
+            self.assertEqual(st, "none")
+            self.assertIn("没做过画面识别", note)
+            # ② 抽了帧、还没判
+            (p / "vision").mkdir()
+            (p / "vision" / "00_vision_tasks.json").write_text("{}", encoding="utf-8")
+            st, note = W._vision_coverage(p)
+            self.assertEqual(st, "pending_agent")
+            self.assertIn("大模型还没判", note)
+            # ③ 判完了
+            (p / "vision" / "00_vision_labels.json").write_text(
+                json.dumps({"clips": [{"file": "a.mov", "summary": "s"}]}, ensure_ascii=False), encoding="utf-8")
+            st, note = W._vision_coverage(p)
+            self.assertEqual(st, "agent")
+            self.assertIn("已由大模型逐帧看过", note)
+
+    def test_confirm_plan_lists_only_kept_sentences(self):
+        import workflow_guard as W
+        from pathlib import Path
+        import tempfile, json
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td)
+            (p / "02_transcript.json").write_text(json.dumps({
+                "segments": [
+                    {"id": "seg_001", "text": "好嘅一句", "start_sec": 0, "end_sec": 1},
+                    {"id": "seg_002", "text": "重拍的废版本", "start_sec": 1, "end_sec": 2,
+                     "drop_reason": "ng_retake (superseded_by=seg_001)"},
+                    {"id": "seg_003", "text": "画外导演声", "start_sec": 2, "end_sec": 3, "keep": False},
+                ]
+            }, ensure_ascii=False), encoding="utf-8")
+            out = W.write_confirm_plan_doc(p, style_id="style_21")
+            body = out.read_text(encoding="utf-8")
+        self.assertIn("好嘅一句", body)
+        self.assertNotIn("重拍的废版本", body)
+        self.assertNotIn("画外导演声", body)
+
+    def test_vision_package_is_skipped_when_labels_already_exist(self):
+        import run_pipeline as RP
+        from pathlib import Path
+        import tempfile, json
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td)
+            (p / "vision").mkdir()
+            (p / "vision" / "00_vision_labels.json").write_text(
+                json.dumps({"clips": [{"file": "a.mov"}]}), encoding="utf-8")
+            # 已有判定就不该再抽帧（不再重复花 30 秒和一遍磁盘）
+            self.assertIsNone(RP._ensure_vision_package(p, p))
 
 
 if __name__ == "__main__":

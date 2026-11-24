@@ -290,6 +290,24 @@ def exclude_shot_window(
     }
 
 
+def _vision_coverage(pipeline_dir: Path) -> tuple:
+    """确认单里那句「画面依据」的真话：配镜用的是大模型看过的画面，还是只按文件名猜的。"""
+    for sub in (pipeline_dir / "vision", pipeline_dir):
+        if (sub / "00_vision_labels.json").is_file():
+            try:
+                lab = read_json(sub / "00_vision_labels.json")
+                n_lab = len(lab.get("clips") or []) if isinstance(lab, dict) else len(lab or [])
+            except Exception:
+                n_lab = 0
+            return "agent", f"✅ 已由大模型逐帧看过 {n_lab} 段素材，画面是照内容选的"
+        if (sub / "00_vision_tasks.json").is_file():
+            return "pending_agent", (
+                "⚠️ 帧已经抽好、判定拼版图也拼好了（vision/grids/），但**大模型还没判**："
+                "现在选画面只能靠文件名与素材说明，可能配错。先让 Agent 看拼版图、写 00_vision_labels.json"
+            )
+    return "none", "⚠️ 没做过画面识别：镜头是按时长/顺序排的，不保证和台词对得上"
+
+
 def write_confirm_plan_doc(
     pipeline_dir: Path,
     style_id: str = "style_01",
@@ -308,6 +326,12 @@ def write_confirm_plan_doc(
     ng_items = [x for x in items if x.get("video_grade") == "ng" or x.get("usable") is False]
 
     raw_segs = tr.get("kept_segments") or tr.get("segments") or []
+    # 确认单要列的是「真正要上屏的句子」。曾经直接把全部 segments 列出来，
+    # 结果 NG 重拍的 4 个版本、画外导演声全被当成「计划保留的文案」摊给用户看（实测 2026-11-24）。
+    raw_segs = [
+        s for s in raw_segs
+        if s.get("keep") is not False and not str(s.get("drop_reason") or "").strip()
+    ]
     est_dur = sum(max(0.2, float(s.get("end_sec", 0.0)) - float(s.get("start_sec", 0.0))) for s in raw_segs)
     if not eta_summary:
         eta_summary = estimate_task_eta("full_edit", duration_sec=max(15.0, est_dur), clip_count=max(1, len(items)))
@@ -336,6 +360,9 @@ def write_confirm_plan_doc(
 
     lines.append("")
     lines.append("## 3. 镜头与台词匹配排查")
+    # 画面依据：配镜到底是不是真看过画面？没判定就得写在脸上，不能祽过去。
+    _vstate, vision_note = _vision_coverage(pipeline_dir)
+    lines.append(f"- **画面依据**：{vision_note}")
     if media_gaps:
         for g in media_gaps:
             lines.append(f"- ⚠️ **可能缺对应画面**：{g.get('suggestion') or g.get('matched_cue')}")

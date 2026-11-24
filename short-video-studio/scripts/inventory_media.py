@@ -427,46 +427,91 @@ def classify_clip(
     return "b_roll_candidate"
 
 
-MEDIA_NOTE_FILES = ("素材说明.txt", "素材说明.md", "media_notes.txt", "media_notes.json")
+MEDIA_NOTE_FILES = (
+    "素材说明.txt", "素材说明.md", "media_notes.txt", "media_notes.json",
+    # 技能自己会生成/回收这两个名字：`_SVS工作区/素材说明_待填写.txt` 是骨架，
+    # `素材说明_已填写.txt` 是填完的版本。以前这两个名字不在名单里，
+    # 于是 Agent 判完画面写进草稿，盘点环节根本不认——判定回不了主链。
+    "素材说明_待填写.txt", "素材说明_已填写.txt",
+)
+
+# 素材目录下允许放过程文件的一个子目录（与 common.WORK_DIR_NAME 一致）
+NOTE_SUBDIRS = ("_SVS工作区",)
+
+_NOTE_PLACEHOLDERS = ("（待 Agent 判定）", "(待 Agent 判定)", "待 Agent 判定")
+
+_NOTE_LINE_RE = re.compile(
+    r"^(.+?\.(?:mov|mp4|m4v|avi|mkv|jpg|jpeg|png|heic|heif|webp|mov))\s+(.+)$",
+    re.IGNORECASE,
+)
+
+_NOTE_MEDIA_TOKEN_RE = re.compile(
+    r"\.(?:mov|mp4|m4v|avi|mkv|jpg|jpeg|png|heic|heif|webp)\b", re.IGNORECASE
+)
+
+
+def _note_dirs(input_dir: Path) -> List[Path]:
+    root = Path(input_dir)
+    dirs = [root]
+    for sub in NOTE_SUBDIRS:
+        d = root / sub
+        if d.is_dir():
+            dirs.append(d)
+    return dirs
 
 
 def load_media_notes(input_dir: Path) -> Dict[str, str]:
-    """读用户手写的「素材说明」：一行一条 `文件名 一句描述`（也支持 JSON: {文件名: 描述}）。
+    """读用户手写（或 Agent 判定后自动生成）的「素材说明」。
 
+    一行一条 `文件名 一句描述`，也支持 JSON: {文件名: 描述}。
     这是唯一能给出"主题词"的离线信号——文件名是 IMG_4821.MOV 时，除了 OCR 就只剩它。
+
+    2026-11-24 实测修三处：
+    * 文件名带空格（手机导出常见 `2026-05-29 183554.mov 画面描述`）以前按空格切，
+      永远匹配不到文件——改为「到第一个媒体后缀为止」的非贪心匹配；
+    * 以前只读素材目录根，性能多一层 `_SVS工作区/`；
+    * 骨架里的「（待 Agent 判定）」是占位符，不能当内容收进来。
     """
     notes: Dict[str, str] = {}
-    for name in MEDIA_NOTE_FILES:
-        f = Path(input_dir) / name
-        if not f.is_file():
-            continue
-        try:
-            raw = f.read_text(encoding="utf-8")
-        except Exception:
-            continue
-        if f.suffix.lower() == ".json":
+    for dir_path in _note_dirs(input_dir):
+        for name in MEDIA_NOTE_FILES:
+            f = dir_path / name
+            if not f.is_file():
+                continue
             try:
-                data = json.loads(raw)
+                raw = f.read_text(encoding="utf-8")
             except Exception:
                 continue
-            if isinstance(data, dict):
-                for k, v in data.items():
-                    key = str(k).strip()
-                    val = str(v).strip() if not isinstance(v, dict) else str(v.get("note") or v.get("description") or "").strip()
-                    if key and val:
-                        notes[key] = val
-            continue
-        for line in raw.splitlines():
-            line = line.strip().lstrip("-*").strip()
-            if not line or line.startswith("#"):
+            if f.suffix.lower() == ".json":
+                try:
+                    data = json.loads(raw)
+                except Exception:
+                    continue
+                if isinstance(data, dict):
+                    for k, v in data.items():
+                        key = str(k).strip()
+                        val = str(v).strip() if not isinstance(v, dict) else str(v.get("note") or v.get("description") or "").strip()
+                        if key and val:
+                            notes.setdefault(key, val)
                 continue
-            parts = line.split(None, 1)
-            if len(parts) == 2 and re.search(r"\.(mov|mp4|m4v|avi|mkv|MOV|MP4)$", parts[0]):
-                notes[parts[0]] = parts[1].strip()
-            else:
-                # 也允许「整条目录都一样」的宽口径：没有文件名前缀的行按 *_all 收下
-                notes.setdefault("*_all", "")
-                notes["*_all"] = (notes["*_all"] + " " + line).strip()
+            for line in raw.splitlines():
+                line = line.strip().lstrip("-*").strip()
+                if not line or line.startswith("#"):
+                    continue
+                m = _NOTE_LINE_RE.match(line)
+                if m:
+                    fn, desc = m.group(1).strip(), m.group(2).strip()
+                else:
+                    parts = line.split(None, 1)
+                    # 骨架里的空行是「文件名 + 空描述」（用户还没填）。
+                    # 以前这种行会被当成「整条目录通用的说明」收进 *_all，
+                    # 结果每个文件的描述都变成一串文件名拼接——比没说明更坑。
+                    if len(parts) < 2 or _NOTE_MEDIA_TOKEN_RE.search(line):
+                        continue
+                    fn, desc = parts[0], parts[1].strip()
+                if any(p in desc for p in _NOTE_PLACEHOLDERS) or not desc:
+                    continue
+                notes.setdefault(fn, desc)
     return notes
 
 
@@ -943,7 +988,7 @@ def inventory_directory(
                 "ocr_texts": [],
                 "semantic_tags": [],
                 "manual_tags": list((v_idx_entry or {}).get("manual_tags", [])),
-                "description": "",
+                "description": str((v_idx_entry or {}).get("description") or ""),
                 "visual_indexed": bool(v_idx_entry),
                 "_v_idx_entry": v_idx_entry,
             })
@@ -992,7 +1037,15 @@ def inventory_directory(
                     all_labels.append(lb)
             # 画面"讲什么"必须由大模型判（用户 2026-11-23 明确要求）。
             # 本地 ImageNet 标签只给物件级、置信度常 <0.3，拿它当语义依据就是假装有依据。
-            if _local_vision_allowed():
+            # 2026-11-24 实测补上最前一级：Agent 逐帧看过的判定（visual index）。
+            # 以前这里只认本地分类，Agent 判完的语义被当成 pending_agent 丢掉了。
+            agent_tags = [str(t).strip() for t in ((clips[c_idx].get("_v_idx_entry") or {}).get("semantic_tags") or [])
+                          if str(t).strip()]
+            if agent_tags:
+                clips[c_idx]["scene_tags_zh"] = agent_tags[:8]
+                clips[c_idx]["scene_tag_groups"] = tag_groups(agent_tags[:8])
+                clips[c_idx]["scene_labels_source"] = "agent"
+            elif _local_vision_allowed():
                 scene_tags, label_evidence = labels_to_tags(all_labels)
                 clips[c_idx]["scene_tags_zh"] = scene_tags
                 clips[c_idx]["scene_tag_groups"] = tag_groups(scene_tags)

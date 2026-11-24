@@ -48,16 +48,23 @@ if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
 from common import (ALL_MEDIA_EXTS, IMAGE_EXTS, ensure_image_decodable, ffprobe_media, find_bin,
-                    maybe_reexec_in_venv, write_json)
+                    maybe_reexec_in_venv, media_duration_sec, write_json)
 
 if __name__ == "__main__" or str(sys.argv[0]).endswith(".py"):
     maybe_reexec_in_venv()
 
-def _collect(root: Path) -> List[Path]:
+def _collect(root: Path, exclude_dirs: tuple = ()) -> List[Path]:
+    """收视频/图片。exclude_dirs 用来跳过长口播目录——口播段是 A-roll，不用「配镜」。"""
     out: List[Path] = []
+    ex = tuple(str(x).strip() for x in exclude_dirs if str(x).strip())
     for p in sorted(root.rglob("*")):
-        if p.is_file() and p.suffix.lower() in ALL_MEDIA_EXTS:
-            out.append(p)
+        if not p.is_file() or p.suffix.lower() not in ALL_MEDIA_EXTS:
+            continue
+        if ex:
+            parts = p.relative_to(root).parts[:-1]
+            if any(name and name in parts for name in ex):
+                continue
+        out.append(p)
     return out
 
 
@@ -137,6 +144,92 @@ def _vlm_describe(cfg: Dict[str, str], images: List[Path], hint: str) -> Optiona
         return None
 
 
+def _label_font(size: int = 22):
+    """格子角标字体：找得到就用系统字体，找不到退默认（角标看不清但不会崩）。"""
+    try:
+        from PIL import ImageFont
+
+        for p in (
+            "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "C:/Windows/Fonts/arialbd.ttf",
+        ):
+            if Path(p).is_file():
+                return ImageFont.truetype(p, size)
+        return ImageFont.load_default()
+    except Exception:
+        return None
+
+
+def build_grids(
+    results: List[Dict[str, Any]],
+    out_dir: Path,
+    cell_w: int = 220,
+    cols: int = 6,
+    max_cells: int = 48,
+) -> List[Dict[str, Any]]:
+    """把抽出来的帧拼成带编号的拼版图。
+
+    为什么必须有这个：一次判定要看 200–300 帧，逐帧传给模型又贵又慢，
+    实测按每张 48 格拼成 6–10 张拼版，10 次调用就能判完 70 段素材。
+    格子编号 `段序号-帧序号`（如 012-3），判定回来就按这个编号对回去。
+    """
+    try:
+        from PIL import Image, ImageDraw
+    except Exception:
+        return []
+
+    cells: List[Dict[str, Any]] = []
+    for ci, r in enumerate(results):
+        for fi, fd in enumerate(r.get("frame_paths") or []):
+            p = Path(str(fd.get("path") or ""))
+            if p.is_file():
+                cells.append({
+                    "label": f"{ci:03d}-{fi}",
+                    "path": str(p),
+                    "file": str(r.get("file") or ""),
+                    "t": fd.get("t", 0.0),
+                })
+    if not cells:
+        return []
+
+    font = _label_font(20)
+    bar_h = 26
+    grids_dir = out_dir / "grids"
+    grids_dir.mkdir(parents=True, exist_ok=True)
+    manif: List[Dict[str, Any]] = []
+    for gi in range(0, len(cells), max_cells):
+        chunk = cells[gi: gi + max_cells]
+        thumbs = []
+        for c in chunk:
+            try:
+                im = Image.open(c["path"]).convert("RGB")
+            except Exception:
+                continue
+            h = max(1, int(round(im.height * (cell_w / float(im.width)))))
+            thumbs.append((c, im.resize((cell_w, h), Image.LANCZOS)))
+        if not thumbs:
+            continue
+        rows = (len(thumbs) + cols - 1) // cols
+        cell_h = max(t[1].height for t in thumbs) + bar_h
+        sheet = Image.new("RGB", (cols * cell_w, rows * cell_h), (18, 18, 18))
+        draw = ImageDraw.Draw(sheet)
+        for k, (c, im) in enumerate(thumbs):
+            cx = (k % cols) * cell_w
+            cy = (k // cols) * cell_h
+            sheet.paste(im, (cx, cy + bar_h))
+            draw.rectangle([cx, cy, cx + cell_w - 1, cy + bar_h - 1], fill=(0, 0, 0))
+            draw.text((cx + 6, cy + 4), c["label"], fill=(255, 235, 60), font=font)
+        gp = grids_dir / f"grid_{len(manif) + 1:02d}.jpg"
+        sheet.save(gp, quality=88)
+        manif.append({"path": str(gp), "cells": chunk})
+
+    if manif:
+        write_json(grids_dir / "grid_map.json", {"grids": manif, "total_cells": len(cells)})
+    return manif
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="抽密帧 + 交大模型判断画面（默认不本地猜）")
     ap.add_argument("--input-dir", help="素材目录")
@@ -152,6 +245,11 @@ def main() -> None:
     ap.add_argument("--workers", type=int, default=0, help="并发线程数（默认按机器负载自适应）")
     ap.add_argument("--vlm", action="store_true", help="local 模式下额外用 VLM 描述（需 SVS_VLM_ENDPOINT）")
     ap.add_argument("--limit", type=int, default=0, help="只处理前 N 段（试跑用）")
+    ap.add_argument("--no-grids", action="store_true",
+                    help="不拼判定拼版图（默认会拼：一张图 48 格，十几个调用就能判完全库）")
+    ap.add_argument("--cell-width", type=int, default=220, help="拼版图每格宽度（像素）")
+    ap.add_argument("--exclude-dirs", default="",
+                    help="跳过这些目录（逗号分隔，如 口播,音频）：口播是 A-roll，不需要画面配镜判定")
     args = ap.parse_args()
 
     out_dir = Path(args.out).expanduser()
@@ -161,6 +259,10 @@ def main() -> None:
     if args.apply:
         rep = VA.merge_labels(out_dir, VA.load_labels(out_dir, Path(args.labels) if args.labels else None) or None)
         print(f"[tag-frames] 大模型判定已并入：{rep['clips']}/{rep['total']} 段")
+        if rep.get("visual_index"):
+            print(f"[tag-frames] 配镜用的画面索引 -> {rep['visual_index']}")
+        else:
+            print("[tag-frames] 警告：没有任何一段拿到大模型判定，配镜将按「无画面依据」处理")
         if rep["missing"]:
             print(f"[tag-frames] 还有 {len(rep['missing'])} 段没判定（配镜时会被当成没依据）："
                   + "、".join(rep["missing"][:5]) + ("…" if len(rep["missing"]) > 5 else ""))
@@ -177,7 +279,8 @@ def main() -> None:
     from vision_inspector import inspect_images
 
     src_dir = Path(args.input_dir).expanduser()
-    files = _collect(src_dir)
+    exclude = tuple(x for x in str(args.exclude_dirs or "").replace("，", ",").split(",") if x.strip())
+    files = _collect(src_dir, exclude_dirs=exclude)
     if args.limit:
         files = files[: args.limit]
     if not files:
@@ -195,7 +298,9 @@ def main() -> None:
     def work(item: tuple) -> Dict[str, Any]:
         idx, src = item
         probe = ffprobe_media(src) or {}
-        dur = float(probe.get("duration_sec") or 0.0)
+        # 唯一口径：ffprobe_media 返回的是原始 {format, streams}，没有 duration_sec 这个键。
+        # 以前这里读的是不存在的键 → 恒 0 → 「每段 N 帧」实际只抽到 1 帧。
+        dur = media_duration_sec(probe)
         keep = frames_root / f"{idx:03d}_{VA.slug_of(src.name)}"
         keep.mkdir(parents=True, exist_ok=True)
         frames = _extract_frames(ffmpeg, src, dur, args.frames_per_clip, keep)
@@ -210,6 +315,11 @@ def main() -> None:
             "frame_paths": [{"path": str(p), "t": 0.0} for p in frames],
             "frames_dir": str(keep),
         }
+        if dur <= 0:
+            # 时长读不出来就别装作抽够了：只会有首帧，配镜的依据是不完整的。
+            base["error"] = "duration_unknown"
+        elif len(frames) < max(1, args.frames_per_clip):
+            base["error"] = f"frames_short:{len(frames)}/{args.frames_per_clip}"
         return base
 
     results: List[Dict[str, Any]] = []
@@ -240,6 +350,11 @@ def main() -> None:
         notes += [f"{r['file']}  （待 Agent 判定）" for r in results]
         (out_dir / VA.NOTES_NAME).write_text("\n".join(notes) + "\n", encoding="utf-8")
         print(f"[tag-frames] 已抽 {sum(int(r.get('frames') or 0) for r in results)} 帧 -> {frames_root}")
+        if not args.no_grids:
+            manif = build_grids(results, out_dir, cell_w=args.cell_width)
+            if manif:
+                print(f"[tag-frames] 判定拼版 -> {len(manif)} 张（{out_dir / 'grids'}），"
+                      f"每格左上角是「段序号-帧序号」，逐张交给大模型看即可")
         print(f"[tag-frames] 任务包 -> {tasks_p}")
         print("[tag-frames] 下一步：把帧交给 Agent/大模型判，把结论写进 "
               f"{out_dir / VA.LABELS_NAME}，然后跑 --apply --out {out_dir}")

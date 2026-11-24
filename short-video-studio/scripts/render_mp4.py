@@ -38,6 +38,7 @@ from common import (
     compute_crop_transform,
     compute_segment_cache_key,
     contrast_ratio,
+    clamp_speed,
     ffprobe_media,
     find_bin,
     find_commercial_font,
@@ -56,6 +57,8 @@ from common import (
     run_cmd,
     sec_to_frames,
     sha256_file,
+    source_span_for,
+    speed_setpts,
     write_json,
 )
 
@@ -1573,6 +1576,23 @@ def _render_ai_person_matting_segment(
     return False
 
 
+def speed_time_parts(speed: Any, trim_src_sec: float, fps: int) -> List[str]:
+    """抽段滤镜链的头两段：裁素材时长 → 落帧率。**倍速时顺序必须反过来。**
+
+    剪映的 speed 语义是 `source_timerange = target_timerange × speed`：
+    时间线 t 秒要吃掉素材 t×speed 秒，所以要先把**素材时长**裁出来，再把时间戳压/拉，
+    最后才落目标帧率。先 `fps` 再 `setpts/speed` 会让帧率滤镜按「压缩前的时长」算采样数，
+    快速段少帧、慢速段复用相邻帧（看着像掉帧/卡顿）。
+
+    speed≈1 时保持历史链条逐字不变（`fps` 在前、`trim` 在后）——这条链已被几十条风格
+    的逐帧对齐验过，不为「整齐」去动它。
+    """
+    if abs(clamp_speed(speed) - 1.0) > 5e-4:
+        return [f"trim=duration={trim_src_sec:.4f},{speed_setpts(speed)}",
+                f"fps=fps={fps}"]
+    return [f"fps=fps={fps}", f"trim=duration={trim_src_sec:.4f},setpts=PTS-STARTPTS"]
+
+
 def build_graded_segment_cmd(
     ffmpeg_bin: str,
     clip: Dict[str, Any],
@@ -1595,6 +1615,15 @@ def build_graded_segment_cmd(
     clip_dur = frames_to_sec(clip_frames, fps)
     src_out = float(clip.get("source_out_sec", src_in + clip_dur))
     src_avail = max(0.1, src_out - src_in)
+    # 变速（剪映 segment.speed）：时间线 1 秒要吃掉素材 speed 秒。
+    # 旧行为：这里根本不读 speed，却已经按 source_out = src_in + dur×speed 写进了 EDL，
+    # 于是快速段只拿到素材的**前 1/speed 部分按原速播放**（style_01 那段 2× B-roll：
+    # 该走 2.67s 素材压缩进 1.33s，实际只用了前 1.33s 正常速）+ 慢速段（0.197×）整段内容跑不完。
+    # 只认显式 `speed`，**不从 (source_out−source_in)/duration 反解**：step4 生成的 EDL 在素材
+    # 不够长时会把 src_out 夹到末帧（src_in+seg_dur 截短），反解出来的「<1 倍速」会把「冻末帧」
+    # 误画成慢动作。谁要变速，谁写 speed。
+    speed = clamp_speed(clip.get("speed"))
+    need_src = max(0.0, source_span_for(clip_dur, speed)) if abs(speed - 1.0) > 5e-4 else clip_dur
 
     if geom_cache is not None and media_path in geom_cache:
         sw, sh = geom_cache[media_path]
@@ -1615,8 +1644,8 @@ def build_graded_segment_cmd(
     tx = compute_crop_transform(sw, sh, tw, th, cx_frac, cy_frac)
     fx, fy = fx_raw, fy_raw
 
-    trim_dur = min(src_avail, clip_dur) if src_avail >= clip_dur - 0.01 else src_avail
-    vf_parts: List[str] = [f"fps=fps={fps}", f"trim=duration={trim_dur:.4f},setpts=PTS-STARTPTS"]
+    trim_dur = min(src_avail, need_src) if src_avail >= need_src - 0.01 else src_avail
+    vf_parts: List[str] = speed_time_parts(speed, trim_dur, fps)
 
     vf_extra = str(clip.get("vf_extra") or "").strip()
     kb = clip.get("ken_burns")
@@ -1649,8 +1678,9 @@ def build_graded_segment_cmd(
 
     if color_vf and not preview:
         vf_parts.append(color_vf)
-    if src_avail < clip_dur - 0.01:
-        pad_sec = (clip_dur - src_avail) + 0.3
+    if src_avail < need_src - 0.01:
+        # 素材不够长：冻住末帧补时间线上的缺口（补的时长按**时间线口径**算，不是素材口径）
+        pad_sec = ((need_src - src_avail) / max(1e-6, speed)) + 0.3
         vf_parts.append(f"tpad=stop_mode=clone:stop_duration={pad_sec:.4f}")
 
     pip_cfg = clip.get("pip_layout") if (not preview and tw == CANVAS_WIDTH and th == CANVAS_HEIGHT) else None

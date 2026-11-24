@@ -31,6 +31,7 @@ if str(SCRIPTS_ROOT) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_ROOT))
 
 from common import (
+    WORK_DIR_NAME,
     find_bin,
     find_cached_whisper_model,
     get_cached_whisper_model,
@@ -45,11 +46,16 @@ from common import (
 )
 from compliance_guard import audit_script_compliance, write_compliance_report_files
 import asr_glossary
+import asr_sensevoice
 
 if __name__ == "__main__":
     maybe_reexec_in_venv(("faster_whisper",))
 
 import numpy as np
+
+# ASR 引擎：auto = SenseVoice 可用就用它（快 20 倍以上、自己判粤语），不可用才回落 whisper。
+# 显式传 sensevoice 时，不可用直接报错，不许偷悔降级（宁可停下也不能静静换题）。
+ASR_ENGINE = "auto"
 
 FILLER_WORDS = {"呃", "嗯", "那个", "就是说", "然后呢", "啊", "这个", "哎呀"}
 DIRECTOR_CUE_EXACT = {
@@ -376,6 +382,217 @@ def _get_whisper_model(model_name: str) -> Any:
     return get_cached_whisper_model(model_name, device="cpu", compute_type="int8", local_files_only=True)
 
 
+def _asr_cache_dir() -> Path:
+    """转写结果缓存目录（账号级、跳项目复用）。
+
+    实测痛点：一轮 plan-only 在 9 分钟口播上光转写就要 20 分钟。
+    用户改一句选题、换个风格、重出一次确认单，居然要再等一遍——这不是“可用”的 skill。
+    键里带 wav 内容指纹 + 模型 + 语言 + 提示词，所以换素材/换术语表/换方言都会自动失效。
+    """
+    d = Path.home() / ".short-video-studio" / "cache" / "asr"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _asr_cache_key(wav_path: Path, model_name: str, lang_code: str, prompt: str) -> str:
+    import hashlib
+
+    # 解码参数也是输出的一部分：改参数必须让旧缓存失效，否则留着上一轮的脏结果。
+    ASR_CFG = "v3:no_cond_prev"
+    h = hashlib.sha256()
+    try:
+        st = wav_path.stat()
+        h.update(f"{st.st_size}:{st.st_mtime_ns}".encode("utf-8"))
+        with wav_path.open("rb") as f:
+            h.update(f.read(65536))
+            if st.st_size > 131072:
+                f.seek(max(0, st.st_size - 65536))
+                h.update(f.read(65536))
+    except Exception:
+        return ""
+    h.update(f"|{model_name}|{lang_code}|{prompt}|{ASR_CFG}".encode("utf-8"))
+    return h.hexdigest()[:24]
+
+
+_ECHO_FRAG_RE = re.compile(
+    r"(准确识别|专有名词|简体中文真实口播|请保留准确口语词|按原样识别|相关品牌或门店关键词)"
+)
+
+
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]")
+_KANA_RE = re.compile(r"[\u3040-\u30ff\uac00-\ud7af]")
+
+
+def _norm_text(t: str) -> str:
+    return re.sub(r"[\s,，。、.！!？?；;：:、“”\"'（）()\-—]+", "", str(t or ""))
+
+
+def simplify_asr_segments(segments: List[Dict[str, Any]]) -> int:
+    """繁体转简体。
+
+    实测 2026-11-24：广东口播会被 Whisper 转出繁体（「正宗廣東早餐」「圓關」「每個包房」），
+    字幕直接上屏就是半繁半简。没装 opencc 时必须明说，不能静默跳过。
+    """
+    try:
+        from opencc import OpenCC
+    except Exception:
+        print("[step2] [WARN] 没装 opencc，繁体不會转简体（粤语口播容易转出繁体）；"
+              "装法：pip install opencc-python-reimplemented")
+        return 0
+    cc = OpenCC("t2s")
+    changed = 0
+    for seg in segments:
+        t = str(seg.get("text") or "")
+        if not t:
+            continue
+        s = cc.convert(t)
+        if s != t:
+            seg["text"] = s
+            changed += 1
+        for w in seg.get("words") or []:
+            if not isinstance(w, dict):
+                continue
+            wd = str(w.get("word") or "")
+            sw = cc.convert(wd)
+            if sw != wd:
+                w["word"] = sw
+    if changed:
+        print(f"[step2] 繁体转简体：{changed} 句")
+    return changed
+
+
+# 现场口令/废take的粤语与普通话写法。SenseVoice 出的是字面粤语，不认这些就会直接写进字幕。
+_CUE_PREFIX_RE = re.compile(
+    r"^\s*(?:[系係诶欸哎oOｋkK嚟咁嗯啊呀，,、 ]*)?"  # 口语起手
+    r"(?:第[一二三四五]组|第[一二三四]|[三二]一[组走]?|三二一|[一二三四五]组|321|action|开麦|开机|开始|cut|卡)[走组]?\s*[，,、。！!]?\s*",
+    re.IGNORECASE,
+)
+_CUE_TAIL_RE = re.compile(r"(?:[，,、\s]*(?:ok|OK|okay|得|好|嚟|啦|开始|再来一次|再嚟一次))+\s*$", re.IGNORECASE)
+_YUE_NOISE_RE = re.compile(r"^(?:[系係诶欸嗯啊呀哦oOｋkK冇唔占嚟咁]{1,3}|[oO0]{1,2})$")
+# 「ok 嚟」「o 」「诶」这种纯语气起手：整段如果去掉它只剩语气词/极短，就别留
+_YUE_LEAD_NOISE_RE = re.compile(r"^\s*(?:ok|OK|okay|o|O|诶|欸|哎|嗯|啊|呀|嚟|咁)[\s，,、]*", re.IGNORECASE)
+# 同字叠三次以上的起手（「冇冇冇…」「就就就…」）是卡词/废take，不留
+_STUTTER_START_RE = re.compile(r"^(.)\1{2,}")
+
+
+def clean_cue_noise(text: str) -> str:
+    """去掉口令与废take的起手/收尾（「系三二一组…」「…ok 嚟」「o冇冇冇」）。
+
+    实测 2026-11-24：SenseVoice 把「三二一组」「三二一走」原样抄进句子，
+    这些上了字幕就是事故；而 Whisper 那边是靠标点断句把它们切成独立短句后被填词表吞掉的，
+    换引擎后这条通路不存在了，得在文本层补。
+    """
+    t = str(text or "")
+    if not t:
+        return t
+    prev = None
+    while prev != t:
+        prev = t
+        t = _CUE_PREFIX_RE.sub("", t)
+        t = _CUE_TAIL_RE.sub("", t)
+    # 只清起手多余的标点与空白：句尾的「。」「？」是真标点，不能一起削掉
+    return t.lstrip("，,、；;：: ").strip()
+
+
+def sanitize_asr_segments(segments: List[Dict[str, Any]]) -> Dict[str, int]:
+    """清掉 ASR 的三类噪音——它们会原样进字幕、也会把确认单写成鬼话。
+
+    实测 2026-11-24（19 条真实口播）：
+    * **重复环**：`二楼有 8 张，二楼有 8 张。` Whisper 在低能量段会环回（condition_on_previous_text）。
+    * **前缀重复**：`周边邻居、` / `周边邻居、附近办公、` / `周边邻居、办公、旅游客人`——同一句话被切成
+      三段递增的前缀，抄在一起像结巴，剪的时候还会被当成三句都要配镜。
+    * **非中文垃圾**：`纯手工て`、`指造全中的国庄港桶早茶`——假名/无意义串不能上屏。
+
+    只在**同一个 source_audio 内**、且**相邻**的段之间做判断，不跨麦克风、不乱删真重复。
+    """
+    stats = {"repeat_loop_dropped": 0, "prefix_dup_dropped": 0, "garbage_dropped": 0}
+    if not segments:
+        return stats
+    keep: List[Dict[str, Any]] = []
+    last_norm_by_src: Dict[str, str] = {}
+    for seg in segments:
+        src = str(seg.get("source_audio") or "")
+        raw = str(seg.get("text") or "")
+        norm = _norm_text(raw)
+        if not norm:
+            stats["garbage_dropped"] += 1
+            continue
+        if _KANA_RE.search(raw) or len(_CJK_RE.findall(raw)) < 2:
+            stats["garbage_dropped"] += 1
+            continue
+        if _YUE_NOISE_RE.match(norm) or _STUTTER_START_RE.match(norm):
+            stats["garbage_dropped"] += 1
+            continue
+        if _YUE_NOISE_RE.match(norm):
+            stats["garbage_dropped"] += 1
+            continue
+        cleaned = clean_cue_noise(raw)
+        prev_lead = None
+        while prev_lead != cleaned:
+            prev_lead = cleaned
+            cleaned = _YUE_LEAD_NOISE_RE.sub("", cleaned).strip()
+        if cleaned and cleaned != raw:
+            seg["text"] = cleaned
+            raw = cleaned
+            norm = _norm_text(cleaned)
+            if len(_CJK_RE.findall(raw)) < 2:
+                stats["garbage_dropped"] += 1
+                continue
+        prev_norm = last_norm_by_src.get(src, "")
+        if prev_norm and norm == prev_norm:
+            stats["repeat_loop_dropped"] += 1
+            continue
+        if prev_norm and len(prev_norm) >= 3 and norm.startswith(prev_norm):
+            # 前一句是这一句的前缀 → 前一句是没说完的半句，用后一句（更完整）替掉
+            if keep and str(keep[-1].get("source_audio") or "") == src:
+                keep.pop()
+            stats["prefix_dup_dropped"] += 1
+        last_norm_by_src[src] = norm
+        keep.append(seg)
+    segments[:] = keep
+    return stats
+
+
+def _is_short_repeat(rem: str) -> bool:
+    """「价格价格价格价格」这种：剩下的字只是一个短词反复叠——回声特征，不是人话。"""
+    n = len(rem)
+    for L in (1, 2, 3, 4):
+        if n >= L * 2 and n % L == 0 and rem == rem[:L] * (n // L):
+            return True
+    return False
+
+
+def _drop_prompt_echo(segs: Optional[List[Dict[str, Any]]], prompt: str) -> Optional[List[Dict[str, Any]]]:
+    """丢掉 Whisper 把「提示词」当成台词念回来的段。
+
+    实测（2026-11-24）：19 条口播里有 3 段转出来就是 initial_prompt 本身——
+    「准确识别数字、」「请准确识别数字、价格专有名词，」「价格专有名词,价格专有名词,……」。
+    原因：初始提示里写的是**指令句子**，而 Whisper 对指令的期待是「文本风格样本」，
+    安静段/低语段就会把它当内容输出。这东西比漏句更严重：会直接当字幕上屏。
+
+    两道防线：
+    * 这里把「完全由指令碎片构成」的段丢掉，并在段上留痕 `_asr_echo_dropped`；
+    * 提示词只保留「品牌/术语」这种纯名词种子，不再写「请准确识别……」这种句子。
+    """
+    if not segs:
+        return segs
+    kept: List[Dict[str, Any]] = []
+    dropped = 0
+    for s in segs:
+        txt = str(s.get("text") or "")
+        core = re.sub(r"[\s,，。、.！!？?；;：:、“”\"'（）()]+", "", txt)
+        frag = _ECHO_FRAG_RE.sub("", core)
+        if _ECHO_FRAG_RE.search(core) and (len(frag) <= 6 or _is_short_repeat(frag)):
+            dropped += 1
+            s = dict(s)
+            s["_asr_echo_dropped"] = True
+            continue
+        kept.append(s)
+    if dropped:
+        print(f"[step2] 丢掉 {dropped} 段「提示词被当成台词」的假转写（Whisper 回声，不能上屏）")
+    return kept
+
+
 def try_faster_whisper(
     wav_path: Path,
     model_name: Optional[str] = None,
@@ -394,19 +611,31 @@ def try_faster_whisper(
             return None
         model = _get_whisper_model(chosen)
         lang_code = "yue" if str(dialect or "").lower() == "cantonese" else "zh"
-        anchor_hint = f"相关品牌或门店关键词：{store_anchor}。" if store_anchor else ""
+        anchor_hint = f"{store_anchor}。" if store_anchor else ""
         anchor_hint += asr_glossary.asr_prompt_suffix(_ACTIVE_GLOSSARY)
-        prompt = (
-            f"以下为粤语真实口播内容，请保留准确口语词。{anchor_hint}"
-            if lang_code == "yue"
-            else f"以下是简体中文真实口播内容，请准确识别数字、价格与专有名词。{anchor_hint}"
-        )
+        # initial_prompt 只放「名词 + 真实句子样本」——指令句式会被 Whisper 当台词念回来（实测）。
+        prompt = f"{anchor_hint}".strip() or "以下是简体中文口播。"
+        cache_key = _asr_cache_key(wav_path, chosen, lang_code, prompt)
+        if cache_key:
+            c_p = _asr_cache_dir() / f"{cache_key}.json"
+            if c_p.is_file():
+                try:
+                    cached = read_json(c_p)
+                    segs_c = cached.get("segments") if isinstance(cached, dict) else None
+                    if isinstance(segs_c, list):
+                        print(f"[step2] 转写命中缓存：{wav_path.name}（{len(segs_c)} 句）")
+                        return _drop_prompt_echo(list(segs_c), prompt)
+                except Exception:
+                    pass
         segments, _ = model.transcribe(
             y16.astype(np.float32, copy=False),
             language=lang_code,
             initial_prompt=prompt,
             word_timestamps=True,
             vad_filter=True,
+            # 重复环的根源：把上文的解码结果当上下文，低能量段就一路循环同一句。
+            # 实测「二楼有 8 张，二楼有 8 张。」就是它造成的。
+            condition_on_previous_text=False,
         )
         rms_10ms = compute_10ms_rms(y16)
         out = []
@@ -443,9 +672,111 @@ def try_faster_whisper(
                 "keywords": kws,
                 "words": words,
             })
-        return out if out else None
+        if out and cache_key:
+            try:
+                write_json(_asr_cache_dir() / f"{cache_key}.json",
+                           {"wav": wav_path.name, "model": chosen, "lang": lang_code, "segments": out})
+            except Exception:
+                pass
+        return _drop_prompt_echo(out, prompt) or None
     except Exception:
         return None
+
+
+def _make_asr_segment(
+    idx: int,
+    text: str,
+    start_sec: float,
+    end_sec: float,
+    raw_words: List[Dict[str, Any]],
+    rms_10ms: np.ndarray,
+) -> Dict[str, Any]:
+    """把任引擎吐的句子归一成 step2 下游口径（关键字、词级时间轴、填充词标记）。"""
+    text = text.strip()
+    is_filler = is_filler_or_director_cue(text)
+    kws = [] if is_filler else extract_auto_keywords(text)
+    if raw_words:
+        words = [
+            {
+                "word": str(w.get("word") or "").strip(),
+                "start_sec": round(float(w.get("start_sec") or start_sec), 4),
+                "end_sec": round(float(w.get("end_sec") or end_sec), 4),
+                "is_keyword": False,
+                "is_accent": False,
+                "energy": float(w.get("energy") or 0.75),
+            }
+            for w in raw_words
+            if str(w.get("word") or "").strip()
+        ]
+        _mark_word_keywords(words, kws)
+    else:
+        words = split_chars_energy_aligned(text, start_sec, end_sec, kws, rms_10ms=rms_10ms)
+    return {
+        "id": f"seg_{idx:03d}",
+        "text": text,
+        "start_sec": round(float(start_sec), 4),
+        "end_sec": round(float(end_sec), 4),
+        "is_filler": is_filler,
+        "emotion": "filler" if is_filler else "info",
+        "keywords": kws,
+        "words": words,
+    }
+
+
+def try_sense_voice(
+    wav_path: Path,
+    y16_cached: Optional[np.ndarray] = None,
+    dialect: str = "mandarin",
+) -> Optional[List[Dict[str, Any]]]:
+    """主引擎：SenseVoice（Sherpa-onnx）。不可用/模型缺失返回 None，不在这里降级。"""
+    lang = "yue" if str(dialect or "").lower() == "cantonese" else "auto"
+    raw = asr_sensevoice.try_transcribe(Path(wav_path), language=lang)
+    if raw is None:
+        return None
+    if not raw:
+        return []
+    y16 = y16_cached if y16_cached is not None else load_wav_16k_mono(wav_path)[0]
+    rms_10ms = compute_10ms_rms(y16)
+    out: List[Dict[str, Any]] = []
+    for idx, seg in enumerate(raw, start=1):
+        text = str(seg.get("text") or "")
+        if not text.strip():
+            continue
+        item = _make_asr_segment(
+            idx, text, float(seg["start_sec"]), float(seg["end_sec"]),
+            list(seg.get("words") or []), rms_10ms,
+        )
+        item["asr_lang"] = seg.get("asr_lang")
+        out.append(item)
+    return out
+
+
+def asr_transcribe(
+    wav_path: Path,
+    y16_cached: Optional[np.ndarray] = None,
+    dialect: str = "mandarin",
+    store_anchor: Optional[str] = None,
+    whisper_model: Optional[str] = None,
+) -> Tuple[Optional[List[Dict[str, Any]]], str]:
+    """统一入口：返回 (句子列表, 引擎标记)。
+
+    SenseVoice 能用就用（快 20 倍以上，自己判粤语/普通话）；不可用时：
+    `auto` 回落 whisper 并明说；`sensevoice` 直接报错（不静默降级）。
+    """
+    engine = str(ASR_ENGINE or "auto").lower()
+    if engine in ("auto", "sensevoice", "sv"):
+        segs = try_sense_voice(wav_path, y16_cached=y16_cached, dialect=dialect)
+        if segs is not None:
+            return segs, "asr_sensevoice"
+        ok, why = asr_sensevoice.available()
+        if engine != "auto":
+            raise RuntimeError(f"你指定了 --asr-engine sensevoice，但它现在不可用：{why}")
+        print(f"[step2] [WARN] SenseVoice 不可用（{why}），本次回落到 faster-whisper")
+    segs_w = try_faster_whisper(
+        wav_path, model_name=whisper_model, y16_cached=y16_cached,
+        dialect=dialect, store_anchor=store_anchor,
+    )
+    return segs_w, "asr_whisper"
 
 
 def align_script_to_existing_wav(
@@ -462,8 +793,8 @@ def align_script_to_existing_wav(
     rms_10ms = compute_10ms_rms(y16, sr)
     total_dur = len(y16) / float(sr) if sr > 0 else 0.0
 
-    asr_segs = try_faster_whisper(
-        wav_path, model_name=model_name, y16_cached=y16, dialect=dialect, store_anchor=store_anchor
+    asr_segs, _engine = asr_transcribe(
+        wav_path, y16_cached=None, dialect=dialect, store_anchor=store_anchor, whisper_model=model_name
     )
     if asr_segs:
         core_asr = [s for s in asr_segs if not is_filler_or_director_cue(s["text"])] or asr_segs
@@ -1456,14 +1787,34 @@ def run_step2(
     store_anchor: Optional[str] = None,
     multi_speaker: bool = False,
     glossary_dirs: Optional[List[Optional[Path]]] = None,
+    asr_engine: str = "auto",
 ) -> Dict[str, Any]:
     from compliance_guard import audit_script_compliance
+
+    global ASR_ENGINE
+    ASR_ENGINE = (asr_engine or "auto").lower()
+    if ASR_ENGINE in ("auto", "sensevoice", "sv"):
+        ok_sv, why_sv = asr_sensevoice.available()
+        if ok_sv:
+            print(f"[step2] ASR 引擎：SenseVoice（{why_sv}）——自己判方言，粤语不需要硬当普通话听")
+        elif ASR_ENGINE != "auto":
+            raise RuntimeError(f"--asr-engine sensevoice 但不可用：{why_sv}")
+        else:
+            print(f"[step2] [WARN] SenseVoice 不可用（{why_sv}），本次用 faster-whisper")
+    else:
+        print("[step2] ASR 引擎：faster-whisper（你显式指定的）")
 
     # 用户背景资料 / 术语表：喂给 ASR 当提示，也用来在转写后硬纠错（本地、零联网）
     global _ACTIVE_GLOSSARY
     scan_dirs: List[Optional[Path]] = [pipeline_dir]
-    if glossary_dirs:
-        scan_dirs.extend(glossary_dirs)
+    for p in (glossary_dirs or []):
+        if not p:
+            continue
+        scan_dirs.append(p)
+        # 素材目录下只允许 `_SVS工作区/`；术语表/背景资料放这里也照样要能读到。
+        sub = Path(p) / WORK_DIR_NAME
+        if sub.is_dir():
+            scan_dirs.append(sub)
     _ACTIVE_GLOSSARY = asr_glossary.load_glossary(scan_dirs)
     if _ACTIVE_GLOSSARY.get("sources"):
         print(f"[step2] 读到背景资料/术语表 {len(_ACTIVE_GLOSSARY['sources'])} 份"
@@ -1684,16 +2035,15 @@ def run_step2(
                     audio_pair=(y16_ar, sr16_ar), dialect=dialect, store_anchor=store_anchor,
                 )
             else:
-                asr_segs = try_faster_whisper(
-                    wav_path, model_name=whisper_model, y16_cached=y16_ar,
-                    dialect=dialect, store_anchor=store_anchor,
+                asr_segs, stype = asr_transcribe(
+                    wav_path, y16_cached=y16_ar, dialect=dialect,
+                    store_anchor=store_anchor, whisper_model=whisper_model,
                 )
                 if asr_segs is not None and len(asr_segs) > 0:
                     for seg in asr_segs:
                         seg["source_media"] = ar["normalized_mp4"]
                         seg["source_audio"] = wav_key
                     ar_segs = asr_segs
-                    stype = "asr_whisper"
                 elif asr_segs is not None and len(asr_segs) == 0:
                     # 实测痛点 #2 根治：带环境声空镜被误判为候选口播但 ASR 识别 0 字 -> 自动降级回 b_roll 不崩流程！
                     ar["role"] = "b_roll"
@@ -1738,12 +2088,19 @@ def run_step2(
             wk = str(Path(ar["normalized_wav"]).resolve())
             ar_slice = [s for s in segments if s.get("source_audio") == wk]
             compute_prosody_for_segments(Path(ar["normalized_wav"]), ar_slice, audio_pair=audio_cache.get(wk))
-        # 先按用户术语表纠正同音错字，再做画外声/NG 择优（错误的字会影响相似度判断）
+        # 先繁体转简体（粤语口播常转出繁体），再按术语表纠错——术语表里写的是简体，顺序反了就对不上。
+        simplify_asr_segments(segments)
+        # 再按用户术语表纠正同音错字，再做画外声/NG 择优（错误的字会影响相似度判断）
         glossary_log = asr_glossary.apply_to_transcript(segments, _ACTIVE_GLOSSARY)
         if glossary_log:
             print(f"[step2] 按你的背景资料纠正了 {len(glossary_log)} 句里的 {sum(len(x['corrections']) for x in glossary_log)} 处同音错字"
                   f"（逐句留痕在 02_transcript.json 的 asr_corrections）")
+        asr_sanitize = sanitize_asr_segments(segments)
+        if any(asr_sanitize.values()):
+            print(f"[step2] 清掉 ASR 噪音：重复环 {asr_sanitize['repeat_loop_dropped']} 句、"
+                  f"前缀重复 {asr_sanitize['prefix_dup_dropped']} 句、非中文垃圾 {asr_sanitize['garbage_dropped']} 句")
         filter_stats = filter_offcamera_and_retakes(segments, audio_cache=audio_cache, multi_speaker=multi_speaker)
+        filter_stats.update(asr_sanitize)
         ng_report = collect_ng_report(segments)
         filter_stats["ng_lines"] = len(ng_report)
         stumble_cnt = detect_prompt_stumbles(segments)
@@ -1880,6 +2237,12 @@ def main() -> None:
     parser.add_argument("--dialect", default="mandarin", help="语言/方言提示 (mandarin|cantonese|dialect)")
     parser.add_argument("--store-anchor", help="门店/品牌热词提示")
     parser.add_argument("--multi-speaker", action="store_true", help="多人对话保护模式（不按音量差删除副说话人）")
+    parser.add_argument(
+        "--asr-engine",
+        choices=["auto", "sensevoice", "whisper"],
+        default="auto",
+        help="ASR 引擎：auto（默认，SenseVoice 优先）/ sensevoice / whisper",
+    )
     args = parser.parse_args()
 
     reps: Optional[Dict[str, str]] = None
@@ -1898,6 +2261,7 @@ def main() -> None:
         dialect=args.dialect,
         store_anchor=args.store_anchor,
         multi_speaker=args.multi_speaker,
+        asr_engine=args.asr_engine,
     )
 
 

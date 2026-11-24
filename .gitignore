@@ -56,3 +56,5 @@ forensic/*.csv
 !forensic/style_render_truth.json
 !forensic/text_style_truth.json
 forensic/jy_*.py
+# 逐帧对比的临时抽帧，不进库
+frames/

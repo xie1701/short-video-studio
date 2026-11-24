@@ -48,7 +48,9 @@ from common import (
 )
 
 CORE_PIP_PKGS = ["pillow", "numpy", "scipy", "edge-tts", "fonttools", "pypinyin"]
-HEAVY_ML_PKGS = ["faster-whisper", "librosa"]
+# SenseVoice（sherpa-onnx）是主转写引擎：快 20 倍以上，自己判粤语/普通话。
+# faster-whisper 留在附近当兜底，不再单独占一个「重装」开关。
+HEAVY_ML_PKGS = ["sherpa-onnx", "faster-whisper", "librosa"]
 
 
 def check_command(cmd: str) -> str:
@@ -157,6 +159,26 @@ def ensure_venv_and_deps(install_deps: bool, install_heavy_ml: bool) -> tuple[st
 
     active_py = str(py_in_venv) if py_in_venv.exists() else sys.executable
     return active_py, install_ok
+
+
+def ensure_sensevoice_ready(active_py: str) -> bool:
+    """确保 SenseVoice 模型就绪（离线包内置 > 用户级目录 > Cola 自带）。
+
+    这个模型约 240 MB，`model.int8.onnx` + `tokens.txt` 两件就够。
+    找不到就明说「会用 whisper 兜底」，不许静默当成功。
+    """
+    try:
+        import asr_sensevoice
+    except Exception as exc:
+        print(f"[setup] [WARN] 读不到 asr_sensevoice 模块：{exc}")
+        return False
+    ok, why = asr_sensevoice.available()
+    if ok:
+        print(f"[setup] 主转写引擎 SenseVoice 就绪：{why}")
+        return True
+    print(f"[setup] [WARN] SenseVoice 不可用：{why}")
+    print("[setup] 影响：转写会回落到 faster-whisper（粤语素材会明显更差、且慢 20 倍以上）")
+    return False
 
 
 def ensure_whisper_model_ready(active_py: str, model_size: str = "small") -> bool:
@@ -289,6 +311,8 @@ def main() -> None:
     if not args.check_only and args.download_whisper_model and pkg_status.get("faster_whisper"):
         ensure_whisper_model_ready(active_py, model_size=args.download_whisper_model)
 
+    if args.check_only:
+        ensure_sensevoice_ready(active_py)
     cached_wm = find_cached_whisper_model()
     print(f"Whisper模型 : {cached_wm or '未预置（首次转写将走 hf-mirror 国内镜像自动拉取）'}")
 

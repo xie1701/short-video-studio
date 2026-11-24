@@ -294,9 +294,12 @@ def load_draft(draft_dir: Path, decrypted_root: Path) -> dict:
             return json.loads(jd.decrypt_text(raw))
         except Exception:
             pass
-    dec = decrypted_root / draft_dir.name / "draft_content.json"
-    if dec.is_file():
-        return json.loads(dec.read_text(encoding="utf-8"))
+    # 快照落盘名有两种：常规 `draft_content.json`，以及剪映「关闭项目」时写的
+    # `__latest_close.json`（style_01 的源草稿就是后者——这一条让它在批量里一直 SKIP）。
+    for name in ("draft_content.json", "__latest_close.json"):
+        dec = decrypted_root / draft_dir.name / name
+        if dec.is_file():
+            return json.loads(dec.read_text(encoding="utf-8"))
     raise SystemExit(f"草稿既不能实时解密也没有快照: {draft_dir}")
 
 
@@ -536,12 +539,22 @@ def media_pixel_size(path: str, mat: dict | None = None) -> tuple:
                 size = None
         if size is None:
             try:
+                # 必须用**显示尺寸**（旋转矫正后），不能只读 width/height 编码尺寸。
+                # 手机竖拍素材很常见：文件 1920×1080 + 旋转元数据 −90°，ffmpeg 解码时
+                # **会自动转成 1080×1920**（实测 showinfo: s:1080x1920）。旧实现按编码尺寸
+                # 算 contain → 竖素材被当成横素材，图层变成一条 1080×608 的横带（上下露出主轨），
+                # style_01 的 7–20s 整段 B-roll 就是这样画错的（原版是满屏覆盖）。
                 proc = subprocess.run(
                     ["ffprobe", "-v", "error", "-select_streams", "v:0",
-                     "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", key],
+                     "-print_format", "json", "-show_streams", key],
                     capture_output=True, text=True, timeout=60)
-                w, h = (proc.stdout or "").strip().split("x")[:2]
-                size = (int(w), int(h))
+                v_s = next((x for x in (json.loads(proc.stdout or "{}").get("streams") or [])
+                            if x.get("codec_type") == "video"), {})
+                from common import parse_video_stream_geometry  # 懒加载：本模块顶层不 import scripts
+                g = parse_video_stream_geometry(v_s)
+                size = (int(g.get("display_width") or 0), int(g.get("display_height") or 0))
+                if not all(size):
+                    size = None
             except Exception:
                 size = None
     if not size:
@@ -1045,7 +1058,7 @@ def _anim_base_png(src: str, mat: dict, geom: dict, out_png: Path, flip: dict | 
 
 
 def _anim_video_frames(src: str, geom: dict, s_in: float, dur: float, fps: int,
-                       out_dir: Path, flip: dict | None = None) -> list:
+                       out_dir: Path, flip: dict | None = None, speed: float = 1.0) -> list:
     """视频素材 → 按输出帧率抽成 geom 尺寸的 PNG 序列（带 crop/scale/flip），供逐帧动画层用。
 
     为什么不能只抽一帧：出场淡出、滑出这类动画挂在真实视频层上，抽一帧等于把 4 秒底片
@@ -1065,18 +1078,42 @@ def _anim_video_frames(src: str, geom: dict, s_in: float, dur: float, fps: int,
             vf.append("hflip")
         elif fl.get("v"):
             vf.append("vflip")
+        # 倍速：先把时间戳压/拉回时间线口径，再落帧率（顺序反了会少帧/复用相邻帧）
+        _lead = (f"setpts=(PTS-STARTPTS)/{speed:.6f},fps={fps}"
+                 if abs(float(speed) - 1.0) > 5e-4 else f"fps={fps}")
         run_ffmpeg(["ffmpeg", "-y", "-ss", f"{s_in:.4f}", "-t", f"{max(0.05, dur):.4f}", "-i", src,
-                    "-vf", f"{','.join(vf)},fps={fps}", "-an", str(pat)], timeout=900)
+                    "-vf", f"{','.join(vf)},{_lead}", "-an", str(pat)], timeout=900)
         have = sorted(out_dir.glob("s*.png"))
     return have
 
 
-def classify_tracks(draft: dict) -> dict:
+def is_visible_segment(seg: dict) -> bool:
+    """段在剪映里是否真的显示/发声。`visible: False` 就是「素材被隐藏」那个开关。
+
+    用户原话：「草稿里面我看我的素材是隐藏了的，所以说导出来是没有的」。此前一直没找到
+    对应字段，是因为在 `clip` 里找；真字段在**段**上（与 `visible` 并列的还有 target/source
+    timerange）。全库实测：11714 段里 89 段 `visible: False`，分布在 22 套草稿；24 套风格里
+    只有 style_01 命中（**14 段**，全部压在 0–4s——那是他试过的一整批开场/封面方案，后来全隐藏了）。
+
+    不跳过它们的后果（style_01 实测）：0–3s 有一张全画幅静图盖住主轨（复刻近乎全黑，逐帧差
+    126 级）、34–37s 又差 45 级；而原版这两处都是主轨真人画面。这不是「画得不够像」，是**把
+    本来不存在的层画了上去**。
+    """
+    return seg.get("visible") is not False
+
+
+def classify_tracks(draft: dict, report: dict | None = None) -> dict:
     tracks = draft.get("tracks") or []
     vid_main, vid_over, txt_tracks, stk_tracks, fx_tracks, aud_tracks = [], [], [], [], [], []
+    _hidden = 0
     for idx, t in enumerate(tracks):
         tt = t.get("type")
-        segs = t.get("segments") or []
+        segs = []
+        for _s in (t.get("segments") or []):
+            if is_visible_segment(_s):
+                segs.append(_s)
+            else:
+                _hidden += 1
         if tt == "video":
             (vid_over if t.get("flag") == 2 else vid_main).append((idx, segs))
         elif tt == "text":
@@ -1091,6 +1128,8 @@ def classify_tracks(draft: dict) -> dict:
     def _cover_len(item):
         return sum(int((s.get("target_timerange") or {}).get("duration") or 0) for s in item[1])
 
+    if report is not None and _hidden:
+        report["invisible_segments_skipped"] = report.get("invisible_segments_skipped", 0) + _hidden
     vid_main.sort(key=_cover_len, reverse=True)
     return {
         "main": vid_main[0] if vid_main else (None, []),
@@ -1153,7 +1192,8 @@ def yes_blur_rt_ratio(value: float) -> float:
 
 
 def _bake_blurred_segment(src: str, s_in: float, dur: float, fps: int, out_p: Path,
-                          lw: int, lh: int, crop, flip: dict, value: float) -> Path:
+                          lw: int, lh: int, crop, flip: dict, value: float,
+                          speed: float = 1.0) -> Path:
     """把剪映「模糊」特效**照着着色器**重烘成同尺寸底片（替代 ffmpeg `gblur`）。
 
     原来什么：`-vf gblur=sigma=σ`——在**gamma 编码空间**、**图层满分辨率**上做高斯。
@@ -1202,9 +1242,11 @@ def _bake_blurred_segment(src: str, s_in: float, dur: float, fps: int, out_p: Pa
             _geom.append(f"crop={int(crop[2])}:{int(crop[3])}:{int(crop[0])}:{int(crop[1])}")
         _geom.append(f"scale={lw}:{lh}:flags=bicubic")
         _pre = ",".join(x for x in (fl.rstrip(","), ",".join(_geom)) if x)
+        _lead = (f"setpts=(PTS-STARTPTS)/{speed:.6f},fps={fps}"
+                 if abs(float(speed) - 1.0) > 5e-4 else f"fps={fps},setpts=PTS-STARTPTS")
         run_ffmpeg(["ffmpeg", "-y", "-ss", f"{s_in:.4f}",
                     "-t", f"{max(0.05, dur):.4f}", "-i", src,
-                    "-vf", f"fps={fps},setpts=PTS-STARTPTS,{_pre}",
+                    "-vf", f"{_lead},{_pre}",
                     "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "14",
                     "-pix_fmt", "yuv420p", str(tmp)])
 
@@ -1660,7 +1702,8 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                     alpha_out: bool = False) -> Path:
     """复刻一条时间线（含递归复合片段），返回最终 mp4。"""
     sys.path.insert(0, str(SCRIPTS))
-    from common import read_json, write_json, find_bin, get_wav_duration_sec  # noqa: E402
+    from common import (read_json, write_json, find_bin, get_wav_duration_sec,  # noqa: E402
+                        atempo_chain, clamp_speed)
     import render_mp4 as R  # noqa: E402
     import mask_shapes as MS  # noqa: E402
     from step7_color_grade import run_step7  # noqa: E402
@@ -1789,7 +1832,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
     # ---------- 1. 复合片段预渲染（唯一化：同一子时间线只渲一次） ----------
     compound_media: dict = {}  # drafts entry id -> mp4 path
     compound_audio: dict = {}  # drafts entry id -> (mp4, has_audio)
-    cls = classify_tracks(draft)
+    cls = classify_tracks(draft, report)
 
     def _build_master(cls_local: dict, comp_media: dict, comp_audio: dict, out_name: str) -> Path:
         """逐段裁切→定位→amix 合成母带；无音轨的源（照片/静图）探测后跳过并计数。"""
@@ -1813,7 +1856,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             srcr = s.get("source_timerange") or {}
             t_start = float(tgt.get("start") or 0) / US
             t_dur = float(tgt.get("duration") or 0) / US
-            speed = float(s.get("speed") or 1.0)
+            speed = clamp_speed(s.get("speed"))
             src = ""
             if not (mat.get("path") or ""):
                 for ref in s.get("extra_material_refs") or []:
@@ -1845,7 +1888,13 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 vol = float(s["volume"])
             inputs += ["-ss", f"{s_start:.4f}", "-t", f"{max(0.05, s_dur):.4f}", "-i", src]
             delay_ms = int(round(t_start * 1000))
-            speed_fx = f"atempo={speed:.6f}," if abs(speed - 1.0) > 1e-4 else ""
+            # atempo 单实例只吃 0.5–100：全库实测有 0.1969/0.37/0.41 这类值，直接写
+            # `atempo=0.1969` 会让 ffmpeg 「Invalid argument」退出（整条母带合成失败，成片没声）。
+            # 统一走 common.atempo_chain() 拆多级。
+            speed_fx = ""
+            if abs(speed - 1.0) > 1e-4:
+                _chain = atempo_chain(speed)
+                speed_fx = f"{_chain}," if _chain else ""
             vol_fx = f"volume={vol:.4f}," if abs(vol - 1.0) > 1e-4 else ""
             chains.append(
                 f"[{n_in}:a]aresample=48000,aformat=channel_layouts=stereo,{speed_fx}{vol_fx}adelay={delay_ms}|{delay_ms}[a{n_in}]"
@@ -1937,7 +1986,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
         srcr = s.get("source_timerange") or {}
         t_start = float(tgt.get("start") or 0) / US
         t_dur = float(tgt.get("duration") or 0) / US
-        speed = float(s.get("speed") or 1.0)
+        speed = clamp_speed(s.get("speed"))
         ckey = None
         if not (mat.get("path") or ""):
             for ref in s.get("extra_material_refs") or []:
@@ -1979,6 +2028,9 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             "source_in_sec": round(s_in, 4),
             "source_out_sec": round(s_out, 4),
             "duration_sec": round(t_dur, 4),
+            # 变速必须显式写进 EDL：`source_out − source_in` 已经按 dur×speed 算好，但渲染端
+            # 不能反解（step4 在素材不够长时会把 src_out 夹短，反解会变成慢动作）。
+            "speed": round(speed, 6),
             "timeline_in_frame": int(round(t_start * fps)),
             "timeline_out_frame": int(round((t_start + t_dur) * fps)),
         }
@@ -2155,6 +2207,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 "source_in_sec": round(_s_in_p, 4),
                 "source_out_sec": round(_s_out_p, 4),
                 "duration_sec": round((_f_out - _f_in) / fps, 4),
+                "speed": round(speed, 6),
                 "timeline_in_frame": _f_in,
                 "timeline_out_frame": _f_out,
             }
@@ -2265,7 +2318,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
             srcr = s.get("source_timerange") or {}
             t_start = float(tgt.get("start") or 0) / US
             t_dur = float(tgt.get("duration") or 0) / US
-            speed = float(s.get("speed") or 1.0)
+            speed = clamp_speed(s.get("speed"))
             s_in = float(srcr.get("start") or 0) / US   # 容器 start_time 偏移在下面 src 定下来后补
             s_dur = t_dur * speed
             ckey = None
@@ -2380,7 +2433,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 # 叠加时只做 setpts 平移（坐标/缩放已在图层内部完成）。
                 _cx = W / 2.0 + tx * W / 2.0
                 _cy = H / 2.0 - ty * H / 2.0
-                _atag = _cache_tag("an", s_in, s_dur, sc, tx, ty, alpha, fps, flip, json.dumps(geom, sort_keys=True),
+                _atag = _cache_tag("an", s_in, s_dur, sc, tx, ty, alpha, fps, speed, flip, json.dumps(geom, sort_keys=True),
                                    json.dumps([(x.kind, x.name, x.duration, x.start) for x in _specs]))
                 _amov = media_dir / f"anim_{t_idx:02d}_{o:02d}_{_atag}.mov"
                 if not _amov.is_file():
@@ -2389,7 +2442,8 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                         _srcfps = None
                     else:
                         _frames = _anim_video_frames(src, geom, s_in, s_dur, fps,
-                                                     media_dir / f"anim_{t_idx:02d}_{o:02d}_{_atag}_src", flip)
+                                                     media_dir / f"anim_{t_idx:02d}_{o:02d}_{_atag}_src", flip,
+                                                     speed=speed)
                         _srcfps = float(fps)
                     render_animated_layer(_frames, (W, H), (lw, lh), (_cx, _cy),
                                           t_start, t_dur, fps, _specs, _amov,
@@ -2429,7 +2483,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                         report["unrealized"].get("overlay_kf_scale_masked", 0) + 1
             seg_ext = ".mov" if (alpha_src or ov_mask) else ".mp4"
             # 缓存指纹必须含模糊 sigma：否则改了标定系数旧段会被永久复用（“改了不生效”陷阱）
-            seg_p = media_dir / (f"ov_{t_idx:02d}_{o:02d}_{_cache_tag('ov', s_in, s_dur, sc, tx, ty, alpha, fps, flip, json.dumps(geom, sort_keys=True), json.dumps(ov_mask, sort_keys=True) if ov_mask else '', _seg_blur_sigma(s))}" + seg_ext)
+            seg_p = media_dir / (f"ov_{t_idx:02d}_{o:02d}_{_cache_tag('ov', s_in, s_dur, sc, tx, ty, alpha, fps, speed, flip, json.dumps(geom, sort_keys=True), json.dumps(ov_mask, sort_keys=True) if ov_mask else '', _seg_blur_sigma(s))}" + seg_ext)
             if not seg_p.is_file():
                 fl = "hflip," if flip.get("h") else ("vflip," if flip.get("v") else "")
                 _ov_blur = _seg_blur_sigma(s)
@@ -2441,7 +2495,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 _blur_value = _seg_blur_value(s)
                 if _ov_blur and _plain_video and _blur_value:
                     _bake_blurred_segment(src, s_in, max(0.05, s_dur), fps, seg_p, lw, lh, geom.get("crop"),
-                                          flip, _blur_value)
+                                          flip, _blur_value, speed=speed)
                     if depth == 0:
                         report["layer_blur_baked"] = report.get("layer_blur_baked", 0) + 1
                     _baked = True
@@ -2452,6 +2506,11 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                 # 拼接滤镜链：空段不能留逗号（`fps=30,` 这种尾部空滤镜 ffmpeg 会报 "No such filter: ''"）
                 _pre = ",".join(x for x in (fl.rstrip(","), _geom_vf) if x)
                 _pre = ("," + _pre) if _pre else ""
+                # 变速叠加层（剪映 segment.speed）：抽 s_dur 秒素材，再把时间戳压/拉回 t_dur。
+                # 旧行为只抽不压——2× 的层会把**前一半内容**按原速铺满，慢速层内容还没放完就被切掉。
+                # 顺序必须是 setpts/speed 在 fps 之前：先落帧率再压时间戳，帧数按压缩前算，会少帧/复用相邻帧。
+                _sp_lead = (f"setpts=(PTS-STARTPTS)/{speed:.6f},fps={fps}"
+                            if abs(speed - 1.0) > 5e-4 else f"fps={fps},setpts=PTS-STARTPTS")
                 if _baked:
                     pass    # 已在 _bake_blurred_segment 里出片（含 crop/翻转/缩放）
                 elif ov_mask:
@@ -2465,7 +2524,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                             else ["-ss", f"{s_in:.4f}", "-t", f"{_dur0:.4f}", "-i", str(src)])
                     run_ffmpeg([ffmpeg_bin, "-y", *_in0, "-loop", "1", "-t", f"{_dur0:.4f}", "-i", str(_png),
                                 "-filter_complex",
-                                f"[0:v]fps={fps},setpts=PTS-STARTPTS,format=rgba{_pre},setsar=1[fg0];"
+                                f"[0:v]{_sp_lead},format=rgba{_pre},setsar=1[fg0];"
                                 f"[fg0]tpad=stop_mode=clone:stop_duration={_dur0:.4f}[fg];"
                                 f"[1:v]fps={fps},setpts=PTS-STARTPTS,setsar=1,format=gray[mask];"
                                 f"[fg][mask]alphamerge=shortest=1[v]",
@@ -2478,14 +2537,16 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                     # 复合片段输出是 ProRes4444 带 alpha：抽段必须保 alpha。
                     # setsar=1 与普通视频段同一口径：下游 matte/合成只认「图层像素」。
                     run_ffmpeg([ffmpeg_bin, "-y", "-ss", f"{s_in:.4f}", "-t", f"{max(0.05, s_dur):.4f}", "-i", str(src),
-                                "-vf", f"fps={fps},setpts=PTS-STARTPTS,format=rgba{_pre},setsar=1",
+                                "-vf", f"{_sp_lead},format=rgba{_pre},setsar=1",
                                 "-an", "-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le", str(seg_p)], timeout=600)
                 else:
                     if (mat.get("type") or "") == "photo":
                         # 静图：-t 放在 -i 前会限制输入读取（单帧图只能得 ~2 帧），必须 -loop 1 + 输出侧 -t
+                        # 静图没有时间基准：倍速对一张不动的图无意义，时长按时间线口径算，
+                        # 不能按 s_dur(=t_dur×speed) 白抽一倍帧数。
                         run_ffmpeg([ffmpeg_bin, "-y", "-loop", "1", "-i", str(src),
                                     "-vf", f"fps={fps}{_pre},setsar=1",
-                                    "-t", f"{max(0.05, s_dur):.4f}",
+                                    "-t", f"{max(0.05, t_dur):.4f}",
                                     "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "14",
                                     "-pix_fmt", "yuv420p", str(seg_p)])
                     else:
@@ -2502,7 +2563,7 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
                         # 注意：改完后必须让 _cache_tag 失效重烘——上一轮就是复用了修复前的
                         # 旧抽段（hash 未含本脚本源码前生成），才看到「setpts 加了 start_time 没变」。
                         run_ffmpeg([ffmpeg_bin, "-y", "-ss", f"{s_in:.4f}", "-t", f"{max(0.05, s_dur):.4f}", "-i", str(src),
-                                    "-vf", f"fps={fps},setpts=PTS-STARTPTS{_pre},setsar=1",
+                                    "-vf", f"{_sp_lead}{_pre},setsar=1",
                                     "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "14",
                                     "-pix_fmt", "yuv420p", str(seg_p)])
             matte_p = None
@@ -2728,7 +2789,20 @@ def render_timeline(draft: dict, base_dir: Path, style_id: str, work: Path, fps_
     fc_parts = []
     # 主轨拼接后 PTS 网格会轻微漂（实测 41 段拼完 15.999s → 15.933s），不拉成 CFR 的话
     # 下游所有 enable(t,…) 都会早/晚一帧。强制重采样到目标帧率再叠。
-    fc_parts.append(f"[0:v]fps={fps},setpts=PTS-STARTPTS[basecfr]")
+    # 主轨比时间线短时必须**补黑场**，不能让 overlay 把末帧拉长。
+    # 机理：overlay 的 framesync 默认 `eof_action=repeat` 且 shortest=0 —— 主输入放完了，
+    # 只要还有副输入（片尾那两条文字层）在走，输出就继续，并把主输入的**最后一帧重复**下去。
+    # style_01 实测：主轨末段止于 65.73s、草稿 68.5s，原版那 2.77s 是纯黑 +「茶楼延期十分抱歉 /
+    # 评论区心意记得领」两条文字，我们却把最后一帧视频复制了 2.77s（66–68s 逐帧差 126 级）。
+    _base_dur = media_duration_sec(str(base_mp4))
+    _deficit = max(0.0, total_sec - _base_dur)
+    _pad = ""
+    if _deficit > 0.02:
+        # 带 alpha 的复合片段用透明补，否则会把下层全盖成黑
+        _pad = (f",tpad=stop_mode=add:color=0x00000000:stop_duration={_deficit:.4f}"
+                if alpha_out else
+                f",tpad=stop_mode=add:color=black:stop_duration={_deficit:.4f}")
+    fc_parts.append(f"[0:v]fps={fps},setpts=PTS-STARTPTS{_pad}[basecfr]")
     cur = "[basecfr]"
     # 草稿 effect 轨真值：整画面模糊只作用于**视频合成层**（主轨 + 叠加视频），不糊字幕/贴纸。
     # 剪映把画面特效挂在自己的 effect 轨（这里 render_index=7），字幕轨在它上面；实测原版

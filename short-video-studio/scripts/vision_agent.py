@@ -131,6 +131,51 @@ def _labels_to_notes(labels: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def write_visual_index(out_dir: Path, dest: Optional[Path] = None) -> Optional[Path]:
+    """把 Agent（大模型）的画面判定写成 `inventory_media` 真正会读的那份文件。
+
+    2026-11-24 实测出的断层：`tag_frames --apply` 只写 `00_frame_semantics.json`
+    和《素材说明》草稿，而 `inventory_media` 只认两种输入——素材目录里的
+    `素材说明.txt` 与 `--visual-index 00_visual_index.json`。
+    结果就是 Agent 判完画面之后，配镜环节一点都用不上，还是按文件名盲配。
+
+    这里把判定转成 visual index 的 schema（按文件名索引），返回写出的路径；
+    没有可用判定时返回 None，让上层知道「没有依据」，而不是静默地当已判过。
+    """
+    sem_p = out_dir / SEMANTICS_NAME
+    if not sem_p.is_file():
+        return None
+    try:
+        sem = json.loads(sem_p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    clips: List[Dict[str, Any]] = []
+    for c in sem.get("clips") or []:
+        if not isinstance(c, dict) or c.get("vision_engine") != "agent":
+            continue
+        tags = [str(t).strip() for t in (c.get("scene_tags_zh") or []) if str(t).strip()]
+        summary = str(c.get("vlm_description") or "").strip()
+        if not tags and not summary:
+            continue
+        entry: Dict[str, Any] = {"filename": str(c.get("file") or ""),
+                                 "semantic_tags": tags[:8],
+                                 "description": summary,
+                                 "visual_indexed": True,
+                                 "source": "agent_frames"}
+        if c.get("frames"):
+            entry["frames_seen"] = int(c.get("frames") or 0)
+        if c.get("agent_evidence"):
+            entry["evidence"] = list(c["agent_evidence"])[:4]
+        clips.append(entry)
+    if not clips:
+        return None
+    out = {"step": "visual_index", "engine": "agent", "clips": clips}
+    dst = dest or (out_dir / "00_visual_index.json")
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
+    return dst
+
+
 def merge_labels(out_dir: Path, labels: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """把大模型的判定并进 00_frame_semantics.json 与《素材说明》草稿。
 
@@ -180,4 +225,6 @@ def merge_labels(out_dir: Path, labels: Optional[Dict[str, Any]] = None) -> Dict
         note = str(c.get("suggested_note") or "")
         lines.append(f"{name} {note}".rstrip() if note else f"{name}  （待 Agent 判定）")
     (out_dir / NOTES_NAME).write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return {"clips": hit, "total": len(clips), "missing": missing}
+    vi = write_visual_index(out_dir)
+    return {"clips": hit, "total": len(clips), "missing": missing,
+            "visual_index": str(vi) if vi else ""}

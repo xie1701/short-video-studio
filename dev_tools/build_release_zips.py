@@ -41,6 +41,9 @@ ALL_OFFLINE_PKGS = [
     "scipy",
     "edge-tts",
     "fonttools",
+    # sherpa-onnx = 主转写引擎 SenseVoice 的运行时（快 20 倍以上、粤语自判）。
+    # 它有平台专用 wheel（sherpa_onnx_core），所以必须按目标平台下载，不能通用。
+    "sherpa-onnx",
     "faster-whisper",
     "librosa",
     "pypinyin",
@@ -142,6 +145,39 @@ def _stage_whisper_model(dst_models_dir: Path, model_size: str = "small", allow_
     return True
 
 
+def _stage_sensevoice_model(dst_models_dir: Path) -> bool:
+    """把 SenseVoice 模型（约 240 MB）打进离线包：model.int8.onnx + tokens.txt 就够跑。
+
+    来源优先级：用户级目录 → Cola 自带（~/.coli/models）。
+    找不到就明说，别让装包的人以为到手就能转写。
+    """
+    cands: List[Path] = []
+    for root in (Path.home() / ".short-video-studio" / "models", Path.home() / ".coli" / "models"):
+        if not root.is_dir():
+            continue
+        if (root / "model.int8.onnx").is_file() or (root / "model.onnx").is_file():
+            cands.append(root)
+        for sub in sorted(root.iterdir()):
+            if sub.is_dir() and ((sub / "model.int8.onnx").is_file() or (sub / "model.onnx").is_file()):
+                cands.append(sub)
+    if not cands:
+        print("[WARN] 本机没找到 SenseVoice 模型（~/.short-video-studio/models 与 ~/.coli/models 都没有），"
+              "离线包将不含它 —— 转写会回落到 faster-whisper。")
+        return False
+    src = cands[0]
+    dst = dst_models_dir / "sensevoice"
+    dst.mkdir(parents=True, exist_ok=True)
+    keep = ("model.int8.onnx", "model.onnx", "tokens.txt", "LICENSE", "README.md")
+    total = 0
+    for name in keep:
+        f = src / name
+        if f.is_file():
+            shutil.copy2(f, dst / name)
+            total += f.stat().st_size
+    print(f"[build-zip] 已内置 SenseVoice 模型 -> {dst}（{total / 1e6:.0f} MB，来源 {src.name}）")
+    return (dst / "tokens.txt").is_file() and any((dst / n).is_file() for n in ("model.int8.onnx", "model.onnx"))
+
+
 def _stage_ffmpeg_bins(target_key: str, bin_dir: Path, custom_bin_dir: Optional[Path] = None) -> int:
     bin_dir.mkdir(parents=True, exist_ok=True)
     copied = 0
@@ -216,6 +252,7 @@ def build_target_zip(
             _download_wheels(target_key, vendor_dir / "wheelhouse", include_ml=include_ml)
         if whisper_model:
             _stage_whisper_model(vendor_dir / "whisper_models", model_size=whisper_model, allow_download=True)
+        _stage_sensevoice_model(vendor_dir / "models")
         _stage_ffmpeg_bins(target_key, vendor_dir / "bin", custom_bin_dir=ffmpeg_bin_dir)
         if include_node_tools and (NODE_TOOLS_DIR / "node_modules" / "playwright-core").is_dir():
             shutil.copytree(

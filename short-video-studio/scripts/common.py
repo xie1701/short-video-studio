@@ -491,6 +491,76 @@ def adaptive_workers(n_items: int = 0, cap: int = 8, floor: int = 1) -> int:
     return max(floor, workers)
 
 
+# ---------------------------------------------------------------- 变速（剪映 segment.speed）
+#
+# 语义（剪映白盒真值，全库 112 套草稿实测 122 段非 1.0，取值 0.1969 ~ 12.0）：
+#   source_timerange.duration = target_timerange.duration × speed
+# 也就是 speed=2.0 时「时间线上一秒 = 素材两秒」；speed=0.1969 时「时间线上一秒 = 素材 0.2 秒」。
+#
+# 剪映那一段的正则会把 0.1969 判成非法值（`atempo` 单实例只吃 0.5–100），直接把 ffmpeg 打死，
+# 所以下面所有地方都必须走 `atempo_chain()` 拆链，不许再自己写 `f"atempo={speed}"`。
+
+SPEED_MIN = 0.05
+SPEED_MAX = 100.0
+ATEMPO_MIN = 0.5
+ATEMPO_MAX = 100.0
+
+
+def clamp_speed(value: Any, default: float = 1.0) -> float:
+    """把草稿/EDL 里的 speed 收进可用范围。缺省、非数、0、负数一律当 1.0（不静默变速）。"""
+    try:
+        sp = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not (sp == sp) or sp in (float("inf"), float("-inf")):
+        return default
+    if sp <= 0:
+        return default
+    return max(SPEED_MIN, min(SPEED_MAX, sp))
+
+
+def atempo_chain(speed: Any, tol: float = 5e-4) -> str:
+    """speed → 一段可用的 atempo 链（可能多级），每级都严格落在 0.5–100。
+
+    单级不够时按「反复折半/折倍」拆：0.1969 → `atempo=0.5,atempo=0.3938`，
+    乘积与目标值的相对误差 < tol。返回空字符串表示不需要变速。
+    """
+    sp = clamp_speed(speed)
+    if abs(sp - 1.0) <= tol:
+        return ""
+    factors: List[float] = []
+    remain = sp
+    guard = 0
+    while remain < ATEMPO_MIN and guard < 32:
+        factors.append(ATEMPO_MIN)
+        remain /= ATEMPO_MIN
+        guard += 1
+    while remain > ATEMPO_MAX and guard < 64:
+        factors.append(ATEMPO_MAX)
+        remain /= ATEMPO_MAX
+        guard += 1
+    factors.append(remain)
+    # 最后一级可能是浮点残差造成的越界值（如 1e-16），夹一下再拼
+    out: List[str] = []
+    for f in factors:
+        f = max(ATEMPO_MIN, min(ATEMPO_MAX, f))
+        out.append(f"atempo={f:.6f}")
+    return ",".join(out)
+
+
+def speed_setpts(speed: Any, tol: float = 5e-4) -> str:
+    """speed → 视频时间戳压缩表达式（放在 trim 之后、fps 之前）。"""
+    sp = clamp_speed(speed)
+    if abs(sp - 1.0) <= tol:
+        return ""
+    return f"setpts=(PTS-STARTPTS)/{sp:.6f}"
+
+
+def source_span_for(duration_sec: float, speed: Any) -> float:
+    """时间线上 `duration_sec` 这么长、倍速 speed 的一段，要吃掉素材多少秒。"""
+    return max(0.0, float(duration_sec) * clamp_speed(speed))
+
+
 def find_bin(name: str) -> Optional[str]:
     """查找二进制可执行文件：优先命中离线包内置 vendor/bin/（且验活），再查找系统 PATH。"""
     vendor_bin_dir = VENDOR_DIR / "bin"
@@ -551,6 +621,37 @@ def ffprobe_media(media_path: Path) -> Dict[str, Any]:
     path = media_path.resolve()
     stat = path.stat()
     return json.loads(_probe_media_json(str(path), stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
+
+
+def media_duration_sec(meta: Dict[str, Any]) -> float:
+    """从 `ffprobe_media()` 的原始返回里取时长（秒）。
+
+    这是全仓唯一口径：`format.duration` 常常是空的（mov 带 edit list、流式封装），
+    这时退回视频流、再退回音频流的 duration。以前每个模块各写一份，
+    其中 `tag_frames.py` 直接读 `meta["duration_sec"]` 这个不存在的键，
+    拿到的永远是 0 —— 于是「每段抽 4 帧」实际只抽出 1 帧（首帧），
+    抽密帧这条链在源头就是残的。
+    """
+    if not isinstance(meta, dict):
+        return 0.0
+    streams = meta.get("streams") or []
+    v_dur = a_dur = None
+    for s in streams:
+        if not isinstance(s, dict):
+            continue
+        if s.get("codec_type") == "video" and v_dur is None:
+            v_dur = s.get("duration")
+        elif s.get("codec_type") == "audio" and a_dur is None:
+            a_dur = s.get("duration")
+    fmt = meta.get("format") or {}
+    for cand in (fmt.get("duration"), v_dur, a_dur):
+        try:
+            d = float(cand)
+        except (TypeError, ValueError):
+            continue
+        if d > 0:
+            return d
+    return 0.0
 
 
 @functools.lru_cache(maxsize=256)
@@ -1765,25 +1866,52 @@ def sha256_file(path: Path) -> str:
 _WHISPER_MODEL_CACHE: Dict[Tuple[str, str, str, bool], Any] = {}
 
 
+def _whisper_model_ready(d: Path) -> bool:
+    """一个模型目录算不算「能用」。
+
+    实测坏的：下到 90MB 就断线的 medium 被当成可用模型选中，
+    结果 faster-whisper 加载失败，整条链报「faster-whisper 不可用」——
+    看起来像环境没装，实际是一个半截文件。
+    """
+    mb = d / "model.bin"
+    if not mb.is_file() or mb.stat().st_size < 20 * 1024 * 1024:
+        return False
+    if not (d / "config.json").is_file():
+        return False
+    return (d / "tokenizer.json").is_file() or (d / "vocabulary.txt").is_file() or (d / "vocabulary.json").is_file()
+
+
+def _whisper_model_dirs() -> List[Path]:
+    """模型可以放的三个地方：发包内置、用户级目录、HF 缓存。
+
+    用户级目录 `~/.short-video-studio/models/` 是后加的：本机多个 Agent
+    共用同一份仓库（都是软链），下载一次就能给所有 Agent 用，不跟着仓库走。
+    """
+    dirs: List[Path] = [VENDOR_DIR / "whisper_models", Path.home() / ".short-video-studio" / "models"]
+    if os.environ.get("SVS_WHISPER_MODELS_DIR"):
+        dirs.insert(0, Path(os.environ["SVS_WHISPER_MODELS_DIR"]).expanduser())
+    return dirs
+
+
 def resolve_bundled_whisper_model(model_size: str) -> Optional[Path]:
-    """优先查找离线分发包内置的 Whisper 模型目录 (vendor/whisper_models/<size>)。"""
-    base = VENDOR_DIR / "whisper_models"
-    if not base.is_dir():
-        return None
-    for cand in (
-        base / str(model_size),
-        base / f"faster-whisper-{model_size}",
-        base / f"models--Systran--faster-whisper-{model_size}",
-    ):
-        if not cand.is_dir():
+    """查找本地已有的 Whisper 模型目录（发包内置 / 用户级 / 显式指定）。"""
+    for base in _whisper_model_dirs():
+        if not base.is_dir():
             continue
-        if (cand / "model.bin").is_file():
-            return cand
-        snaps = cand / "snapshots"
-        if snaps.is_dir():
-            for sp in sorted(snaps.iterdir()):
-                if (sp / "model.bin").is_file():
-                    return sp
+        for cand in (
+            base / str(model_size),
+            base / f"faster-whisper-{model_size}",
+            base / f"models--Systran--faster-whisper-{model_size}",
+        ):
+            if not cand.is_dir():
+                continue
+            if _whisper_model_ready(cand):
+                return cand
+            snaps = cand / "snapshots"
+            if snaps.is_dir():
+                for sp in sorted(snaps.iterdir()):
+                    if _whisper_model_ready(sp):
+                        return sp
     return None
 
 

@@ -564,6 +564,13 @@ def _extract_level(draft: dict, *, depth: int = 0) -> dict:
         t_total = _cover(segs)
         sizes = []
         for s_i, s in enumerate(segs):
+            if s.get("visible") is False:
+                # 「素材被隐藏」的段（段级 `visible: False`）：原版成片里根本没有它。
+                # 提取进模版就会在套用端被**真画出来**——style_01 的 14 段全压在 0–4s，
+                # 正是他试过又隐藏掉的那批开场方案。跳过并计数，不假装它是模版的一部分。
+                counts["invisible_segments_skipped"] = \
+                    counts.get("invisible_segments_skipped", 0) + 1
+                continue
             mid = s.get("material_id")
             mat = mat_idx.get(mid) or {}
             tgt = s.get("target_timerange") or {}

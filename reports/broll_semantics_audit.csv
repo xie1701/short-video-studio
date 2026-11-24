@@ -1,0 +1,6 @@
+clip_id,role,sentence,media,verdict,score,basis,legacy_tag_hits,has_manual_signal
+clip_001,b_roll,价格越高的菜，利润反而越低。,VID_20240312_104522.mp4,hit,1.0,「利润」(实体)↔「成本」(实体),0,False
+clip_002,b_roll,清晨市场带回的鲜羊排，成本花了三千块。,IMG_4821.MOV,hit,1.0,「羊排」(实体)↔「羊排」(实体),0,False
+clip_003,b_roll,看起来卖四百能赚一百多，,IMG_4830.MOV,hit,1.0,「卖」(动作)↔「到店」(动作),0,False
+clip_004,b_roll,其实要腌两小时，炭火再烤三小时。,IMG_4822.MOV,hit,1.0,「炭火」(动作)↔「炭火」(动作),0,False
+clip_005,b_roll,开了八年烧烤店，绝不用冻肉糊弄人。,DSC09931.MOV,hit,1.0,「冻肉」(实体)↔「肉」(实体)；「烤」(动作)↔「腌」(动作),0,False

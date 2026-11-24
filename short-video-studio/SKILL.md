@@ -112,6 +112,42 @@ description: 策划、剪辑和交付面向实体门店获客或个人账号增�
 
 ## 四、 先音后画流水线与独立验收交付
 
+### 4.0 两条硬引擎（先看这两条，再谈剪辑）
+
+**1) 转写：SenseVoice 是主引擎，Whisper 只是兜底。**
+不是偏好问题，是实测差 20 倍以上、而且差在对不对：
+
+| 引擎 | 同一段 54.9 秒粤语口播 | 结果 |
+|---|---|---|
+| SenseVoice int8（默认） | **1.1 秒** | 自己判出 `<\|yue\|>`，字面准确 |
+| faster-whisper medium | 52 秒 | 被 `language=zh` 按住当普通话听，金湾→今晚 |
+| faster-whisper small | 26 秒 | 同一句复读 4 遍 |
+
+```bash
+python3 scripts/asr_sensevoice.py <某段.wav> --tokens   # 自检：模型在不在、字级时间戳
+python3 scripts/run_pipeline.py ... --asr-engine auto   # 默认：SenseVoice 优先，不可用才回落 whisper
+```
+
+模型放这三个位置任一即可（约 240 MB，`model.int8.onnx` + `tokens.txt`）：
+`~/.short-video-studio/models/`、`~/.coli/models/`、`<skill>/vendor/models/`。
+`--asr-engine sensevoice` 显式指定时模型缺失会直接报错，**不静默降级**。
+
+**2) 看画面：抽密帧 + 多模态必须走大模型，严禁本地分类器冒充。**
+流水线在 `plan-only` 会自动跑这一步（可 `--no-vision-package` 关掉）：
+
+```bash
+# ① 自动备料（run_pipeline 自己会跑；也可手动）
+python3 scripts/tag_frames.py --input-dir <素材目录> --out <pipeline>/vision \
+    --engine agent --frames-per-clip 4 --exclude-dirs 口播
+# ② Agent 看 vision/grids/grid_*.jpg（一张 48 格，左上角「段序号-帧序号」）
+# ③ 判定写 <pipeline>/vision/00_vision_labels.json 后并回链上
+python3 scripts/tag_frames.py --apply --out <pipeline>/vision
+```
+
+判定一旦写回，`run_pipeline` 会自动认领并生成 `00_visual_index.json`；没有判定时，
+`00_confirm_plan.md` 的「画面依据」一栏会明写**大模型还没判、选画面只能靠文件名**——
+不许假装看过画面。
+
 完整中间文件契约见 [references/pipeline-schemas.md](references/pipeline-schemas.md)，安全区与居中字幕规范见 [references/platform-safe-zones.md](references/platform-safe-zones.md)。
 
 一键跑通端到端流水线（默认全局/门店轨 `style_01` / 博主轨 `style_11`，自动落盘 `out/` 并清理大体积临时文件）：
@@ -130,6 +166,8 @@ python3 scripts/run_pipeline.py \
   [--raw-intel <00_raw_intel.json>] \
   [--sources-json <sources.json>] \
   [--visual-index <00_visual_index.json>] \
+  [--asr-engine auto|sensevoice|whisper] \
+  [--no-vision-package] \
   [--licenses-json <licenses.json>] \
   [--dialect mandarin|cantonese|dialect] \
   [--store-anchor <门店名>] \

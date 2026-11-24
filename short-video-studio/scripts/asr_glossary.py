@@ -118,6 +118,12 @@ def load_glossary(dirs: Sequence[Optional[Path]]) -> Dict[str, Any]:
                 sources.append(str(p))
                 break
 
+    # 同一个词既被列成「术语」又被列成「错词」时，术语那一遍会把纠错结果反推回去。
+    # 实测 2026-11-24：术语表第 5 行裸写「六百坪」，同时又有「六百坪 => 六百平」，
+    # 结果「六百平」被当成术语的近似而改回 600 坪——越纠越错。硬映射为准，这类术语剔掉。
+    _wrong_keys = set(repl)
+    terms = [t for t in terms if str(t).strip() not in _wrong_keys]
+
     # 去重保序
     uniq_terms: List[str] = []
     for t in terms:
@@ -138,14 +144,19 @@ def load_glossary(dirs: Sequence[Optional[Path]]) -> Dict[str, Any]:
 
 
 def asr_prompt_suffix(glossary: Dict[str, Any]) -> str:
-    """拼进 Whisper `initial_prompt` 的一句上下文（有资料才加，没资料返回空串）。"""
+    """拼进 Whisper `initial_prompt` 的上下文（有资料才加，没资料返回空串）。
+
+    只放**名词与真实句子样本**，不写「请准确识别……」这类指令：
+    实测 2026-11-24，指令句式会被 Whisper 当成台词念回来
+    （转出「请准确识别数字、价格专有名词,」并直接上屏）。
+    """
     if not glossary:
         return ""
     terms = [t for t in (glossary.get("terms") or []) if len(t) >= 2][:24]
     bg = str(glossary.get("background") or "").strip()
     parts: List[str] = []
     if terms:
-        parts.append("以下专有名词请按原样识别：" + "、".join(terms) + "。")
+        parts.append("、".join(terms) + "。")
     if bg:
         parts.append(bg[:MAX_PROMPT_CHARS].replace("\n", " "))
     return (" " + " ".join(parts)) if parts else ""
@@ -177,6 +188,9 @@ def _one_char_diff(a: str, b: str) -> bool:
     return sum(1 for x, y in zip(a, b) if x != y) <= 1
 
 
+NUMERAL_CHARS = set("零〇一二三四五六七八九十百千万亿两0123456789０１２３４５６７８９")
+
+
 def correction_pairs(glossary: Dict[str, Any], text: str) -> List[Tuple[str, str]]:
     """在 text 里找出「该改的」片段：硬映射优先，其次是同长度差一字的同音错位。"""
     out: List[Tuple[str, str]] = []
@@ -202,6 +216,12 @@ def correction_pairs(glossary: Dict[str, Any], text: str) -> List[Tuple[str, str
             elif same < max(2, int(round(L * 0.66))):
                 continue
             if not re.search(r"[\u4e00-\u9fff]", win):
+                continue
+            # 数字绝不许被「差一字」规则改（实测 2026-11-24：「六百平」被术语「两百平」纠成「两百平」，
+            # 门店面积直接改错；而 whisper 版还把「三百万」写成「三百万」没问题，正是没碰数字）。
+            # 数字只认硬映射。
+            diff_pairs = [(x, y) for x, y in zip(win, term) if x != y]
+            if any(x in NUMERAL_CHARS or y in NUMERAL_CHARS for x, y in diff_pairs):
                 continue
             out.append((win, term))
     # 去重，长片段优先

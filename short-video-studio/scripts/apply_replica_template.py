@@ -880,8 +880,50 @@ def _audio_material(path_name: str, root_uuid: str, rel_dir: str, dur: float, ca
     }
 
 
-def _speed_material() -> dict:
-    return {"curve_speed": None, "id": _uid(), "mode": 0, "speed": 1.0, "type": "speed"}
+def _tpl_speed(seg: dict) -> float:
+    """模版这段原版的倍速（剪映 segment.speed）。缺省/非法 → 1.0，绝不凭猜变速。"""
+    try:
+        sp = float(seg.get("speed") or 1.0)
+    except (TypeError, ValueError):
+        return 1.0
+    return sp if sp > 0 else 1.0
+
+
+def _note_speed(rep: dict, want: float, achieved: float) -> None:
+    """把「原版倍速 / 实际落地倍速」记进报告：落地不等于原版一律如实计，不假装套上了。"""
+    if abs(float(want) - 1.0) <= 1e-4:
+        return
+    rep["speed_applied"] = rep.get("speed_applied", 0) + 1
+    if float(achieved) < float(want) - 5e-3:
+        rep["speed_shortened"] = rep.get("speed_shortened", 0) + 1
+        rep.setdefault("speed_shortened_detail", []).append(
+            {"want": round(float(want), 4), "achieved": round(float(achieved), 4)})
+
+
+def _resolve_take(dur: float, speed: float, take: float) -> tuple:
+    """「时间线 dur 秒、倍速 speed」需要的素材秒数 vs 池子真给的 take → (实际倍速, 实际素材秒)。
+
+    · 池子给的比需要的长：只用需要的那一段（不许悄悄加速）
+    · 池子给的比需要的短：倍速降下来（achieved < speed），由调用方计 `speed_shortened`
+    """
+    dur = max(1e-6, float(dur))
+    speed = max(0.05, float(speed))
+    want = dur * speed
+    take = max(0.0, float(take))
+    if take >= want - 1e-6:
+        return speed, want
+    return max(0.05, take / dur), take
+
+
+def _speed_material(speed: float = 1.0) -> dict:
+    """剪映的「变速」素材条目。`speed` 必须写**真值**：草稿里段上的 `speed` 只是面板显示，
+    真正生效的是这条 materials.speeds 条目与段的 source_timerange 之比。
+
+    旧实现固定 1.0 —— 模版里 2.0× 的 B-roll（style_01 seg:2:5）、2.0× 的叠加卡片
+    （style_24 三条）、1.2× 的音效全部被拉回原速，节奏与原版不一样。
+    """
+    return {"curve_speed": None, "id": _uid(), "mode": 0,
+            "speed": round(float(speed), 6), "type": "speed"}
 
 
 def _compound_placeholder_material(name: str, root_uuid: str, w: int, h: int, dur: float,
@@ -1027,7 +1069,7 @@ def _keyframes_of(seg: dict, seg_dur: float, src_in: float) -> List[dict]:
 def _segment(*, mat_id: str, tl_start: float, dur: float, src_in: float, src_dur: float,
              geometry: dict, keyframes: List[dict], extra_refs: List[str],
              track_index: int, visible: bool = True, volume: float = 1.0,
-             render_index: Optional[float] = None) -> dict:
+             render_index: Optional[float] = None, speed: float = 1.0) -> dict:
     scale = geometry.get("scale") or [1.0, 1.0]
     transform = geometry.get("transform") or [0.0, 0.0]
     return {
@@ -1067,7 +1109,8 @@ def _segment(*, mat_id: str, tl_start: float, dur: float, src_in: float, src_dur
         "reverse": False,
         "source": "segmentsourcenormal",
         "source_timerange": {"duration": _us(src_dur), "start": _us(src_in)},
-        "speed": 1.0,
+        # 倍速真值：source_timerange.duration / target_timerange.duration 必须与它自洽
+        "speed": round(float(speed or 1.0), 6),
         "target_timerange": {"duration": _us(dur), "start": _us(tl_start)},
         "template_id": "",
         "template_scene": "default",
@@ -1399,6 +1442,10 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
             continue
         if asset_role not in ("a_roll", "b_roll", "photo"):
             asset_role = "a_roll"
+        if asset_role == "a_roll" and abs(_tpl_speed(seg) - 1.0) > 1e-4:
+            # 驱动轨是「真人开口说话」的那条：换素材后语速/口型必须与新录音对齐，
+            # 套 2× 会把嘴型与字音拆开。宁可节奏与原版差一点，也不许把口播变速。
+            rep["a_roll_speed_ignored"] = rep.get("a_roll_speed_ignored", 0) + 1
         if asset_role == "photo":
             # 驱动轨本身就是静图（照片翻页类模版）：同样走「全片唯一」这条账
             fill = take_unique_photo(want, fingerprint=seg.get("material_fingerprint"),
@@ -1759,12 +1806,15 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
                     row["backdrop_asset_ref"] = row.get("asset_ref")
             continue
         avoid = _taken_near(new_start, new_dur)
+        # 动图才吃倍速；静图没有时间基准（拉长/压缩一张不动图是没意义的）
+        _sp = 1.0 if role == "photo" or seg.get("kind") == "photo" else _tpl_speed(seg)
+        _want_src = new_dur * _sp
         if role == "photo":
-            fill = take_unique_photo(new_dur, avoid,
+            fill = take_unique_photo(_want_src, avoid,
                                      fingerprint=seg.get("material_fingerprint"),
                                      key=seg["key"])
         else:
-            fill = take_for(role if role in ROLE_FALLBACK else "b_roll", new_dur, avoid=avoid)
+            fill = take_for(role if role in ROLE_FALLBACK else "b_roll", _want_src, avoid=avoid)
         if fill is None:
             _blank_overlay(seg, "asset_pool_exhausted_avoid_same_source", new_start, new_dur,
                            ghost=True, cover_ratio=round(info["cover"], 3),
@@ -1772,7 +1822,12 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
             continue
         if fill.get("conflict_skipped"):
             rep["overlap_conflicts_avoided"] += 1
-        new_dur = min(new_dur, fill["take"])
+        _sp_ach, _src_take = _resolve_take(new_dur, _sp, fill["take"])
+        if abs(_sp - 1.0) <= 1e-4:
+            # 原速段保持旧行为：素材不够长就把时间线长度缩短（锚点映射跟着缩）
+            new_dur = min(new_dur, fill["take"])
+            _src_take = new_dur
+        _note_speed(rep, _sp, _sp_ach)
         if new_start + new_dur > new_total + 1e-4:
             new_dur = max(0.05, new_total - new_start)
             rep["seg_clipped"] = rep.get("seg_clipped", 0) + 1
@@ -1781,6 +1836,7 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
                             "asset": fill, "reused_asset": bool(fill.get("reused")),
                             "old_start": old_start, "old_dur": old_dur,
                             "track_index": seg["track_index"],
+                            "speed": _sp_ach, "src_take": _src_take,
                             "conflict_skipped": int(fill.get("conflict_skipped") or 0)}
         _placed(new_start, new_dur, fill["path"], seg["key"])
 
@@ -1925,7 +1981,8 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
                 _placed(parent_start + t0, dur, fill["path"], f"{seg['key']}#sub{int(s.get('track_index') or 0)}")
             elif kind in ("video",) or role in ("a_roll", "b_roll", "overlay_card"):
                 avoid = _taken_near(parent_start + t0, dur) | _sub_taken(t0, dur)
-                fill = take_for(role if role in ROLE_FALLBACK else "b_roll", dur, avoid=avoid)
+                _sp = _tpl_speed(s)
+                fill = take_for(role if role in ROLE_FALLBACK else "b_roll", dur * _sp, avoid=avoid)
                 if fill is None:
                     _skip("video_layer_no_asset")
                     continue
@@ -1939,7 +1996,11 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
                     sub_videos[mk]["_path"] = fill["path"]
                 mat_id = sub_videos[mk]["id"]
                 src_in = float(fill.get("src_in") or 0.0)
-                dur = min(dur, float(fill["take"]))
+                _sp_ach, src_dur = _resolve_take(dur, _sp, fill["take"])
+                if abs(_sp - 1.0) <= 1e-4:
+                    dur = min(dur, float(fill["take"]))
+                    src_dur = dur
+                _note_speed(rep, _sp, _sp_ach)
                 local_taken.append({"start": t0, "dur": dur, "path": fill["path"]})
                 _placed(parent_start + t0, dur, fill["path"],
                         f"{seg['key']}#sub{int(s.get('track_index') or 0)}")
@@ -1958,7 +2019,8 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
                     }
                 mat_id = sub_videos[mk]["id"]
             elif kind == "audio" or role in ("bgm", "sfx"):
-                fill = take_for(role if role in ROLE_FALLBACK else "sfx", dur)
+                _sp = _tpl_speed(s)
+                fill = take_for(role if role in ROLE_FALLBACK else "sfx", dur * _sp)
                 if fill is None:
                     _skip("audio_layer_no_asset")
                     continue
@@ -1971,7 +2033,11 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
                     sub_audios[mk]["_path"] = fill["path"]
                 mat_id = sub_audios[mk]["id"]
                 src_in = float(fill.get("src_in") or 0.0)
-                dur = min(dur, float(fill["take"]))
+                _sp_ach, src_dur = _resolve_take(dur, _sp, fill["take"])
+                if abs(_sp - 1.0) <= 1e-4:
+                    dur = min(dur, float(fill["take"]))
+                    src_dur = dur
+                _note_speed(rep, _sp, _sp_ach)
                 is_audio = True
             elif kind == "text":
                 si = s.get("text_slot")
@@ -2016,7 +2082,9 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
                         rep["compound_anim_clamped"] += 1
                         break
             if not is_audio:
-                spd = _speed_material()
+                _sp_sub = locals().get("_sp_ach", 1.0) if kind in ("video",) or role in (
+                    "a_roll", "b_roll", "overlay_card") else 1.0
+                spd = _speed_material(_sp_sub)
                 sub_speeds.append(spd)
                 extra.append(spd["id"])
             if s.get("mask"):
@@ -2039,7 +2107,9 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
             sub_track_segs[t_i].append(_segment(
                 mat_id=mat_id, tl_start=t0, dur=dur, src_in=src_in, src_dur=src_dur,
                 geometry=geom, keyframes=_keyframes_of(s, dur, src_in),
-                extra_refs=extra, track_index=t_i, render_index=s.get("render_index")))
+                extra_refs=extra, track_index=t_i, render_index=s.get("render_index"),
+                speed=(_sp_ach if (kind in ("video", "audio") or role in ("a_roll", "b_roll",
+                        "overlay_card", "bgm", "sfx")) else 1.0)))
             stats["segments"] += 1
 
         if not any(segs for segs in sub_track_segs.values()):
@@ -2228,26 +2298,39 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
                                 "old_start": old_start, "old_dur": old_dur}
             continue
         if kind in ("video", "photo") or role in ("b_roll", "overlay_card", "photo"):
+            _sp = 1.0 if kind == "photo" or role == "photo" else _tpl_speed(seg)
+            _want_src = new_dur * _sp
             if kind == "photo" or role == "photo":
-                fill = take_unique_photo(new_dur, fingerprint=seg.get("material_fingerprint"),
+                fill = take_unique_photo(_want_src, fingerprint=seg.get("material_fingerprint"),
                                          key=seg["key"])
             else:
-                fill = take_for(role if role in ROLE_FALLBACK else "b_roll", new_dur)
+                fill = take_for(role if role in ROLE_FALLBACK else "b_roll", _want_src)
             if fill is None:
                 rep["skipped"]["b_roll_no_asset"] = rep["skipped"].get("b_roll_no_asset", 0) + 1
                 continue
-            new_dur = min(new_dur, fill["take"])
+            _sp_ach, _src_take = _resolve_take(new_dur, _sp, fill["take"])
+            if abs(_sp - 1.0) <= 1e-4:
+                new_dur = min(new_dur, fill["take"])
+                _src_take = new_dur
+            _note_speed(rep, _sp, _sp_ach)
         elif kind == "sticker":
             fill = take_for("sticker", new_dur)
             if fill is None:
                 rep["skipped"]["sticker_no_asset"] = rep["skipped"].get("sticker_no_asset", 0) + 1
                 continue
+            _sp_ach, _src_take = 1.0, new_dur
         elif kind == "audio":
-            fill = take_for(role, new_dur)
+            # 音效也会带倍速（全库 1.108×/1.2× 三条）：时间线不变，素材按速度吃长/吃短
+            _sp = _tpl_speed(seg)
+            fill = take_for(role, new_dur * _sp)
             if fill is None:
                 rep["skipped"]["audio_no_asset"] = rep["skipped"].get("audio_no_asset", 0) + 1
                 continue
-            new_dur = min(new_dur, fill["take"])
+            _sp_ach, _src_take = _resolve_take(new_dur, _sp, fill["take"])
+            if abs(_sp - 1.0) <= 1e-4:
+                new_dur = min(new_dur, fill["take"])
+                _src_take = new_dur
+            _note_speed(rep, _sp, _sp_ach)
         elif kind == "text":
             if seg.get("text_slot") is None or seg["text_slot"] >= len(text_slots):
                 skipped_text_no_slot += 1
@@ -2262,7 +2345,9 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
         plan[seg["key"]] = {"kind": kind, "role": role, "start": new_start, "dur": new_dur,
                             "src_in": (fill or {}).get("src_in", 0.0), "asset": fill,
                             "reused_asset": bool((fill or {}).get("reused")),
-                            "old_start": old_start, "old_dur": old_dur}
+                            "old_start": old_start, "old_dur": old_dur,
+                            "speed": locals().get("_sp_ach", 1.0),
+                            "src_take": locals().get("_src_take", new_dur)}
     if skipped_text_no_slot:
         rep["skipped"]["text_without_slot"] = skipped_text_no_slot
 
@@ -2369,7 +2454,9 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
         geometry = dict(seg.get("geometry") or {})
         extra_refs: List[str] = []
         src_in = float(p.get("src_in") or 0.0)
-        src_dur = p["dur"]
+        # 源段长度按「真吃进的素材秒」写；倍速由 speed 字段与 target_timerange 一起决定
+        src_dur = float(p.get("src_take") or p["dur"])
+        _sp_out = float(p.get("speed") or 1.0)
         mat_id = None
         is_audio = False
 
@@ -2439,6 +2526,10 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
             extra_refs.append(p["compound_ref"])
             src_in = 0.0
             src_dur = p["dur"]
+            if abs(_tpl_speed(seg) - 1.0) > 1e-4:
+                # 复合片段的倍速意味着「子时间线整体被压/拉」，而子层是按父段新时长重映射的；
+                # 两套时间缩放叠起来会把子层锚点算错。这里显式不套，进度条上看得见。
+                rep["compound_speed_ignored"] = rep.get("compound_speed_ignored", 0) + 1
             is_audio = bool(p.get("is_audio"))
             ph = p.get("placeholder") or {}
             if ph:
@@ -2463,7 +2554,7 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
             anim_mats.append(holder)
             extra_refs.append(holder["id"])
         if not is_audio:
-            spd = _speed_material()
+            spd = _speed_material(_sp_out if p["kind"] != "text" else 1.0)
             speeds.append(spd)
             extra_refs.append(spd["id"])
         if seg.get("mask"):
@@ -2491,7 +2582,8 @@ def apply_template(template: dict, assets: Dict[str, List[str]], texts: List[Any
             mat_id=mat_id, tl_start=p["start"], dur=p["dur"], src_in=src_in,
             src_dur=src_dur if p["kind"] not in ("text",) else 0.0,
             geometry=geometry, keyframes=kfs, extra_refs=extra_refs,
-            track_index=t_i, volume=1.0, render_index=seg.get("render_index"))
+            track_index=t_i, volume=1.0, render_index=seg.get("render_index"),
+            speed=_sp_out if p["kind"] not in ("text",) else 1.0)
         track_segs[t_i].append(new_seg)
         segment_map.append({"seg_id": new_seg["id"], "key": seg["key"],
                             "track_index": t_i, "start": round(p["start"], 3),
@@ -2845,6 +2937,8 @@ def main() -> int:
     print(json.dumps({k: rep.get(k) for k in ("out_draft", "duration_sec", "segments_total",
                                               "segments_by_role", "asset_reused", "asset_wrapped",
                                               "slot_shrunk", "anim_clamped", "skipped",
+                                              "speed_applied", "speed_shortened",
+                                              "a_roll_speed_ignored", "compound_speed_ignored",
                                               "texts_truncated", "font_resolved",
                                               "font_fallback_slots", "overlay_left_blank",
                                               "ghost_rejected", "overlap_conflicts_avoided",

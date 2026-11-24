@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+SCRIPTS_DIR = Path(__file__).resolve().parent
 from common import (
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
@@ -862,6 +863,98 @@ def _run_code_video_branch(
     )
 
 
+def _ensure_vision_package(raw_dir: Path, pipeline_dir: Path) -> Optional[Path]:
+    """把「抽密帧 → 交大模型判画面」变成流水线的一步，而不是靠人记得手动跑。
+
+    2026-11-24 的实测教训：这条链的代码全通，但
+      * SKILL.md 里一个字没写；
+      * `run_pipeline` 从不发起它，只在盘点时打一行「请手动跑 tag_frames」；
+      * 没判定也没任何门禁拦。
+    换台机器、换个 Agent，这一步就等于不存在。所以这里做成幂等的一步：
+    没判定且没任务包时，自己把帧抽出来、拼好判定拼版图，然后把活交给 Agent。
+
+    不在这里调任何模型（也严禁用本地分类器冒充）：只准备材料。
+    """
+    for sub in (pipeline_dir / "vision", pipeline_dir):
+        if (sub / "00_vision_labels.json").is_file():
+            print(f"[vision] 已有 Agent 画面判定 -> {sub / '00_vision_labels.json'}")
+            return None
+    for sub in (pipeline_dir / "vision", pipeline_dir):
+        if (sub / "00_vision_tasks.json").is_file():
+            print(f"[vision] 任务包已在，等你/Agent 判定 -> {sub / '00_vision_tasks.json'}")
+            return None
+
+    script = SCRIPTS_DIR / "tag_frames.py"
+    if not script.is_file():
+        print(f"[vision] [WARN] 找不到 {script}，跳过抽帧")
+        return None
+    out_dir = pipeline_dir / "vision"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        sys.executable, str(script),
+        "--input-dir", str(raw_dir),
+        "--out", str(out_dir),
+        "--engine", "agent",
+        "--frames-per-clip", "4",
+        "--exclude-dirs", "口播,音频,声音",
+    ]
+    print("[vision] 没判定过画面：现在抽密帧 + 拼判定拼版图（交给大模型看，本地不猜）")
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True)
+    except Exception as exc:
+        print(f"[vision] [WARN] 抽帧失败：{exc}")
+        return None
+    for line in (res.stdout or "").splitlines():
+        if line.startswith("[tag-frames]"):
+            print("[vision] " + line[len("[tag-frames] "):])
+    if res.returncode != 0:
+        print(f"[vision] [WARN] 抽帧退出码 {res.returncode}：{(res.stderr or '')[-400:]}")
+        return None
+    tasks = out_dir / "00_vision_tasks.json"
+    if tasks.is_file():
+        print("[vision] 下一步是「大模型看画面」：把 grids/ 里的拼版图逐张看图，"
+              "按格子编号写 00_vision_labels.json，再跑 tag_frames.py --apply --out <该目录>")
+        print("[vision] 没判定之前，配镜会明确标成『无画面依据』，不会假装看见过")
+        return tasks
+    return None
+
+
+def _discover_agent_visual_index(pipeline_dir: Path) -> Optional[Path]:
+    """找回 Agent（大模型）逐帧判过的画面语义，交给盘点当 visual index 用。
+
+    为什么需要这一步：视觉识别的硬规定是「抽密帧 + 多模态走 Agent，严禁本地冒充」。
+    但 `tag_frames --apply` 只写 `00_frame_semantics.json` 与《素材说明》草稿，
+    而盘点只认 `--visual-index 00_visual_index.json` 和素材目录里的《素材说明》——
+    `00_frame_semantics.json` 全仓没有消费者。不接这一根线，Agent 判完也白判，配镜还是按文件名盲配。
+
+    顺序：有 labels 就先 merge（幂等），再从 semantics 生成 visual index；
+    没有任何判定就返回 None，让下游按「无画面依据」处理，而不是假装看见过画面。
+    """
+    try:
+        import vision_agent as VA
+    except Exception as exc:  # 依赖缺失不该让主链挂掉，但要高声说出来
+        print(f"[pipeline] [WARN] 画面判定模块不可用，跳过视觉索引：{exc}")
+        return None
+    for sub in (pipeline_dir, pipeline_dir / "vision"):
+        if not sub.is_dir():
+            continue
+        labels_p = sub / VA.LABELS_NAME
+        sem_p = sub / VA.SEMANTICS_NAME
+        if labels_p.is_file():
+            rep = VA.merge_labels(sub)
+            print(f"[pipeline] 已并入 Agent 画面判定 {rep['clips']}/{rep['total']} 段"
+                  + (f"，还有 {len(rep['missing'])} 段没判" if rep.get("missing") else ""))
+        if not sem_p.is_file():
+            continue
+        dst = pipeline_dir / "00_visual_index.json"
+        vi = VA.write_visual_index(sub, dest=dst)
+        if vi:
+            print(f"[pipeline] 画面语义索引 -> {vi}")
+            return vi
+    print("[pipeline] 提示：没有 Agent 画面判定（没抽帧或没判），配镜会按『无画面依据』标出来")
+    return None
+
+
 def _record_cli_style_choices(
     pipeline_dir: Path,
     style_id: Optional[str],
@@ -1128,6 +1221,14 @@ def main() -> None:
     parser.add_argument("--store-anchor", help="门店听觉锚点（如门店名），用于热词与盲听核验")
     parser.add_argument("--multi-speaker", action="store_true", help="多人访谈/双人对话模式（禁止抑制第二人声音）")
     parser.add_argument("--whisper-model", help="可选：显式指定本地 faster-whisper 模型名称")
+    parser.add_argument(
+        "--asr-engine", choices=["auto", "sensevoice", "whisper"], default="auto",
+        help="ASR 引擎：auto（默认，SenseVoice 优先，方言自判）/ sensevoice / whisper",
+    )
+    parser.add_argument(
+        "--no-vision-package", action="store_true",
+        help="不自动准备「抽密帧 + 大模型判定拼版图」（跳过会让配镜没有画面依据）",
+    )
     parser.add_argument("--sync-window", type=float, nargs=2, metavar=("START", "END"), help="可选：实测闪帧/测试音同步检测窗")
     parser.add_argument("--require-lock", action="store_true", help="正式渲染前强制校验 approval_lock.json 指纹锁")
     parser.add_argument("--exports", choices=EXPORT_CHOICES, help="auto 尝试两种工程并允许 MP4 降级，显式选择的工程进入必检")
@@ -1205,6 +1306,11 @@ def main() -> None:
     whitelist_path = Path(args.whitelist) if args.whitelist else ws["compliance_whitelist_path"]
     licenses_path = Path(args.licenses_json) if args.licenses_json else None
     visual_index_path = Path(args.visual_index) if args.visual_index else None
+    if visual_index_path is None:
+        # 没显式指定就自动认领 Agent 的逐帧判定（tag_frames --apply 的产物）。
+        # 没有这一步，Agent 判完画面也回不了配镜链：
+        # `00_frame_semantics.json` 全仓无消费者，配镜只认 `--visual-index` 与《素材说明》。
+        visual_index_path = _discover_agent_visual_index(pipeline_dir)
 
     raw_intel_obj: Optional[Dict[str, Any]] = None
     if args.raw_intel and Path(args.raw_intel).exists():
@@ -1561,6 +1667,9 @@ def main() -> None:
     elif args.mode == "plan-only":
         eff_raw = _ensure_effective_raw_dir()
         _run_inventory_if_needed(eff_raw)
+        # 配置：没画面判定时自己把「抽密帧 + 判定拼版图」准备好（不调模型，纯备料）。
+        if not args.no_vision_package:
+            _ensure_vision_package(eff_raw, pipeline_dir)
         run_step1([eff_raw], pipeline_dir, shared_cache_dir=ws.get("shared_cache_dir"))
         run_step2(
             pipeline_dir,
@@ -1568,6 +1677,7 @@ def main() -> None:
             script_json_path=script_p,
             force_tts=args.force_tts,
             whisper_model=args.whisper_model,
+            asr_engine=args.asr_engine,
             whitelist_path=whitelist_path,
             dialect=args.dialect,
             store_anchor=args.store_anchor,
@@ -1637,6 +1747,7 @@ def main() -> None:
                 script_json_path=script_p,
                 force_tts=args.force_tts,
                 whisper_model=args.whisper_model,
+                asr_engine=args.asr_engine,
                 whitelist_path=whitelist_path,
                 dialect=args.dialect,
                 store_anchor=args.store_anchor,
@@ -1683,6 +1794,7 @@ def main() -> None:
                 script_json_path=script_p,
                 force_tts=True if script_p else args.force_tts,
                 whisper_model=args.whisper_model,
+                asr_engine=args.asr_engine,
                 whitelist_path=whitelist_path,
                 dialect=args.dialect,
                 store_anchor=args.store_anchor,
