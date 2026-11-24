@@ -1,0 +1,268 @@
+{
+  "style_id": "style_23",
+  "source_ref": "forensic/style_sources.json#styles.style_23",
+  "draft_duration_sec": 41.833,
+  "sfx_count": 12,
+  "sfx_per_min": 17.2,
+  "unique_sound_count": 5,
+  "gain_db_median": 2.99,
+  "roles": {
+    "cut": 1,
+    "misc": 4
+  },
+  "files": [
+    {
+      "file": "sound_vibe/sfx/style_23/misc_气泡弹出.mp3",
+      "name": "气泡弹出",
+      "role": "misc",
+      "duration_sec": 0.455,
+      "source_in_sec": 0.067,
+      "trim_dur_sec": 0.467,
+      "gain_db": 8.6,
+      "src_audio": "463e7795397ff8ff117dfa89aa23497f.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_23/misc_纸张抖动声.mp3",
+      "name": "纸张抖动声",
+      "role": "misc",
+      "duration_sec": 0.567,
+      "source_in_sec": 0.767,
+      "trim_dur_sec": 0.567,
+      "gain_db": 6.0,
+      "src_audio": "faa23d7a9f16d30f605ba9732ee59364.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_23/cut_呼2.mp3",
+      "name": "“呼”2",
+      "role": "cut",
+      "duration_sec": 0.833,
+      "source_in_sec": 0.167,
+      "trim_dur_sec": 0.833,
+      "gain_db": 2.99,
+      "src_audio": "95c55b86d67e28378c731468af761dc2.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_23/misc_报纸报纸折叠或展开.mp3",
+      "name": "报纸报纸: 折叠或展开",
+      "role": "misc",
+      "duration_sec": 0.838,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 0.867,
+      "gain_db": 0.0,
+      "src_audio": "853e3da1a02ab179d1ff68ccc10cd481.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_23/misc_叮，提示音4.mp3",
+      "name": "叮，提示音4",
+      "role": "misc",
+      "duration_sec": 1.5,
+      "source_in_sec": 0.067,
+      "trim_dur_sec": 1.5,
+      "gain_db": 12.02,
+      "src_audio": "7a3a3d383bf4ed041314e0b4de60c94f.mp3"
+    }
+  ],
+  "cues": [
+    {
+      "name": "气泡弹出",
+      "role": "misc",
+      "time_sec": 0.933,
+      "target_dur_sec": 0.467,
+      "source_in_sec": 0.067,
+      "source_dur_sec": 0.467,
+      "volume": 2.6901,
+      "gain_db": 8.6,
+      "material_dur_sec": 0.533,
+      "nearest_cut_sec": 0.0,
+      "offset_from_cut_sec": 0.933,
+      "src_audio": "463e7795397ff8ff117dfa89aa23497f.mp3"
+    },
+    {
+      "name": "纸张抖动声",
+      "role": "misc",
+      "time_sec": 4.867,
+      "target_dur_sec": 0.567,
+      "source_in_sec": 0.767,
+      "source_dur_sec": 0.567,
+      "volume": 1.9962,
+      "gain_db": 6.0,
+      "material_dur_sec": 2.0,
+      "nearest_cut_sec": 4.867,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "faa23d7a9f16d30f605ba9732ee59364.mp3"
+    },
+    {
+      "name": "“呼”2",
+      "role": "cut",
+      "time_sec": 17.7,
+      "target_dur_sec": 0.833,
+      "source_in_sec": 0.167,
+      "source_dur_sec": 0.833,
+      "volume": 1.4106,
+      "gain_db": 2.99,
+      "material_dur_sec": 1.3,
+      "nearest_cut_sec": 17.7,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "95c55b86d67e28378c731468af761dc2.mp3"
+    },
+    {
+      "name": "“呼”2",
+      "role": "cut",
+      "time_sec": 18.533,
+      "target_dur_sec": 0.833,
+      "source_in_sec": 0.167,
+      "source_dur_sec": 0.833,
+      "volume": 1.4106,
+      "gain_db": 2.99,
+      "material_dur_sec": 1.3,
+      "nearest_cut_sec": 18.533,
+      "offset_from_cut_sec": -0.0,
+      "src_audio": "95c55b86d67e28378c731468af761dc2.mp3"
+    },
+    {
+      "name": "“呼”2",
+      "role": "cut",
+      "time_sec": 19.533,
+      "target_dur_sec": 0.833,
+      "source_in_sec": 0.167,
+      "source_dur_sec": 0.833,
+      "volume": 1.4106,
+      "gain_db": 2.99,
+      "material_dur_sec": 1.3,
+      "nearest_cut_sec": 19.533,
+      "offset_from_cut_sec": -0.0,
+      "src_audio": "95c55b86d67e28378c731468af761dc2.mp3"
+    },
+    {
+      "name": "纸张抖动声",
+      "role": "misc",
+      "time_sec": 22.333,
+      "target_dur_sec": 0.567,
+      "source_in_sec": 0.767,
+      "source_dur_sec": 0.567,
+      "volume": 1.9962,
+      "gain_db": 6.0,
+      "material_dur_sec": 2.0,
+      "nearest_cut_sec": 22.333,
+      "offset_from_cut_sec": -0.0,
+      "src_audio": "faa23d7a9f16d30f605ba9732ee59364.mp3"
+    },
+    {
+      "name": "报纸报纸: 折叠或展开",
+      "role": "misc",
+      "time_sec": 23.367,
+      "target_dur_sec": 0.867,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 0.867,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 0.867,
+      "nearest_cut_sec": 22.333,
+      "offset_from_cut_sec": 1.034,
+      "src_audio": "853e3da1a02ab179d1ff68ccc10cd481.mp3"
+    },
+    {
+      "name": "纸张抖动声",
+      "role": "misc",
+      "time_sec": 26.767,
+      "target_dur_sec": 0.567,
+      "source_in_sec": 0.767,
+      "source_dur_sec": 0.567,
+      "volume": 1.9962,
+      "gain_db": 6.0,
+      "material_dur_sec": 2.0,
+      "nearest_cut_sec": 24.567,
+      "offset_from_cut_sec": 2.2,
+      "src_audio": "faa23d7a9f16d30f605ba9732ee59364.mp3"
+    },
+    {
+      "name": "报纸报纸: 折叠或展开",
+      "role": "misc",
+      "time_sec": 27.567,
+      "target_dur_sec": 0.867,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 0.867,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 0.867,
+      "nearest_cut_sec": 24.567,
+      "offset_from_cut_sec": 3.0,
+      "src_audio": "853e3da1a02ab179d1ff68ccc10cd481.mp3"
+    },
+    {
+      "name": "叮，提示音4",
+      "role": "misc",
+      "time_sec": 29.4,
+      "target_dur_sec": 1.5,
+      "source_in_sec": 0.067,
+      "source_dur_sec": 1.5,
+      "volume": 3.9887,
+      "gain_db": 12.02,
+      "material_dur_sec": 3.733,
+      "nearest_cut_sec": 34.067,
+      "offset_from_cut_sec": -4.667,
+      "src_audio": "7a3a3d383bf4ed041314e0b4de60c94f.mp3"
+    },
+    {
+      "name": "“呼”2",
+      "role": "cut",
+      "time_sec": 34.067,
+      "target_dur_sec": 0.833,
+      "source_in_sec": 0.167,
+      "source_dur_sec": 0.833,
+      "volume": 1.4106,
+      "gain_db": 2.99,
+      "material_dur_sec": 1.3,
+      "nearest_cut_sec": 34.067,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "95c55b86d67e28378c731468af761dc2.mp3"
+    },
+    {
+      "name": "“呼”2",
+      "role": "cut",
+      "time_sec": 36.667,
+      "target_dur_sec": 0.833,
+      "source_in_sec": 0.167,
+      "source_dur_sec": 0.833,
+      "volume": 1.4106,
+      "gain_db": 2.99,
+      "material_dur_sec": 1.3,
+      "nearest_cut_sec": 34.067,
+      "offset_from_cut_sec": 2.6,
+      "src_audio": "95c55b86d67e28378c731468af761dc2.mp3"
+    }
+  ],
+  "missing_files": [],
+  "bgm": {
+    "status": "source_extracted",
+    "name": "柔和的光（柚仔版）",
+    "med_vol_db": -17.5,
+    "dual_bgm": false,
+    "switch_sec": null,
+    "switch_kind": "none",
+    "tail_piece": "柔和的光（柚仔版）",
+    "pieces": [
+      {
+        "name": "柔和的光（柚仔版）",
+        "kind": "music",
+        "start_sec": 0.0,
+        "end_sec": 41.833,
+        "coverage_sec": 41.833,
+        "extractable": true
+      }
+    ],
+    "layers": [
+      {
+        "name": "柔和的光（柚仔版）",
+        "start_sec": 0.0,
+        "dur_sec": 41.833,
+        "gain_db": -17.47,
+        "extractable": true
+      }
+    ],
+    "file": "sound_vibe/bgm/style_23_bgm.mp3",
+    "duration_sec": 60.0,
+    "license": "source_draft_local_only"
+  },
+  "bgm_disabled_reason": null
+}

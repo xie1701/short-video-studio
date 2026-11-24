@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import argparse
 import math
+import re
 import sys
 import wave
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 SCRIPTS_ROOT = Path(__file__).resolve().parent
 if str(SCRIPTS_ROOT) not in sys.path:
@@ -327,6 +328,28 @@ def level_speech_segments(slices: List[np.ndarray]) -> Tuple[List[np.ndarray], D
         "target_db": round(target_db, 2),
         "adjusted_count": adj_cnt,
     }
+
+
+def _keywords_of_sentence(text: str, raw_keywords: Sequence[Any]) -> List[str]:
+    """只保留真的出现在这句正文里的关键词；一个都不剩就从正文重新抠（数字+量词优先）。"""
+    txt = str(text or "")
+    if not txt:
+        return []
+    kept: List[str] = []
+    for kw in raw_keywords:
+        k = str(kw).strip()
+        if len(k) < 2:
+            continue
+        if k in txt and k not in kept:
+            kept.append(k)
+    if kept:
+        return kept
+    try:
+        import keyword_extract  # type: ignore
+        return list(keyword_extract.extract_keywords(txt) or [])
+    except Exception:
+        nums = re.findall(r"[零一二两三四五六七八九十百千万\d]+(?:\.[\d]+)?[个张间家次倍元块万亿%％折平米天小时分钟秒]", txt)
+        return nums[:3]
 
 
 def resolve_dynamic_pause(
@@ -745,7 +768,12 @@ def run_step3(
             "pause_reason": pause_reason,
             "internal_long_pauses": internal_pauses,
             "emotion_or_info": seg.get("emotion", "info"),
+            # `keywords` 保留逐字稿原样：配镜/对位要用它（同段里别的词的语义线索是有用的）。
             "keywords": seg.get("keywords", []),
+            # 但**上屏**必须只用出现这句正文里的词：原来直接把 keywords 拿去打花字，
+            # 口令/废话带的词会跟着上屏（2026-11-24 实测：成片 61.5s 打出「三二一组」、
+            # 43s 打出「组嗰边咧」——那两句的正文里根本没有这些字）。
+            "display_keywords": _keywords_of_sentence(seg.get("text") or "", seg.get("keywords") or []),
             "words": new_words,
         }
         locked_sentences.append(sent_obj)

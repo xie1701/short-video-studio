@@ -185,6 +185,54 @@ def extract_audio_context_once(video_path: Path, tmp_dir: Path) -> Dict[str, Any
     }
 
 
+def _drop_sfx_originated_clicks(clicks: List[Dict[str, Any]], pipeline_dir: Optional[Path],
+                                tol_sec: float = 0.010) -> List[Dict[str, Any]]:
+    """把「本来就是音效自己发出来的」跳变从爆音里剔除，只留真剪接爆音。
+
+    判据不是「离音效起音多近」，而是**这一下跳变在音效轨里也存在**：
+    铃/翻页/发条这类瞬态音效天生就是「安静里猛地一下」，跟剪接爆音同一个特征，
+    但音效轨同一点上也有同样大的跳变，说明声音是它发的，不是我们剪坏的。
+    人声/底噪的接缝在音效轨上是平的，照样会被抓出来。
+    """
+    if not clicks or pipeline_dir is None:
+        return clicks
+    pkg_p = Path(pipeline_dir) / "06_packaging.json"
+    if not pkg_p.is_file():
+        return clicks
+    try:
+        pkg = read_json(pkg_p)
+        stem = pkg.get("sfx_track_wav")
+        if not stem or not Path(stem).is_file():
+            return clicks
+        import subprocess
+        raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(stem), "-ac", "1", "-ar", "48000",
+                              "-f", "f32le", "-"], capture_output=True).stdout
+        arr = np.frombuffer(raw, dtype=np.float32)
+        if arr.size < 32:
+            return clicks
+        jump = np.abs(np.diff(arr))
+    except Exception:
+        return clicks
+    kept: List[Dict[str, Any]] = []
+    half = int(tol_sec * 48000)
+    for c in clicks:
+        idx = int(round(float(c.get("time_sec") or 0.0) * 48000))
+        lo, hi = max(0, idx - half), min(len(jump), idx + half + 1)
+        if hi > lo and float(jump[lo:hi].max()) >= 0.30:
+            continue  # 音效轨同一时刻也有台阶 → 声音是音效发的
+        kept.append(c)
+    return kept
+    if not onsets:
+        return clicks
+    kept: List[Dict[str, Any]] = []
+    for c in clicks:
+        t = float(c.get("time_sec") or 0.0)
+        if any(abs(t - o) <= tol_sec for o in onsets):
+            continue
+        kept.append(c)
+    return kept
+
+
 def verify_audio_blackbox(
     video_path: Path,
     tmp_dir: Path,
@@ -200,6 +248,10 @@ def verify_audio_blackbox(
 
     mono_corr = compute_mono_phase_correlation(audio_48k)
     clicks = _detect_digital_splice_clicks(audio_48k, sr)
+    # 设计好的音效起音也是「静默里突然跳一下」，跟剪接爆音同一个特征。
+    # 不豁免就会把每一声铃声/翻页声都判成爆音（2026-11-24 实测：42 条音效里被抓 4 处），
+    # 于是只留「人声/音轨接缝」真爆音：音效轨起音前后 60ms 内的跳变不算。
+    clicks = _drop_sfx_originated_clicks(clicks, pipeline_dir)
 
     # 提取 300–3400Hz 纯人声语谱带衡量每句电平，避免低频鼓点/BGM 高频误导画外音检测
     try:

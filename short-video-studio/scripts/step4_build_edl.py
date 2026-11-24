@@ -37,6 +37,7 @@ from common import (
 import os
 
 import broll_match
+import pip_policy
 from broll_semantics import describe_clip, legacy_score
 from edit_grammar import check_edl, load_grammar, plan_shot_budget, select_cuts
 from generate_code_broll import render_broll_clip_pillow, render_code_clip, resolve_style_palette
@@ -1854,6 +1855,17 @@ def run_step4(
     except Exception as exc:  # 没有 ffmpeg / 没有视觉检测时不许假装做过
         print(f"[step4] [WARN] 人脸锚点未计算（{exc}），小窗将按画面正中取景")
 
+    # 抠像内容门槛：风格会抠像 ≠ 每一镜都该抠（2026-11-24 用户实测「讲解效果图的地方，把讲解图给扣没了」）
+    try:
+        cutout_gate = pip_policy.apply_cutout_gate(clips, style_entry, pipeline_dir)
+        print(pip_policy.summarize_for_log(cutout_gate))
+        for _r in cutout_gate.get("rows") or []:
+            if not _r.get("allowed"):
+                print(f"[step4]   抠像降级 @{_r['timeline_in_sec']:6.2f}s {_r['media']}：{_r['reason']}")
+    except Exception as _pe:
+        cutout_gate = {"error": str(_pe)}
+        print(f"[step4] [WARN] 抠像门槛未执行（{_pe}），按风格原指令执行")
+
     # 真实测算首帧视觉密度：文件存在且非废画、且非低对比死黑
     first_c = clips[0] if clips else {}
     first_item = next((m for m in manifest.get("items", []) if m.get("normalized_mp4") == first_c.get("media_path")), {})
@@ -1888,6 +1900,7 @@ def run_step4(
         "kf_per_min_target": kf_target,
         "keyframe_moves_applied": kf_applied,
         "pip_applied_count": pip_applied_count,
+        "cutout_gate": cutout_gate,
         "explainer_broll_windows": explainer_windows,
         "explainer_applied_count": explainer_applied_count,
         "shot_duration_cv": shot_cv,

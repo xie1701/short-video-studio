@@ -819,6 +819,7 @@ def main() -> None:
                 "max_chars_per_line": tpl.get("max_chars_per_line"),
                 "full_width_bar": tpl.get("full_width_bar"),
                 "source_font_family": tpl.get("source_font_family"),
+                "font_candidates": tpl.get("font_candidates"),
                 "synced_from": "subtitle_templates/templates.json（库派生）",
             }
         bp_doc["version"] = "4.1.0"

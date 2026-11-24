@@ -67,6 +67,8 @@ if __name__ == "__main__":
 
 import face_framing
 from generate_code_broll import resolve_style_palette
+from glyph_fallback import load_font_ref as _load_fb_font
+from glyph_fallback import glyph_font_for as _glyph_fb_font
 
 from PIL import Image, ImageDraw, ImageFilter
 
@@ -75,25 +77,24 @@ def parse_hex_rgba(hex_str: str, default_alpha: int = 255) -> Tuple[int, int, in
     return hex_to_rgba(hex_str, default=(255, 255, 255, int(default_alpha)), default_alpha=int(default_alpha))
 
 
-@lru_cache(maxsize=256)
-def _render_glyph_bytes(font_path_key: str, font_size: int, ch: str) -> bytes:
-    fnt = get_cached_font(None if font_path_key == "__default__" else font_path_key, font_size)
-    img = Image.new("L", (48, 48), 0)
-    ImageDraw.Draw(img).text((4, 4), ch, font=fnt, fill=255)
-    return img.tobytes()
+@lru_cache(maxsize=512)
+def _load_font_ref(font_path: str, index: int, size: int) -> Any:
+    """按 (文件, 字面 index, 字号) 载入字体；`.ttc` 必须带 index 才能取到目标字面（如 Heiti TC）。"""
+    return _load_fb_font(font_path, index, max(12, int(size)))
 
 
-@lru_cache(maxsize=2048)
-def _char_is_tofu(font_key: str, font_size: int, ch: str) -> bool:
-    if ch.isspace():
-        return False
-    if ch in ("\ufffe", "\ufffd"):
-        return True
-    ch_bytes = _render_glyph_bytes(font_key, font_size, ch)
-    if not any(ch_bytes):
-        return True
-    tofu_sig = _render_glyph_bytes(font_key, font_size, "\ufffe")
-    return ch_bytes == tofu_sig
+def glyph_font_for(ch: str, primary_font_path: Optional[str], size: int) -> Any:
+    """逐字字形回退：主字体缺这个字就按 font_aliases.json 的 glyph_fallback_chain 逐级找。
+
+    PIL/FreeType 自身不做字体回退，缺字直接画成空白/豆腐块（用户实测：阿里妈妈书黑体缺
+    `佢 冇 咗 哋 啲 喺 嘅 嘢 嚟 𠮶` 十个粤语常用字）。这里只换字体、**不改字号**，
+    同一行里混排两套字体时由调用方按各字体 ascent 对齐基线（render_subtitle_png 按行内
+    max_ascent 排 y），所以基线、字号一致，字宽按各自字体的真实 advance 走。
+
+    实现（cmap 查询 / 回退链 / .ttc 字面 index）在 glyph_fallback 模块，本函数是渲染端的入口。
+    返回已按 size 载入的 Pillow 字体；整条链都覆盖不了时返回主字体（覆盖门禁 fail-closed 拦下）。
+    """
+    return _glyph_fb_font(ch, primary_font_path or None, max(12, int(size)))
 
 
 _DEDUPE_MINIMAL_STYLES = {"style_04", "style_10", "style_11", "style_15", "style_23", "style_24"}
@@ -263,12 +264,6 @@ def render_subtitle_png(
     stroke_rgba = parse_hex_rgba(tpl.get("stroke_color", "#000000"))
     shadow_rgba = parse_hex_rgba(tpl.get("shadow_color", "#000000C8"), 200)
 
-    fallback_font = None
-    if tpl.get("font_fallback"):
-        fallback_font = find_commercial_font(tpl.get("font_fallback"), verified_only=True)
-    if not fallback_font:
-        fallback_font = find_commercial_font(verified_only=True)
-
     kw_set = set(str(k) for k in (entry.get("keywords") or []))
 
     tokens: List[Tuple[str, bool, bool]] = []
@@ -319,7 +314,6 @@ def render_subtitle_png(
     # 逐行收集字符排版元信息
     lines: List[List[Tuple[str, Any, Tuple[int, int, int, int], int, int, int]]] = [[]]
     line_max_ascents: List[int] = [0]
-    fk = font_path or "__default__"
     inter_pad = max(1, stroke_w // 2) if stroke_w > 0 else 0
     for ch, is_kw, is_nl in tokens:
         if is_nl:
@@ -327,9 +321,8 @@ def render_subtitle_png(
             line_max_ascents.append(0)
             continue
         ch_sz = int(round(base_sz * (kw_scale if is_kw else 1.0)))
-        fnt = get_cached_font(font_path, ch_sz)
-        if _char_is_tofu(fk, ch_sz, ch) and fallback_font and fallback_font != font_path:
-            fnt = get_cached_font(fallback_font, ch_sz)
+        # 逐字取字体：主字体缺这个字就按 glyph_fallback_chain 回落（字号不变，基线按行内 ascent 对齐）
+        fnt = glyph_font_for(ch, font_path, ch_sz)
         bb = probe_draw.textbbox((0, 0), ch, font=fnt, stroke_width=stroke_w)
         try:
             adv_w = max(4, int(round(fnt.getlength(ch))) + inter_pad)
@@ -592,13 +585,15 @@ def render_packaging_png(
             gap = 18
             total_cw = cell_w * 3 + gap * 2
             x_start = (w - total_cw) // 2
-            c_fnt = get_cached_font(font_path, min(104, req_fs - 36))
+            c_sz = min(104, req_fs - 36)
             for ci, ch in enumerate(chars):
                 cx0 = x_start + ci * (cell_w + gap)
                 cx1 = cx0 + cell_w
                 c_bg = (178, 24, 36, 236) if ci == 0 else (20, 24, 34, 232)
                 c_bd = fg_rgba if ci == 0 else acc_rgba
                 c_fg = (255, 245, 137, 255) if ci > 0 else (255, 255, 255, 255)
+                # 巨字逐字绘制：每格一字，逐字取字体（缺字回落，字号不变，anchor=mm 居中不受影响）
+                c_fnt = glyph_font_for(ch, font_path, c_sz)
                 draw.rounded_rectangle([(cx0, 38), (cx1, h - 10)], radius=20, fill=c_bg, outline=c_bd, width=4)
                 draw.text(((cx0 + cx1) // 2 + 3, 98 + 4), ch, font=c_fnt, fill=(0, 0, 0, 230), anchor="mm", stroke_width=8, stroke_fill=(0, 0, 0, 230))
                 draw.text(((cx0 + cx1) // 2, 98), ch, font=c_fnt, fill=c_fg, anchor="mm", stroke_width=8, stroke_fill=st_rgba)
@@ -1122,7 +1117,12 @@ def _build_dual_pip_cmd(
 
     if mode.startswith("geometry_pip"):
         wins = pip_layout.get("windows") or []
-        win = wins[0] if wins else {"x": 0.0, "y": 0.32, "scale": 0.55}
+        # 真窗口才有意义：`scale≈1.0` 的是满屏叠加层，拿它当小窗会把主镜整个人盖住
+        # （2026-11-24 实测：抠像被内容门槛关掉后，8 个 A-roll 镜头差点变成「B-roll 铺满」）
+        real_wins = [w for w in wins if isinstance(w, dict) and float(w.get("scale") or 1.0) < 0.92]
+        if not real_wins:
+            return None
+        win = real_wins[0]
         wsc = max(0.18, min(0.98, float(win.get("scale") or 0.55)))
         ww = int(round(CANVAS_WIDTH * wsc / 2)) * 2
         wh = int(round(CANVAS_HEIGHT * wsc / 2)) * 2

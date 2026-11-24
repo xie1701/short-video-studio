@@ -35,9 +35,16 @@ COST_SKIP_AUDIO = 0.45    # 逐字稿有、成稿没有（口令、重来、口�
 # ── 切段参数 ─────────────────────────────────────────────────────────────
 # 判断「该不该在这里断开」只看一件事：两段保留内容之间**是不是夹着成稿之外的话**。
 # 纯停顿（没字的地方）一律不切——那是他自己在喘气，切了反而像卡带。
-SKIP_SPEECH_SEC = 1.00    # 夹在中间的「非成稿语音」超过这么久才切（更短的算口癖与绊嘴，留着自然）
-MIN_RUN_SEC = 1.00        # 一刀下去剩下的碎段比这还短，就不切（段首/段尾的碎段直接丢）
+SKIP_SPEECH_SEC = 0.60    # 夹在中间的「非成稿语音」超过这么久直接切（2026-11-24 实测 1.0s 太宽容：
+                          # 导演一句「厨房啦几多嘅」刚好 0.9s，全躲过去了，成片里听得见）
+MIN_JUNK_SEC = 0.30       # 更短的非成稿语音：只要不是纯口癖，也切（别人的插话常常只有两三个字）
+FILLER_RATIO_KEEP = 0.60  # 非成稿语音里口癖/语气词占比超过这个值，就算「他自己的口头语」，留着出声更自然
+MIN_RUN_SEC = 0.35        # 一刀下去剩下的碎段比这还短，就不切（段首/段尾的碎段直接丢）
+FILLER_LONG_SEC = 1.20    # 夹在中间的口癖再长也切不下手，但这个长度以上一律当碎话
 MERGE_GAP_SEC = 0.16      # 两段保留内容之间只隔这么点，并成一段
+MAX_INNER_GAP_SEC = 0.55  # 一句话中间要是空这么久（纯静音、没人说话），片子里就是冷场：
+                          # 2026-11-24 实测 ouyangTestCut 32.0–33.0s 有 0.90s 全场没声（人声只剩 -50dB 底噪），
+                          # 质检判「超过 0.8s 的静音段 1 段」。这种空档整段剪掉，接 0.17s 呼吸停顿。
 LONG_CUT_SEC = 1.00       # 段首/段尾被整句重来的话隔开时，那半句废开头直接丢
 LEAD_SEC = 0.05           # 每个保留区间前后垫一点，避免切到字的起音
 TAIL_SEC = 0.16
@@ -46,6 +53,11 @@ TAIL_SEC = 0.16
 MIN_COVERAGE = 0.72
 # 覆盖率低到这个程度，就说明根本没对上（成稿换了内容），调用方应退回整段保留
 MIN_OK_COVERAGE = 0.45
+
+# 口癖与语气词：这些字夹在句中不算「别人的话」。注意「嘅 / 咗 / 喺 / 啲」是粤语的实词成分，
+# 不能算口癖，否则会把成稿自己的语法结构切掉。
+_FILLER_CHARS = set("诶欸呃嗯啊呀哇唉哦噢喔咧嘅咁啫啦嘛呢吧咯啰啩呗")
+_FILLER_CHARS -= set("嘅")  # 「嘅」是广州话的结构助词，参与语义，不算语气词
 
 _PUNCT = set("，,。.、；;：:！!？?…「」『』\"'“”‘’（）()《》【】[]—～~· \t\n\r")
 
@@ -141,6 +153,42 @@ def mark_repeated_takes(toks: List[Dict[str, Any]], max_gap_sec: float = 1.6) ->
                 dup.update(range(i, i + size))
                 break
     return dup
+
+
+def _filler_ratio(text: str) -> float:
+    """口癖/语气词占比：用来区分「他自己的口头语」与「另一个人在说话」。"""
+    chars = [c for c in str(text or "") if c.strip()]
+    if not chars:
+        return 1.0
+    return sum(1 for c in chars if c in _FILLER_CHARS) / float(len(chars))
+
+
+def _is_junk_speech(toks: Sequence[Dict[str, Any]], span: float) -> bool:
+    """这段夹在成稿中间的话，该不该当「别人的声音」切掉。
+
+    两道门：
+    1. 长过 `FILLER_LONG_SEC` —— 不管是不是口癖，一秒钟以上的碎话留在当中一定抢戏；
+    2. 短但「有实义」—— 两三个字的插话（「对」「诶就系」）常常是导演在提词，不能只按长度判断；
+       纯语气词（「啦」「啊」「嘅咁」）则算他自己的口头语，留着才不像卡带。
+    """
+    text = "".join(str(t.get("ch") or "") for t in toks)
+    if not text.strip():
+        return False
+    if span >= FILLER_LONG_SEC:
+        return True
+    # 浮点误差：1.15-0.85 算出来是 0.29999999，跟门槛 0.30 一比就漏了（实测踩到）
+    return span >= MIN_JUNK_SEC - 1e-6 and _filler_ratio(text) < FILLER_RATIO_KEEP
+
+
+def _is_junk_speech_text(gap: Dict[str, Any]) -> bool:
+    """同上，但入参是已经落成 dict 的 gap（decision 阶段复用同一口径）。"""
+    text = str(gap.get("speech") or "")
+    span = float(gap.get("span_sec") or 0.0)
+    if not text.strip():
+        return False
+    if span >= FILLER_LONG_SEC:
+        return True
+    return span >= MIN_JUNK_SEC - 1e-6 and _filler_ratio(text) < FILLER_RATIO_KEEP
 
 
 def align_text_to_words(
@@ -241,19 +289,36 @@ def keep_intervals(
         }
 
     cov_raw = al["coverage"]
-    # 成稿覆盖率太低 = 这一行是被压缩改写过的，句中不敢乱切，只砍段首段尾
-    allow_inner_cut = cov_raw >= MIN_COVERAGE
+    # 2026-11-24 实测推翻旧口径：「覆盖率低就不动句中」会把导演/摄影师的插话原封不动留在片子里
+    # （第 3 句 cov 0.60，结果 16–19 秒整段都是现场另一个人在说话）。覆盖率只用来**事后交代**，
+    # 不再用来放弃句中那几刀——真要留整段，调用方看 low_coverage 自己决定。
 
     # ── 1. 相邻匹配字之间夹着的语音 ──
     # 注意：`runs[k]` 与 `runs[k+1]` 之间的 gap 才是 k，不能拿「第几个字对」当下标，
     # 因为连着好几对字可能都落在同一个跑段里（2026-11-24 第一版就是这样错位的）。
     runs: List[List[Tuple[int, int]]] = [[pairs[0]]]
+    run_text_ends: List[int] = []   # 每刀在成稿里的切点（右段的起始字下标）
     run_gaps: List[Dict[str, Any]] = []
     acc: List[Dict[str, Any]] = []
     for (ti_prev, tj_prev), (ti, tj) in zip(pairs, pairs[1:]):
         acc += [toks[k] for k in range(tj_prev + 1, tj)]
         span = sum(max(0.0, float(t["end_sec"]) - float(t["start_sec"])) for t in acc)
-        if allow_inner_cut and span > SKIP_SPEECH_SEC:
+        gap_sil = float(toks[tj]["start_sec"]) - float(toks[tj_prev]["end_sec"])
+        if not acc and gap_sil >= MAX_INNER_GAP_SEC:
+            # 中间这一段压根没人说话：不是别人的插话，是冷场。切开，让下游接 0.17s 呼吸(
+            # 只有左边已经攒够一口气才切，免得把句首一个字切成独立段)
+            run_so_far = float(toks[runs[-1][-1][1]]["end_sec"]) - float(toks[runs[-1][0][1]]["start_sec"])
+            if run_so_far >= MIN_RUN_SEC:
+                run_gaps.append({
+                    "speech": "", "kind": "silence", "span_sec": round(gap_sil, 3),
+                    "start": round(float(toks[tj_prev]["end_sec"]), 3),
+                    "end": round(float(toks[tj]["start_sec"]), 3),
+                })
+                runs.append([(ti, tj)])
+                run_text_ends.append(ti)
+                acc = []
+                continue
+        if _is_junk_speech(acc, span):
             run_gaps.append({
                 "speech": "".join(str(t["ch"]) for t in acc),
                 "span_sec": round(span, 3),
@@ -261,6 +326,10 @@ def keep_intervals(
                 "end": round(float(acc[-1]["end_sec"]), 3),
             })
             runs.append([(ti, tj)])
+            # 这一刀落在成稿的哪个字前面：右段从 `ti` 开始，左段就到 `ti` 为止。
+            # 不记这个边界，「厨房嘅|厨房」这种中间漏配一个字的地方，那个字会两边都不要
+            # （2026-11-24 实测：「氛围」印成「氛」��「四大天王」印成「四大王」）。
+            run_text_ends.append(ti)
             acc = []
         else:
             runs[-1].append((ti, tj))
@@ -277,8 +346,8 @@ def keep_intervals(
         a, b = _run_span(runs[k])
         c, d = _run_span(runs[k + 1])
         gap = run_gaps[k]
-        if gap["span_sec"] <= SKIP_SPEECH_SEC:
-            continue  # 太小，算不上别人的话
+        if str(gap.get("kind")) != "silence" and not _is_junk_speech_text(gap):
+            continue  # 纯口癖/太短，算不上别人的话
         # 只有「一刀下去两边都还剩一整口气」才真下刀；
         # 会在段首/段尾留下 0.3 秒碎段的，不切——那点碎段是成稿里的字，宁可留着他那半句。
         left_dur, right_dur = b - a, d - c
@@ -289,15 +358,21 @@ def keep_intervals(
 
     # ── 3. 落成区间 ──
     intervals: List[Dict[str, Any]] = []
+    texts_bounds: List[Tuple[int, int]] = []
+    for idx in keep:
+        t_from = runs[idx][0][0] if idx == 0 else run_text_ends[idx - 1]
+        t_to = run_text_ends[idx] if idx < len(run_text_ends) else runs[idx][-1][0] + 1
+        texts_bounds.append((max(0, t_from), max(0, t_to)))
     for idx in keep:
         g = runs[idx]
         raw_start, raw_end = _run_span(g)
+        b_from, b_to = texts_bounds[len(intervals)]
         intervals.append({
             "start": round(max(0.0, raw_start - lead_sec), 4),
             "end": round(raw_end + tail_sec, 4),
-            # 文字取「本段第一个对上字 ~ 最后一个对上字」之间的成稿原文，
-            # 不是只取对上的那些字：ASR 把「天」听成「轩」时，「四大天王」不能被印成「四大王」。
-            "text": "".join(t_chars[g[0][0] : g[-1][0] + 1]),
+            # 文字取「本段在成稿里的起止边界」之间的原文，不是只取对上的那些字：
+            # ASR 把「天」听成「轩」时「四大天王」不能被印成「四大王」；切开处漏配的字也要归到一侧。
+            "text": "".join(t_chars[b_from:b_to]),
             "words": _words_in_span(words, raw_start, raw_end),
         })
 
@@ -337,7 +412,8 @@ def keep_intervals(
         "tail_trim_sec": tail_cut,
         "ok": bool(intervals) and cov_raw >= MIN_OK_COVERAGE,
         "low_coverage": cov_raw < MIN_COVERAGE,
-        "reason": "" if cov_raw >= MIN_COVERAGE else f"成稿只对上 {cov_raw:.0%}（压缩改写过的行），只砍段首段尾",
+        "reason": ("" if cov_raw >= MIN_COVERAGE
+                   else f"成稿只对上 {cov_raw:.0%}（这行是压缩改写过的）：句话照样切，但没说的那半句不会有声音"),
     }
 
 

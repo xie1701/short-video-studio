@@ -1,0 +1,348 @@
+{
+  "style_id": "style_11",
+  "source_ref": "forensic/style_sources.json#styles.style_11",
+  "draft_duration_sec": 26.4,
+  "sfx_count": 13,
+  "sfx_per_min": 29.5,
+  "unique_sound_count": 10,
+  "gain_db_median": 0.0,
+  "roles": {
+    "cut": 1,
+    "hook": 1,
+    "misc": 8
+  },
+  "files": [
+    {
+      "file": "sound_vibe/sfx/style_11/cut_呼2.mp3",
+      "name": "“呼”2",
+      "role": "cut",
+      "duration_sec": 0.65,
+      "source_in_sec": 0.167,
+      "trim_dur_sec": 0.65,
+      "gain_db": 0.0,
+      "src_audio": "95c55b86d67e28378c731468af761dc2.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_11/misc_一滴水滴声.mp3",
+      "name": "一滴水滴声",
+      "role": "misc",
+      "duration_sec": 1.033,
+      "source_in_sec": 0.017,
+      "trim_dur_sec": 1.033,
+      "gain_db": -6.3,
+      "src_audio": "fd8b75a140bba2a6bad77df92e6598dd.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_11/misc_嗖，咻.mp3",
+      "name": "嗖，咻",
+      "role": "misc",
+      "duration_sec": 0.38,
+      "source_in_sec": 0.033,
+      "trim_dur_sec": 0.433,
+      "gain_db": -7.17,
+      "src_audio": "4909a2e1f6d61b22d4fd862fe0bafff9.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_11/hook_一声响铃.mp3",
+      "name": "一声响铃",
+      "role": "hook",
+      "duration_sec": 1.433,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 1.433,
+      "gain_db": -10.22,
+      "src_audio": "0354861fd0b2f5d9cc79e59b7f44186e.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_11/misc_叮咚，提示音1.mp3",
+      "name": "叮咚，提示音1",
+      "role": "misc",
+      "duration_sec": 0.6,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 0.6,
+      "gain_db": 0.0,
+      "src_audio": "f1f4a6a00efb226bd2b31c1a9e1496cd.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_11/misc_开门声.mp3",
+      "name": "开门声",
+      "role": "misc",
+      "duration_sec": 0.725,
+      "source_in_sec": 0.033,
+      "trim_dur_sec": 0.733,
+      "gain_db": 0.0,
+      "src_audio": "53925d1c1e828fbb4fec8c6b75efa7f6.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_11/misc_叮，收银机提示音1.mp3",
+      "name": "叮，收银机提示音1",
+      "role": "misc",
+      "duration_sec": 0.967,
+      "source_in_sec": 0.15,
+      "trim_dur_sec": 0.967,
+      "gain_db": -6.3,
+      "src_audio": "c41049563dcdf1c520a847a0b799920a.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_11/misc_打字声.mp3",
+      "name": "打字声",
+      "role": "misc",
+      "duration_sec": 1.083,
+      "source_in_sec": 0.517,
+      "trim_dur_sec": 1.083,
+      "gain_db": 0.0,
+      "src_audio": "b9d488609f6716f45f631bd6eb02a128.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_11/misc_纸张抖动声.mp3",
+      "name": "纸张抖动声",
+      "role": "misc",
+      "duration_sec": 0.75,
+      "source_in_sec": 0.783,
+      "trim_dur_sec": 0.75,
+      "gain_db": 0.0,
+      "src_audio": "faa23d7a9f16d30f605ba9732ee59364.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_11/misc_咚.mp3",
+      "name": "咚",
+      "role": "misc",
+      "duration_sec": 0.983,
+      "source_in_sec": 0.067,
+      "trim_dur_sec": 0.983,
+      "gain_db": -4.13,
+      "src_audio": "c4cf1bd400acba1fc21e7e785b02157e.mp3"
+    }
+  ],
+  "cues": [
+    {
+      "name": "“呼”2",
+      "role": "cut",
+      "time_sec": 0.0,
+      "target_dur_sec": 0.65,
+      "source_in_sec": 0.167,
+      "source_dur_sec": 0.65,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 1.283,
+      "nearest_cut_sec": 0.0,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "95c55b86d67e28378c731468af761dc2.mp3"
+    },
+    {
+      "name": "一滴水滴声",
+      "role": "misc",
+      "time_sec": 0.65,
+      "target_dur_sec": 1.033,
+      "source_in_sec": 0.017,
+      "source_dur_sec": 1.033,
+      "volume": 0.4839,
+      "gain_db": -6.3,
+      "material_dur_sec": 1.633,
+      "nearest_cut_sec": 0.0,
+      "offset_from_cut_sec": 0.65,
+      "src_audio": "fd8b75a140bba2a6bad77df92e6598dd.mp3"
+    },
+    {
+      "name": "“呼”2",
+      "role": "cut",
+      "time_sec": 1.933,
+      "target_dur_sec": 0.65,
+      "source_in_sec": 0.167,
+      "source_dur_sec": 0.65,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 1.283,
+      "nearest_cut_sec": 1.933,
+      "offset_from_cut_sec": -0.0,
+      "src_audio": "95c55b86d67e28378c731468af761dc2.mp3"
+    },
+    {
+      "name": "嗖，咻",
+      "role": "misc",
+      "time_sec": 4.117,
+      "target_dur_sec": 0.433,
+      "source_in_sec": 0.033,
+      "source_dur_sec": 0.433,
+      "volume": 0.4378,
+      "gain_db": -7.17,
+      "material_dur_sec": 0.467,
+      "nearest_cut_sec": 4.117,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "4909a2e1f6d61b22d4fd862fe0bafff9.mp3"
+    },
+    {
+      "name": "一声响铃",
+      "role": "hook",
+      "time_sec": 5.467,
+      "target_dur_sec": 1.433,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 1.433,
+      "volume": 0.3084,
+      "gain_db": -10.22,
+      "material_dur_sec": 5.667,
+      "nearest_cut_sec": 5.467,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "0354861fd0b2f5d9cc79e59b7f44186e.mp3"
+    },
+    {
+      "name": "叮咚，提示音1",
+      "role": "misc",
+      "time_sec": 8.883,
+      "target_dur_sec": 0.6,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 0.6,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 0.967,
+      "nearest_cut_sec": 8.883,
+      "offset_from_cut_sec": -0.0,
+      "src_audio": "f1f4a6a00efb226bd2b31c1a9e1496cd.mp3"
+    },
+    {
+      "name": "开门声",
+      "role": "misc",
+      "time_sec": 9.483,
+      "target_dur_sec": 0.733,
+      "source_in_sec": 0.033,
+      "source_dur_sec": 0.733,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 0.767,
+      "nearest_cut_sec": 9.483,
+      "offset_from_cut_sec": -0.0,
+      "src_audio": "53925d1c1e828fbb4fec8c6b75efa7f6.mp3"
+    },
+    {
+      "name": "“呼”2",
+      "role": "cut",
+      "time_sec": 14.55,
+      "target_dur_sec": 0.65,
+      "source_in_sec": 0.167,
+      "source_dur_sec": 0.65,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 1.283,
+      "nearest_cut_sec": 14.55,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "95c55b86d67e28378c731468af761dc2.mp3"
+    },
+    {
+      "name": "叮，收银机提示音1",
+      "role": "misc",
+      "time_sec": 15.583,
+      "target_dur_sec": 0.967,
+      "source_in_sec": 0.15,
+      "source_dur_sec": 0.967,
+      "volume": 0.4839,
+      "gain_db": -6.3,
+      "material_dur_sec": 2.25,
+      "nearest_cut_sec": 16.517,
+      "offset_from_cut_sec": -0.934,
+      "src_audio": "c41049563dcdf1c520a847a0b799920a.mp3"
+    },
+    {
+      "name": "打字声",
+      "role": "misc",
+      "time_sec": 20.683,
+      "target_dur_sec": 1.083,
+      "source_in_sec": 0.517,
+      "source_dur_sec": 1.083,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 2.05,
+      "nearest_cut_sec": 20.683,
+      "offset_from_cut_sec": -0.0,
+      "src_audio": "b9d488609f6716f45f631bd6eb02a128.mp3"
+    },
+    {
+      "name": "“呼”2",
+      "role": "cut",
+      "time_sec": 22.217,
+      "target_dur_sec": 0.65,
+      "source_in_sec": 0.167,
+      "source_dur_sec": 0.65,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 1.283,
+      "nearest_cut_sec": 20.683,
+      "offset_from_cut_sec": 1.534,
+      "src_audio": "95c55b86d67e28378c731468af761dc2.mp3"
+    },
+    {
+      "name": "纸张抖动声",
+      "role": "misc",
+      "time_sec": 23.117,
+      "target_dur_sec": 0.75,
+      "source_in_sec": 0.783,
+      "source_dur_sec": 0.75,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 2.0,
+      "nearest_cut_sec": 23.9,
+      "offset_from_cut_sec": -0.783,
+      "src_audio": "faa23d7a9f16d30f605ba9732ee59364.mp3"
+    },
+    {
+      "name": "咚",
+      "role": "misc",
+      "time_sec": 25.417,
+      "target_dur_sec": 0.983,
+      "source_in_sec": 0.067,
+      "source_dur_sec": 0.983,
+      "volume": 0.6216,
+      "gain_db": -4.13,
+      "material_dur_sec": 1.117,
+      "nearest_cut_sec": 25.417,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "c4cf1bd400acba1fc21e7e785b02157e.mp3"
+    }
+  ],
+  "missing_files": [],
+  "bgm": {
+    "status": "source_extracted",
+    "name": "Push Up（剪辑版）",
+    "med_vol_db": -6.3,
+    "dual_bgm": true,
+    "switch_sec": 22.217,
+    "switch_kind": "intro_overlay_exit",
+    "tail_piece": "Push Up（剪辑版）",
+    "pieces": [
+      {
+        "name": "Push Up（剪辑版）",
+        "kind": "music",
+        "start_sec": 0.0,
+        "end_sec": 26.4,
+        "coverage_sec": 26.4,
+        "extractable": true
+      },
+      {
+        "name": "复合片段1",
+        "kind": "music",
+        "start_sec": 19.55,
+        "end_sec": 22.217,
+        "coverage_sec": 2.667,
+        "extractable": true
+      }
+    ],
+    "layers": [
+      {
+        "name": "Push Up（剪辑版）",
+        "start_sec": 0.0,
+        "dur_sec": 26.4,
+        "gain_db": -12.61,
+        "extractable": true
+      },
+      {
+        "name": "复合片段1",
+        "start_sec": 19.55,
+        "dur_sec": 2.667,
+        "gain_db": 0.0,
+        "extractable": true
+      }
+    ],
+    "file": "sound_vibe/bgm/style_11_bgm.mp3",
+    "duration_sec": 60.0,
+    "license": "source_draft_local_only"
+  },
+  "bgm_disabled_reason": null
+}

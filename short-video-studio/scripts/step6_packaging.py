@@ -53,20 +53,99 @@ import numpy as np
 from step3_lock_audio import SR, load_stereo_wav_np, save_stereo_wav_np
 
 
-def _default_cc0_sfx(role: str) -> Path:
-    """全仓统一 CC0 真录物理音效兜底（彻底淘汰正弦波合成电子音）。"""
-    vibe_sfx = ASSETS_DIR / "sound_vibe" / "sfx"
-    role_map = {
-        "transition": vibe_sfx / "style_01_transition.wav",
-        "accent": vibe_sfx / "style_01_accent.wav",
-        "ui": vibe_sfx / "style_01_ui.wav",
-        "receipt": vibe_sfx / "style_15_receipt.wav",
+_SFX_ROLES = ("cut", "hook", "info", "accent", "receipt", "misc")
+_SFX_EXTS = (".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg")
+
+
+def style_sfx_dir(style_id: str) -> Path:
+    return ASSETS_DIR / "sound_vibe" / "sfx" / str(style_id or "").strip()
+
+
+def scan_style_sfx(style_id: str) -> Dict[str, List[Path]]:
+    """本风格自己的真音效池：sound_vibe/sfx/<style_id>/<角色>_<原音效名>.<ext>。
+
+    实测事故根因：旧版把兜底写死成 style_01_*/style_15_* 的真音效和其他风格的合成音，
+    于是 style_21 的成片里每 1.5 秒塞一个外来「叮」。这里**只读本风格目录**，
+    本风格一条都没有就返回空字典（由调用方直接关掉音效），绝不做跨风格兜底。
+    """
+    pool: Dict[str, List[Path]] = {r: [] for r in _SFX_ROLES}
+    d = style_sfx_dir(style_id)
+    if d.is_dir():
+        for p in sorted(d.iterdir()):
+            if not p.is_file() or p.suffix.lower() not in _SFX_EXTS:
+                continue
+            role = p.stem.split("_", 1)[0]
+            if role not in pool:
+                role = "misc"
+            pool[role].append(p)
+    # 用户自备原版音效按角色名覆盖：sound_vibe/user/<style_id>/cut.mp3
+    user_dir = ASSETS_DIR / "sound_vibe" / "user" / str(style_id or "")
+    if user_dir.is_dir():
+        for r in _SFX_ROLES:
+            hit = next((p for p in sorted(user_dir.iterdir())
+                        if p.is_file() and p.suffix.lower() in _SFX_EXTS and p.stem.lower() == r), None)
+            if hit is not None:
+                pool[r] = [hit]
+    return {r: v for r, v in pool.items() if v}
+
+
+def _role_candidates(pool: Dict[str, List[Path]], role: str) -> List[Path]:
+    """取本风格该角色的全部候选；本风格缺这个角色就用本风格其它角色（不跨风格）。"""
+    if not pool:
+        return []
+    if pool.get(role):
+        return list(pool[role])
+    for r in _SFX_ROLES:
+        if pool.get(r):
+            return list(pool[r])
+    return []
+
+
+def _default_cc0_sfx(role: str, style_id: str) -> Optional[Path]:
+    """本风格内的单条兜底音效；本风格整包为空则返回 None（不再借别的风格）。"""
+    cands = _role_candidates(scan_style_sfx(style_id), role)
+    return cands[0] if cands else None
+
+
+def load_style_sfx_truth(style_id: str) -> Optional[Dict[str, Any]]:
+    """源草稿音效实测表：assets/sound_vibe/sfx_truth/<style_id>.json。"""
+    p = ASSETS_DIR / "sound_vibe" / "sfx_truth" / f"{style_id}.json"
+    if not p.is_file():
+        return None
+    try:
+        return read_json(p)
+    except Exception:
+        return None
+
+
+def load_style_bgm_info(style_id: str) -> Dict[str, Any]:
+    """本风格 BGM 归属（只读本风格自己的 manifest 节点），绝不指向别的风格。"""
+    info: Dict[str, Any] = {
+        "file": None,
+        "status": None,
+        "name": None,
+        "dual_bgm": None,
+        "switch_sec": None,
+        "disabled_reason": None,
     }
-    cand = role_map.get(role, vibe_sfx / "style_01_ui.wav")
-    if cand.is_file():
-        return cand
-    any_wav = next(iter(sorted(vibe_sfx.glob("*.wav"))), None) if vibe_sfx.is_dir() else None
-    return any_wav or cand
+    node: Dict[str, Any] = {}
+    try:
+        mf = read_json(ASSETS_DIR / "sound_vibe" / "vibe_sound_manifest.json")
+        node = (mf.get("styles") or {}).get(str(style_id)) or {}
+    except Exception:
+        node = {}
+    rel = node.get("bgm_wav")
+    if rel and (ASSETS_DIR / str(rel)).is_file() and not node.get("bgm_is_silence_placeholder"):
+        info["file"] = str(rel)
+    info["status"] = node.get("bgm_status")
+    info["name"] = node.get("bgm_name")
+    info["dual_bgm"] = node.get("bgm_dual")
+    info["switch_sec"] = node.get("bgm_switch_sec")
+    if info["file"] is None:
+        info["disabled_reason"] = (
+            node.get("bgm_disabled_reason") or f"{style_id} 源草稿无 BGM，本片不放 BGM"
+        )
+    return info
 
 
 _FLOWER_FILLER_PREFIXES = (
@@ -101,7 +180,7 @@ def _extract_clean_flower_phrase(
     if num_m and 2 <= len(num_m.group(1)) <= max_len:
         return num_m.group(1)
 
-    for kw in (sent.get("keywords") or []):
+    for kw in _display_keywords(sent):
         ks = str(kw).strip()
         if len(ks) < 2 or ks in _FLOWER_BAN_EXACT:
             continue
@@ -128,15 +207,55 @@ def _extract_clean_flower_phrase(
         if len(c) > len(best_clause):
             best_clause = c
     if best_clause:
-        return best_clause[:max_len]
-    return clean_txt[:max_len] or "核心亮点"
+        return _cut_at_word_boundary(best_clause, max_len)
+    return _cut_at_word_boundary(clean_txt, max_len) or "核心亮点"
 
 
-def rotate_sfx(candidates: List[Path], last_used_name: Optional[str]) -> Path:
-    """同族/候选音效自动轮换，避免连续两次重复同一音色引起听觉疲劳。"""
+def _cut_at_word_boundary(text: str, max_len: int) -> str:
+    """按词边界截断，绝不把词劈成两半。
+
+    2026-11-24 实测：`我哋嘅四大天王虾饺…` 硬截 8 字变成「我哋嘅四大天王虾」，
+    上屏就是个残词。用 jieba 切词后往后累加，最后一个能装下的完整词收口。
+    """
+    t = str(text or "")
+    if len(t) <= max_len:
+        return t
+    try:
+        import jieba  # type: ignore
+        toks = [w for w in jieba.lcut(t) if w]
+    except Exception:
+        toks = [t[i:i + 2] for i in range(0, len(t), 2)]
+    out = ""
+    for w in toks:
+        if len(out) + len(w) > max_len:
+            break
+        out += w
+    if len(out) >= 2:
+        return out
+    return t[:max_len]
+
+
+def _display_keywords(sent: Dict[str, Any]) -> List[str]:
+    """上屏用的关键词：优先取 step3 过滤好的 `display_keywords`（只在正文里出现过的词）。
+
+    没有这个字段的旧管道产物，退回 `keywords` 里能在正文找到的那几个；
+    一个都没有就空着，让花字走「数字+量词」「整句短语」那两条路，绝不把口令打上屏。
+    """
+    got = sent.get("display_keywords")
+    if isinstance(got, list):
+        return [str(k) for k in got if str(k).strip()]
+    txt = str(sent.get("text") or "")
+    return [str(k) for k in (sent.get("keywords") or []) if str(k).strip() and str(k) in txt]
+
+
+def rotate_sfx(candidates: List[Path], last_used_name: Optional[str]) -> Optional[Path]:
+    """同族/候选音效自动轮换，避免连续两次重复同一音色引起听觉疲劳。
+
+    候选为空就返回 None（调用方直接不落这条 cue），不再偷偷兜底到别的风格。
+    """
     valid = [p for p in candidates if p and p.is_file()]
     if not valid:
-        return _default_cc0_sfx("ui")
+        return None
     if len(valid) == 1 or not last_used_name:
         return valid[0]
     for p in valid:
@@ -171,6 +290,21 @@ def _enhance_sfx_presence(arr: np.ndarray, sr: int = SR) -> np.ndarray:
         return out.astype(np.float32)
     except Exception:
         return arr
+
+
+def _fade_sfx_edges(arr: np.ndarray, sr: int, fade_in_sec: float = 0.002,
+                    fade_out_sec: float = 0.010) -> np.ndarray:
+    """给音效两端上淡入淡出，消掉文件硬截留下的电平台阶（不改音色、不改时长）。"""
+    if arr.ndim != 2 or len(arr) < 16:
+        return arr
+    n_in = min(int(sr * fade_in_sec), len(arr) // 4)
+    n_out = min(int(sr * fade_out_sec), len(arr) // 4)
+    out = arr.copy()
+    if n_in > 1:
+        out[:n_in] *= np.linspace(0.0, 1.0, n_in, dtype=np.float32)[:, None]
+    if n_out > 1:
+        out[-n_out:] *= np.linspace(1.0, 0.0, n_out, dtype=np.float32)[:, None]
+    return out
 
 
 def _measure_sfx_peak_offset_sec(arr: np.ndarray, sr: int = SR) -> float:
@@ -290,6 +424,15 @@ def run_step6(
     style_entry_pre = load_style_spectrum_entry(style_id) or {}
     broll_target = float(style_entry_pre.get("broll_overlay_ratio_target", 0.5))
     sfx_per_min_tgt = float((style_entry_pre.get("audio_and_sfx") or {}).get("sfx_per_min_target") or 24.0)
+    # 密度以源草稿实测为准（sfx_truth/<style_id>.json 的 sfx_per_min，style_21≈46/min）
+    sfx_truth = load_style_sfx_truth(style_id)
+    if sfx_truth is not None:
+        try:
+            truth_ppm = float(sfx_truth.get("sfx_per_min") or 0.0)
+        except (TypeError, ValueError):
+            truth_ppm = 0.0
+        # 真值为 0 就按 0 报（下面 sfx 池为空会真的一条都不出）
+        sfx_per_min_tgt = max(0.0, truth_ppm)
     total_dur = float(audio_events["locked_duration_sec"])
     total_samples = int(round(total_dur * SR))
     _legacy_budget = max(2, math.ceil(total_dur / 5.5)) if broll_target >= 0.85 else max(3, math.ceil(total_dur / 3.5))
@@ -311,41 +454,56 @@ def run_step6(
 
     sfx_cues: List[Dict[str, Any]] = []
     dyn_gap_sec = max(1.5, min(4.8, (60.0 / max(12.0, sfx_per_min_tgt)) * 0.68))
-    if vibe_prof and vibe_prof.get("sfx"):
-        v_sfx = {k: Path(v) for k, v in vibe_prof["sfx"].items() if Path(v).exists()}
-        # 尊重流派真实 sfx_gain_db（仅允许上限到 -3.5dB，避免风格全被拉爆成统一响度）
-        base_gain_db = max(-14.0, min(-3.5, float(vibe_prof.get("sfx_gain_db", -9.5)) + 3.0))
-        prof_gap = float(vibe_prof.get("sfx_min_gap_sec", dyn_gap_sec))
+    # 音效池：只认本风格目录下的真音效，整包为空就直接不出 sfx
+    sfx_pool = scan_style_sfx(style_id)
+    sfx_disabled_reason: Optional[str] = None
+    if not sfx_pool:
+        truth_count = int((sfx_truth or {}).get("sfx_count") or 0)
+        sfx_disabled_reason = (
+            f"{style_id} 源草稿 sfx_count=0，本风格无音效可放"
+            if (sfx_truth is not None and truth_count == 0)
+            else f"{style_id} 音效目录为空（assets/sound_vibe/sfx/{style_id}/ 无文件）"
+        )
+    native_prof = vibe_prof if (vibe_prof or {}).get("mapped_from_style_id") == style_id else None
+    bgm_info = load_style_bgm_info(style_id)
+    if native_prof:
+        # 尊重流派自己的 sfx_gain_db（仅允许上限到 -3.5dB，避免风格全被拉爆成统一响度）
+        base_gain_db = max(-14.0, min(-3.5, float(native_prof.get("sfx_gain_db", -9.5)) + 3.0))
+        prof_gap = float(native_prof.get("sfx_min_gap_sec", dyn_gap_sec))
         min_sfx_gap = int(min(prof_gap, dyn_gap_sec) * fps)
     else:
-        v_sfx = {}
         base_gain_db = -8.5
         min_sfx_gap = int(dyn_gap_sec * fps)
 
-    sfx_files = {
-        "hook": v_sfx.get("accent") or _default_cc0_sfx("accent"),
-        "info": v_sfx.get("ui") or v_sfx.get("accent") or _default_cc0_sfx("ui"),
-        "twist": v_sfx.get("accent") or _default_cc0_sfx("accent"),
-        "detail": v_sfx.get("ui") or _default_cc0_sfx("ui"),
-        "persona": v_sfx.get("ui") or v_sfx.get("transition") or _default_cc0_sfx("ui"),
-        "cta": v_sfx.get("receipt") or v_sfx.get("ui") or _default_cc0_sfx("ui"),
-        "cut": v_sfx.get("transition") or _default_cc0_sfx("transition"),
+    sfx_files: Dict[str, List[Path]] = {
+        "hook": _role_candidates(sfx_pool, "hook") or _role_candidates(sfx_pool, "accent"),
+        "info": _role_candidates(sfx_pool, "info"),
+        "accent": _role_candidates(sfx_pool, "accent"),
+        "twist": _role_candidates(sfx_pool, "accent"),
+        "detail": _role_candidates(sfx_pool, "info"),
+        "persona": _role_candidates(sfx_pool, "cut"),
+        "cta": _role_candidates(sfx_pool, "receipt"),
+        "cut": _role_candidates(sfx_pool, "cut"),
     }
 
-    # 接入动画×音效字典与叙事意图分类表
+    # 接入动画×音效字典与叙事意图分类表（仅接受本风格目录内的音频，杜绝跨风格串味）
     anim_sfx_dict = load_animation_sfx_pairs()
     sfx_taxonomy = load_sfx_intent_taxonomy()
     emotion_routing = sfx_taxonomy.get("pipeline_emotion_routing") or {}
+    style_sfx_root = style_sfx_dir(style_id).resolve()
     for emo_key, rel_list in emotion_routing.items():
         if emo_key not in sfx_files or not rel_list:
             continue
         for rel_p in rel_list:
             cand_p = ASSETS_DIR / rel_p
-            if cand_p.is_file():
-                # 保护流派专属 receipt 收尾音效不被泛用 cta 覆盖；仅填充尚未显式设定的角色
-                if emo_key in ("persona", "twist") or (emo_key == "cta" and "receipt" not in v_sfx):
-                    sfx_files[emo_key] = cand_p
-                break
+            if not cand_p.is_file():
+                continue
+            try:
+                cand_p.resolve().relative_to(style_sfx_root)
+            except Exception:
+                continue  # 不是本风格目录内的音频，直接丢弃
+            sfx_files[emo_key] = [cand_p]
+            break
 
     used_frames: List[int] = []
     last_sfx_name: Optional[str] = None
@@ -353,93 +511,101 @@ def run_step6(
     def can_place_sfx(frame: int) -> bool:
         return len(sfx_cues) < max_sfx_budget and all(abs(frame - f) >= min_sfx_gap for f in used_frames)
 
-    # 100% 使用 Freesound CC0 真实物理材质 SFX（彻底剔除塑料电子合成音）
-    for clip in edl["clips"][1:]:
-        role = clip.get("track_role", "b_roll")
-        ev_frame = int(clip.get("timeline_in_frame", clip["cut_event_frame"])) if role == "code_broll" else int(clip["cut_event_frame"])
-        is_end_receipt = (clip is edl["clips"][-1]) and ("receipt" in v_sfx)
-        if role != "code_broll" and not is_end_receipt:
-            continue
-        if not can_place_sfx(ev_frame):
-            continue
-        cand_list = [v_sfx["receipt"]] if is_end_receipt else [
-            sfx_files["info"],
-            sfx_files["cut"],
-            sfx_files["hook"],
-        ]
-        sf = rotate_sfx(cand_list, last_sfx_name)
-        last_sfx_name = sf.name
-        cue_gain = round(max(-14.0, min(-3.5, base_gain_db + 1.5)), 1)
-        sfx_cues.append({
-            "id": f"sfx_{len(sfx_cues)+1:03d}",
-            "file": str(sf.resolve()),
-            "sfx_name": sf.name,
-            "time_sec": frames_to_sec(ev_frame, fps),
-            "frame": ev_frame,
-            "gain_db": cue_gain,
-            "event_id": clip["cut_event_id"],
-            "reason": f"{style_id} 账单小票收尾提示" if is_end_receipt else f"{style_id} 信息卡片物理提示",
-        })
-        used_frames.append(ev_frame)
-
-    # 100% CC0 真实物理录音轮换池
-    cut_palette = [
-        sfx_files["cut"],
-        sfx_files["info"],
-        sfx_files["hook"],
-        _default_cc0_sfx("transition"),
-        _default_cc0_sfx("ui"),
-    ]
-    cut_rot = 0
-    # 优先选在句首/停顿缝隙切点安放 SFX，确保听感清爽且避免被重读浊音完全掩蔽，第二遍再补足其余切点
-    prioritized_clips = [
-        c for c in edl["clips"][1:]
-        if str(c.get("cut_event_type", "")) in ("sentence_start", "pause_start", "pause_end", "bgm_downbeat")
-    ] + [
-        c for c in edl["clips"][1:]
-        if str(c.get("cut_event_type", "")) not in ("sentence_start", "pause_start", "pause_end", "bgm_downbeat")
-    ]
-    for clip in prioritized_clips:
-        ev_frame = int(clip["cut_event_frame"])
-        if not can_place_sfx(ev_frame):
-            continue
-        rotated_pool = cut_palette[cut_rot % len(cut_palette):] + cut_palette[:cut_rot % len(cut_palette)]
-        sf = rotate_sfx(rotated_pool, last_sfx_name)
-        last_sfx_name = sf.name
-        cut_rot += 1
-        cue_gain = round(max(-14.0, min(-4.0, base_gain_db + 0.5)), 1)
-        sfx_cues.append({
-            "id": f"sfx_{len(sfx_cues)+1:03d}",
-            "file": str(sf.resolve()),
-            "sfx_name": sf.name,
-            "time_sec": frames_to_sec(ev_frame, fps),
-            "frame": ev_frame,
-            "gain_db": cue_gain,
-            "event_id": clip["cut_event_id"],
-            "reason": f"{style_id} 流派物理材质转场",
-        })
-        used_frames.append(ev_frame)
-
-    for ev in events:
-        if ev["type"] == "sentence_start" and can_place_sfx(ev["frame"]):
-            sent = sentences_map.get(ev.get("sentence_id", ""), {})
-            emo = sent.get("emotion_or_info", "info")
-            if emo not in ("hook", "twist", "persona", "cta"):
+    # 音效 cue 一律取自本风格真音效池（assets/sound_vibe/sfx/<style_id>/），
+    # 池子为空时一条都不出，绝不借别的风格的音效来凑数。
+    if sfx_pool:
+        for clip in edl["clips"][1:]:
+            role = clip.get("track_role", "b_roll")
+            ev_frame = int(clip.get("timeline_in_frame", clip["cut_event_frame"])) if role == "code_broll" else int(clip["cut_event_frame"])
+            is_end_receipt = (clip is edl["clips"][-1]) and bool(sfx_files["cta"])
+            if role != "code_broll" and not is_end_receipt:
                 continue
-            sf = rotate_sfx([sfx_files.get(emo, sfx_files["info"]), sfx_files["cut"]], last_sfx_name)
+            if not can_place_sfx(ev_frame):
+                continue
+            cand_list = sfx_files["cta"] if is_end_receipt else [
+                *sfx_files["info"],
+                *sfx_files["cut"],
+                *sfx_files["hook"],
+            ]
+            sf = rotate_sfx(cand_list, last_sfx_name)
+            if sf is None:
+                continue
             last_sfx_name = sf.name
-            cue_gain = round(max(-15.0, min(-4.5, base_gain_db - 1.2)), 1)
+            cue_gain = round(max(-14.0, min(-3.5, base_gain_db + 1.5)), 1)
             sfx_cues.append({
                 "id": f"sfx_{len(sfx_cues)+1:03d}",
                 "file": str(sf.resolve()),
                 "sfx_name": sf.name,
-                "time_sec": ev["time_sec"],
-                "frame": ev["frame"],
+                "time_sec": frames_to_sec(ev_frame, fps),
+                "frame": ev_frame,
                 "gain_db": cue_gain,
-                "event_id": ev["id"],
-                "reason": f"{emo} 句首节点轻量提示",
+                "event_id": clip["cut_event_id"],
+                "reason": f"{style_id} 账单小票收尾提示" if is_end_receipt else f"{style_id} 信息卡片物理提示",
             })
-            used_frames.append(ev["frame"])
+            used_frames.append(ev_frame)
+
+        # 本风格真音效轮换池（按角色顺序铺开，同角色内多音色轮转；含 accent 才接近源草稿的听感）
+        cut_palette: List[Path] = []
+        for _role_key in ("cut", "info", "hook", "accent"):
+            for p in sfx_files.get(_role_key) or []:
+                if p not in cut_palette:
+                    cut_palette.append(p)
+        if not cut_palette:
+            cut_palette = [p for _r in _SFX_ROLES for p in sfx_pool.get(_r, [])]
+        cut_rot = 0
+        # 优先选在句首/停顿缝隙切点安放 SFX，确保听感清爽且避免被重读浊音完全掩蔽，第二遍再补足其余切点
+        prioritized_clips = [
+            c for c in edl["clips"][1:]
+            if str(c.get("cut_event_type", "")) in ("sentence_start", "pause_start", "pause_end", "bgm_downbeat")
+        ] + [
+            c for c in edl["clips"][1:]
+            if str(c.get("cut_event_type", "")) not in ("sentence_start", "pause_start", "pause_end", "bgm_downbeat")
+        ]
+        for clip in prioritized_clips:
+            ev_frame = int(clip["cut_event_frame"])
+            if not can_place_sfx(ev_frame):
+                continue
+            rotated_pool = cut_palette[cut_rot % len(cut_palette):] + cut_palette[:cut_rot % len(cut_palette)]
+            sf = rotate_sfx(rotated_pool, last_sfx_name)
+            if sf is None:
+                continue
+            last_sfx_name = sf.name
+            cut_rot += 1
+            cue_gain = round(max(-14.0, min(-4.0, base_gain_db + 0.5)), 1)
+            sfx_cues.append({
+                "id": f"sfx_{len(sfx_cues)+1:03d}",
+                "file": str(sf.resolve()),
+                "sfx_name": sf.name,
+                "time_sec": frames_to_sec(ev_frame, fps),
+                "frame": ev_frame,
+                "gain_db": cue_gain,
+                "event_id": clip["cut_event_id"],
+                "reason": f"{style_id} 流派真音效转场",
+            })
+            used_frames.append(ev_frame)
+
+        for ev in events:
+            if ev["type"] == "sentence_start" and can_place_sfx(ev["frame"]):
+                sent = sentences_map.get(ev.get("sentence_id", ""), {})
+                emo = sent.get("emotion_or_info", "info")
+                if emo not in ("hook", "twist", "persona", "cta"):
+                    continue
+                sf = rotate_sfx([*sfx_files.get(emo, sfx_files["info"]), *sfx_files["cut"]], last_sfx_name)
+                if sf is None:
+                    continue
+                last_sfx_name = sf.name
+                cue_gain = round(max(-15.0, min(-4.5, base_gain_db - 1.2)), 1)
+                sfx_cues.append({
+                    "id": f"sfx_{len(sfx_cues)+1:03d}",
+                    "file": str(sf.resolve()),
+                    "sfx_name": sf.name,
+                    "time_sec": ev["time_sec"],
+                    "frame": ev["frame"],
+                    "gain_db": cue_gain,
+                    "event_id": ev["id"],
+                    "reason": f"{emo} 句首节点轻量提示",
+                })
+                used_frames.append(ev["frame"])
 
     sfx_cues.sort(key=lambda x: x["frame"])
     for idx_cue, cue in enumerate(sfx_cues, start=1):
@@ -459,6 +625,10 @@ def run_step6(
             peak_cap = 0.85 / max(1e-4, float(np.max(np.abs(arr))))
             arr = (arr * min(norm_gain, peak_cap)).astype(np.float32)
             arr = _enhance_sfx_presence(arr, SR)
+            # 剪映音效库里不少 mp3 是「硬截」出来的：最后一个采样点还停在半波上，
+            # 直接铺进音轨就是一声哒（2026-11-24 实测：42 条音效里 3 条尾音跳变被判爆音）。
+            # 2ms 淡入 + 10ms 淡出，声音本身不变，只把两端的台阶磨掉。
+            arr = _fade_sfx_edges(arr, SR)
             sfx_cache[fp] = arr
         arr = sfx_cache[fp]
         peak_off = _measure_sfx_peak_offset_sec(arr, SR)
@@ -470,7 +640,11 @@ def run_step6(
         start_idx = max(0, int(round(onset_sec * SR)))
         end_idx = min(total_samples, start_idx + len(arr))
         if end_idx > start_idx:
-            sfx_track[start_idx:end_idx] += arr[: end_idx - start_idx] * gain
+            piece = arr[: end_idx - start_idx]
+            if end_idx - start_idx < len(arr):
+                # 片子结束把音效截断，同样要磨台阶
+                piece = _fade_sfx_edges(piece, SR, fade_in_sec=0.0)
+            sfx_track[start_idx:end_idx] += piece * gain
 
     sfx_wav_path = pipeline_dir / "06_sfx_track.wav"
     save_stereo_wav_np(sfx_wav_path, sfx_track, SR)
@@ -626,7 +800,8 @@ def run_step6(
             if hook_bbox["y"] + hook_bbox["h"] > 1120:
                 hook_bbox["y"] = max(162, 1120 - hook_bbox["h"])
             safe_ok, _ = check_bbox_in_safe_zone(hook_bbox)
-            sec_kw = (first_sent.get("keywords") or [None, None])[1] if len(first_sent.get("keywords") or []) >= 2 else ""
+            _fkw = _display_keywords(first_sent)
+            sec_kw = _fkw[1] if len(_fkw) >= 2 else ""
             if not sec_kw and style_id == "style_01":
                 sec_kw = giant_tag if giant_tag and giant_tag != "核心重点" else "门店实拍"
             visual_elements.append({
@@ -699,7 +874,7 @@ def run_step6(
             )
             fg_key = "end_card_color" if is_end_cta else ("flank_color" if is_quote_item else "stamp_color")
             fg_default = "#FFE28A" if (is_end_cta or is_quote_item) else "#FFF589"
-            burst_tags = [str(k)[:5] for k in (sent.get("keywords") or []) if str(k).strip()][:3] if use_multi_tag else []
+            burst_tags = [str(k)[:5] for k in _display_keywords(sent) if str(k).strip()][:3] if use_multi_tag else []
             elem_obj: Dict[str, Any] = {
                 "id": f"pkg_{len(visual_elements)+1:03d}",
                 "kind": elem_kind,
@@ -848,6 +1023,11 @@ def run_step6(
         "style_id": style_id,
         "no_flower_text": bool(no_flower_text),
         "sfx_track_wav": str(sfx_wav_path.resolve()),
+        "sfx_disabled_reason": sfx_disabled_reason,
+        "sfx_per_min_target": round(float(sfx_per_min_tgt), 1),
+        "sfx_source_dir": f"sound_vibe/sfx/{style_id}",
+        "bgm": bgm_info,
+        "bgm_disabled_reason": bgm_info.get("disabled_reason"),
         "budget": {
             "max_visual_elements": max_visual_budget,
             "used_visual_elements": len(visual_elements),

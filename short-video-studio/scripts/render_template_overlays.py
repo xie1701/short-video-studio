@@ -55,6 +55,7 @@ from overlay_motion import (
     make_frame_fn as make_motion_frame_fn,
     resolve_mode as resolve_anim_mode,
 )
+from glyph_fallback import glyph_font_for
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
@@ -382,20 +383,27 @@ def _text_sprite(
     fnt = get_cached_font(font_path, fs)
     gap_px = max(0.0, float(spacing_px))
 
-    def _span(txt: str, font: Any, gap: float) -> float:
-        return sum(pd.textlength(ch, font=font) for ch in txt) + gap * max(0, len(txt) - 1)
+    def _span(txt: str, size: int, gap: float) -> float:
+        # 逐字量宽：缺字用回退字体量，否则豆腐块的宽度会把行宽算错
+        return sum(pd.textlength(ch, font=glyph_font_for(ch, font_path, size)) for ch in txt) + gap * max(0, len(txt) - 1)
 
-    while fs > min_fs and _span(t, fnt, gap_px) > limit:
+    while fs > min_fs and _span(t, fs, gap_px) > limit:
         fs -= 2
         fnt = get_cached_font(font_path, fs)
-    while len(t) > 2 and _span(t, fnt, gap_px) > limit:
+    while len(t) > 2 and _span(t, fs, gap_px) > limit:
         t = t[:-1]
-    if gap_px > 0 and _span(t, fnt, gap_px) > limit:
+    if gap_px > 0 and _span(t, fs, gap_px) > limit:
         gap_px = 0.0
 
-    widths = [pd.textlength(ch, font=fnt) for ch in t]
+    # 逐字字形回退：花字里常出现粤语字（嘅/喺/嗰…），而阿里妈妈书黑体的 cmap 没有这些字，
+    # PIL 又不会自动换字体——不回落就是空白。只换字体、不换字号；基线用 anchor="ls" 对齐，
+    # 画布高度按行内最大 ascent/descent 留白，混排也不会上下错位。
+    char_fonts = [glyph_font_for(ch, font_path, fs) for ch in t]
+    widths = [pd.textlength(ch, font=cf) for ch, cf in zip(t, char_fonts)]
     total = sum(widths) + gap_px * max(0, len(t) - 1)
-    ascent, descent = fnt.getmetrics()
+    metrics = [cf.getmetrics() for cf in char_fonts] or [fnt.getmetrics()]
+    ascent = max(m[0] for m in metrics)
+    descent = max(m[1] for m in metrics)
     pad = sw + 8
     w = int(math.ceil(total)) + pad * 2 + 4
     h = ascent + descent + pad * 2 + 4
@@ -405,8 +413,8 @@ def _text_sprite(
     x = float(pad)
     base_y = pad + ascent
     stroke_fill = stroke_rgba if (sw > 0 and stroke_rgba) else None
-    for ch, cw_px in zip(t, widths):
-        d.text((x, base_y), ch, font=fnt, fill=fill_rgba, anchor="ls", stroke_width=sw, stroke_fill=stroke_fill)
+    for ch, cw_px, cf in zip(t, widths, char_fonts):
+        d.text((x, base_y), ch, font=cf, fill=fill_rgba, anchor="ls", stroke_width=sw, stroke_fill=stroke_fill)
         x += cw_px + gap_px
 
     if shadow_rgba is not None and shadow_rgba[3] > 0:

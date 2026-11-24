@@ -28,7 +28,6 @@ from common import (
     ASSETS_DIR,
     find_bin,
     get_wav_duration_sec,
-    load_style_spectrum_entry,
     maybe_reexec_in_venv,
     write_json,
 )
@@ -243,11 +242,23 @@ SFX_DEDUP_ALIAS: Dict[str, str] = {
 
 
 def rebuild_relative_manifest_and_beats(out_dir: Path | None = None) -> Dict[str, Any]:
-    """基于已清洗 BGM (.m4a/.wav) 与去重 SFX 重建相对路径 manifest 并补全节拍时间轴。"""
+    """基于已清洗 BGM (.m4a/.wav) 与去重 SFX 重建相对路径 manifest 并补全节拍时间轴。
+
+    注：这套 CC0 清洗流程只覆盖 7 套自带音库，其余 17 套的真 BGM/音效由
+    dev_tools/build_sound_packs.py + extract_style_sfx.py 生成。因此重建时必须
+    先把已有风格节点原样保留，否则一次 clean 就会把另 17 套全部抹掉。
+    """
     out_dir = out_dir or SOUND_VIBE_DIR
     bgm_dir = out_dir / "bgm"
     sfx_dir = out_dir / "sfx"
-    manifest: Dict[str, Any] = {"styles": {}, "archetype_fallback": ARCHETYPE_TO_VIBE_STYLE}
+    prev_path = out_dir / "vibe_sound_manifest.json"
+    prev_styles: Dict[str, Any] = {}
+    if prev_path.is_file():
+        try:
+            prev_styles = dict(json.loads(prev_path.read_text(encoding="utf-8")).get("styles") or {})
+        except Exception:
+            prev_styles = {}
+    manifest: Dict[str, Any] = {"styles": dict(prev_styles), "archetype_fallback": ARCHETYPE_TO_VIBE_STYLE}
 
     for sid, cfg in STYLE_SOUND_MAP.items():
         b = cfg["bgm"]
@@ -352,25 +363,20 @@ def clean_all_vibe_assets(raw_dir: Path | None = None, out_dir: Path | None = No
 
 def get_style_sound_profile(style_id: str) -> Optional[Dict[str, Any]]:
     """
-    获取任意 style_01 ~ style_24 对应的真实 CC0 音色包：
-    1. 精确命中 STYLE_SOUND_MAP / manifest；
-    2. 未单独建包者按其 archetype_id 自动映射至同流派真实 CC0 音色包；
-    3. 全部路径基于当前主机 ASSETS_DIR 动态拼装，彻底杜绝绝对路径失效。
+    获取 style_01 ~ style_24 各自的声音包（BGM + 音效均来自该风格自己的源草稿）。
+
+    实测事故：旧版对没建包的风格按 archetype 回落到别的风格（style_21 抽到 style_01 的 BGM
+    和 style_01/15 的音效）。现在 manifest 里 24 套齐备，不再跨风格借：
+    **找不到就是找不到，返回 None，让调用方自己决定不放**。
     """
     mf_path = SOUND_VIBE_DIR / "vibe_sound_manifest.json"
     if not mf_path.exists():
         return None
     mf = json.loads(mf_path.read_text(encoding="utf-8"))
     styles = mf.get("styles", {})
-    target_sid = style_id
+    target_sid = str(style_id)
     if target_sid not in styles:
-        entry = load_style_spectrum_entry(style_id)
-        arch_id = entry.get("archetype_id") if entry else None
-        fb_map = {**(mf.get("archetype_fallback") or {}), **ARCHETYPE_TO_VIBE_STYLE}
-        if arch_id and arch_id in fb_map and fb_map[arch_id] in styles:
-            target_sid = fb_map[arch_id]
-        else:
-            return None
+        return None
 
     raw_prof = dict(styles[target_sid])
     if raw_prof.get("bgm_wav"):
@@ -397,7 +403,11 @@ def get_style_sound_profile(style_id: str) -> Optional[Dict[str, Any]]:
 
 
 def get_default_sound_profile(track: str = "store") -> Optional[Dict[str, Any]]:
-    """当未指定 style_id 时按轨道返回默认 CC0 真录音库（门店轨 style_01 / 博主轨 style_12）。"""
+    """没有风格上下文时的**最后一道兜底**（仅 step3 在 bgm_path 为空时才会走到）。
+
+    注意：这是跨曲目兜底，只应在“确实不知道是哪个风格”时使用；
+    带风格上下文的调用必须用 get_style_sound_profile(style_id)。
+    """
     return get_style_sound_profile("style_01" if track == "store" else "style_12")
 
 

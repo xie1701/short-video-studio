@@ -10354,8 +10354,8 @@
       "subtitle_spec": {
         "font_family": "Source Han Serif CN",
         "font_candidates": [
-          "AlimamaShuHeiTi-Bold.otf",
           "SourceHanSerifCN-Heavy.otf",
+          "AlimamaShuHeiTi-Bold.otf",
           "SourceHanSansCN-Bold.otf",
           "NotoSansCJKsc-Bold.otf"
         ],
@@ -10424,6 +10424,11 @@
           "shadow_dist_px_per_unit": 2.3,
           "shadow_blur_em": 0.13,
           "note": "字号 = font_size_jianying_units × canvas_w/172.8；阴影幅度 = distance × 2.3px（1080 宽）；σ = smoothing × font_px × 0.13。重建器 dev_tools/rebuild_subtitle_typography.py"
+        },
+        "font_override": {
+          "font_candidates_0": "SourceHanSerifCN-Heavy.otf",
+          "reason": "阿里妈妈书黑体 cmap 缺粤语常用字（佢冇咗哋啲喺嘅嘢嚟𠮶），用户实测要求换思源宋体，且该模板 source_font_family 本就是 SourceHanSerifCN-Heavy",
+          "single_source": "dev_tools/rebuild_subtitle_typography.py → FONT_CANDIDATE_OVERRIDES"
         }
       },
       "color_and_lut": {

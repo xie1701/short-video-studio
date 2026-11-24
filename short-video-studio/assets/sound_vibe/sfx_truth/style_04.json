@@ -1,0 +1,332 @@
+{
+  "style_id": "style_04",
+  "source_ref": "forensic/style_sources.json#styles.style_04",
+  "draft_duration_sec": 19.5,
+  "sfx_count": 13,
+  "sfx_per_min": 40.0,
+  "unique_sound_count": 10,
+  "gain_db_median": 0.0,
+  "roles": {
+    "cut": 1,
+    "misc": 9
+  },
+  "files": [
+    {
+      "file": "sound_vibe/sfx/style_04/cut_呼的转场音效.mp3",
+      "name": "“呼”的转场音效",
+      "role": "cut",
+      "duration_sec": 1.067,
+      "source_in_sec": 0.267,
+      "trim_dur_sec": 1.067,
+      "gain_db": 0.0,
+      "src_audio": "249bf13f91735789e519cd940682ff6d.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_04/misc_滴，提示音.mp3",
+      "name": "滴，提示音",
+      "role": "misc",
+      "duration_sec": 0.993,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 1.0,
+      "gain_db": 0.0,
+      "src_audio": "0f20dc8e92167f5567ed6033214d07f6.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_04/misc_回忆-刷一下.mp3",
+      "name": "回忆-刷一下",
+      "role": "misc",
+      "duration_sec": 0.467,
+      "source_in_sec": 0.2,
+      "trim_dur_sec": 0.467,
+      "gain_db": 0.0,
+      "src_audio": "2de8f9bddfe3ed59930b1ff993194dab.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_04/misc_纸张抖动声.mp3",
+      "name": "纸张抖动声",
+      "role": "misc",
+      "duration_sec": 1.0,
+      "source_in_sec": 0.767,
+      "trim_dur_sec": 1.0,
+      "gain_db": 6.0,
+      "src_audio": "faa23d7a9f16d30f605ba9732ee59364.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_04/misc_叮，提示音4.mp3",
+      "name": "叮，提示音4",
+      "role": "misc",
+      "duration_sec": 1.567,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 1.567,
+      "gain_db": 19.24,
+      "src_audio": "7a3a3d383bf4ed041314e0b4de60c94f.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_04/misc_哐，撞击轻响.mp3",
+      "name": "哐，撞击轻响",
+      "role": "misc",
+      "duration_sec": 1.167,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 1.167,
+      "gain_db": 0.0,
+      "src_audio": "9650ba8960a6f38356e2113b9bfa2410.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_04/misc_诡异的滴水声.mp3",
+      "name": "诡异的滴水声",
+      "role": "misc",
+      "duration_sec": 1.133,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 1.133,
+      "gain_db": 0.0,
+      "src_audio": "72a4200a2eedc379937675c34b017f2e.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_04/misc_综艺拉扯.mp3",
+      "name": "综艺拉扯",
+      "role": "misc",
+      "duration_sec": 0.496,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 0.5,
+      "gain_db": 0.0,
+      "src_audio": "259e8cd855e9f922b18ac438d0f1a5a9.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_04/misc_综艺开头-咚（空旷）.mp3",
+      "name": "综艺开头-咚（空旷）",
+      "role": "misc",
+      "duration_sec": 1.8,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 1.8,
+      "gain_db": 0.0,
+      "src_audio": "8ea334544c166a40d01f051f795bc3eb.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_04/misc_打字声.mp3",
+      "name": "打字声",
+      "role": "misc",
+      "duration_sec": 1.433,
+      "source_in_sec": 0.433,
+      "trim_dur_sec": 1.433,
+      "gain_db": 0.0,
+      "src_audio": "b9d488609f6716f45f631bd6eb02a128.mp3"
+    }
+  ],
+  "cues": [
+    {
+      "name": "“呼”的转场音效",
+      "role": "cut",
+      "time_sec": 0.0,
+      "target_dur_sec": 1.067,
+      "source_in_sec": 0.267,
+      "source_dur_sec": 1.067,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 3.133,
+      "nearest_cut_sec": 0.0,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "249bf13f91735789e519cd940682ff6d.mp3"
+    },
+    {
+      "name": "滴，提示音",
+      "role": "misc",
+      "time_sec": 1.067,
+      "target_dur_sec": 1.0,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 1.0,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 1.0,
+      "nearest_cut_sec": 0.0,
+      "offset_from_cut_sec": 1.067,
+      "src_audio": "0f20dc8e92167f5567ed6033214d07f6.mp3"
+    },
+    {
+      "name": "回忆-刷一下",
+      "role": "misc",
+      "time_sec": 3.033,
+      "target_dur_sec": 0.467,
+      "source_in_sec": 0.2,
+      "source_dur_sec": 0.467,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 0.8,
+      "nearest_cut_sec": 3.033,
+      "offset_from_cut_sec": -0.0,
+      "src_audio": "2de8f9bddfe3ed59930b1ff993194dab.mp3"
+    },
+    {
+      "name": "纸张抖动声",
+      "role": "misc",
+      "time_sec": 3.5,
+      "target_dur_sec": 1.0,
+      "source_in_sec": 0.767,
+      "source_dur_sec": 1.0,
+      "volume": 1.9962,
+      "gain_db": 6.0,
+      "material_dur_sec": 2.0,
+      "nearest_cut_sec": 3.033,
+      "offset_from_cut_sec": 0.467,
+      "src_audio": "faa23d7a9f16d30f605ba9732ee59364.mp3"
+    },
+    {
+      "name": "叮，提示音4",
+      "role": "misc",
+      "time_sec": 4.6,
+      "target_dur_sec": 1.567,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 1.567,
+      "volume": 9.1581,
+      "gain_db": 19.24,
+      "material_dur_sec": 3.733,
+      "nearest_cut_sec": 4.6,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "7a3a3d383bf4ed041314e0b4de60c94f.mp3"
+    },
+    {
+      "name": "纸张抖动声",
+      "role": "misc",
+      "time_sec": 6.167,
+      "target_dur_sec": 0.567,
+      "source_in_sec": 0.767,
+      "source_dur_sec": 0.567,
+      "volume": 1.9962,
+      "gain_db": 6.0,
+      "material_dur_sec": 2.0,
+      "nearest_cut_sec": 6.167,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "faa23d7a9f16d30f605ba9732ee59364.mp3"
+    },
+    {
+      "name": "哐，撞击轻响",
+      "role": "misc",
+      "time_sec": 6.733,
+      "target_dur_sec": 1.167,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 1.167,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 3.067,
+      "nearest_cut_sec": 6.167,
+      "offset_from_cut_sec": 0.566,
+      "src_audio": "9650ba8960a6f38356e2113b9bfa2410.mp3"
+    },
+    {
+      "name": "诡异的滴水声",
+      "role": "misc",
+      "time_sec": 8.333,
+      "target_dur_sec": 1.133,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 1.133,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 2.767,
+      "nearest_cut_sec": 8.333,
+      "offset_from_cut_sec": -0.0,
+      "src_audio": "72a4200a2eedc379937675c34b017f2e.mp3"
+    },
+    {
+      "name": "回忆-刷一下",
+      "role": "misc",
+      "time_sec": 11.7,
+      "target_dur_sec": 0.467,
+      "source_in_sec": 0.2,
+      "source_dur_sec": 0.467,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 0.8,
+      "nearest_cut_sec": 12.5,
+      "offset_from_cut_sec": -0.8,
+      "src_audio": "2de8f9bddfe3ed59930b1ff993194dab.mp3"
+    },
+    {
+      "name": "综艺拉扯",
+      "role": "misc",
+      "time_sec": 12.5,
+      "target_dur_sec": 0.5,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 0.5,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 0.533,
+      "nearest_cut_sec": 12.5,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "259e8cd855e9f922b18ac438d0f1a5a9.mp3"
+    },
+    {
+      "name": "综艺开头-咚（空旷）",
+      "role": "misc",
+      "time_sec": 13.0,
+      "target_dur_sec": 1.867,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 1.867,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 5.633,
+      "nearest_cut_sec": 12.5,
+      "offset_from_cut_sec": 0.5,
+      "src_audio": "8ea334544c166a40d01f051f795bc3eb.mp3"
+    },
+    {
+      "name": "打字声",
+      "role": "misc",
+      "time_sec": 13.433,
+      "target_dur_sec": 1.433,
+      "source_in_sec": 0.433,
+      "source_dur_sec": 1.433,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 2.067,
+      "nearest_cut_sec": 12.5,
+      "offset_from_cut_sec": 0.933,
+      "src_audio": "b9d488609f6716f45f631bd6eb02a128.mp3"
+    },
+    {
+      "name": "诡异的滴水声",
+      "role": "misc",
+      "time_sec": 16.267,
+      "target_dur_sec": 1.133,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 1.133,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 2.767,
+      "nearest_cut_sec": 15.333,
+      "offset_from_cut_sec": 0.934,
+      "src_audio": "72a4200a2eedc379937675c34b017f2e.mp3"
+    }
+  ],
+  "missing_files": [],
+  "bgm": {
+    "status": "source_extracted",
+    "name": "Judgment Day.m4a",
+    "med_vol_db": -8.0,
+    "dual_bgm": false,
+    "switch_sec": null,
+    "switch_kind": "none",
+    "tail_piece": "Judgment Day.m4a",
+    "pieces": [
+      {
+        "name": "Judgment Day.m4a",
+        "kind": "extract_music",
+        "start_sec": 0.0,
+        "end_sec": 19.5,
+        "coverage_sec": 19.5,
+        "extractable": true
+      }
+    ],
+    "layers": [
+      {
+        "name": "Judgment Day.m4a",
+        "start_sec": 0.0,
+        "dur_sec": 19.5,
+        "gain_db": -7.97,
+        "extractable": true
+      }
+    ],
+    "file": "sound_vibe/bgm/style_04_bgm.mp3",
+    "duration_sec": 194.653,
+    "license": "source_draft_local_only"
+  },
+  "bgm_disabled_reason": null
+}

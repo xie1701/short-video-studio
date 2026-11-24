@@ -1130,6 +1130,24 @@ def run_visual_to_delivery(
     allow_style_deviation: bool = False,
     allow_broll_mismatch: bool = False,
 ) -> Dict[str, Any]:
+    # 口播干净度：锁定人声再转写一遍，看还有多少秒对不上成稿（别人的话/废话）。
+    # 用户实测过「16-19 秒、35-39 秒还有导演/摄影师的声音」——离线指标全绿也拦不住，
+    # 所以这里每次出片前都拿 ASR 反过来验一遍，并把账本落盘，不信脚本自评。
+    try:
+        import audio_cleanliness as _AC
+        _clean = _AC.audit(pipeline_dir)
+        write_json(pipeline_dir / _AC.OUT_NAME, _clean)
+        print(
+            f"[pipeline] 口播干净度：对不上成稿 {_clean.get('junk_sec', 0):.2f}s，"
+            f"其中别人的话 {_clean.get('foreign_sec', 0):.2f}s"
+            f"（{_clean.get('speech_sec', 0):.1f}s 人声里）"
+        )
+        if not _clean.get("ok"):
+            print("[pipeline] [WARN] 口播里还有别人的话，建议回 step3 收紧刀口："
+                  f"{pipeline_dir / _AC.OUT_NAME}")
+    except Exception as _ce:
+        print(f"[pipeline] [WARN] 口播干净度复核未执行（{_ce}）")
+
     edl_p = pipeline_dir / "04_edl.json"
     if keep_edl and edl_p.is_file():
         edl_existing = read_json(edl_p)

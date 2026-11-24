@@ -58,3 +58,10 @@ forensic/*.csv
 forensic/jy_*.py
 # 逐帧对比的临时抽帧，不进库
 frames/
+
+# 从剪映草稿里抽出的原曲/原音效：只在本机与本人项目可用（vibe_sound_manifest.json 里
+# bgm_license=source_draft_local_only），不随包分发也不进 git。
+# 换台机器时跑 dev_tools/extract_style_sfx.py 从本机草稿重新抽；真值表 sfx_truth/*.json 照常提交。
+short-video-studio/assets/sound_vibe/bgm/*.mp3
+short-video-studio/assets/sound_vibe/bgm/*.m4a
+short-video-studio/assets/sound_vibe/sfx/style_*/

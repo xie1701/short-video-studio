@@ -1,0 +1,291 @@
+{
+  "style_id": "style_05",
+  "source_ref": "forensic/style_sources.json#styles.style_05",
+  "draft_duration_sec": 22.467,
+  "sfx_count": 10,
+  "sfx_per_min": 26.7,
+  "unique_sound_count": 10,
+  "gain_db_median": 0.0,
+  "roles": {
+    "hook": 1,
+    "info": 1,
+    "misc": 8
+  },
+  "files": [
+    {
+      "file": "sound_vibe/sfx/style_05/misc_青蛙呱叫音效.mp3",
+      "name": "青蛙呱叫音效",
+      "role": "misc",
+      "duration_sec": 0.285,
+      "source_in_sec": 0.017,
+      "trim_dur_sec": 0.333,
+      "gain_db": 0.0,
+      "src_audio": "b1e4fff7d2758ba9b9b7d1614ff5246a.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_05/info_键盘空格声.mp3",
+      "name": "键盘空格声",
+      "role": "info",
+      "duration_sec": 0.483,
+      "source_in_sec": 0.383,
+      "trim_dur_sec": 0.483,
+      "gain_db": 0.0,
+      "src_audio": "85985ce88f5028d513ba45e7ca666b41.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_05/misc_Tom鼓.mp3",
+      "name": "Tom鼓",
+      "role": "misc",
+      "duration_sec": 1.433,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 1.433,
+      "gain_db": 0.0,
+      "src_audio": "01a6de9e81e12132dd96d8f1407b0fb1.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_05/misc_嗖.mp3",
+      "name": "嗖",
+      "role": "misc",
+      "duration_sec": 0.273,
+      "source_in_sec": 0.067,
+      "trim_dur_sec": 0.283,
+      "gain_db": 0.0,
+      "src_audio": "d07cd9886b155509416e9607281d1bc0.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_05/misc_啵综艺.mp3",
+      "name": "啵 综艺",
+      "role": "misc",
+      "duration_sec": 0.239,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 0.267,
+      "gain_db": 0.0,
+      "src_audio": "da7277b5c578bb55cb9749525f6c9ae9.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_05/misc_waooe.mp3",
+      "name": "waooe",
+      "role": "misc",
+      "duration_sec": 0.494,
+      "source_in_sec": 0.05,
+      "trim_dur_sec": 0.533,
+      "gain_db": 0.0,
+      "src_audio": "5c41a43e4601289135ed4dcd434c96e9.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_05/hook_一声亮铃清脆迷惑铃音铃铛.mp3",
+      "name": "一声亮铃清脆迷惑铃音铃铛",
+      "role": "hook",
+      "duration_sec": 1.8,
+      "source_in_sec": 0.05,
+      "trim_dur_sec": 1.8,
+      "gain_db": 0.0,
+      "src_audio": "104d26ca8906b2dcaea128c7e50965a9.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_05/misc_魔法音效.mp3",
+      "name": "魔法音效",
+      "role": "misc",
+      "duration_sec": 1.017,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 1.017,
+      "gain_db": 0.0,
+      "src_audio": "5c9494e0e95f6b9f47d56addc077151d.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_05/misc_叮，收银机提示音1.mp3",
+      "name": "叮，收银机提示音1",
+      "role": "misc",
+      "duration_sec": 1.35,
+      "source_in_sec": 0.117,
+      "trim_dur_sec": 1.35,
+      "gain_db": 0.0,
+      "src_audio": "c41049563dcdf1c520a847a0b799920a.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_05/misc_叮叮.mp3",
+      "name": "叮叮",
+      "role": "misc",
+      "duration_sec": 1.176,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 1.2,
+      "gain_db": -10.7,
+      "src_audio": "c9aafaa895dab9b74a04b304f955d52f.mp3"
+    }
+  ],
+  "cues": [
+    {
+      "name": "青蛙呱叫音效",
+      "role": "misc",
+      "time_sec": 0.017,
+      "target_dur_sec": 0.333,
+      "source_in_sec": 0.017,
+      "source_dur_sec": 0.333,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 0.35,
+      "nearest_cut_sec": 0.017,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "b1e4fff7d2758ba9b9b7d1614ff5246a.mp3"
+    },
+    {
+      "name": "键盘空格声",
+      "role": "info",
+      "time_sec": 0.833,
+      "target_dur_sec": 0.483,
+      "source_in_sec": 0.383,
+      "source_dur_sec": 0.483,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 3.567,
+      "nearest_cut_sec": 0.833,
+      "offset_from_cut_sec": -0.0,
+      "src_audio": "85985ce88f5028d513ba45e7ca666b41.mp3"
+    },
+    {
+      "name": "Tom鼓",
+      "role": "misc",
+      "time_sec": 1.567,
+      "target_dur_sec": 1.433,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 1.433,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 3.033,
+      "nearest_cut_sec": 1.567,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "01a6de9e81e12132dd96d8f1407b0fb1.mp3"
+    },
+    {
+      "name": "嗖",
+      "role": "misc",
+      "time_sec": 7.217,
+      "target_dur_sec": 0.283,
+      "source_in_sec": 0.067,
+      "source_dur_sec": 0.283,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 0.35,
+      "nearest_cut_sec": 7.217,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "d07cd9886b155509416e9607281d1bc0.mp3"
+    },
+    {
+      "name": "啵 综艺",
+      "role": "misc",
+      "time_sec": 9.383,
+      "target_dur_sec": 0.267,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 0.267,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 0.267,
+      "nearest_cut_sec": 9.383,
+      "offset_from_cut_sec": -0.0,
+      "src_audio": "da7277b5c578bb55cb9749525f6c9ae9.mp3"
+    },
+    {
+      "name": "waooe",
+      "role": "misc",
+      "time_sec": 9.883,
+      "target_dur_sec": 0.533,
+      "source_in_sec": 0.05,
+      "source_dur_sec": 0.533,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 0.583,
+      "nearest_cut_sec": 9.883,
+      "offset_from_cut_sec": -0.0,
+      "src_audio": "5c41a43e4601289135ed4dcd434c96e9.mp3"
+    },
+    {
+      "name": "一声亮铃清脆迷惑铃音铃铛",
+      "role": "hook",
+      "time_sec": 10.567,
+      "target_dur_sec": 2.917,
+      "source_in_sec": 0.05,
+      "source_dur_sec": 2.917,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 5.717,
+      "nearest_cut_sec": 10.567,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "104d26ca8906b2dcaea128c7e50965a9.mp3"
+    },
+    {
+      "name": "魔法音效",
+      "role": "misc",
+      "time_sec": 14.717,
+      "target_dur_sec": 1.017,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 1.017,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 2.0,
+      "nearest_cut_sec": 14.717,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "5c9494e0e95f6b9f47d56addc077151d.mp3"
+    },
+    {
+      "name": "叮，收银机提示音1",
+      "role": "misc",
+      "time_sec": 18.3,
+      "target_dur_sec": 1.35,
+      "source_in_sec": 0.117,
+      "source_dur_sec": 1.35,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 2.25,
+      "nearest_cut_sec": 17.533,
+      "offset_from_cut_sec": 0.767,
+      "src_audio": "c41049563dcdf1c520a847a0b799920a.mp3"
+    },
+    {
+      "name": "叮叮",
+      "role": "misc",
+      "time_sec": 21.15,
+      "target_dur_sec": 1.2,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 1.2,
+      "volume": 0.2917,
+      "gain_db": -10.7,
+      "material_dur_sec": 1.2,
+      "nearest_cut_sec": 21.15,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "c9aafaa895dab9b74a04b304f955d52f.mp3"
+    }
+  ],
+  "missing_files": [],
+  "bgm": {
+    "status": "source_extracted",
+    "name": "Push Up（剪辑版）",
+    "med_vol_db": -11.0,
+    "dual_bgm": false,
+    "switch_sec": null,
+    "switch_kind": "none",
+    "tail_piece": "Push Up（剪辑版）",
+    "pieces": [
+      {
+        "name": "Push Up（剪辑版）",
+        "kind": "music",
+        "start_sec": 0.017,
+        "end_sec": 22.467,
+        "coverage_sec": 22.45,
+        "extractable": true
+      }
+    ],
+    "layers": [
+      {
+        "name": "Push Up（剪辑版）",
+        "start_sec": 0.017,
+        "dur_sec": 22.45,
+        "gain_db": -11.0,
+        "extractable": true
+      }
+    ],
+    "file": "sound_vibe/bgm/style_05_bgm.mp3",
+    "duration_sec": 60.0,
+    "license": "source_draft_local_only"
+  },
+  "bgm_disabled_reason": null
+}

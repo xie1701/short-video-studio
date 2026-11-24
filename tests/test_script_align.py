@@ -115,6 +115,66 @@ class AlignTests(unittest.TestCase):
             self.assertLessEqual(a["end"], b["start"] + 1e-9)
 
 
+class ForeignSpeechCutTests(unittest.TestCase):
+    """别人插话的切法（2026-11-24 第二次实测：16–19 秒、35–39 秒还有导演/摄影师的声音）。
+
+    旧口径两条都太宽容：句中夹着的碎话要 1.0 秒以上才切；成稿覆盖率低的行（被压缩改写过的）
+    干脆「只砍段首段尾」，于是整段别人的话原样留在片子里。
+    """
+
+    def test_short_foreign_speech_is_cut(self):
+        """0.4 秒的实义插话（不是语气词）也要切掉——导演提词经常只有两三个字。"""
+        spec = _grid("甲乙") + _grid("丙丁", start=0.4 + 0.45, step=0.15) + _grid("戊己", start=1.5)
+        r = SA.keep_intervals("甲乙戊己", _words(spec))
+        kept = "".join(iv["text"] for iv in r["intervals"])
+        self.assertEqual(kept, "甲乙戊己")
+        self.assertGreaterEqual(len(r["intervals"]), 2)
+
+
+    def test_pure_filler_inside_is_kept(self):
+        """夹在中间的纯语气词（「咧」「啊」）留着更像人说话，不许切。"""
+        spec = _grid("甲乙") + _grid("咧", start=0.37, step=0.30) + _grid("戊己", start=0.55 + 0.45)
+        r = SA.keep_intervals("甲乙戊己", _words(spec))
+        self.assertEqual(len(r["intervals"]), 1)
+
+
+    def test_long_filler_inside_is_cut(self):
+        """一秒钟以上的语气词也是碎话，留在当中一定抢戏。"""
+        spec = _grid("甲乙") + _grid("诶", start=0.37, step=1.40) + _grid("戊己", start=1.77 + 0.60)
+        r = SA.keep_intervals("甲乙戊己", _words(spec))
+        self.assertGreaterEqual(len(r["intervals"]), 2)
+
+
+    def test_low_coverage_line_still_cuts_inner_junk(self):
+        """成稿只对上 60% 的行，句中的别人的话照样要切（旧口径在这里整段保留）。"""
+        spec = _grid("厨房") + _grid("啦几多嘅", start=0.45) + _grid("厨房两百平", start=1.90)
+        # 成稿改写过的行：句尾「手工现做」素材里根本没有，覆盖率必然低
+        r = SA.keep_intervals("厨房厨房两百平手工现做", _words(spec))
+        self.assertTrue(r["low_coverage"])
+        for iv in r["intervals"]:
+            self.assertNotIn("啦几多", iv["text"])
+        self.assertGreaterEqual(len(r["intervals"]), 2)
+
+
+class DeadAirTests(unittest.TestCase):
+    """一句话中间的长静音（冷场）要剪掉（2026-11-24 实测：32.0–33.0s 全场 0.90s 没声）。"""
+
+    def test_inner_silence_is_split(self):
+        # 「甲乙丙丁」四个字之间空了 0.9 秒：没人说话，不是别人的插话
+        spec = _grid("甲乙") + _grid("丙丁", start=1.30)
+        r = SA.keep_intervals("甲乙丙丁", _words(spec))
+        self.assertGreaterEqual(len(r["intervals"]), 2)
+        cut = [n for n in r["cut_notes"] if n.get("kind") == "silence"]
+        self.assertTrue(cut, "应记一条 silence 切点")
+        self.assertEqual(cut[0]["action"], "cut")
+
+    def test_short_inner_silence_is_kept(self):
+        # 0.35 秒的呼吸停顿是说话本身的节奏，不许切
+        spec = _grid("甲乙") + _grid("丙丁", start=0.75)
+        r = SA.keep_intervals("甲乙丙丁", _words(spec))
+        self.assertEqual(len(r["intervals"]), 1)
+
+
 class Step3WiringTests(unittest.TestCase):
     """源码级防回退：step3 必须真的调用逐字对齐，而不是又退回整段保留。"""
 

@@ -1,0 +1,343 @@
+{
+  "style_id": "style_22",
+  "source_ref": "forensic/style_sources.json#styles.style_22",
+  "draft_duration_sec": 23.483,
+  "sfx_count": 13,
+  "sfx_per_min": 33.2,
+  "unique_sound_count": 11,
+  "gain_db_median": 0.0,
+  "roles": {
+    "accent": 2,
+    "cut": 1,
+    "misc": 8
+  },
+  "files": [
+    {
+      "file": "sound_vibe/sfx/style_22/accent_风铃声.mp3",
+      "name": "风铃声",
+      "role": "accent",
+      "duration_sec": 1.8,
+      "source_in_sec": 0.1,
+      "trim_dur_sec": 1.8,
+      "gain_db": 0.0,
+      "src_audio": "bede42759d508e49530033fa14768be4.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_22/misc_撞击光1.mp3",
+      "name": "撞击光1",
+      "role": "misc",
+      "duration_sec": 1.5,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 1.5,
+      "gain_db": 0.0,
+      "src_audio": "069777f17b1fa5960d1c574774ffebe5.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_22/misc_综艺咚.mp3",
+      "name": "综艺咚",
+      "role": "misc",
+      "duration_sec": 1.8,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 1.8,
+      "gain_db": -7.01,
+      "src_audio": "e0b6cdbe113da884ac73a6b4cf87996a.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_22/misc_打字声.mp3",
+      "name": "打字声",
+      "role": "misc",
+      "duration_sec": 1.605,
+      "source_in_sec": 0.433,
+      "trim_dur_sec": 1.617,
+      "gain_db": 0.0,
+      "src_audio": "b9d488609f6716f45f631bd6eb02a128.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_22/accent_发条转动.mp3",
+      "name": "发条转动",
+      "role": "accent",
+      "duration_sec": 0.822,
+      "source_in_sec": 0.067,
+      "trim_dur_sec": 0.883,
+      "gain_db": -9.45,
+      "src_audio": "ff8355c28c408b1153bfb2384ba0dd6b.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_22/cut_呼2.mp3",
+      "name": "“呼”2",
+      "role": "cut",
+      "duration_sec": 1.13,
+      "source_in_sec": 0.15,
+      "trim_dur_sec": 1.133,
+      "gain_db": 0.0,
+      "src_audio": "95c55b86d67e28378c731468af761dc2.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_22/misc_扫光.mp3",
+      "name": "扫光",
+      "role": "misc",
+      "duration_sec": 0.767,
+      "source_in_sec": 0.383,
+      "trim_dur_sec": 0.767,
+      "gain_db": 6.0,
+      "src_audio": "ab65aaa8ecbf2e245cf07d7b6d2e8279.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_22/misc_啵1.mp3",
+      "name": "啵1",
+      "role": "misc",
+      "duration_sec": 0.34,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 0.35,
+      "gain_db": -10.55,
+      "src_audio": "5bb4c18515e6059da16432af0db0f1dc.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_22/misc_敲击碗叮的一声.mp3",
+      "name": "敲击碗 叮的一声",
+      "role": "misc",
+      "duration_sec": 0.767,
+      "source_in_sec": 0.133,
+      "trim_dur_sec": 0.767,
+      "gain_db": 0.0,
+      "src_audio": "3ba3be785f1bb16fe7efd0fee5d9c933.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_22/misc_纸张抖动声.mp3",
+      "name": "纸张抖动声",
+      "role": "misc",
+      "duration_sec": 0.517,
+      "source_in_sec": 0.733,
+      "trim_dur_sec": 0.517,
+      "gain_db": 0.0,
+      "src_audio": "faa23d7a9f16d30f605ba9732ee59364.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_22/misc_叮叮.mp3",
+      "name": "叮叮",
+      "role": "misc",
+      "duration_sec": 0.883,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 0.883,
+      "gain_db": -8.0,
+      "src_audio": "c9aafaa895dab9b74a04b304f955d52f.mp3"
+    }
+  ],
+  "cues": [
+    {
+      "name": "风铃声",
+      "role": "accent",
+      "time_sec": 0.0,
+      "target_dur_sec": 3.533,
+      "source_in_sec": 0.1,
+      "source_dur_sec": 3.533,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 3.633,
+      "nearest_cut_sec": 0.0,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "bede42759d508e49530033fa14768be4.mp3"
+    },
+    {
+      "name": "撞击光1",
+      "role": "misc",
+      "time_sec": 0.967,
+      "target_dur_sec": 1.5,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 1.5,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 3.567,
+      "nearest_cut_sec": 1.5,
+      "offset_from_cut_sec": -0.533,
+      "src_audio": "069777f17b1fa5960d1c574774ffebe5.mp3"
+    },
+    {
+      "name": "综艺咚",
+      "role": "misc",
+      "time_sec": 1.5,
+      "target_dur_sec": 2.483,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 2.483,
+      "volume": 0.4462,
+      "gain_db": -7.01,
+      "material_dur_sec": 2.483,
+      "nearest_cut_sec": 1.5,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "e0b6cdbe113da884ac73a6b4cf87996a.mp3"
+    },
+    {
+      "name": "打字声",
+      "role": "misc",
+      "time_sec": 4.3,
+      "target_dur_sec": 1.617,
+      "source_in_sec": 0.433,
+      "source_dur_sec": 1.617,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 2.05,
+      "nearest_cut_sec": 4.3,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "b9d488609f6716f45f631bd6eb02a128.mp3"
+    },
+    {
+      "name": "发条转动",
+      "role": "accent",
+      "time_sec": 9.217,
+      "target_dur_sec": 0.883,
+      "source_in_sec": 0.067,
+      "source_dur_sec": 0.883,
+      "volume": 0.3367,
+      "gain_db": -9.45,
+      "material_dur_sec": 0.95,
+      "nearest_cut_sec": 9.217,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "ff8355c28c408b1153bfb2384ba0dd6b.mp3"
+    },
+    {
+      "name": "“呼”2",
+      "role": "cut",
+      "time_sec": 10.75,
+      "target_dur_sec": 1.133,
+      "source_in_sec": 0.15,
+      "source_dur_sec": 1.133,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 1.283,
+      "nearest_cut_sec": 10.75,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "95c55b86d67e28378c731468af761dc2.mp3"
+    },
+    {
+      "name": "打字声",
+      "role": "misc",
+      "time_sec": 13.317,
+      "target_dur_sec": 0.933,
+      "source_in_sec": 0.433,
+      "source_dur_sec": 0.933,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 2.05,
+      "nearest_cut_sec": 13.317,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "b9d488609f6716f45f631bd6eb02a128.mp3"
+    },
+    {
+      "name": "扫光",
+      "role": "misc",
+      "time_sec": 14.383,
+      "target_dur_sec": 0.767,
+      "source_in_sec": 0.383,
+      "source_dur_sec": 0.917,
+      "volume": 1.9962,
+      "gain_db": 6.0,
+      "material_dur_sec": 1.3,
+      "nearest_cut_sec": 13.317,
+      "offset_from_cut_sec": 1.066,
+      "src_audio": "ab65aaa8ecbf2e245cf07d7b6d2e8279.mp3"
+    },
+    {
+      "name": "啵1",
+      "role": "misc",
+      "time_sec": 16.133,
+      "target_dur_sec": 0.35,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 0.35,
+      "volume": 0.297,
+      "gain_db": -10.55,
+      "material_dur_sec": 0.35,
+      "nearest_cut_sec": 16.133,
+      "offset_from_cut_sec": -0.0,
+      "src_audio": "5bb4c18515e6059da16432af0db0f1dc.mp3"
+    },
+    {
+      "name": "敲击碗 叮的一声",
+      "role": "misc",
+      "time_sec": 17.1,
+      "target_dur_sec": 0.767,
+      "source_in_sec": 0.133,
+      "source_dur_sec": 0.767,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 1.467,
+      "nearest_cut_sec": 17.1,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "3ba3be785f1bb16fe7efd0fee5d9c933.mp3"
+    },
+    {
+      "name": "纸张抖动声",
+      "role": "misc",
+      "time_sec": 19.6,
+      "target_dur_sec": 0.517,
+      "source_in_sec": 0.733,
+      "source_dur_sec": 0.517,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 2.0,
+      "nearest_cut_sec": 19.583,
+      "offset_from_cut_sec": 0.017,
+      "src_audio": "faa23d7a9f16d30f605ba9732ee59364.mp3"
+    },
+    {
+      "name": "纸张抖动声",
+      "role": "misc",
+      "time_sec": 20.117,
+      "target_dur_sec": 0.517,
+      "source_in_sec": 0.733,
+      "source_dur_sec": 0.517,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 2.0,
+      "nearest_cut_sec": 20.1,
+      "offset_from_cut_sec": 0.017,
+      "src_audio": "faa23d7a9f16d30f605ba9732ee59364.mp3"
+    },
+    {
+      "name": "叮叮",
+      "role": "misc",
+      "time_sec": 22.6,
+      "target_dur_sec": 0.883,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 0.883,
+      "volume": 0.3981,
+      "gain_db": -8.0,
+      "material_dur_sec": 1.2,
+      "nearest_cut_sec": 22.6,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "c9aafaa895dab9b74a04b304f955d52f.mp3"
+    }
+  ],
+  "missing_files": [],
+  "bgm": {
+    "status": "source_extracted",
+    "name": "Push Up（剪辑版）",
+    "med_vol_db": -11.1,
+    "dual_bgm": false,
+    "switch_sec": null,
+    "switch_kind": "none",
+    "tail_piece": "Push Up（剪辑版）",
+    "pieces": [
+      {
+        "name": "Push Up（剪辑版）",
+        "kind": "music",
+        "start_sec": 0.0,
+        "end_sec": 23.483,
+        "coverage_sec": 23.483,
+        "extractable": true
+      }
+    ],
+    "layers": [
+      {
+        "name": "Push Up（剪辑版）",
+        "start_sec": 0.0,
+        "dur_sec": 23.483,
+        "gain_db": -11.09,
+        "extractable": true
+      }
+    ],
+    "file": "sound_vibe/bgm/style_22_bgm.mp3",
+    "duration_sec": 60.0,
+    "license": "source_draft_local_only"
+  },
+  "bgm_disabled_reason": null
+}

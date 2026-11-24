@@ -1,0 +1,88 @@
+{
+  "style_id": "style_01",
+  "source_ref": "forensic/style_sources.json#styles.style_01",
+  "draft_duration_sec": 68.5,
+  "sfx_count": 1,
+  "sfx_per_min": 0.9,
+  "unique_sound_count": 1,
+  "gain_db_median": -6.47,
+  "roles": {
+    "misc": 1
+  },
+  "files": [
+    {
+      "file": "sound_vibe/sfx/style_01/misc_一声响（敲锣）.mp3",
+      "name": "一声响（敲锣）",
+      "role": "misc",
+      "duration_sec": 1.567,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 1.567,
+      "gain_db": -6.47,
+      "src_audio": "9c606da25f7e17a809185bc36e688cc5.mp3"
+    }
+  ],
+  "cues": [
+    {
+      "name": "一声响（敲锣）",
+      "role": "misc",
+      "time_sec": 1.433,
+      "target_dur_sec": 1.567,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 1.567,
+      "volume": 0.4749,
+      "gain_db": -6.47,
+      "material_dur_sec": 2.233,
+      "nearest_cut_sec": 1.367,
+      "offset_from_cut_sec": 0.066,
+      "src_audio": "9c606da25f7e17a809185bc36e688cc5.mp3"
+    }
+  ],
+  "missing_files": [],
+  "bgm": {
+    "status": "source_extracted",
+    "name": "Food2",
+    "med_vol_db": -5.5,
+    "dual_bgm": true,
+    "switch_sec": 2.833,
+    "switch_kind": "sequential_handoff",
+    "tail_piece": "Food2",
+    "pieces": [
+      {
+        "name": "喜剧幽默搞笑古风  eighteen",
+        "kind": "music",
+        "start_sec": 0.0,
+        "end_sec": 2.833,
+        "coverage_sec": 2.833,
+        "extractable": true
+      },
+      {
+        "name": "Food2",
+        "kind": "music",
+        "start_sec": 2.833,
+        "end_sec": 68.5,
+        "coverage_sec": 65.667,
+        "extractable": true
+      }
+    ],
+    "layers": [
+      {
+        "name": "喜剧幽默搞笑古风  eighteen",
+        "start_sec": 0.0,
+        "dur_sec": 2.833,
+        "gain_db": 0.0,
+        "extractable": true
+      },
+      {
+        "name": "Food2",
+        "start_sec": 2.833,
+        "dur_sec": 65.667,
+        "gain_db": -10.95,
+        "extractable": true
+      }
+    ],
+    "file": "sound_vibe/bgm/style_01_bgm.mp3",
+    "duration_sec": 109.667,
+    "license": "source_draft_local_only"
+  },
+  "bgm_disabled_reason": null
+}

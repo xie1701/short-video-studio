@@ -1348,8 +1348,8 @@
       "recommended_track": "store",
       "archetype_id": "arch_04_punch_talking_head",
       "font_candidates": [
-        "AlimamaShuHeiTi-Bold.otf",
         "SourceHanSerifCN-Heavy.otf",
+        "AlimamaShuHeiTi-Bold.otf",
         "SourceHanSansCN-Bold.otf",
         "NotoSansCJKsc-Bold.otf"
       ],

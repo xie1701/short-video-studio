@@ -161,6 +161,7 @@ def main() -> int:
 
     # 判 PASS 只能看「特效之前」的分布：源片实测分位取自未加暗角/聚光的素材，
     # 加上特效后终帧分布本来就该被改动（那是特效本身的效果，另有接触表人工核对）。
+    bad_total = 0
     for mode in ("self", "neutral"):
         sub = [r for r in rows if r["mode"] == mode and r.get("pre_effect_delta") is not None]
         if not sub:
@@ -172,12 +173,18 @@ def main() -> int:
               f"｜最差 {worst['style']} {worst['pre_effect_delta']}")
         bad = [r for r in sub if r["pre_effect_delta"] > args.tol]
         if bad:
+            bad_total += len(bad)
             print("  超差：" + "，".join(f"{r['style']}({r['pre_effect_delta']})" for r in bad))
         withfx = [r for r in sub if r.get("max_abs_delta") is not None]
         if withfx:
             print(f"  （含特效后的终帧分布：平均偏离 "
                   f"{round(sum(r['max_abs_delta'] for r in withfx) / len(withfx), 1)} 级，属特效本身主动改分布）")
     print(f"\n明细已写入 {out_path}")
+    # 门禁有牙：有超差就非 0 退出，不许「全错也绿灯」。
+    if bad_total:
+        print(f"[FAIL] {bad_total} 条超差（容差 ±{args.tol} 级）")
+        return 1
+    print("[PASS] 全部在容差内")
     return 0
 
 

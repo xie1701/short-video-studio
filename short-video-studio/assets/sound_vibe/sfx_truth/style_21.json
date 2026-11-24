@@ -1,0 +1,325 @@
+{
+  "style_id": "style_21",
+  "source_ref": "forensic/style_sources.json#styles.style_21",
+  "draft_duration_sec": 15.617,
+  "sfx_count": 12,
+  "sfx_per_min": 46.1,
+  "unique_sound_count": 9,
+  "gain_db_median": 0.0,
+  "roles": {
+    "accent": 4,
+    "cut": 2,
+    "hook": 1,
+    "info": 2
+  },
+  "files": [
+    {
+      "file": "sound_vibe/sfx/style_21/accent_风铃声.mp3",
+      "name": "风铃声",
+      "role": "accent",
+      "duration_sec": 1.667,
+      "source_in_sec": 0.1,
+      "trim_dur_sec": 1.667,
+      "gain_db": 0.0,
+      "src_audio": "bede42759d508e49530033fa14768be4.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_21/cut_呼的转场音效.mp3",
+      "name": "“呼”的转场音效",
+      "role": "cut",
+      "duration_sec": 1.15,
+      "source_in_sec": 0.283,
+      "trim_dur_sec": 1.15,
+      "gain_db": -8.13,
+      "src_audio": "249bf13f91735789e519cd940682ff6d.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_21/accent_哇呜.mp3",
+      "name": "哇呜",
+      "role": "accent",
+      "duration_sec": 0.889,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 0.9,
+      "gain_db": 0.0,
+      "src_audio": "6007588a2192f94096511bba91692259.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_21/cut_呼2.mp3",
+      "name": "“呼”2",
+      "role": "cut",
+      "duration_sec": 0.583,
+      "source_in_sec": 0.2,
+      "trim_dur_sec": 0.583,
+      "gain_db": 0.0,
+      "src_audio": "95c55b86d67e28378c731468af761dc2.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_21/info_快速翻页声.mp3",
+      "name": "快速翻页声",
+      "role": "info",
+      "duration_sec": 1.1,
+      "source_in_sec": 0.2,
+      "trim_dur_sec": 1.1,
+      "gain_db": 0.0,
+      "src_audio": "68a10f97fdd5a0b161935663c2b30efb.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_21/hook_一声响铃.mp3",
+      "name": "一声响铃",
+      "role": "hook",
+      "duration_sec": 1.8,
+      "source_in_sec": 0.017,
+      "trim_dur_sec": 1.8,
+      "gain_db": -7.21,
+      "src_audio": "0354861fd0b2f5d9cc79e59b7f44186e.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_21/accent_发条转动.mp3",
+      "name": "发条转动",
+      "role": "accent",
+      "duration_sec": 0.822,
+      "source_in_sec": 0.067,
+      "trim_dur_sec": 0.883,
+      "gain_db": 0.0,
+      "src_audio": "ff8355c28c408b1153bfb2384ba0dd6b.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_21/info_键盘空格声.mp3",
+      "name": "键盘空格声",
+      "role": "info",
+      "duration_sec": 0.683,
+      "source_in_sec": 0.367,
+      "trim_dur_sec": 0.683,
+      "gain_db": 0.0,
+      "src_audio": "85985ce88f5028d513ba45e7ca666b41.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_21/accent_开瓶塞.mp3",
+      "name": "开瓶塞",
+      "role": "accent",
+      "duration_sec": 0.142,
+      "source_in_sec": 0.067,
+      "trim_dur_sec": 0.15,
+      "gain_db": 7.95,
+      "src_audio": "2af40ceefcf309056e712f4a0ec46c61.mp3"
+    }
+  ],
+  "cues": [
+    {
+      "name": "风铃声",
+      "role": "accent",
+      "time_sec": 0.0,
+      "target_dur_sec": 1.667,
+      "source_in_sec": 0.1,
+      "source_dur_sec": 1.993,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 3.633,
+      "nearest_cut_sec": 0.0,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "bede42759d508e49530033fa14768be4.mp3"
+    },
+    {
+      "name": "“呼”的转场音效",
+      "role": "cut",
+      "time_sec": 1.667,
+      "target_dur_sec": 1.15,
+      "source_in_sec": 0.283,
+      "source_dur_sec": 1.15,
+      "volume": 0.3923,
+      "gain_db": -8.13,
+      "material_dur_sec": 3.117,
+      "nearest_cut_sec": 1.667,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "249bf13f91735789e519cd940682ff6d.mp3"
+    },
+    {
+      "name": "哇呜",
+      "role": "accent",
+      "time_sec": 3.783,
+      "target_dur_sec": 0.9,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 0.9,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 0.9,
+      "nearest_cut_sec": 2.817,
+      "offset_from_cut_sec": 0.966,
+      "src_audio": "6007588a2192f94096511bba91692259.mp3"
+    },
+    {
+      "name": "“呼”2",
+      "role": "cut",
+      "time_sec": 4.833,
+      "target_dur_sec": 0.583,
+      "source_in_sec": 0.2,
+      "source_dur_sec": 0.583,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 1.283,
+      "nearest_cut_sec": 4.833,
+      "offset_from_cut_sec": -0.0,
+      "src_audio": "95c55b86d67e28378c731468af761dc2.mp3"
+    },
+    {
+      "name": "快速翻页声",
+      "role": "info",
+      "time_sec": 5.3,
+      "target_dur_sec": 1.1,
+      "source_in_sec": 0.2,
+      "source_dur_sec": 1.1,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 2.717,
+      "nearest_cut_sec": 5.3,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "68a10f97fdd5a0b161935663c2b30efb.mp3"
+    },
+    {
+      "name": "风铃声",
+      "role": "accent",
+      "time_sec": 6.8,
+      "target_dur_sec": 1.233,
+      "source_in_sec": 0.067,
+      "source_dur_sec": 1.233,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 2.317,
+      "nearest_cut_sec": 6.533,
+      "offset_from_cut_sec": 0.267,
+      "src_audio": "19d79b4eeb51b52a1019752172083145.mp3"
+    },
+    {
+      "name": "快速翻页声",
+      "role": "info",
+      "time_sec": 7.517,
+      "target_dur_sec": 0.683,
+      "source_in_sec": 0.2,
+      "source_dur_sec": 0.683,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 2.717,
+      "nearest_cut_sec": 7.517,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "68a10f97fdd5a0b161935663c2b30efb.mp3"
+    },
+    {
+      "name": "一声响铃",
+      "role": "hook",
+      "time_sec": 8.2,
+      "target_dur_sec": 1.817,
+      "source_in_sec": 0.017,
+      "source_dur_sec": 1.817,
+      "volume": 0.4358,
+      "gain_db": -7.21,
+      "material_dur_sec": 5.667,
+      "nearest_cut_sec": 8.2,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "0354861fd0b2f5d9cc79e59b7f44186e.mp3"
+    },
+    {
+      "name": "发条转动",
+      "role": "accent",
+      "time_sec": 10.017,
+      "target_dur_sec": 0.883,
+      "source_in_sec": 0.067,
+      "source_dur_sec": 0.883,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 0.95,
+      "nearest_cut_sec": 10.017,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "ff8355c28c408b1153bfb2384ba0dd6b.mp3"
+    },
+    {
+      "name": "键盘空格声",
+      "role": "info",
+      "time_sec": 11.65,
+      "target_dur_sec": 0.683,
+      "source_in_sec": 0.367,
+      "source_dur_sec": 0.683,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 3.567,
+      "nearest_cut_sec": 11.65,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "85985ce88f5028d513ba45e7ca666b41.mp3"
+    },
+    {
+      "name": "开瓶塞",
+      "role": "accent",
+      "time_sec": 12.9,
+      "target_dur_sec": 0.15,
+      "source_in_sec": 0.067,
+      "source_dur_sec": 0.15,
+      "volume": 2.4961,
+      "gain_db": 7.95,
+      "material_dur_sec": 0.217,
+      "nearest_cut_sec": 12.467,
+      "offset_from_cut_sec": 0.433,
+      "src_audio": "2af40ceefcf309056e712f4a0ec46c61.mp3"
+    },
+    {
+      "name": "键盘空格声",
+      "role": "info",
+      "time_sec": 14.867,
+      "target_dur_sec": 0.683,
+      "source_in_sec": 0.367,
+      "source_dur_sec": 0.683,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 3.567,
+      "nearest_cut_sec": 15.617,
+      "offset_from_cut_sec": -0.75,
+      "src_audio": "85985ce88f5028d513ba45e7ca666b41.mp3"
+    }
+  ],
+  "missing_files": [],
+  "bgm": {
+    "status": "source_extracted",
+    "name": "It is All in Your Imagination",
+    "med_vol_db": -5.0,
+    "dual_bgm": true,
+    "switch_sec": 1.733,
+    "switch_kind": "intro_overlay_exit",
+    "tail_piece": "It is All in Your Imagination",
+    "pieces": [
+      {
+        "name": "It is All in Your Imagination",
+        "kind": "music",
+        "start_sec": 0.0,
+        "end_sec": 15.617,
+        "coverage_sec": 15.617,
+        "extractable": true
+      },
+      {
+        "name": "复合片段5",
+        "kind": "music",
+        "start_sec": 0.45,
+        "end_sec": 1.733,
+        "coverage_sec": 1.283,
+        "extractable": false
+      }
+    ],
+    "layers": [
+      {
+        "name": "It is All in Your Imagination",
+        "start_sec": 0.0,
+        "dur_sec": 15.617,
+        "gain_db": -9.95,
+        "extractable": true
+      },
+      {
+        "name": "复合片段5",
+        "start_sec": 0.45,
+        "dur_sec": 1.283,
+        "gain_db": 0.0,
+        "extractable": false
+      }
+    ],
+    "file": "sound_vibe/bgm/style_21_bgm.mp3",
+    "duration_sec": 141.6,
+    "license": "source_draft_local_only"
+  },
+  "bgm_disabled_reason": null
+}

@@ -1,0 +1,343 @@
+{
+  "style_id": "style_16",
+  "source_ref": "forensic/style_sources.json#styles.style_16",
+  "draft_duration_sec": 28.333,
+  "sfx_count": 13,
+  "sfx_per_min": 27.5,
+  "unique_sound_count": 11,
+  "gain_db_median": -5.96,
+  "roles": {
+    "cut": 1,
+    "hook": 1,
+    "misc": 9
+  },
+  "files": [
+    {
+      "file": "sound_vibe/sfx/style_16/hook_一声响铃.mp3",
+      "name": "一声响铃",
+      "role": "hook",
+      "duration_sec": 1.8,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 1.8,
+      "gain_db": -17.36,
+      "src_audio": "0354861fd0b2f5d9cc79e59b7f44186e.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_16/misc_雷元素-电光一闪.mp3",
+      "name": "雷元素-电光一闪",
+      "role": "misc",
+      "duration_sec": 1.8,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 1.8,
+      "gain_db": -17.99,
+      "src_audio": "0dfce0cab1aa526aa4823b4016e4ba23.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_16/misc_超市电子钱柜结账.mp3",
+      "name": "超市电子钱柜 结账",
+      "role": "misc",
+      "duration_sec": 0.983,
+      "source_in_sec": 0.067,
+      "trim_dur_sec": 0.983,
+      "gain_db": 0.0,
+      "src_audio": "7fc363f555018e18273c06f15819e2e4.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_16/misc_报纸报纸折叠或展开.mp3",
+      "name": "报纸报纸: 折叠或展开",
+      "role": "misc",
+      "duration_sec": 0.721,
+      "source_in_sec": 0.117,
+      "trim_dur_sec": 0.75,
+      "gain_db": -5.96,
+      "src_audio": "853e3da1a02ab179d1ff68ccc10cd481.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_16/misc_打字声.mp3",
+      "name": "打字声",
+      "role": "misc",
+      "duration_sec": 0.767,
+      "source_in_sec": 0.417,
+      "trim_dur_sec": 0.767,
+      "gain_db": 0.0,
+      "src_audio": "b9d488609f6716f45f631bd6eb02a128.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_16/cut_呼2.mp3",
+      "name": "“呼”2",
+      "role": "cut",
+      "duration_sec": 1.147,
+      "source_in_sec": 0.133,
+      "trim_dur_sec": 1.15,
+      "gain_db": 0.0,
+      "src_audio": "95c55b86d67e28378c731468af761dc2.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_16/misc_敲锣声.mp3",
+      "name": "敲锣声",
+      "role": "misc",
+      "duration_sec": 1.056,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 1.083,
+      "gain_db": -9.34,
+      "src_audio": "40ef323a2b7c00bae11a1455d9fa967e.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_16/misc_旋风.mp3",
+      "name": "旋风",
+      "role": "misc",
+      "duration_sec": 1.8,
+      "source_in_sec": 0.317,
+      "trim_dur_sec": 1.8,
+      "gain_db": -8.28,
+      "src_audio": "bc601aa191ae40a6cf64c93f46af3635.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_16/misc_金币到账叮咚声.mp3",
+      "name": "金币到账叮咚声",
+      "role": "misc",
+      "duration_sec": 0.7,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 0.7,
+      "gain_db": -12.72,
+      "src_audio": "86b14e3b42ade78a1dc14034370178c3.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_16/misc_扫光音效4.mp3",
+      "name": "扫光音效4",
+      "role": "misc",
+      "duration_sec": 1.288,
+      "source_in_sec": 0.567,
+      "trim_dur_sec": 1.333,
+      "gain_db": -9.97,
+      "src_audio": "a79088f3a0e3479e74a1ff02356ee254.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_16/misc_综艺影视紧张回响.mp3",
+      "name": "综艺影视紧张回响",
+      "role": "misc",
+      "duration_sec": 0.719,
+      "source_in_sec": 0.217,
+      "trim_dur_sec": 0.75,
+      "gain_db": 0.0,
+      "src_audio": "405d5246e7bc7032c99e7574c254b928.mp3"
+    }
+  ],
+  "cues": [
+    {
+      "name": "一声响铃",
+      "role": "hook",
+      "time_sec": 0.0,
+      "target_dur_sec": 2.417,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 2.417,
+      "volume": 0.1355,
+      "gain_db": -17.36,
+      "material_dur_sec": 5.667,
+      "nearest_cut_sec": 0.0,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "0354861fd0b2f5d9cc79e59b7f44186e.mp3"
+    },
+    {
+      "name": "雷元素-电光一闪",
+      "role": "misc",
+      "time_sec": 1.433,
+      "target_dur_sec": 1.817,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 1.817,
+      "volume": 0.126,
+      "gain_db": -17.99,
+      "material_dur_sec": 2.583,
+      "nearest_cut_sec": 2.417,
+      "offset_from_cut_sec": -0.984,
+      "src_audio": "0dfce0cab1aa526aa4823b4016e4ba23.mp3"
+    },
+    {
+      "name": "超市电子钱柜 结账",
+      "role": "misc",
+      "time_sec": 2.917,
+      "target_dur_sec": 0.983,
+      "source_in_sec": 0.067,
+      "source_dur_sec": 0.983,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 3.733,
+      "nearest_cut_sec": 2.417,
+      "offset_from_cut_sec": 0.5,
+      "src_audio": "7fc363f555018e18273c06f15819e2e4.mp3"
+    },
+    {
+      "name": "报纸报纸: 折叠或展开",
+      "role": "misc",
+      "time_sec": 5.4,
+      "target_dur_sec": 0.75,
+      "source_in_sec": 0.117,
+      "source_dur_sec": 0.75,
+      "volume": 0.5033,
+      "gain_db": -5.96,
+      "material_dur_sec": 0.867,
+      "nearest_cut_sec": 5.4,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "853e3da1a02ab179d1ff68ccc10cd481.mp3"
+    },
+    {
+      "name": "打字声",
+      "role": "misc",
+      "time_sec": 7.633,
+      "target_dur_sec": 0.767,
+      "source_in_sec": 0.417,
+      "source_dur_sec": 0.767,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 2.05,
+      "nearest_cut_sec": 7.633,
+      "offset_from_cut_sec": -0.0,
+      "src_audio": "b9d488609f6716f45f631bd6eb02a128.mp3"
+    },
+    {
+      "name": "“呼”2",
+      "role": "cut",
+      "time_sec": 11.633,
+      "target_dur_sec": 1.15,
+      "source_in_sec": 0.133,
+      "source_dur_sec": 1.15,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 1.283,
+      "nearest_cut_sec": 10.8,
+      "offset_from_cut_sec": 0.833,
+      "src_audio": "95c55b86d67e28378c731468af761dc2.mp3"
+    },
+    {
+      "name": "敲锣声",
+      "role": "misc",
+      "time_sec": 13.867,
+      "target_dur_sec": 1.083,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 1.083,
+      "volume": 0.3412,
+      "gain_db": -9.34,
+      "material_dur_sec": 1.083,
+      "nearest_cut_sec": 13.867,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "40ef323a2b7c00bae11a1455d9fa967e.mp3"
+    },
+    {
+      "name": "旋风",
+      "role": "misc",
+      "time_sec": 15.0,
+      "target_dur_sec": 2.35,
+      "source_in_sec": 0.317,
+      "source_dur_sec": 2.35,
+      "volume": 0.3853,
+      "gain_db": -8.28,
+      "material_dur_sec": 3.017,
+      "nearest_cut_sec": 15.0,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "bc601aa191ae40a6cf64c93f46af3635.mp3"
+    },
+    {
+      "name": "“呼”2",
+      "role": "cut",
+      "time_sec": 17.35,
+      "target_dur_sec": 0.667,
+      "source_in_sec": 0.133,
+      "source_dur_sec": 0.667,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 1.283,
+      "nearest_cut_sec": 18.05,
+      "offset_from_cut_sec": -0.7,
+      "src_audio": "95c55b86d67e28378c731468af761dc2.mp3"
+    },
+    {
+      "name": "金币到账叮咚声",
+      "role": "misc",
+      "time_sec": 18.05,
+      "target_dur_sec": 0.7,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 0.7,
+      "volume": 0.2313,
+      "gain_db": -12.72,
+      "material_dur_sec": 1.667,
+      "nearest_cut_sec": 18.05,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "86b14e3b42ade78a1dc14034370178c3.mp3"
+    },
+    {
+      "name": "扫光音效4",
+      "role": "misc",
+      "time_sec": 18.75,
+      "target_dur_sec": 1.333,
+      "source_in_sec": 0.567,
+      "source_dur_sec": 1.333,
+      "volume": 0.3172,
+      "gain_db": -9.97,
+      "material_dur_sec": 1.9,
+      "nearest_cut_sec": 18.05,
+      "offset_from_cut_sec": 0.7,
+      "src_audio": "a79088f3a0e3479e74a1ff02356ee254.mp3"
+    },
+    {
+      "name": "“呼”2",
+      "role": "cut",
+      "time_sec": 20.3,
+      "target_dur_sec": 1.15,
+      "source_in_sec": 0.133,
+      "source_dur_sec": 1.15,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 1.283,
+      "nearest_cut_sec": 20.3,
+      "offset_from_cut_sec": 0.0,
+      "src_audio": "95c55b86d67e28378c731468af761dc2.mp3"
+    },
+    {
+      "name": "综艺影视紧张回响",
+      "role": "misc",
+      "time_sec": 23.733,
+      "target_dur_sec": 0.75,
+      "source_in_sec": 0.217,
+      "source_dur_sec": 0.75,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 0.967,
+      "nearest_cut_sec": 23.733,
+      "offset_from_cut_sec": -0.0,
+      "src_audio": "405d5246e7bc7032c99e7574c254b928.mp3"
+    }
+  ],
+  "missing_files": [],
+  "bgm": {
+    "status": "source_extracted",
+    "name": "Melody (Original Mix)",
+    "med_vol_db": -9.6,
+    "dual_bgm": false,
+    "switch_sec": null,
+    "switch_kind": "none",
+    "tail_piece": "Melody (Original Mix)",
+    "pieces": [
+      {
+        "name": "Melody (Original Mix)",
+        "kind": "music",
+        "start_sec": 0.0,
+        "end_sec": 28.333,
+        "coverage_sec": 28.333,
+        "extractable": true
+      }
+    ],
+    "layers": [
+      {
+        "name": "Melody (Original Mix)",
+        "start_sec": 0.0,
+        "dur_sec": 28.333,
+        "gain_db": -9.55,
+        "extractable": true
+      }
+    ],
+    "file": "sound_vibe/bgm/style_16_bgm.mp3",
+    "duration_sec": 227.424,
+    "license": "source_draft_local_only"
+  },
+  "bgm_disabled_reason": null
+}

@@ -263,6 +263,15 @@ def main() -> int:
         print(f"fixtures kept at {tmp}")
     else:
         shutil.rmtree(tmp, ignore_errors=True)
+    # 门禁有牙：有任何一套「按风格剪反而更远离自身真值」、或根本没得比，就非 0 退出。
+    comparable = len(cmp_rows) - n_na
+    if comparable <= 0:
+        print("[FAIL] 没有任何一套能跟真值对照，这个门禁等于没跑")
+        return 1
+    if worse:
+        print(f"[FAIL] {len(worse)} 套在 style 模式下反而更远：{'、'.join(worse)}")
+        return 1
+    print(f"[PASS] {n_style}/{comparable} 套更接近自身真值，无一回退")
     return 0
 
 

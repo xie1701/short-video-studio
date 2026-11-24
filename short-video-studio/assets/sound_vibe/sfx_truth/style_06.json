@@ -1,0 +1,332 @@
+{
+  "style_id": "style_06",
+  "source_ref": "forensic/style_sources.json#styles.style_06",
+  "draft_duration_sec": 21.667,
+  "sfx_count": 13,
+  "sfx_per_min": 36.0,
+  "unique_sound_count": 10,
+  "gain_db_median": 0.0,
+  "roles": {
+    "cut": 1,
+    "misc": 9
+  },
+  "files": [
+    {
+      "file": "sound_vibe/sfx/style_06/misc_叮3.mp3",
+      "name": "叮3",
+      "role": "misc",
+      "duration_sec": 0.661,
+      "source_in_sec": 0.133,
+      "trim_dur_sec": 0.733,
+      "gain_db": 5.02,
+      "src_audio": "02821abd7ce32362da279494de7cb617.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_06/misc_回忆-刷一下.mp3",
+      "name": "回忆-刷一下",
+      "role": "misc",
+      "duration_sec": 0.531,
+      "source_in_sec": 0.2,
+      "trim_dur_sec": 0.6,
+      "gain_db": 0.0,
+      "src_audio": "2de8f9bddfe3ed59930b1ff993194dab.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_06/misc_纸张抖动声.mp3",
+      "name": "纸张抖动声",
+      "role": "misc",
+      "duration_sec": 0.767,
+      "source_in_sec": 0.767,
+      "trim_dur_sec": 0.767,
+      "gain_db": 6.68,
+      "src_audio": "faa23d7a9f16d30f605ba9732ee59364.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_06/misc_啵，轻气泡音3.mp3",
+      "name": "啵，轻气泡音3",
+      "role": "misc",
+      "duration_sec": 0.183,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 0.2,
+      "gain_db": 4.55,
+      "src_audio": "14585b4db1ee0513afab490dde6aaddb.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_06/misc_滴，提示音.mp3",
+      "name": "滴，提示音",
+      "role": "misc",
+      "duration_sec": 0.667,
+      "source_in_sec": 0.067,
+      "trim_dur_sec": 0.667,
+      "gain_db": -5.0,
+      "src_audio": "0f20dc8e92167f5567ed6033214d07f6.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_06/misc_气泡弹出.mp3",
+      "name": "气泡弹出",
+      "role": "misc",
+      "duration_sec": 0.522,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 0.533,
+      "gain_db": 0.0,
+      "src_audio": "463e7795397ff8ff117dfa89aa23497f.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_06/misc_影视氛围发现咚.mp3",
+      "name": "影视氛围发现咚",
+      "role": "misc",
+      "duration_sec": 1.033,
+      "source_in_sec": 0.167,
+      "trim_dur_sec": 1.033,
+      "gain_db": 0.0,
+      "src_audio": "a9559baadcb8a6fde3cfcc61b9cad930.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_06/misc_钱(money).mp3",
+      "name": "钱(money)",
+      "role": "misc",
+      "duration_sec": 0.871,
+      "source_in_sec": 0.033,
+      "trim_dur_sec": 0.933,
+      "gain_db": -3.41,
+      "src_audio": "4a5a5edeaae505df60cd24dba1feb012.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_06/misc_哐，撞击轻响.mp3",
+      "name": "哐，撞击轻响",
+      "role": "misc",
+      "duration_sec": 1.0,
+      "source_in_sec": 0.0,
+      "trim_dur_sec": 1.0,
+      "gain_db": -1.0,
+      "src_audio": "9650ba8960a6f38356e2113b9bfa2410.mp3"
+    },
+    {
+      "file": "sound_vibe/sfx/style_06/cut_星星闪耀转场声.mp3",
+      "name": "星星闪耀转场声",
+      "role": "cut",
+      "duration_sec": 1.067,
+      "source_in_sec": 0.133,
+      "trim_dur_sec": 1.067,
+      "gain_db": -6.02,
+      "src_audio": "cfc0fde8c7d2948e8d9a586753b07935.mp3"
+    }
+  ],
+  "cues": [
+    {
+      "name": "叮3",
+      "role": "misc",
+      "time_sec": 1.5,
+      "target_dur_sec": 0.733,
+      "source_in_sec": 0.133,
+      "source_dur_sec": 0.733,
+      "volume": 1.7814,
+      "gain_db": 5.02,
+      "material_dur_sec": 0.867,
+      "nearest_cut_sec": 2.767,
+      "offset_from_cut_sec": -1.267,
+      "src_audio": "02821abd7ce32362da279494de7cb617.mp3"
+    },
+    {
+      "name": "回忆-刷一下",
+      "role": "misc",
+      "time_sec": 4.633,
+      "target_dur_sec": 0.6,
+      "source_in_sec": 0.2,
+      "source_dur_sec": 0.6,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 0.8,
+      "nearest_cut_sec": 2.767,
+      "offset_from_cut_sec": 1.866,
+      "src_audio": "2de8f9bddfe3ed59930b1ff993194dab.mp3"
+    },
+    {
+      "name": "纸张抖动声",
+      "role": "misc",
+      "time_sec": 6.633,
+      "target_dur_sec": 0.767,
+      "source_in_sec": 0.767,
+      "source_dur_sec": 0.767,
+      "volume": 2.1576,
+      "gain_db": 6.68,
+      "material_dur_sec": 2.0,
+      "nearest_cut_sec": 2.767,
+      "offset_from_cut_sec": 3.866,
+      "src_audio": "faa23d7a9f16d30f605ba9732ee59364.mp3"
+    },
+    {
+      "name": "啵，轻气泡音3",
+      "role": "misc",
+      "time_sec": 7.4,
+      "target_dur_sec": 0.2,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 0.2,
+      "volume": 1.689,
+      "gain_db": 4.55,
+      "material_dur_sec": 0.2,
+      "nearest_cut_sec": 2.767,
+      "offset_from_cut_sec": 4.633,
+      "src_audio": "14585b4db1ee0513afab490dde6aaddb.mp3"
+    },
+    {
+      "name": "滴，提示音",
+      "role": "misc",
+      "time_sec": 8.7,
+      "target_dur_sec": 0.667,
+      "source_in_sec": 0.067,
+      "source_dur_sec": 0.667,
+      "volume": 0.5623,
+      "gain_db": -5.0,
+      "material_dur_sec": 1.0,
+      "nearest_cut_sec": 2.767,
+      "offset_from_cut_sec": 5.933,
+      "src_audio": "0f20dc8e92167f5567ed6033214d07f6.mp3"
+    },
+    {
+      "name": "气泡弹出",
+      "role": "misc",
+      "time_sec": 9.467,
+      "target_dur_sec": 0.533,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 0.533,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 0.533,
+      "nearest_cut_sec": 2.767,
+      "offset_from_cut_sec": 6.7,
+      "src_audio": "463e7795397ff8ff117dfa89aa23497f.mp3"
+    },
+    {
+      "name": "影视氛围发现咚",
+      "role": "misc",
+      "time_sec": 10.733,
+      "target_dur_sec": 1.033,
+      "source_in_sec": 0.167,
+      "source_dur_sec": 1.033,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 7.033,
+      "nearest_cut_sec": 18.133,
+      "offset_from_cut_sec": -7.4,
+      "src_audio": "a9559baadcb8a6fde3cfcc61b9cad930.mp3"
+    },
+    {
+      "name": "钱(money)",
+      "role": "misc",
+      "time_sec": 11.767,
+      "target_dur_sec": 0.933,
+      "source_in_sec": 0.033,
+      "source_dur_sec": 0.933,
+      "volume": 0.6749,
+      "gain_db": -3.41,
+      "material_dur_sec": 0.967,
+      "nearest_cut_sec": 18.133,
+      "offset_from_cut_sec": -6.366,
+      "src_audio": "4a5a5edeaae505df60cd24dba1feb012.mp3"
+    },
+    {
+      "name": "气泡弹出",
+      "role": "misc",
+      "time_sec": 12.7,
+      "target_dur_sec": 0.533,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 0.533,
+      "volume": 1.0,
+      "gain_db": 0.0,
+      "material_dur_sec": 0.533,
+      "nearest_cut_sec": 18.133,
+      "offset_from_cut_sec": -5.433,
+      "src_audio": "463e7795397ff8ff117dfa89aa23497f.mp3"
+    },
+    {
+      "name": "纸张抖动声",
+      "role": "misc",
+      "time_sec": 14.0,
+      "target_dur_sec": 0.5,
+      "source_in_sec": 0.767,
+      "source_dur_sec": 0.5,
+      "volume": 2.1576,
+      "gain_db": 6.68,
+      "material_dur_sec": 2.0,
+      "nearest_cut_sec": 18.133,
+      "offset_from_cut_sec": -4.133,
+      "src_audio": "faa23d7a9f16d30f605ba9732ee59364.mp3"
+    },
+    {
+      "name": "哐，撞击轻响",
+      "role": "misc",
+      "time_sec": 17.133,
+      "target_dur_sec": 1.0,
+      "source_in_sec": 0.0,
+      "source_dur_sec": 1.0,
+      "volume": 0.8913,
+      "gain_db": -1.0,
+      "material_dur_sec": 3.067,
+      "nearest_cut_sec": 18.133,
+      "offset_from_cut_sec": -1.0,
+      "src_audio": "9650ba8960a6f38356e2113b9bfa2410.mp3"
+    },
+    {
+      "name": "星星闪耀转场声",
+      "role": "cut",
+      "time_sec": 18.133,
+      "target_dur_sec": 1.067,
+      "source_in_sec": 0.133,
+      "source_dur_sec": 1.067,
+      "volume": 0.5002,
+      "gain_db": -6.02,
+      "material_dur_sec": 1.8,
+      "nearest_cut_sec": 18.133,
+      "offset_from_cut_sec": -0.0,
+      "src_audio": "cfc0fde8c7d2948e8d9a586753b07935.mp3"
+    },
+    {
+      "name": "星星闪耀转场声",
+      "role": "cut",
+      "time_sec": 19.933,
+      "target_dur_sec": 1.067,
+      "source_in_sec": 0.133,
+      "source_dur_sec": 1.067,
+      "volume": 0.5002,
+      "gain_db": -6.02,
+      "material_dur_sec": 1.8,
+      "nearest_cut_sec": 21.667,
+      "offset_from_cut_sec": -1.734,
+      "src_audio": "cfc0fde8c7d2948e8d9a586753b07935.mp3"
+    }
+  ],
+  "missing_files": [],
+  "bgm": {
+    "status": "source_extracted",
+    "name": "美丽的神话 钢琴演奏",
+    "med_vol_db": -6.0,
+    "dual_bgm": false,
+    "switch_sec": null,
+    "switch_kind": "none",
+    "tail_piece": "美丽的神话 钢琴演奏",
+    "pieces": [
+      {
+        "name": "美丽的神话 钢琴演奏",
+        "kind": "music",
+        "start_sec": 0.067,
+        "end_sec": 21.667,
+        "coverage_sec": 21.6,
+        "extractable": true
+      }
+    ],
+    "layers": [
+      {
+        "name": "美丽的神话 钢琴演奏",
+        "start_sec": 0.067,
+        "dur_sec": 21.6,
+        "gain_db": -5.95,
+        "extractable": true
+      }
+    ],
+    "file": "sound_vibe/bgm/style_06_bgm.mp3",
+    "duration_sec": 223.422,
+    "license": "source_draft_local_only"
+  },
+  "bgm_disabled_reason": null
+}

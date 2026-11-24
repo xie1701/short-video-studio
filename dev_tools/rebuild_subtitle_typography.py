@@ -21,6 +21,10 @@
    `Alimama ShuHeiTi`、commercial_safe_font 也是 AlimamaShuHeiTi-Bold.otf —— 实测原版是粗黑体，
    我们渲染成了细宋体。这里按 `assets/fonts/font_aliases.json` 的 `ass_style_families` 映射，
    命中就排到 font_candidates[0]；映射不到才保留原顺序（并在报告里点名）。
+   **例外**：`FONT_CANDIDATE_OVERRIDES` 里登记的交付字体覆盖（目前只有 style_21）优先级高于
+   ass_style 映射——用户实测（2026-11-24）「阿里妈妈字体应该是不支持粤语文字的，很多字都
+   显示不出来，换成思源宋体。」阿里妈妈书黑体 cmap 缺 10 个粤语常用字（佢冇咗哋啲喺嘅嘢嚟𠮶），
+   所以 style_21 交付字体按用户要求换成 SourceHanSerifCN-Heavy.otf（ass_font_family 仍记源草稿的原值）。
 
 3) 投影偏移过大 + 虚化不足
    旧模板 shadow_offset≈[14,14]（合成幅度 19.8px）、shadow_blur_px≈1.1（硬得像描边）。
@@ -64,6 +68,20 @@ SHADOW_BLUR_EM = 0.13                            # σ = smoothing × font_px × 
 SUBTITLE_SYMMETRIC_MAX_W = 640                   # [220, 860] 对称安全带
 DEFAULT_SHADOW_POINT = {"x": 0.636396103067893, "y": -0.636396103067893}  # -45°
 DEFAULT_SHADOW_SMOOTHING = 0.45                  # 24 套里 21 套的草稿真值
+
+# ── 交付字体覆盖（ass_style 之外的显式人工例外，仍然只此一处）──
+# 用户实测（2026-11-24）：「阿里妈妈字体应该是不支持粤语文字的，很多字都显示不出来，换成思源宋体。」
+# fontTools 实测 AlimamaShuHeiTi-Bold.otf 的 cmap 缺 10 个粤语常用字
+# （佢 冇 咗 哋 啲 喺 嘅 嘢 嚟 𠮶）；思源宋体 Heavy 只缺 𠮶（CJK 扩展 B 区 U+2CA36），
+# 那个字由 assets/fonts/font_aliases.json → glyph_fallback_chain 逐字回退兜住。
+# ass_font_family 继续记源草稿的 `Alimama ShuHeiTi`（那是剪映草稿的原始声明），
+# 但交付字体（font_candidates[0]）按用户要求换成思源宋体。
+FONT_CANDIDATE_OVERRIDES: Dict[str, Dict[str, str]] = {
+    "style_21": {
+        "font": "SourceHanSerifCN-Heavy.otf",
+        "reason": "阿里妈妈书黑体 cmap 缺粤语常用字（佢冇咗哋啲喺嘅嘢嚟𠮶），用户实测要求换思源宋体，且该模板 source_font_family 本就是 SourceHanSerifCN-Heavy",
+    },
+}
 
 TMPL_SYNC_KEYS = (
     "font_size",
@@ -234,6 +252,12 @@ def compute_style(sid: str, entry: Dict[str, Any], tpl: Dict[str, Any], fam_tabl
     else:
         cands = old_cands
 
+    # 交付字体例外（见 FONT_CANDIDATE_OVERRIDES）：只把排头那一个换掉，其余顺序不动
+    override = FONT_CANDIDATE_OVERRIDES.get(sid) or {}
+    override_font = str(override.get("font") or "")
+    if override_font:
+        cands = [override_font] + [c for c in cands if c != override_font]
+
     return {
         "units": units,
         "font_px": font_px,
@@ -247,6 +271,7 @@ def compute_style(sid: str, entry: Dict[str, Any], tpl: Dict[str, Any], fam_tabl
         "font_candidates": cands,
         "ass_font_family": ass_family,
         "ass_font_resolved": resolved,
+        "font_override": override or None,
         "max_chars_by_font": max(4, int((SUBTITLE_SYMMETRIC_MAX_W - 32) // max(1, font_px))),
     }
 
@@ -259,6 +284,12 @@ def apply_to_library(entry: Dict[str, Any], new: Dict[str, Any]) -> None:
     spec["font_size_1080p_px"] = new["font_px"]
     spec["font_candidates"] = new["font_candidates"]
     spec["ass_font_family"] = new["ass_font_family"]
+    if new.get("font_override"):
+        spec["font_override"] = {
+            "font_candidates_0": new["font_candidates"][0],
+            "reason": new["font_override"].get("reason"),
+            "single_source": "dev_tools/rebuild_subtitle_typography.py → FONT_CANDIDATE_OVERRIDES",
+        }
     spec["shadow_offset"] = new["shadow_offset"]
     spec["shadow_blur_px"] = new["shadow_blur_px"]
     spec["shadow_distance_units"] = new["shadow_distance_units"]
@@ -299,6 +330,7 @@ def apply_to_blueprint(node: Dict[str, Any], tpl: Dict[str, Any], new: Dict[str,
             "shadow_smoothing": new["shadow_smoothing"],
             "shadow_point": new["shadow_point"],
             "ass_font_family": new["ass_font_family"],
+            "font_candidates": tpl.get("font_candidates"),
             "synced_from": "subtitle_templates/templates.json（库派生）",
         }
     )
@@ -388,12 +420,14 @@ def main() -> None:
         print(json.dumps({"rows": rows, "unmapped_ass_fonts": missing}, ensure_ascii=False, indent=2))
         return
 
-    print(f"{'style':9} {'units':>6} {'旧px':>5} {'新px':>5} {'阴影':>9} {'σ':>5}  ASS字体名 → 命中文件")
+    print(f"{'style':9} {'units':>6} {'旧px':>5} {'新px':>5} {'阴影':>9} {'σ':>5}  ASS字体名 → 命中文件 → 交付字体(font_candidates[0])")
     for r in rows:
         off = r["shadow_offset"]
         print(
             f"{r['style_id']:9} {r['units']:>6} {str(r['old_font_px']):>5} {r['font_px']:>5} "
-            f"{str(off):>9} {r['shadow_blur_px']:>5}  {r['ass_font_family']} → {r['ass_font_resolved'] or '（未映射，保留原顺序）'}"
+            f"{str(off):>9} {r['shadow_blur_px']:>5}  {r['ass_font_family']} → "
+            f"{r['ass_font_resolved'] or '（未映射，保留原顺序）'} → {r['font_candidates'][0]}"
+            + ("  [用户要求覆盖]" if r.get("font_override") else "")
         )
     if missing:
         print(f"\n未映射的 ASS 字体族：{', '.join(missing)}（请在 assets/fonts/font_aliases.json → ass_style_families 补一条）")

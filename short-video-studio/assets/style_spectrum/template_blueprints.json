@@ -110,7 +110,12 @@
           "x": 0.636396103067893,
           "y": -0.636396103067893
         },
-        "ass_font_family": "Alimama ShuHeiTi"
+        "ass_font_family": "Alimama ShuHeiTi",
+        "font_candidates": [
+          "AlimamaShuHeiTi-Bold.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ]
       }
     },
     "style_02": {
@@ -204,7 +209,12 @@
           "x": 0.890954544295,
           "y": -0.890954544295
         },
-        "ass_font_family": "Source Han Serif CN"
+        "ass_font_family": "Source Han Serif CN",
+        "font_candidates": [
+          "SourceHanSerifCN-Bold.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ]
       }
     },
     "style_03": {
@@ -307,7 +317,12 @@
           "x": 0.636396103068,
           "y": -0.636396103068
         },
-        "ass_font_family": "Source Han Serif CN Heavy"
+        "ass_font_family": "Source Han Serif CN Heavy",
+        "font_candidates": [
+          "SourceHanSerifCN-Heavy.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ]
       }
     },
     "style_04": {
@@ -408,7 +423,12 @@
           "x": 0.636396103068,
           "y": -0.636396103068
         },
-        "ass_font_family": "Source Han Serif CN Heavy"
+        "ass_font_family": "Source Han Serif CN Heavy",
+        "font_candidates": [
+          "SourceHanSerifCN-Heavy.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ]
       }
     },
     "style_05": {
@@ -517,7 +537,13 @@
           "x": 0.636396103068,
           "y": -0.636396103068
         },
-        "ass_font_family": "Alimama ShuHeiTi"
+        "ass_font_family": "Alimama ShuHeiTi",
+        "font_candidates": [
+          "AlimamaShuHeiTi-Bold.otf",
+          "SmileySans-Oblique.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ]
       }
     },
     "style_06": {
@@ -610,7 +636,13 @@
           "x": 0.636396103068,
           "y": -0.636396103068
         },
-        "ass_font_family": "Source Han Serif CN"
+        "ass_font_family": "Source Han Serif CN",
+        "font_candidates": [
+          "SourceHanSerifCN-Bold.otf",
+          "AlimamaShuHeiTi-Bold.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ]
       }
     },
     "style_07": {
@@ -719,7 +751,12 @@
           "x": 0.636396103068,
           "y": -0.636396103068
         },
-        "ass_font_family": "Alimama ShuHeiTi"
+        "ass_font_family": "Alimama ShuHeiTi",
+        "font_candidates": [
+          "AlimamaShuHeiTi-Bold.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ]
       }
     },
     "style_08": {
@@ -802,7 +839,13 @@
           "x": 0.636396103068,
           "y": -0.636396103068
         },
-        "ass_font_family": "Smiley Sans"
+        "ass_font_family": "Smiley Sans",
+        "font_candidates": [
+          "SmileySans-Oblique.ttf",
+          "AlimamaShuHeiTi-Bold.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ]
       }
     },
     "style_09": {
@@ -910,7 +953,13 @@
           "x": 0.636396103068,
           "y": -0.636396103068
         },
-        "ass_font_family": "Smiley Sans"
+        "ass_font_family": "Smiley Sans",
+        "font_candidates": [
+          "SmileySans-Oblique.ttf",
+          "SmileySans-Oblique.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ]
       }
     },
     "style_10": {
@@ -1019,7 +1068,13 @@
           "x": 0.636396103068,
           "y": -0.636396103068
         },
-        "ass_font_family": "Smiley Sans"
+        "ass_font_family": "Smiley Sans",
+        "font_candidates": [
+          "SmileySans-Oblique.ttf",
+          "SmileySans-Oblique.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ]
       }
     },
     "style_11": {
@@ -1128,7 +1183,13 @@
           "x": 0.636396103068,
           "y": -0.636396103068
         },
-        "ass_font_family": "Smiley Sans"
+        "ass_font_family": "Smiley Sans",
+        "font_candidates": [
+          "SmileySans-Oblique.ttf",
+          "SmileySans-Oblique.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ]
       }
     },
     "style_12": {
@@ -1221,7 +1282,13 @@
           "x": 0.636396103068,
           "y": -0.636396103068
         },
-        "ass_font_family": "Smiley Sans"
+        "ass_font_family": "Smiley Sans",
+        "font_candidates": [
+          "SmileySans-Oblique.ttf",
+          "AlimamaShuHeiTi-Bold.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ]
       }
     },
     "style_13": {
@@ -1330,7 +1397,13 @@
           "x": 0.636396103068,
           "y": -0.636396103068
         },
-        "ass_font_family": "Source Han Serif CN"
+        "ass_font_family": "Source Han Serif CN",
+        "font_candidates": [
+          "SourceHanSerifCN-Bold.otf",
+          "SmileySans-Oblique.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ]
       }
     },
     "style_14": {
@@ -1413,7 +1486,13 @@
           "x": 0.636396103068,
           "y": -0.636396103068
         },
-        "ass_font_family": "Alimama ShuHeiTi"
+        "ass_font_family": "Alimama ShuHeiTi",
+        "font_candidates": [
+          "AlimamaShuHeiTi-Bold.otf",
+          "SmileySans-Oblique.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ]
       }
     },
     "style_15": {
@@ -1523,7 +1602,12 @@
           "x": 0.636396103068,
           "y": -0.636396103068
         },
-        "ass_font_family": "Source Han Serif CN"
+        "ass_font_family": "Source Han Serif CN",
+        "font_candidates": [
+          "SourceHanSerifCN-Bold.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ]
       }
     },
     "style_16": {
@@ -1615,7 +1699,12 @@
           "x": 0.636396103068,
           "y": -0.636396103068
         },
-        "ass_font_family": "Alimama ShuHeiTi"
+        "ass_font_family": "Alimama ShuHeiTi",
+        "font_candidates": [
+          "AlimamaShuHeiTi-Bold.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ]
       }
     },
     "style_17": {
@@ -1724,7 +1813,12 @@
           "x": 0.636396103068,
           "y": -0.636396103068
         },
-        "ass_font_family": "Source Han Serif CN Heavy"
+        "ass_font_family": "Source Han Serif CN Heavy",
+        "font_candidates": [
+          "SourceHanSerifCN-Heavy.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ]
       }
     },
     "style_18": {
@@ -1833,7 +1927,13 @@
           "x": 0.636396103068,
           "y": -0.636396103068
         },
-        "ass_font_family": "Smiley Sans"
+        "ass_font_family": "Smiley Sans",
+        "font_candidates": [
+          "SmileySans-Oblique.ttf",
+          "SmileySans-Oblique.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ]
       }
     },
     "style_19": {
@@ -1926,7 +2026,13 @@
           "x": 0.636396103068,
           "y": -0.636396103068
         },
-        "ass_font_family": "Smiley Sans"
+        "ass_font_family": "Smiley Sans",
+        "font_candidates": [
+          "SmileySans-Oblique.ttf",
+          "SmileySans-Oblique.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ]
       }
     },
     "style_20": {
@@ -2036,7 +2142,13 @@
           "x": 0.636396103068,
           "y": -0.636396103068
         },
-        "ass_font_family": "Source Han Serif CN Heavy"
+        "ass_font_family": "Source Han Serif CN Heavy",
+        "font_candidates": [
+          "SourceHanSerifCN-Heavy.otf",
+          "AlimamaShuHeiTi-Bold.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ]
       }
     },
     "style_21": {
@@ -2137,7 +2249,13 @@
           "x": 0.636396103068,
           "y": -0.636396103068
         },
-        "ass_font_family": "Alimama ShuHeiTi"
+        "ass_font_family": "Alimama ShuHeiTi",
+        "font_candidates": [
+          "SourceHanSerifCN-Heavy.otf",
+          "AlimamaShuHeiTi-Bold.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ]
       }
     },
     "style_22": {
@@ -2246,7 +2364,13 @@
           "x": 0.636396103068,
           "y": -0.636396103068
         },
-        "ass_font_family": "Smiley Sans"
+        "ass_font_family": "Smiley Sans",
+        "font_candidates": [
+          "SmileySans-Oblique.ttf",
+          "SmileySans-Oblique.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ]
       }
     },
     "style_23": {
@@ -2356,7 +2480,12 @@
           "x": 0.636396103068,
           "y": -0.636396103068
         },
-        "ass_font_family": "Source Han Serif CN"
+        "ass_font_family": "Source Han Serif CN",
+        "font_candidates": [
+          "SourceHanSerifCN-Bold.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ]
       }
     },
     "style_24": {
@@ -2465,7 +2594,13 @@
           "x": 0.636396103068,
           "y": -0.636396103068
         },
-        "ass_font_family": "Source Han Serif CN Heavy"
+        "ass_font_family": "Source Han Serif CN Heavy",
+        "font_candidates": [
+          "SourceHanSerifCN-Heavy.otf",
+          "AlimamaShuHeiTi-Bold.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ]
       }
     }
   },

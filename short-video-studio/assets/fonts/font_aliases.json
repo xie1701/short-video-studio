@@ -19,6 +19,34 @@
    "note": "得意黑 Smiley Sans"
   }
  },
+ "glyph_fallback_chain": [
+  {
+   "file": "SourceHanSerifCN-Heavy.otf",
+   "index": 0,
+   "note": "随包思源宋体 Heavy（字幕主字体）：只缺扩展 B 区的 𠮶，粤语常用字全覆盖"
+  },
+  {
+   "file": "SourceHanSerifCN-Bold.otf",
+   "index": 0,
+   "note": "随包思源宋体 Bold（主字体是别的字重时垫一层同一家族）"
+  },
+  {
+   "file": "AlimamaShuHeiTi-Bold.otf",
+   "index": 0,
+   "note": "随包阿里妈妈书黑体：缺 佢 冇 咗 哋 啲 喺 嘅 嘢 嚟 𠮶，只作中间层兜底"
+  },
+  {
+   "file": "STHeiti Medium.ttc",
+   "index": 0,
+   "note": "系统垫底。index=0 = Heiti TC Medium（繁体），是全机唯一覆盖 𠮶（U+2CA36）的字面"
+  },
+  {
+   "file": "STHeiti Light.ttc",
+   "index": 0,
+   "note": "系统垫底第二档，同为 Heiti TC，覆盖同上一档"
+  }
+ ],
+ "glyph_fallback_chain_note": "逐字字形回退链（PIL 不做字体回退）。有序：随包优先、系统垫底；.ttc 必须给 index 指定字面。消费方：short-video-studio/scripts/glyph_fallback.py（render_mp4.glyph_font_for 逐字取字体、step5 字形覆盖门禁、dev_tools/verify_glyph_coverage.py）",
  "entries": {
   "得意黑.ttf": {
    "kind": "alias",

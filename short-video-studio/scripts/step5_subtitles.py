@@ -44,6 +44,7 @@ from common import (
     read_json,
     write_json,
 )
+import glyph_fallback as glyph_gate
 
 # 仅保留夹在数字间的小数点/冒号(如 3.5 / 18:30)以及数字后的%，彻底清掉紧贴数字的中文逗号句号！
 _NON_CORE_PUNCT_RE = re.compile(r"(?<!\d)[.:：](?!\d)|(?<!\d)[.:：](?=\d)|(?<=\d)[.:：](?!\d)|[，。、；！？,!?;“”‘’\"'（）()]+")
@@ -1163,10 +1164,47 @@ def run_step5(
         "broken_protected_terms": broken_terms,
         "entries": entries,
     }
+    # ── 字形覆盖门禁（fail-closed）──
+    # PIL 不做字体回退，缺字就是空白/豆腐块；用户实测「阿里妈妈字体…很多字都显示不出来」。
+    # 这里对将要上屏的全部字幕文本逐字核对「主字体 + glyph_fallback_chain」并落库 glyph_coverage，
+    # 缺一个字就终止（exit 非 0），绝不带着豆腐块往下渲染。
+    try:
+        coverage = glyph_gate.coverage_report(
+            [(str(e.get("id") or i), str(e.get("text") or "")) for i, e in enumerate(entries, start=1)],
+            font_path,
+            strict_chain=True,
+        )
+    except glyph_gate.GlyphCoverageError as exc:
+        out_json["glyph_coverage"] = {"chars": 0, "missing": ["<配置错误>"], "fallback_used": {}, "error": str(exc)}
+        write_json(pipeline_dir / "05_subtitles.json", out_json)
+        print(f"[step5] 字形覆盖配置错误：{exc}", file=sys.stderr)
+        raise SystemExit(2)
+    out_json["glyph_coverage"] = {
+        "chars": coverage["chars"],
+        "missing": coverage["missing"],
+        "fallback_used": coverage["fallback_used"],
+        "total_chars": coverage["total_chars"],
+        "primary": coverage["primary"],
+        "chain": coverage["chain"],
+        "fallback_chars": coverage["fallback_chars"],
+        "missing_lines": coverage["missing_lines"],
+    }
     write_json(pipeline_dir / "05_subtitles.json", out_json)
+    if coverage["missing"]:
+        print(
+            f"[step5] 字形覆盖 FAIL：{len(coverage['missing'])} 个字无字体可画"
+            f"（{''.join(coverage['missing'])}），上屏会变成空白/豆腐块；"
+            "请在 assets/fonts/font_aliases.json → glyph_fallback_chain 补一套覆盖的字体",
+            file=sys.stderr,
+        )
+        for ln in coverage["missing_lines"]:
+            print(f"  ✗ {ln['id']}「{ln['text']}」缺 {''.join(ln['chars'])}", file=sys.stderr)
+        raise SystemExit(1)
     print(
         f"[step5] 字幕生成完成：{len(entries)} 条（图解画面自动让位 {suppressed_count} 条，"
-        f"模板 `{template_id}`, 字体 `{Path(font_path).name if font_path else 'default'}`）-> 05_subtitles.json"
+        f"模板 `{template_id}`, 字体 `{Path(font_path).name if font_path else 'default'}`"
+        f"｜字形覆盖 {coverage['chars']} 字全中，回退 {sum(coverage['fallback_used'].values())} 字次）"
+        "-> 05_subtitles.json"
     )
     return out_json
 
