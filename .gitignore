@@ -55,6 +55,11 @@ forensic/*.csv
 !forensic/style_edit_grammar.json
 !forensic/style_render_truth.json
 !forensic/text_style_truth.json
+!forensic/style_scene_budget.json
+!forensic/causality_text.json
+!forensic/causality_audio.json
+!forensic/causality_visual.json
+!forensic/style_element_causality.json
 forensic/jy_*.py
 # 逐帧对比的临时抽帧，不进库
 frames/

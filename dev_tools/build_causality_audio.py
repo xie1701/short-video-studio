@@ -351,9 +351,11 @@ def analyze(style_id: str, draft_name: str, grammar: Dict[str, Any], rules: Dict
             "why": (f"{bits} —— 这是主轨镜头自带的声音被留下并根据切点抬过电平，"
                     "不是从音效库挑的；别把它算进密度，也别用音效去模仿它"),
         })
-    out["elements"]["bgm"] = build_bgm(style_id, bgm, extra_sound, sfx, dur, subs, speech_cov, cuts, lines, lib)
-    out["elements"]["dual_bgm_switch"] = build_dual(style_id, bgm, dur, cuts, lines, fstarts)
-    out["elements"]["voice_ducking"] = build_ducking(style_id, bgm, sfx, dur, subs, speech_cov, doc, lib)
+    out["elements"]["bgm"] = build_bgm(style_id, bgm, sfx, dur, lib)
+    overlays = [(round(float(o.get("start") or 0), 3), round(float(o.get("end") or 0), 3))
+                for o in (grammar.get("overlay_segments") or [])]
+    out["elements"]["dual_bgm_switch"] = build_dual(style_id, bgm, dur, cuts, lines, fstarts, overlays)
+    out["elements"]["voice_ducking"] = build_ducking(style_id, bgm, sfx, dur, doc, lib)
     return out
 
 
@@ -408,7 +410,6 @@ def build_sfx(style_id: str, sfx: List[Dict[str, Any]], cuts: Sequence[float], d
     durs = [c["dur"] for c in sfx]
     gains = [c["gain_db"] for c in sfx if c["gain_db"] is not None]
     long_rows = [c for c in sfx if c["dur"] >= 2.0]
-    short_rows = [c for c in sfx if c["dur"] < 1.3]
     fades = [c for c in sfx if c["fade_out"] > 0]
     fade_ratio = [c["fade_out"] / c["dur"] for c in fades if c["dur"] > 0]
     trimmed = [c for c in sfx if c["src_in"] > 0.02]
@@ -439,6 +440,9 @@ def build_sfx(style_id: str, sfx: List[Dict[str, Any]], cuts: Sequence[float], d
         not_when.append("花字上屏：这套的花字不带声音")
     if "cut" not in present_triggers:
         not_when.append("画面切点：这套从不在换镜时响")
+    if not not_when:
+        not_when.append("四类锚点这套都用过（" + " / ".join(present_triggers) + "）——没有'绝对不响'的位置，"
+                        "只有密度与最小间隔在约束它")
 
     n_zero = sum(1 for g in gains if abs(g) < 0.5)
     boosted = [c for c in sfx if gdb(c) > 0.5]
@@ -621,7 +625,8 @@ def build_sfx(style_id: str, sfx: List[Dict[str, Any]], cuts: Sequence[float], d
         "absent_reason": None,
         "why_appears": {"rule": rule, "triggers": present_triggers, "not_when": not_when,
                         "evidence": (f"{n} 条 sound 段 / {dur}s；触发 {fmt_share(mix)}；"
-                                     f"锚点偏移中位 {med(offs)}s、p90 {pct([abs(o) for o in offs], 0.9)}s；"
+                                     f"锚点偏移中位 {med(offs)}s（≈{round((med([abs(o) for o in offs]) or 0) * 30)} 帧@30fps）、"
+                                     f"|偏移| 最大 {pct([abs(o) for o in offs], 1.0)}s；"
                                      f"其中 {round(dual * 100)}% 同时贴切点与花字")},
         "value_drivers": drivers,
         "scope": {
@@ -648,17 +653,17 @@ def build_sfx(style_id: str, sfx: List[Dict[str, Any]], cuts: Sequence[float], d
         "min_gap_sec": (round(min(gaps), 3) if gaps else None),
         "gap_median_sec": med(gaps),
         "gain_db_median": med(gains),
+        "gain_db_p10": pct(gains, 0.10),
+        "gain_db_p90": pct(gains, 0.90),
+        "dur_median_sec": med(durs),
+        "offset_median_sec": med(offs),
+        "offset_abs_max_sec": pct([abs(o) for o in offs], 1.0),
+        "fade_share": share(len(fades), n),
+        "trimmed_share": share(len(trimmed), n),
     }
 
 
-def _piece_timeline(bgm: List[Dict[str, Any]]) -> List[Tuple[float, float, str, float]]:
-    """把 BGM 段压成 (start, end, name, gain_db) 时间轴，按 start 排序。"""
-    return [(c["start"], c["end"], c["name"], c["gain_db"]) for c in bgm]
-
-
-def build_bgm(style_id: str, bgm: List[Dict[str, Any]], extra: List[Dict[str, Any]],
-              sfx: List[Dict[str, Any]], dur: float, subs: Sequence[Tuple[float, float, str]],
-              speech_cov, cuts: Sequence[float], lines: Sequence[float],
+def build_bgm(style_id: str, bgm: List[Dict[str, Any]], sfx: List[Dict[str, Any]], dur: float,
               lib: Dict[str, Any]) -> Dict[str, Any]:
     if not bgm:
         return {
@@ -891,7 +896,8 @@ def detect_switches(bgm: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def build_dual(style_id: str, bgm: List[Dict[str, Any]], dur: float, cuts: Sequence[float],
-               lines: Sequence[float], fstarts: Sequence[float]) -> Dict[str, Any]:
+               lines: Sequence[float], fstarts: Sequence[float],
+               overlay_spans: Sequence[Tuple[float, float]] = ()) -> Dict[str, Any]:
     if not bgm:
         return {
             "present": False,
@@ -936,10 +942,17 @@ def build_dual(style_id: str, bgm: List[Dict[str, Any]], dur: float, cuts: Seque
         line_off = round(t - lpos, 3) if lpos is not None else None
         fpos = near(fstarts, t, 0.6)
         fl_off = round(t - fpos, 3) if fpos is not None else None
+    # B-roll 窗口边界（画面从口播切到插画的那一下）也是结构位
+    ov_starts = [a for a, _ in overlay_spans]
+    ov_ends = [b for _, b in overlay_spans]
+    ov_off = None
+    if t is not None:
+        cands = [round(t - a, 3) for a in ov_starts] + [round(t - b, 3) for b in ov_ends]
+        cands = [c for c in cands if abs(c) <= 1.0]
+        ov_off = min(cands, key=abs) if cands else None
 
     kinds = sorted({e["kind"] for e in events})
     kind_main = main_sw["kind"]
-    others = [e for e in events if e is not main_sw]
     kind_desc = {
         "intro_overlay_exit": "片头 sting 叠在床的上方、退出时把正片床露出来（sting ≤3.5s）",
         "overlay_sting_exit": "中段 sting 叠在床的上方、退出时回单床",
@@ -953,6 +966,8 @@ def build_dual(style_id: str, bgm: List[Dict[str, Any]], dur: float, cuts: Seque
         anchor_bits.append(f"距换句 {line_off:+}s")
     if fl_off is not None:
         anchor_bits.append(f"距花字 {fl_off:+}s")
+    if ov_off is not None:
+        anchor_bits.append(f"距 B-roll 窗口边界 {ov_off:+}s")
 
     if t is None:
         rule = (f"这套是叠层而不是换段：{len(names)} 首（{' / '.join(names)}）几乎同起同收，"
@@ -966,7 +981,6 @@ def build_dual(style_id: str, bgm: List[Dict[str, Any]], dur: float, cuts: Seque
             + ("；" + "、".join(anchor_bits) if anchor_bits else "")
             + "。换床必须落在结构位上，不然听成两首歌打架"
         )
-    step_sizes = [abs(e["delta_db"]) for e in events if e["kind"] == "level_step"] or [0.0]
     overlap_max = max([e["overlap_sec"] for e in events] or [0.0])
     drivers = [
         {"param": "switch_sec",
@@ -1054,13 +1068,12 @@ def build_dual(style_id: str, bgm: List[Dict[str, Any]], dur: float, cuts: Seque
         "switches": [{"at": e["at"], "kind": e["kind"], "delta_db": e["delta_db"],
                       "overlap_sec": e["overlap_sec"]} for e in events],
         "switch_context": {"cut_offset_sec": cut_off, "line_offset_sec": line_off,
-                           "flower_offset_sec": fl_off},
+                           "flower_offset_sec": fl_off, "broll_edge_offset_sec": ov_off},
     }
 
 
 def build_ducking(style_id: str, bgm: List[Dict[str, Any]], sfx: List[Dict[str, Any]], dur: float,
-                  subs: Sequence[Tuple[float, float, str]], speech_cov, doc: Dict[str, Any],
-                  lib: Dict[str, Any]) -> Dict[str, Any]:
+                  doc: Dict[str, Any], lib: Dict[str, Any]) -> Dict[str, Any]:
     if not bgm:
         return {
             "present": False,
@@ -1213,7 +1226,12 @@ def style_index_row(st: Dict[str, Any]) -> Dict[str, Any]:
         "sfx_role_mix": sfx.get("role_mix") or {},
         "sfx_trigger_mix": sfx.get("reason_mix") or {},
         "sfx_min_gap_sec": sfx.get("min_gap_sec"),
+        "sfx_gap_median_sec": sfx.get("gap_median_sec"),
         "sfx_gain_db_median": sfx.get("gain_db_median"),
+        "sfx_dur_median_sec": sfx.get("dur_median_sec"),
+        "sfx_offset_median_sec": sfx.get("offset_median_sec"),
+        "sfx_offset_abs_max_sec": sfx.get("offset_abs_max_sec"),
+        "sfx_fade_share": sfx.get("fade_share"),
         "sfx_unique_names": len(sfx.get("name_counts") or {}),
         "bgm_present": bool(bgm.get("present")),
         "bgm_names": bgm.get("names") or [],
@@ -1241,6 +1259,11 @@ def library_stats(styles: Dict[str, Any]) -> Dict[str, Any]:
     bgm_present: List[str] = []
     beds: List[float] = []
     total_sec = 0.0
+    offs_all: List[float] = []
+    durs_all: List[float] = []
+    gains_all: List[float] = []
+    fades_w: List[float] = []
+    triggers: Dict[str, int] = {}
     for sid, st in styles.items():
         if "elements" not in st:
             continue
@@ -1260,8 +1283,15 @@ def library_stats(styles: Dict[str, Any]) -> Dict[str, Any]:
                     gains.append((d["value"] or {}).get("median") or 0.0)
                 if d["param"] == "cue_duration_sec":
                     durs.append((d["value"] or {}).get("median") or 0.0)
-            for t in s.get("why_appears", {}).get("triggers") or []:
-                trig[t] = trig.get(t, 0) + 1
+            for t, c in (s.get("reason_mix") or {}).items():
+                triggers[t] = triggers.get(t, 0) + c
+            if s.get("offset_median_sec") is not None:
+                offs_all.append(s["offset_median_sec"])
+            if s.get("dur_median_sec") is not None:
+                durs_all.append(s["dur_median_sec"])
+            if s.get("gain_db_median") is not None:
+                gains_all.append(s["gain_db_median"])
+            fades_w.append(s.get("fade_share") or 0.0)
         if st["elements"]["bgm"].get("present"):
             bgm_present.append(sid)
             beds.append(st["elements"]["bgm"].get("bed_db_duration_weighted"))
@@ -1282,6 +1312,14 @@ def library_stats(styles: Dict[str, Any]) -> Dict[str, Any]:
         "family_mix": dict(sorted(fams.items(), key=lambda kv: -kv[1])),
         "role_mix": dict(sorted(roles.items(), key=lambda kv: -kv[1])),
         "top_sfx_names": sorted(names.items(), key=lambda kv: -kv[1])[:12],
+        "trigger_mix_total": dict(sorted(triggers.items(), key=lambda kv: -kv[1])),
+        "offset_median_sec_across_styles": med(offs_all),
+        "offset_abs_max_worst_sec": (round(max([s.get("offset_abs_max_sec") or 0 for s in
+                                               [v["elements"]["sfx"] for v in styles.values()
+                                                if "elements" in v]]), 3)),
+        "cue_dur_median_sec_across_styles": med(durs_all),
+        "gain_db_median_across_styles": med(gains_all),
+        "fade_share_median": med(fades_w),
         "unique_names": len(names),
         "bed_db_range": [round(min(beds), 1), round(max(beds), 1)] if beds else None,
         "bed_db_median": med(beds),
@@ -1437,17 +1475,39 @@ def compare_our_build(styles: Dict[str, Any], pipeline_dir: Optional[Path] = Non
     for r in kept:
         t = str(r.get("trigger") or "none")
         kept_trig[t] = kept_trig.get(t, 0) + 1
+
+    def on_picture_cut(r: Dict[str, Any]) -> bool:
+        t = float(r.get("time_sec") or 0)
+        return any(abs(t - v) <= 0.12 for v in vcuts)
+
+    cut_labelled = [r for r in kept if r.get("trigger") == "cut"]
+    cut_labelled_ok = [r for r in cut_labelled if on_picture_cut(r)]
+    flower_labelled = [r for r in kept if r.get("trigger") == "flower"]
+    flower_off_cut = [r for r in flower_labelled if not on_picture_cut(r)]
+    downbeat = [r for r in kept if r.get("event_type") == "bgm_downbeat"]
+    empty_cut = [r for r in cut_labelled if not on_picture_cut(r)]
     findings.append({
         "kind": "anchor_type",
         "ours": {"trigger": kept_trig, "event_type": kept_types,
-                 "no_picture_change": len(cutless)},
+                 "cut_labelled": len(cut_labelled), "cut_labelled_on_real_cut": len(cut_labelled_ok),
+                 "cut_labelled_without_cut": len(empty_cut),
+                 "flower_labelled": len(flower_labelled), "flower_off_cut": len(flower_off_cut),
+                 "labelled_bgm_downbeat": len(downbeat),
+                 "downbeat_also_real_cut": len([r for r in downbeat if on_picture_cut(r)])},
         "truth": {"trigger": (src.get("sfx") or {}).get("why_appears", {}).get("triggers"),
-                  "beat_triggered": 0},
-        "verdict": "乱响" if (len(on_downbeat) >= 3 or len(cutless) >= 3) else "齐",
-        "detail": (f"我们 keep 的 {len(kept)} 条：trigger {kept_trig}；其中 {len(on_downbeat)} 条挂在小节强拍"
-                   f"（bgm_downbeat）、{len(cutless)} 条所在时刻画面根本没换镜（±0.12s 内无 clip 边界）。"
-                   f"真值这套 12 条：0 条踩拍，cut/flower/line 三分"),
-        "no_picture_change_sec": [round(float(r["time_sec"]), 1) for r in cutless],
+                  "beat_triggered": 0,
+                  "flower_cues": (((src.get("sfx") or {}).get("reason_mix") or {}).get("flower") or 0)},
+        "verdict": ("位置齐/记账偏" if not empty_cut else "乱响"),
+        "detail": (
+            f"cut 触发的 {len(cut_labelled)} 条里 {len(cut_labelled_ok)} 条确实落在真实画面切点 ±0.12s 内"
+            + (f"，只有 {len(empty_cut)} 条没有换镜" if empty_cut else "（0 条空贴）")
+            + f"；flower 触发的 {len(flower_labelled)} 条有 {len(flower_off_cut)} 条不在切点上——"
+            f"这符合真值（这套花字触发占 {round((((src.get('sfx') or {}).get('reason_mix') or {}).get('flower') or 0) * 100 / max(1, sum(((src.get('sfx') or {}).get('reason_mix') or {}).values())))}%）。"
+            f"问题在记账：{len(downbeat)} 条理由写成 bgm_downbeat（小节强拍），其中 {len([r for r in downbeat if on_picture_cut(r)])} 条其实也是真切点，"
+            f"但按真值口径这套 0 条踩拍——同一声音被记成'踩拍'，复核时就会误判成乱响"
+        ),
+        "empty_cut_sec": [round(float(r["time_sec"]), 2) for r in empty_cut],
+        "downbeat_labelled_sec": [round(float(r["time_sec"]), 2) for r in downbeat],
     })
     cov_all = share(len(vcuts) - len(missed), len(vcuts))
     cov_main = share(len(vcuts_main) - len(missed_main), len(vcuts_main))
@@ -1509,12 +1569,14 @@ def compare_our_build(styles: Dict[str, Any], pipeline_dir: Optional[Path] = Non
         },
         "findings": findings,
         "single_fix": single_fix(our_pm, src_pm, name_counts, src_unique, our_fams, src_fams,
-                                 len(vcuts), len(missed), len(on_downbeat), len(kept)),
+                                 len(vcuts_main), len(missed_main), len(on_downbeat), len(kept),
+                                 cov_main, truth_cut_cov),
     }
 
 
 def single_fix(our_pm, src_pm, name_counts, src_unique, our_fams, src_fams,
-               n_vcuts, n_missed, n_downbeat, n_kept) -> Dict[str, Any]:
+               n_vcuts, n_missed, n_downbeat, n_kept,
+               cov_main=None, truth_cut_cov=None) -> Dict[str, Any]:
     """「只能改一处」：挑一条改动，能同时缓解'吵'和'空'。"""
     return {
         "where": "step6 的音效选型（不是密度参数）",
@@ -1525,8 +1587,9 @@ def single_fix(our_pm, src_pm, name_counts, src_unique, our_fams, src_fams,
             f"吵：{n_kept} 条里同一批 2–8kHz 的翻页/键盘占了 {round(sum(v for k, v in our_fams.items() if k == 'text_reveal') * 100 / max(1, n_kept))}%，"
             f"而真值只占 {round(src_fams.get('text_reveal', 0) * 100 / max(1, sum(src_fams.values())))}%、"
             f"另有一半是 whoosh/响铃/风铃（{fmt_share(src_fams)}）；"
-            f"空：{n_vcuts} 个真实切点只有 {n_vcuts - n_missed} 个有声，换成 whoosh 后切点自然有声，"
-            "密度不用调高也不会空"),
+            f"空：主轨 {n_vcuts} 个切点只有 {n_vcuts - n_missed} 个有声（{round((cov_main or 0) * 100)}%，"
+            f"真值 {round((truth_cut_cov or 0) * 100)}%）；换成 whoosh 后切点自然有声，"
+            "密度靠'该响的地方响'补回来，而不是靠堆条数"),
         "risk": "whoosh 每 1.5s 一次会变成'呼呼呼'；所以仍受源的最小间隔与每分上限约束",
         "cheapest_verification": "跑一次 style_fingerprint.verify()：sfx_role_mix 余弦、unique_names/60s、cut_coverage 三个数同时回正才算过",
     }
@@ -1570,7 +1633,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "reason_priority": ["cut", "flower", "line", "beat"],
             "free_policy": "挂不上任何锚点的 cue 记为 free；free 比例就是这套允许的「无理由」额度",
             "gain_formula": "dB = 20·log10(segment.volume)",
-            "time_unit": "秒；源草稿落点量化在 1/60s 网格（偏移分辨率 16.7ms）",
+            "time_unit": ("秒；源草稿落点量化在 1/60s 网格（偏移分辨率 16.7ms）。"
+                          "表里给 ms，换算到 30fps 成片时 1 帧 = 33.3ms，"
+                          "所以 ≤40ms 的偏移在 30fps 上就是同帧"),
             "privacy": "source_ref = wb_<sha256 前 12 位>；不含草稿目录名、本机路径、逐条文案",
             "unmeasured": [
                 "人声-BGM SNR：源草稿段字段推不出，库里 11.0/11.5dB 是编写常量，不当真值用",

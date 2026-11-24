@@ -1,0 +1,247 @@
+{
+ "version": "1.0",
+ "unit_note": "全部由源草稿 segments 现算：段=视频轨段总数，文件=不同素材文件数（同一文件可反复取不同时间窗）",
+ "why_this_matters": "原版之所以 1.1 秒一镜也不乱，是因为它只用了极少数素材文件、在同一场景里反复取不同时间窗；我们素材池大，每条素材只用一次 → 观众每 1 秒换一个地方。段/文件 是这个差别的可量化值。",
+ "styles": {
+  "style_01": {
+   "source_ref": "wb_65546d8b2143",
+   "duration_sec": 68.5,
+   "video_segments": 55,
+   "distinct_files": 31,
+   "segs_per_file": 1.77,
+   "files_per_min": 27.15,
+   "segs_per_min": 48.18,
+   "max_segs_on_one_file": 14
+  },
+  "style_02": {
+   "source_ref": "wb_c138c02ab6f3",
+   "duration_sec": 29.47,
+   "video_segments": 29,
+   "distinct_files": 2,
+   "segs_per_file": 14.5,
+   "files_per_min": 4.07,
+   "segs_per_min": 59.05,
+   "max_segs_on_one_file": 28
+  },
+  "style_03": {
+   "source_ref": "wb_509526dc2af4",
+   "duration_sec": 126.87,
+   "video_segments": 55,
+   "distinct_files": 4,
+   "segs_per_file": 13.75,
+   "files_per_min": 1.89,
+   "segs_per_min": 26.01,
+   "max_segs_on_one_file": 51
+  },
+  "style_04": {
+   "source_ref": "wb_20fdae6b98ca",
+   "duration_sec": 19.5,
+   "video_segments": 8,
+   "distinct_files": 8,
+   "segs_per_file": 1.0,
+   "files_per_min": 24.62,
+   "segs_per_min": 24.62,
+   "max_segs_on_one_file": 1
+  },
+  "style_05": {
+   "source_ref": "wb_da07ca0d991a",
+   "duration_sec": 22.47,
+   "video_segments": 22,
+   "distinct_files": 5,
+   "segs_per_file": 4.4,
+   "files_per_min": 13.35,
+   "segs_per_min": 58.75,
+   "max_segs_on_one_file": 17
+  },
+  "style_06": {
+   "source_ref": "wb_2138c457a3a0",
+   "duration_sec": 21.67,
+   "video_segments": 5,
+   "distinct_files": 4,
+   "segs_per_file": 1.25,
+   "files_per_min": 11.08,
+   "segs_per_min": 13.85,
+   "max_segs_on_one_file": 2
+  },
+  "style_07": {
+   "source_ref": "wb_4ad0b7cffe7d",
+   "duration_sec": 28.13,
+   "video_segments": 30,
+   "distinct_files": 10,
+   "segs_per_file": 3.0,
+   "files_per_min": 21.33,
+   "segs_per_min": 63.98,
+   "max_segs_on_one_file": 21
+  },
+  "style_08": {
+   "source_ref": "wb_450376d4c991",
+   "duration_sec": 58.47,
+   "video_segments": 2,
+   "distinct_files": 2,
+   "segs_per_file": 1.0,
+   "files_per_min": 2.05,
+   "segs_per_min": 2.05,
+   "max_segs_on_one_file": 1
+  },
+  "style_09": {
+   "source_ref": "wb_f695f22cfe5d",
+   "duration_sec": 42.5,
+   "video_segments": 37,
+   "distinct_files": 9,
+   "segs_per_file": 4.11,
+   "files_per_min": 12.71,
+   "segs_per_min": 52.24,
+   "max_segs_on_one_file": 28
+  },
+  "style_10": {
+   "source_ref": "wb_c3d2b641a143",
+   "duration_sec": 18.92,
+   "video_segments": 25,
+   "distinct_files": 3,
+   "segs_per_file": 8.33,
+   "files_per_min": 9.52,
+   "segs_per_min": 79.3,
+   "max_segs_on_one_file": 23
+  },
+  "style_11": {
+   "source_ref": "wb_e3536e2a1fa1",
+   "duration_sec": 26.4,
+   "video_segments": 27,
+   "distinct_files": 3,
+   "segs_per_file": 9.0,
+   "files_per_min": 6.82,
+   "segs_per_min": 61.36,
+   "max_segs_on_one_file": 24
+  },
+  "style_12": {
+   "source_ref": "wb_b6ad1c91ce58",
+   "duration_sec": 26.3,
+   "video_segments": 14,
+   "distinct_files": 1,
+   "segs_per_file": 14.0,
+   "files_per_min": 2.28,
+   "segs_per_min": 31.94,
+   "max_segs_on_one_file": 14
+  },
+  "style_13": {
+   "source_ref": "wb_42a4263a7693",
+   "duration_sec": 30.22,
+   "video_segments": 23,
+   "distinct_files": 2,
+   "segs_per_file": 11.5,
+   "files_per_min": 3.97,
+   "segs_per_min": 45.67,
+   "max_segs_on_one_file": 22
+  },
+  "style_14": {
+   "source_ref": "wb_f2eed1052762",
+   "duration_sec": 20.9,
+   "video_segments": 13,
+   "distinct_files": 1,
+   "segs_per_file": 13.0,
+   "files_per_min": 2.87,
+   "segs_per_min": 37.32,
+   "max_segs_on_one_file": 13
+  },
+  "style_15": {
+   "source_ref": "wb_37328c877feb",
+   "duration_sec": 30.57,
+   "video_segments": 26,
+   "distinct_files": 24,
+   "segs_per_file": 1.08,
+   "files_per_min": 47.11,
+   "segs_per_min": 51.04,
+   "max_segs_on_one_file": 3
+  },
+  "style_16": {
+   "source_ref": "wb_3751917c15e4",
+   "duration_sec": 28.33,
+   "video_segments": 24,
+   "distinct_files": 5,
+   "segs_per_file": 4.8,
+   "files_per_min": 10.59,
+   "segs_per_min": 50.82,
+   "max_segs_on_one_file": 19
+  },
+  "style_17": {
+   "source_ref": "wb_52c241bb6cb5",
+   "duration_sec": 16.0,
+   "video_segments": 16,
+   "distinct_files": 6,
+   "segs_per_file": 2.67,
+   "files_per_min": 22.5,
+   "segs_per_min": 60.0,
+   "max_segs_on_one_file": 11
+  },
+  "style_18": {
+   "source_ref": "wb_657da9237c20",
+   "duration_sec": 38.2,
+   "video_segments": 32,
+   "distinct_files": 4,
+   "segs_per_file": 8.0,
+   "files_per_min": 6.28,
+   "segs_per_min": 50.26,
+   "max_segs_on_one_file": 29
+  },
+  "style_19": {
+   "source_ref": "wb_2ff6ef7e74af",
+   "duration_sec": 38.2,
+   "video_segments": 29,
+   "distinct_files": 4,
+   "segs_per_file": 7.25,
+   "files_per_min": 6.28,
+   "segs_per_min": 45.55,
+   "max_segs_on_one_file": 26
+  },
+  "style_20": {
+   "source_ref": "wb_007d6d4513cd",
+   "duration_sec": 30.7,
+   "video_segments": 20,
+   "distinct_files": 7,
+   "segs_per_file": 2.86,
+   "files_per_min": 13.68,
+   "segs_per_min": 39.09,
+   "max_segs_on_one_file": 14
+  },
+  "style_21": {
+   "source_ref": "wb_a48e9a9fc06f",
+   "duration_sec": 15.62,
+   "video_segments": 25,
+   "distinct_files": 6,
+   "segs_per_file": 4.17,
+   "files_per_min": 23.05,
+   "segs_per_min": 96.05,
+   "max_segs_on_one_file": 20
+  },
+  "style_22": {
+   "source_ref": "wb_7eac5aca58e3",
+   "duration_sec": 23.48,
+   "video_segments": 26,
+   "distinct_files": 4,
+   "segs_per_file": 6.5,
+   "files_per_min": 10.22,
+   "segs_per_min": 66.43,
+   "max_segs_on_one_file": 22
+  },
+  "style_23": {
+   "source_ref": "wb_f490b4416c37",
+   "duration_sec": 41.83,
+   "video_segments": 15,
+   "distinct_files": 15,
+   "segs_per_file": 1.0,
+   "files_per_min": 21.51,
+   "segs_per_min": 21.51,
+   "max_segs_on_one_file": 1
+  },
+  "style_24": {
+   "source_ref": "wb_dc88387bda2e",
+   "duration_sec": 36.42,
+   "video_segments": 45,
+   "distinct_files": 11,
+   "segs_per_file": 4.09,
+   "files_per_min": 18.12,
+   "segs_per_min": 74.14,
+   "max_segs_on_one_file": 33
+  }
+ }
+}

@@ -227,7 +227,7 @@ def classify(m: dict, safe_y: float, base_hint: float = 0.0) -> dict:
                 and 0.30 <= s["y"] <= 0.92:
             el = "end_card"
         elif ORD_RE.match(s["text"]) and s["ch"] >= 2 \
-                and s["px"] >= 0.9 * (base_px or 75.0) \
+                and (not base_tracks or s["px"] >= 0.9 * (base_px or 75.0)) \
                 and (s["du"] >= 0.75 or s["px"] >= 1.15 * (base_px or 75.0)):
             el = "chapter_card"
         if el == "flower" and base_px > 0 and s["px"] >= 1.8 * base_px and s["ch"] <= 6 and s["du"] >= 0.3:
@@ -286,6 +286,7 @@ def classify(m: dict, safe_y: float, base_hint: float = 0.0) -> dict:
                              "overlap_b": ov_b, "collide_b": coll_b, "nb": len(B)}
     base_segs = sorted([x for t in base_tracks for x in t["segs"]], key=lambda x: x["t"])
     return {"subs": subs, "disp": disp, "base_px": base_px, "pairs": pairs, "cuts": m.get("cuts") or [],
+            "has_sub": bool(base_tracks),
             "base_segs": base_segs, "base_cov": union_sec(base_segs) / dur,
             "base_tracks": [t["ti"] for t in base_tracks],
             "base_y": base["med_y"] if base else None}
@@ -434,6 +435,7 @@ def build_subtitle(segs, cls, lib_spec, base_px) -> dict:
     lib_safe = lib_spec.get("safe_y_ratio")
     font_dev = (base_px / lib_px - 1.0) if lib_px else 0.0
     shadow = next((s["shadow"] for s in xs if s["shadow"]), None) or {}
+    has_shadow = bool(shadow)
     stroke_any = sum(1 for s in xs if s["strokes"])
     anims = anim_names(xs)
     word_ms = (med(cps) and 1000.0 / med(cps)) or 0
@@ -468,13 +470,19 @@ def build_subtitle(segs, cls, lib_spec, base_px) -> dict:
          "calibrated_by": "forensic/text_style_truth.json（stroke_mode）",
          "tolerance": "0（要么有要么没有，不存在 0.5px 描边）"},
         {"param": "shadow",
-         "value": f"color #000000 / alpha {round(float(shadow.get('alpha') or 0),2)} / distance {round(float(shadow.get('distance') or 0),1)}u / "
+         "value": (f"color #000000 / alpha {round(float(shadow.get('alpha') or 0),2)} / distance {round(float(shadow.get('distance') or 0),1)}u / "
                   f"point ({short((shadow.get('point') or {}).get('x',0),3)},{short((shadow.get('point') or {}).get('y',0),3)}) / "
-                  f"smoothing {round(float(shadow.get('smoothing') or 0),2)}",
+                  f"smoothing {round(float(shadow.get('smoothing') or 0),2)}") if has_shadow else "none",
          "derived_from": "materials.texts[].shadow_distance / shadow_point / shadow_smoothing / shadow_alpha",
          "formula": "offset_px = distance × 2.3（1080 宽）；σ = smoothing × font_px × 0.13",
-         "why_this_value": "四件套在源里是固定常量，全片不随字号/颜色变；"
-                           "distance=5 换算 11.5px 是「贴纸感」的来源",
+         "why_this_value": ("四件套在源里是固定常量，全片不随字号/颜色变；"
+                            "distance=5 换算 11.5px 是「贴纸感」的来源"
+                            if has_shadow else
+                            f"这套字幕不挂阴影（{sum(1 for x in xs if x['shadow'])}/{n} 段有 shadow）："
+                            f"它靠字号/颜色跟画面拉开，不靠投影"
+                            + (f"；库记 shadow={lib_spec.get('shadow')} / distance="
+                               f"{lib_spec.get('shadow_distance_units')}，与源不符，以源为准"
+                               if lib_spec.get("shadow") else "")),
          "calibrated_by": "forensic/style_render_truth.json::texts.shadow + rebuild_subtitle_typography.py",
          "tolerance": "alpha ±0.05，smoothing ±0.02"},
         {"param": "safe_y（字幕带中心）",
@@ -529,13 +537,16 @@ def build_subtitle(segs, cls, lib_spec, base_px) -> dict:
          "why": f"字幕带中心；花字/贴纸不得进 ±0.04 带；实测已在 {round(y_med*1920)}px"},
         {"name": "stroke_mode", "value": "none" if stroke_any == 0 else "stroke",
          "why": f"源里 {stroke_any}/{n} 段有 styles[].strokes；border_width=0.08 是面板记忆值，不算描边"},
-        {"name": "shadow_distance", "value": round(float(shadow.get("distance") or 0), 1),
-         "why": "阴影位移（单位），换算 offset_px = distance × 2.3（1080 宽）"},
-        {"name": "shadow_point", "value": f"({short((shadow.get('point') or {}).get('x', 0), 3)}, "
-                                         f"{short((shadow.get('point') or {}).get('y', 0), 3)})",
-         "why": "阴影方向（单位向量，归一化）；x 正 y 负 = 右下"},
-        {"name": "shadow_smoothing", "value": round(float(shadow.get("smoothing") or 0), 2),
-         "why": "σ = smoothing × font_px × 0.13；改它可以造「发光」或「硬边」，源里是固定值"},
+        ({"name": "shadow_distance", "value": round(float(shadow.get("distance") or 0), 1),
+          "why": "阴影位移（单位），换算 offset_px = distance × 2.3（1080 宽）"} if has_shadow else
+         {"name": "shadow_distance", "value": "none", "why": "源里这套字幕没有 shadow 块"}),
+        ({"name": "shadow_point", "value": f"({short((shadow.get('point') or {}).get('x', 0), 3)}, "
+                                          f"{short((shadow.get('point') or {}).get('y', 0), 3)})",
+          "why": "阴影方向（单位向量，归一化）；x 正 y 负 = 右下"} if has_shadow else
+         {"name": "shadow_point", "value": "none", "why": "无阴影"}),
+        ({"name": "shadow_smoothing", "value": round(float(shadow.get("smoothing") or 0), 2),
+          "why": "σ = smoothing × font_px × 0.13；改它可以造「发光」或「硬边」，源里是固定值"} if has_shadow else
+         {"name": "shadow_smoothing", "value": "none", "why": "无阴影"}),
         {"name": "min_hold", "value": short(min(dus), 2),
          "why": "最短一条；低于 0.4s 的字幕观众读不完，源里出现是因为那句只有 2–3 字"},
         {"name": "max_hold", "value": short(max(dus), 2),
