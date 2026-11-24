@@ -239,17 +239,92 @@ def _cut_at_word_boundary(text: str, max_len: int) -> str:
     return t[:max_len]
 
 
+# 花字不是「句子前几个字」。源草稿里 24 套的花字全部是**名词性短语或数字**（中位 4 字，1~5 字），
+# 从来没有把半句话搬上屏的。以前按词边界截前 5 字，实测会打出「我系牛哥我」「上边摆好多」这种半句话，
+# 观众一眼就看出是机器拼的——这也是「看着乱」的一部分。
+_FLOWER_LEAD_STOP = (
+    "我", "你", "佢", "他", "她", "我哋", "你哋", "佢哋", "呢", "嗰", "咁", "就", "都", "仲", "又",
+    "係", "系", "嘅", "既", "有", "冇", "同", "跟", "同埋", "而", "但", "因为", "所以", "如果",
+    "上边", "下边", "左边", "右边", "前边", "后边", "其实", "即系", "可以", "应该", "比较", "非常",
+)
+_FLOWER_BAD_TAIL = ("嘅", "系", "係", "同", "跟", "既", "嘅话", "啦", "喇", "嗰", "呢")
+# 场记口令：这些字本身不是内容，绝不上屏（实测曾把「三二一组」打成花字）
+CUE_WORDS = {
+    "三二一", "一二三", "三二一组", "开始", "停", "嚟啦", "来啦", "预备", "起", "action",
+    "唔知道大家", "大家好", "大家", "各位", "观众",
+}
+
+
 def _flower_label_for_style(label: str, chars_max: int) -> str:
-    """花字文案收口：有数字就压成数字核心（三百万/六百平），否则按词边界收到该风格字数上限。"""
+    """花字文案收口：只留「数字核心」或「一个完整名词短语」，拼不出来就返回空串（这张不出）。
+
+    返回空串是明确表态：这句里没有能当花字的词，宁可不打，也不要拿半句话糊上去。
+    """
     t = str(label or "").strip()
+    cap = max(2, int(chars_max or 10))
+    # 口令/场记不上屏（三二一、嚟啦、开始、唔知道大家这种）
+    if re.fullmatch(r"[一二三四五六七八九十0-9\s、，,。.！!？?~～]+", t or "") or t in CUE_WORDS:
+        return ""
     m = NUM_MEASURE_RE.search(t)
     if m:
         core = re.sub(r"[嘅的]$", "", m.group(0))
-        if 2 <= len(core) <= max(2, chars_max):
+        if 2 <= len(core) <= cap:
             return core
-    if len(t) > chars_max:
-        t = _cut_at_word_boundary(t, chars_max)
-    return t
+    if not t:
+        return ""
+    # 用词性挑「名词性短语」：源草稿里花字全部是名词/名词串（卡座、中空、岭南元素、招牌特色）
+    # 或者数字（三百万、两百平），没有一条是动词短语或半句话。
+    _NOUN_TAGS = ("n", "nr", "ns", "nt", "nz", "j", "l", "ng", "vn", "an")
+    best = ""
+    try:
+        import jieba.posseg as pseg  # type: ignore
+
+        pairs = [(str(w), str(f)) for w, f in pseg.cut(t)]
+    except Exception:
+        pairs = []
+    if pairs:
+        run: List[str] = []
+        for w, f in pairs + [("", "x")]:
+            # 数字不进名词串：数字单独走 NUM_MEASURE_RE（「三百万／两百平／十几年」），
+            # 混进来会拼出「多卡座一个」这种不是人话的东西。
+            is_noun = (f.startswith("n") or f in _NOUN_TAGS) and f != "m"
+            if is_noun and w and len("".join(run)) + len(w) <= cap:
+                run.append(w)
+                continue
+            cand = "".join(run).strip("我你佢他她哋嘅个咗啲嘅")
+            run = [w] if (is_noun and w) else []
+            if 2 <= len(cand) <= cap and len(cand) > len(best):
+                best = cand
+    if pairs:
+        # 词性判断可用时只认名词串：没挑出来就是这句里没有能当花字的词，宁可不出。
+        if best and not any(best.startswith(x) for x in _FLOWER_LEAD_STOP) and len(best) >= 2:
+            return best
+        return ""
+    # 词性判断不可用时（没装 jieba.posseg）退回「按词边界取最长的干净词」
+    try:
+        import jieba  # type: ignore
+
+        toks = [w.strip() for w in jieba.lcut(t) if w.strip()]
+    except Exception:
+        toks = [t[i:i + 2] for i in range(0, len(t), 2)]
+    best2 = ""
+    for w in toks:
+        if not (2 <= len(w) <= cap):
+            continue
+        if any(w.startswith(x) for x in _FLOWER_LEAD_STOP):
+            continue
+        if any(w.endswith(x) for x in _FLOWER_BAD_TAIL):
+            continue
+        if not re.search(r"[\u4e00-\u9fffA-Za-z0-9]", w):
+            continue
+        if len(w) > len(best2):
+            best2 = w
+    if best2:
+        return best2
+    # 整句本身够短且干净（例如「干炒蚝」这种专名句），才允许整句上屏
+    if 2 <= len(t) <= cap and not any(t.startswith(x) for x in _FLOWER_LEAD_STOP):
+        return t
+    return ""
 
 
 def _display_keywords(sent: Dict[str, Any]) -> List[str]:
@@ -789,6 +864,27 @@ def run_step6(
             "jianying_sfx_name": "“呼”的转场音效",
         })
 
+    # 展示字（花字/巨字）的入场动画与配对音效，源草稿里是**换着来的**：
+    # style_21 的 9 条展示字用了 8 种动画（缩小3/渐隐2/日出2/向右露出/雪光模糊/向左滑动/渐显），
+    # 以前全片只用「缩小 + 撞击光1」一种 → 六张字一个样、一个音，观众听两遍就腻。
+    # 这里按真值 anims_top 的频次顺序做成轮换表，按落位槽位取，永远不再整片单色。
+    _anim_rot_names: List[str] = []
+    for _it in ((style_entry.get("display_text_spec") or {}).get("anims_top") or []):
+        _nm = str(_it[0] if isinstance(_it, (list, tuple)) else _it).strip()
+        _nm = _nm.replace("in:", "").replace("out:", "").replace("loop:", "").strip()
+        if not _nm:
+            continue
+        _mapped = anim_cn_alias.get(_nm, _nm)
+        _canon = _nm if _nm in anim_lookup else (_mapped if _mapped in anim_lookup else "")
+        if _canon and _canon not in _anim_rot_names:
+            _anim_rot_names.append(_canon)
+    _anim_rot_pairs = [anim_lookup[n] for n in _anim_rot_names]
+
+    def _pair_for_slot(idx: int) -> Dict[str, Any]:
+        if _anim_rot_pairs:
+            return _anim_rot_pairs[idx % len(_anim_rot_pairs)]
+        return matched_pair
+
     def _safe_readable_fg(cand_hex: Optional[str], fallback_hex: str = "#FFE28A") -> str:
         c_str = str(cand_hex or fallback_hex)
         rgb = hex_to_rgba(c_str, 255)[:3]
@@ -852,9 +948,9 @@ def run_step6(
                 "bbox": top_bb,
                 "final_bbox": top_bb,
                 "safe_zone_ok": ok_top,
-                "jianying_anim_name": default_jy_anim,
-                "anim_duration_ms": int(matched_pair.get("anim_duration_ms", 400)),
-                "paired_jianying_sfx": str(matched_pair.get("jianying_sfx_name", "提示音")),
+                "jianying_anim_name": str(_pair_for_slot(len(visual_elements)).get("jianying_anim_name") or default_jy_anim),
+                "anim_duration_ms": int(_pair_for_slot(len(visual_elements)).get("anim_duration_ms", 400)),
+                "paired_jianying_sfx": str(_pair_for_slot(len(visual_elements)).get("jianying_sfx_name", "提示音")),
                 "trigger": "hook",
                 "policy": f"{style_id} 顶部常驻标语（源草稿 packaging 结构件，按整条停留，不受花字密度约束）",
                 "reason": f"{style_id} 顶部常驻主题标语栏",
@@ -907,9 +1003,9 @@ def run_step6(
                 "bbox": hook_bbox,
                 "final_bbox": hook_bbox,
                 "safe_zone_ok": safe_ok,
-                "jianying_anim_name": default_jy_anim,
-                "anim_duration_ms": int(matched_pair.get("anim_duration_ms", 400)),
-                "paired_jianying_sfx": str(matched_pair.get("jianying_sfx_name", "“呼”的转场音效")),
+                "jianying_anim_name": str(_pair_for_slot(len(visual_elements)).get("jianying_anim_name") or default_jy_anim),
+                "anim_duration_ms": int(_pair_for_slot(len(visual_elements)).get("anim_duration_ms", 400)),
+                "paired_jianying_sfx": str(_pair_for_slot(len(visual_elements)).get("jianying_sfx_name", "“呼”的转场音效")),
                 "trigger": "hook",
                 "policy": f"{style_id} 开场巨字（片头 0~{round(hook_ef / float(fps), 2)}s 的结构件，不是撒花字）",
                 "reason": f"{style_id} 开场 {giant_fs}px 砸屏巨字冲击 ({giant_mode})",
@@ -990,9 +1086,9 @@ def run_step6(
                 "bbox": final_bbox,
                 "final_bbox": final_bbox,
                 "safe_zone_ok": ok,
-                "jianying_anim_name": default_jy_anim,
-                "anim_duration_ms": int(matched_pair.get("anim_duration_ms", 400)),
-                "paired_jianying_sfx": str(matched_pair.get("jianying_sfx_name", "“呼”的转场音效")),
+                "jianying_anim_name": str(_pair_for_slot(len(visual_elements)).get("jianying_anim_name") or default_jy_anim),
+                "anim_duration_ms": int(_pair_for_slot(len(visual_elements)).get("anim_duration_ms", 400)),
+                "paired_jianying_sfx": str(_pair_for_slot(len(visual_elements)).get("jianying_sfx_name", "“呼”的转场音效")),
                 "trigger": spec.get("trigger"),
                 "anchor": {"kind": spec.get("anchor_kind"), "time_sec": spec.get("anchor_time"),
                            "offset_sec": spec.get("anchor_offset_sec")},
@@ -1044,9 +1140,9 @@ def run_step6(
                     "bbox": cta_bb,
                     "final_bbox": cta_bb,
                     "safe_zone_ok": ok_cta,
-                    "jianying_anim_name": default_jy_anim,
-                    "anim_duration_ms": int(matched_pair.get("anim_duration_ms", 400)),
-                    "paired_jianying_sfx": str(matched_pair.get("jianying_sfx_name", "“呼”的转场音效")),
+                    "jianying_anim_name": str(_pair_for_slot(len(visual_elements)).get("jianying_anim_name") or default_jy_anim),
+                    "anim_duration_ms": int(_pair_for_slot(len(visual_elements)).get("anim_duration_ms", 400)),
+                    "paired_jianying_sfx": str(_pair_for_slot(len(visual_elements)).get("jianying_sfx_name", "“呼”的转场音效")),
                     "trigger": "ending",
                     "policy": f"{style_id} 片尾互动召唤（收束结构件，绑定末句起声帧，不受花字密度约束）",
                     "reason": "片尾收束互动召唤大字（绑定末句起声帧）",
@@ -1110,9 +1206,9 @@ def run_step6(
                     "bbox": bb,
                     "final_bbox": bb,
                     "safe_zone_ok": ok_card,
-                    "jianying_anim_name": default_jy_anim,
-                    "anim_duration_ms": int(matched_pair.get("anim_duration_ms", 400)),
-                    "paired_jianying_sfx": str(matched_pair.get("jianying_sfx_name", "“呼”的转场音效")),
+                    "jianying_anim_name": str(_pair_for_slot(len(visual_elements)).get("jianying_anim_name") or default_jy_anim),
+                    "anim_duration_ms": int(_pair_for_slot(len(visual_elements)).get("anim_duration_ms", 400)),
+                    "paired_jianying_sfx": str(_pair_for_slot(len(visual_elements)).get("jianying_sfx_name", "“呼”的转场音效")),
                     "trigger": "ending",
                     "policy": "片尾收尾补位卡（话没说完时补一张，打 deviation_from_style_source 标）",
                     "reason": f"片尾收尾补位：{ending['reason']}",

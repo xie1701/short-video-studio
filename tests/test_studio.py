@@ -2035,8 +2035,15 @@ class StudioTests(unittest.TestCase):
         write_json(p04 / "03_audio_events.json", ae_doc)
         edl04 = run_step4(p04, track="store", style_id="style_04")
         self.assertGreater(edl10["clip_count"], edl04["clip_count"])
-        # 已做重点拉近（punch-in）的镜头不再叠 keyframe，允许少量镜头由拉近替代
-        self.assertGreaterEqual(edl10["keyframe_moves_applied"], int(edl10["clip_count"] * 0.8))
+        # 2026-11-24 改口径：关键帧密度 ≠ 推镜密度。
+        # 真草稿实测（style_21）：主轨 13 镜只有 4 镜有推镜、共 8 个缩放关键帧点，主轨机位基本固定；
+        # 旧代码把「190 关键帧/分」当成「190 次推镜/分」→ 几乎每镜都挂缓推，观感是「每一镜都在呼吸」。
+        # 现在推镜按整片占比上限给预算，所以这里两头都断言：高密度风格必须比慢调风格推得多，
+        # 但绝不许回到「人人有份」。
+        self.assertGreater(edl10["keyframe_moves_applied"], edl04["keyframe_moves_applied"],
+                           "高关键帧密度风格应当比慢调风格多推镜")
+        self.assertLessEqual(edl10["keyframe_moves_applied"], int(edl10["clip_count"] * 0.35) + 2,
+                             "推镜不得超过整片镜头数的 35%（真值里机位大体不动）")
 
         # 3) style_05 (depth_hook_then_framed_broll): A-roll 挂 person_behind_giant_text_pip，B-roll 切 blur_bg_center_card_pip
         p05 = self.root / "edl_s05"

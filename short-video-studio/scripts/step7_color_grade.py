@@ -611,6 +611,10 @@ def compute_hero_and_shot_correction(
     }
 
 
+# 闭环降强度的下限（相对 1.0）：低于这个值画面影调已经明显偏离风格真值
+LUT_STRENGTH_FLOOR = 0.45
+
+
 def build_blended_cube_lut(lut_path: Path, strength: float, out_path: Path) -> tuple[Path, float]:
     """将源 3D .cube LUT 与恒等映射线性混合；通过 common.write_cube_lut 写出并如实返回有效强度。"""
     strength = max(0.0, min(1.0, strength))
@@ -938,7 +942,11 @@ def run_step7(
     # 闭环片源强度回测：套用完整调色链（含特效）回测 Hero 及副镜头人脸肤色是否跌出健康扇区，仅沿严格不增强度阶梯下探
     skin_post_grade: Optional[Dict[str, float]] = None
     if face_verify_targets and eff_strength > 0.01:
-        raw_cands = [eff_strength, min(eff_strength, 0.45), min(eff_strength, 0.30), 0.15]
+        # 降强度阶梯必须设下限。2026-11-24 实测：style_21 真值 lut_strength=0.6，
+        # 旧阶梯一路探到 0.15 只为把肤色拉回扇区 → 全片主亮 yavg 105（真值 140），
+        # 整整暗 35 级、画面发灰，人眼看着「闷」；而真值本来就是「均衡自然高通透」。
+        # 影调是这套风格的第一性，肤色偏移应该用中间调纠回来，不能靠把强度降到 1/4 来回避。
+        raw_cands = [eff_strength, min(eff_strength, 0.55), min(eff_strength, LUT_STRENGTH_FLOOR)]
         cand_strengths: List[float] = []
         for cs in raw_cands:
             cs_r = round(float(cs), 2)

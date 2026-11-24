@@ -38,6 +38,7 @@ import os
 
 import broll_match
 import pip_policy
+import scene_budget
 import treatment_policy
 from broll_semantics import describe_clip, legacy_score
 from edit_grammar import check_edl, load_grammar, plan_shot_budget, select_cuts
@@ -59,6 +60,12 @@ HARD_TABOO_ALWAYS = {"crew_leak", "kitchen_trash", "construction_trash"}
 # B-roll 选片口径（v4.6）：语义对位是主序，其它风格加分项只做「同分裁决」。
 # 以前选片按「稳/锐/用得少」轮转池子，画面自然对不上台词（用户实测：讲卡座配了 10 条航拍）。
 BROLL_SEM_RANK_WEIGHT = 1.0
+# 语义同档带：语义分（0~100）差在这以内就视为「一样对得上」，改由场景连续性裁决。
+# 这是从 24 套真草稿的段/文件 反推的：原版一条素材反复取 4.3 个时间窗，不是一条用一次。
+BROLL_SEM_TIE_BAND = 12.0
+# 推镜预算：整片挂推镜的镜头占比上限，主轨另有更紧的上限（真值里主轨机位基本不动）
+PUSH_SHOT_RATIO = 0.35
+PUSH_SHOT_RATIO_AROLL = 0.15
 # 对位门禁阈值：写在 broll_match 里（MAX_NONE_RATIO / MIN_HIT_RATIO），这里只做开关
 
 
@@ -480,14 +487,26 @@ def _apply_keyframe_policy(clips: List[Dict[str, Any]], kf_per_min: float, total
     cands = [c for c in clips if c.get("track_role") != "code_broll" and not c.get("vf_extra")]
     if not cands:
         return 0
-    strong = kf_per_min >= 80.0
-    if strong:
-        chosen = cands
-    else:
-        budget = max(1, int(round(kf_per_min * total_dur / 60.0 / 2.0)))
-        chosen = sorted(cands, key=lambda c: -float(c.get("duration_sec", 0.0)))[:budget]
+    # 关键帧密度 ≠ 推镜密度。2026-11-24 实测（style_21 真草稿）：主轨 13 镜里只有 4 镜有推镜、
+    # 共 8 个缩放关键帧点，主轨机位基本是**固定半身**（常驻 scale 1.2），推镜是点缀不是常态。
+    # 旧代码把「92.2 关键帧/分」当成「92.2 次推镜/分」→ 51 镜里 49 镜全挂缓推，
+    # 观感就是「每一镜都在呼吸」，这正是「看着乱」的头号来源。
+    # 现在：只挑最长的镜头给预算，且比例上限 PUSH_SHOT_RATIO；主轨更少（推镜优先给 B-roll）。
+    aroll = [c for c in cands if c.get("track_role") == "a_roll"]
+    broll = [c for c in cands if c.get("track_role") != "a_roll"]
+    budget_total = max(1, int(round(len(cands) * PUSH_SHOT_RATIO)))
+    budget_a = int(round(len(aroll) * PUSH_SHOT_RATIO_AROLL))
+    if aroll and budget_a == 0:
+        budget_a = 1  # 全 A-roll 的风格（如 style_08）也要有推镜，否则整片机位死板
+    if not broll:
+        budget_a = max(budget_a, budget_total)
+    budget_b = max(0, budget_total - budget_a)
+    chosen = (
+        sorted(aroll, key=lambda c: -float(c.get("duration_sec", 0.0)))[:budget_a]
+        + sorted(broll, key=lambda c: -float(c.get("duration_sec", 0.0)))[:budget_b]
+    )
     chosen_ids = {id(c) for c in chosen}
-    peak = 1.14 if strong else 1.07
+    peak = 1.08
     flip = 0
     for c in clips:
         if id(c) not in chosen_ids:
@@ -1189,6 +1208,10 @@ def run_step4(
                     j_leads[idx] = 0
 
     usage_counts: Dict[str, int] = {m["id"]: 0 for m in broll_pool}
+    # 场景复用账本：原版一条素材反复取不同时间窗（真值段/文件 中位 4.3），不是一条用一次。
+    # 每条素材只用一次 → 每秒换一个新场景 → 这就是「看着乱」的量化根因。
+    used_media_counts: Dict[str, int] = {}
+    scene_target = scene_budget.target_segs_per_file(style_id)
     # Agent 逐句指定过素材（04b_broll_choice.json）就优先采信，读一次即可
     agent_choices = broll_match.load_agent_choices(pipeline_dir)
     if agent_choices.get("items"):
@@ -1260,6 +1283,7 @@ def run_step4(
         best_m = candidates[0]
         best_score = -1e9
         blocked_here = False
+        cand_rows: List[Dict[str, Any]] = []
         for m in candidates:
             m_tags_tab = {str(t) for t in (m.get("taboo_tags") or [])}
             hard_taboo = bool(m_tags_tab & HARD_TABOO_ALWAYS)
@@ -1305,20 +1329,36 @@ def run_step4(
                 if m.get("role") == "code_broll" or (avail - max(eff_cur, prev_src_out + 0.05) < seg_dur):
                     same_media_pen = 800.0
                 else:
-                    same_media_pen = 18.0
+                    # 真值里同一文件会被反复取不同时间窗（段/文件 4.3），轻微扣分即可；
+                    # 旧值 18.0 等于「禁止回用」，是「每镜换地方」的直接推手。
+                    same_media_pen = 3.0
             rem = (avail - h_m) - eff_cur
             exhausted_pen = 500.0 if (m.get("role") != "code_broll" and (avail - eff_cur) < seg_dur) else 0.0
             if m.get("role") != "code_broll" and (avail - eff_cur) < min(0.5, seg_dur * 0.5):
                 exhausted_pen += 1500.0
             dur_bonus = 2.0 if rem >= seg_dur else (0.5 if avail >= seg_dur else -2.0)
             live_bonus = 3.5 if (t_start < 3.0 and m.get("role") == "b_roll") else 0.0
-            sc = (
-                sem_weight + intel_bonus + size_bonus + cont_bonus + stab_bonus + sharp_bonus
-                + dur_bonus + live_bonus - taboo_pen - same_media_pen - exhausted_pen - motion_pen
+            reuse_adj = scene_budget.reuse_bonus(
+                style_id, mp_str, used_media_counts, len(used_media_counts), t_start,
             )
-            if sc > best_score:
-                best_score = sc
-                best_m = m
+            # 两段裁决（这是原版的做法，也是「乱」的根因所在）：
+            #   第一段只问「画面对不对得上这句台词」——语义分进同档就算达标；
+            #   第二段在同档里按场景连续性裁决：回用同一条素材的另一个时间窗、同场景组、景别交替、
+            #   稳定性——而不是每切一次就换一条从没用过的新素材（那样每秒换一个场景，观感必然乱）。
+            sem_part = sem_weight + intel_bonus
+            cont_part = (
+                size_bonus + cont_bonus + stab_bonus + sharp_bonus
+                + dur_bonus + live_bonus + reuse_adj
+                - taboo_pen - same_media_pen - exhausted_pen - motion_pen
+            )
+            cand_rows.append({"m": m, "sem": sem_part, "cont": cont_part, "sc": sem_part + cont_part})
+        if cand_rows:
+            top_sem = max(r["sem"] for r in cand_rows)
+            band = [r for r in cand_rows if r["sem"] >= top_sem - BROLL_SEM_TIE_BAND]
+            band.sort(key=lambda r: (-r["cont"], -r["sem"]))
+            best_row = band[0]
+            best_m = best_row["m"]
+            best_score = best_row["sc"]
         if blocked_here and not best_m.get("taboo_tags"):
             taboo_blocked_count += 1
         return best_m, "rules"
@@ -1463,6 +1503,8 @@ def run_step4(
                 used_cursors[bid] = round(src_out + 0.10, 4)
 
             usage_counts[bid] = usage_counts.get(bid, 0) + 1
+            _mp_of_br = str(br.get("normalized_mp4") or "")
+            used_media_counts[_mp_of_br] = used_media_counts.get(_mp_of_br, 0) + 1
             last_group = str(br.get("scene_group", last_group))
             last_motion = str(br.get("camera_motion") or "static")
             last_shot_size = str(br.get("shot_size") or "medium")

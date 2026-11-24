@@ -157,8 +157,17 @@ class FlowerPolicy:
         self.min_gap = max(1.0, min(_g_min, _g_med * 0.6))
         self.chars_min = max(2, int(self.rules.get("chars_min") or 2))
         self.chars_max = max(self.chars_min + 1, int(self.rules.get("chars_max") or 10))
-        self.hold_min = max(HARD_MIN_HOLD_SEC, float(self.rules.get("hold_sec_min") or 1.2))
-        self.hold_max = max(self.hold_min, float(self.rules.get("hold_sec_max") or 4.0))
+        # 停留时长必须用「源草稿里这张花字自己的段时长」，不是「到下一张的间隔」。
+        # 2026-11-24 修：style_21 的 hold_sec_min/max 是 3.3/3.98，可那是间隔口径；
+        # 真正落在画面上的段时长分布是 fallback_hold_sec = 1.08~2.3（中位 1.4）。
+        # 用间隔口径 → 每张大字在画面里杵 3.3 秒，六张连着就把画面占满，观感必然乱。
+        _fh = [float(x) for x in (self.rules.get("fallback_hold_sec") or []) if x]
+        if len(_fh) >= 2 and _fh[1] >= _fh[0]:
+            self.hold_min = max(HARD_MIN_HOLD_SEC, _fh[0])
+            self.hold_max = max(self.hold_min, _fh[1])
+        else:
+            self.hold_min = max(HARD_MIN_HOLD_SEC, float(self.rules.get("hold_sec_min") or 1.2))
+            self.hold_max = max(self.hold_min, float(self.rules.get("hold_sec_max") or 4.0))
         self.allowed_shot_types = set(scope.get("allowed_shot_types") or ["a_roll", "b_roll"])
         self.tol = float(self.rules.get("tol_sec") or 0.12)
         self.colors = self.rules.get("colors") or {}
