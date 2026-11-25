@@ -126,6 +126,34 @@ def detect_black_intervals(video_path: Path) -> tuple[str, List[str]]:
     return ("FAIL" if hits else "PASS"), hits
 
 
+def evaluate_cut_boundary_cleanliness(video_path: Path, edl: Dict[str, Any]) -> Dict[str, Any]:
+    """片段首尾 NG 帧与切点冻帧拖尾（白盒 EDL 源窗口 + 黑盒成片切点采样）。"""
+    from clip_boundary_audit import audit_edl_cut_boundaries
+
+    result = audit_edl_cut_boundaries(str(video_path), edl)
+    freeze = result.get("freeze_tail_clips") or []
+    ng_edges = result.get("ng_boundary_clips") or []
+    if not result.get("ok"):
+        status = "FAIL"
+    elif result.get("checked_clips") and not result.get("sampled", True):
+        status = "SKIPPED_UNAVAILABLE"
+    else:
+        status = "PASS"
+    detail = f"{result.get('checked_clips', 0)} 镜 / 冻帧拖尾 {len(freeze)} 处 / 首尾NG帧 {len(ng_edges)} 处"
+    if freeze:
+        detail += f" | {freeze[0]['clip_id']} 结尾源窗口缺 {freeze[0]['shortfall_sec']:.2f}s"
+    if ng_edges:
+        edge_cn = "入点" if ng_edges[0]["edge"] == "head" else "出点"
+        detail += f" | {ng_edges[0]['clip_id']} {edge_cn} {ng_edges[0]['reason']} @{ng_edges[0]['time_sec']:.2f}s"
+    return _mk_check(
+        "cut_boundary_cleanliness",
+        "片段首尾无NG帧与切点无冻帧拖尾",
+        status,
+        detail,
+        "0 处源窗口短缺>0.08s；切点±0.20s 无黑闪/糊帧甩镜",
+    )
+
+
 def measure_sync_marker(video_path: Path, start: float, end: float, fps: int) -> Dict[str, Any]:
     """Measure the onset offset of a bright slate flash and a paired test tone."""
     import numpy as np
@@ -394,6 +422,9 @@ def inspect_video(
             f"最大对齐偏差 {max_cut_err_frames} 帧, J-cut合规={'是' if jcut_valid else '否'}",
             "≤ 1 帧",
         ))
+
+        # 6b. 素材头尾 NG 帧与切点干净度（EDL 源窗口冻帧 + 成片切点 ±0.20s 采样）
+        checks.append(evaluate_cut_boundary_cleanliness(video_path, edl))
 
         # 7. UI 安全区 / 540px 真居中对称带 / <=3 字残句 / B9 互斥 / 包装预算
         ui_violations: List[str] = []
