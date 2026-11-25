@@ -585,6 +585,47 @@ def _event_cut_prio(ev: Dict[str, Any], prop_sent_ids: set) -> int:
     return 4
 
 
+def _pick_choreography_opening_events(
+    events: List[Dict[str, Any]], fps: int, total_frames: int, count: int, prop_sent_ids: set,
+) -> List[Dict[str, Any]]:
+    """按帧选开场事件，优先留够能落地的切点，同帧再按语音事件优先级裁决。"""
+    candidates = sorted(
+        (ev for ev in events if ev.get("type") in _GRAMMAR_CUT_EVENT_TYPES
+         and int(ev["frame"]) < 3 * fps and total_frames - int(ev["frame"]) >= 10),
+        key=lambda ev: (int(ev["frame"]), _event_cut_prio(ev, prop_sent_ids)),
+    )
+    picked = []
+    last_frame = 0
+    min_gap_frames = max(12, math.ceil(0.40 * fps))
+    for ev in candidates:
+        if len(picked) >= count:
+            break
+        if int(ev["frame"]) - last_frame >= min_gap_frames:
+            picked.append(ev)
+            last_frame = int(ev["frame"])
+    return picked
+
+
+def _broll_tags(item: Dict[str, Any]) -> List[str]:
+    return [
+        str(tag).strip()
+        for key in ("semantic_tags", "manual_tags", "scene_tags_zh", "tags")
+        for tag in (item.get(key) or [])
+        if str(tag).strip()
+    ]
+
+
+def _has_opening_broll_evidence(item: Dict[str, Any], text: str) -> bool:
+    tags = _broll_tags(item)
+    if any(tag in text for tag in tags):
+        return True
+    # 允许标签或描述用同一实物的近义名称，例如「虾饺」和「饺子」。
+    spoken = broll_match.concepts_detail(text)
+    visible = broll_match.concepts_detail(" ".join([str(item.get("description") or ""), *tags]))
+    return any(strength >= 1.0 and concept in spoken and spoken[concept][1] >= 1.0
+               for concept, (_, strength) in visible.items())
+
+
 def _prune_cut_points_to_budget(cut_points: List[Dict[str, Any]], target_shots: int,
                                shot_max_sec: float, fps: int, total_dur: float,
                                can_merge=None) -> tuple:
@@ -699,6 +740,67 @@ def run_step4(
               "B-roll 只能按质量轮转，对位会大面积记 none")
     broll_pool = ensure_code_broll_pool(pipeline_dir, sentences, brolls_raw, track, style_id=style_id, total_dur=total_dur)
 
+    contract = None
+    choreography_applied = None
+    if style_id in ("style_01", "style_21"):
+        try:
+            from style_01_21_choreographer import (
+                STYLE_RHYTHM_CONTRACTS,
+                plan_style_01_rhythm,
+                plan_style_21_rhythm,
+            )
+
+            contract = STYLE_RHYTHM_CONTRACTS[style_id]
+        except Exception as exc:
+            reason = "风格节奏契约加载失败，沿用原有剪辑规则"
+            print(f"[step4] [WARN] {reason}（{type(exc).__name__}）")
+            choreography_applied = {"style_id": style_id, "enabled": False, "planned_degrade_reason": reason}
+        else:
+            planner = plan_style_21_rhythm if style_id == "style_21" else plan_style_01_rhythm
+            choreo_plan = planner(sentences, broll_pool, fps)
+            choreography_applied = {
+                "style_id": style_id,
+                "enabled": True,
+                "broll_target_ratio": choreo_plan["broll_target_ratio"],
+                "punch_in_scale": contract["punch_in_scale"],
+                "opening_cuts_3s_target": contract["opening_cuts_3s"],
+                "aroll_speed_locked": True,
+                "planned_degrade_reason": choreo_plan["degrade_reason"],
+            }
+    fast_choreography = bool(contract and style_id == "style_21")
+    choreography_broll = bool(contract and not prefer_broll_only)
+    live_brolls_for_choreography = [m for m in broll_pool if m["role"] == "b_roll"] if choreography_broll else []
+
+    def _score_broll(
+        text: str,
+        item: Dict[str, Any],
+        *,
+        keywords: Optional[List[str]] = None,
+        used_count: int = 0,
+        need_sec: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        score = broll_match.score_clip(text, item, keywords=keywords, used_count=used_count, need_sec=need_sec)
+        if (
+            fast_choreography and choreography_broll
+            and item["role"] == "b_roll" and score["tier"] == broll_match.TIER_NONE
+        ):
+            # 台词明确讲到素材标签时，词表未收录的同场景依据也可以用于选镜。
+            visible = broll_match.describe_clip(item)
+            tags = [
+                tag for tag in dict.fromkeys(_broll_tags(item))
+                if len(tag) >= 2 and tag in text and tag in visible
+                and tag not in ("实拍", "空镜", "近景", "特写", "全景", "中景", "远景")
+            ][:6]
+            if tags:
+                weak = broll_match.WEAK_MIN
+                score.update(
+                    rank=round(score["rank"] + (weak - score["score"]) * 100, 2),
+                    score=weak, tier=broll_match.TIER_WEAK,
+                    hits=[f"素材标签「{tag}」" for tag in tags],
+                    why=f"画面标签与台词相同（{'、'.join(tags)}）",
+                )
+        return score
+
     deictic_gaps = detect_script_media_gaps(sentences, broll_pool)
     if deictic_gaps:
         print(f"[step4] [WARN] 镜头与台词缺口预警 {len(deictic_gaps)} 处: {[g['matched_cue'] for g in deictic_gaps]}")
@@ -712,6 +814,8 @@ def run_step4(
     # 风格「剪辑刀法」真值：style 模式读 forensic/style_edit_grammar.json；dynamic 是逃生门（旧行为）
     grammar_mode = grammar if grammar in ("style", "dynamic") else "style"
     gram = load_grammar(style_id) if (style_id and grammar_mode == "style") else None
+    if gram is not None and fast_choreography:
+        gram = {**gram, "shot": {**gram["shot"], "p50": contract["median_shot_sec"]}}
     # 镜头预算先算出来：挑切点时要用（目标刀数 / 单镜时长带 / 快切配额 / 开场刀数）
     shot_budget: Optional[Dict[str, Any]] = plan_shot_budget(total_dur, gram) if gram is not None else None
     grammar_notes: List[str] = []
@@ -741,10 +845,12 @@ def run_step4(
             for w in (kinetic_stage_plan.get("matting_windows") or [])
         )
 
-    broll_prior_ratio = float((style_entry or {}).get("broll_overlay_ratio_target", 0.53))
+    broll_prior_ratio = (choreography_applied["broll_target_ratio"] if contract
+                         else float((style_entry or {}).get("broll_overlay_ratio_target", 0.53)))
     # 风格里的 B-roll 占比只是先验：实际配比按素材能力动态调整（用户明确要求，不可刻板执行模版比例）
     broll_target_hard = bool((style_entry or {}).get("broll_target_hard", False))
-    band_raw = (style_entry or {}).get("broll_target_band_pct") or [
+    contract_band = [r * 100 for r in contract["broll_ratio_band"]] if contract else None
+    band_raw = (style_entry or {}).get("broll_target_band_pct") or contract_band or [
         max(0.0, (broll_prior_ratio - 0.15) * 100),
         min(100.0, (broll_prior_ratio + 0.15) * 100),
     ]
@@ -773,7 +879,8 @@ def run_step4(
     micro_hook_max_sec = min(max_shot, float(eff_prof.get("micro_hook_max_sec", max_shot - 1.8)))
     # ── 动态配比：先验 → 按实际素材能力收敛，并记录原因 ──
     aroll_capacity = min(1.0, sum(float(m.get("duration_sec") or 0) for m in usable_arolls) / max(total_dur, 0.1))
-    broll_capacity = min(1.0, sum(float(m.get("duration_sec") or 0) for m in broll_pool) / max(total_dur, 0.1))
+    capacity_pool = live_brolls_for_choreography if choreography_broll else broll_pool
+    broll_capacity = min(1.0, sum(float(m.get("duration_sec") or 0) for m in capacity_pool) / max(total_dur, 0.1))
     broll_target_ratio = broll_prior_ratio
     if kinetic_stage_mode and not brolls_raw:
         broll_target_ratio = 0.0
@@ -806,7 +913,8 @@ def run_step4(
     use_style_timing = bool(gram)
     use_ab_timing = use_style_timing or (bool(ab_spec) and not eff_prof)
     opening_cuts_conflict = ""
-    zero_broll_mode = bool(ab_spec) and broll_target_ratio <= 0.01 and bool(usable_arolls) and not prefer_broll_only
+    zero_broll_mode = (bool(ab_spec) and broll_target_ratio <= 0.01 and bool(usable_arolls)
+                       and not prefer_broll_only and not choreography_broll)
     if use_ab_timing:
         if use_style_timing:
             # 裁决开场刀数：以草稿切点直接数出来的 opening_structure.first_3s_cuts_count 为准
@@ -848,14 +956,25 @@ def run_step4(
         grammar_notes.append("风格刀法真值缺失，镜头节奏降级到账号画像兜底")
     kf_target = float(ab_spec["kf_per_min_target"]) if ("kf_per_min_target" in ab_spec) else None
     allow_punch = kf_target is None or kf_target > 0.0
+    punch_scale = contract["punch_in_scale"] if contract else 1.15
+    if fast_choreography:
+        punch_scale = max(1.18, min(1.22, punch_scale))
+    if contract:
+        # 契约计镜头切片，选刀时减去从第 0 帧起的首镜。
+        pacing["opening_cuts"] = max(int(pacing["opening_cuts"]), int(contract["opening_cuts_3s"]) - 1)
 
-    first_3s_evts = pick_first_3s_events(events, fps, int(pacing["opening_cuts"]))
     sent_by_id = {s["id"]: s for s in sentences}
     prop_sent_ids = {s["id"] for s in sentences if any(cue in s.get("text", "") for cue in PROP_SHOW_CUES)}
+    first_3s_cutoff_f = 3 * fps
+    opening_cut_target = int(pacing["opening_cuts"])
+    first_3s_evts = pick_first_3s_events(events, fps, opening_cut_target)
+    if fast_choreography or (contract and len(first_3s_evts) < opening_cut_target):
+        first_3s_evts = _pick_choreography_opening_events(events, fps, total_frames, opening_cut_target, prop_sent_ids)
 
     later_candidates = [
         e for e in events
         if e["time_sec"] > 2.85
+        and (not contract or int(e["frame"]) >= first_3s_cutoff_f)
         and e["time_sec"] < total_dur - 0.80
         and e["type"] in ("pause_start", "sentence_start", "pause_end", "keyword_accent", "stress", "bgm_section", "bgm_downbeat")
     ]
@@ -881,9 +1000,27 @@ def run_step4(
             if prev_c is None or prio < int(prev_c["prio"]):
                 cand_by_time[t_c] = {"time_sec": t_c, "prio": prio, "event": e,
                                      "sentence_id": e.get("sentence_id")}
-        plan = select_cuts(list(cand_by_time.values()), shot_budget, gram)
+        selection_grammar = gram
+        if (fast_choreography and not choreo_plan["degrade_reason"]
+                and len(cand_by_time) >= shot_budget["target_shots"]):
+            # 正文只借用参考镜长，select_cuts 仍从真实音频事件取切点。
+            preferred_lengths = [
+                seg["duration_sec"] for seg in choreo_plan["segments"][:-1]
+                if seg["start_sec"] >= 3.0
+            ]
+            if preferred_lengths:
+                selection_grammar = {**gram, "shot": {**gram["shot"], "durations_chrono": preferred_lengths}}
+        plan = select_cuts(list(cand_by_time.values()), shot_budget, selection_grammar)
         chosen_cuts = [c["candidate"]["event"] for c in plan["cuts"] if c.get("candidate")]
-        grammar_notes.extend(str(n) for n in (plan.get("notes") or []))
+        plan_notes = [str(note) for note in (plan.get("notes") or [])]
+        if contract:
+            grammar_opening_count = sum(int(e["frame"]) < first_3s_cutoff_f for e in chosen_cuts)
+            if fast_choreography or len(first_3s_evts) > grammar_opening_count:
+                chosen_cuts = first_3s_evts + [e for e in chosen_cuts if int(e["frame"]) >= first_3s_cutoff_f]
+                plan_notes = [n for n in plan_notes if not n.startswith("前 3s 可用事件不足")]
+                if len(first_3s_evts) < opening_cut_target:
+                    plan_notes.append(f"前 3s 可用事件不足：开场只排到 {len(first_3s_evts)}/{opening_cut_target} 刀")
+        grammar_notes.extend(plan_notes)
         grammar_notes.append(
             f"挑切点走风格节奏式挑法：目标 {shot_budget['target_shots']} 镜 / "
             f"快切配额 {shot_budget['fast_quota']} / 开场 {shot_budget['opening_cuts']} 刀 / "
@@ -1067,6 +1204,7 @@ def run_step4(
                     nxt_t = frames_to_sec(cut_points[k + 1]["raw_frame"] if k + 1 < len(cut_points) else total_frames, fps)
                     if (
                         str(cut_points[k]["event"].get("type") or "") != "sentence_start"
+                        and (not fast_choreography or cp_t >= 3.0 or snap_f < first_3s_cutoff_f)
                         and abs(s_t0 - cp_t) <= 2.2
                         and s_t0 - prev_t >= 0.80
                         and s_t0 - prev_t <= max(_max_shot_lim, 6.0)
@@ -1112,6 +1250,8 @@ def run_step4(
             best_dist = int(1.1 * fps) + 1
             for k in range(1, len(cut_points)):
                 rf = int(cut_points[k]["raw_frame"])
+                if fast_choreography and rf < first_3s_cutoff_f <= snap_f:
+                    continue
                 if any(abs(rf - sf) <= 2 for sf in source_switch_frames if sf != snap_f):
                     continue
                 d_f = abs(rf - snap_f)
@@ -1129,6 +1269,27 @@ def run_step4(
                 right_rf = int(cut_points[ins_i]["raw_frame"]) if ins_i < len(cut_points) else total_frames
                 if snap_f - left_rf >= 14 and right_rf - snap_f >= 14:
                     cut_points.insert(ins_i, {"cut_frame": snap_f, "raw_frame": snap_f, "event": ev_c})
+
+    if choreography_broll:
+        # 优先用锁定口播的真实句首界定窗口，避免把相邻的整段镜头一起锁住。
+        lock_boundaries = set()
+        was_locked = False
+        for sentence in sentences:
+            locked = bool(sentence.get("a_roll_locked"))
+            if locked != was_locked:
+                lock_boundaries.add(sentence["id"])
+            was_locked = locked
+        for event in events:
+            if event["type"] != "sentence_start" or event.get("sentence_id") not in lock_boundaries:
+                continue
+            frame = int(event["frame"])
+            if frame < 12:
+                continue
+            index = next((i for i, cp in enumerate(cut_points) if cp["raw_frame"] >= frame), len(cut_points))
+            before = cut_points[index - 1]["raw_frame"]
+            after = cut_points[index]["raw_frame"] if index < len(cut_points) else total_frames
+            if frame - before >= 12 and after - frame >= 12:
+                cut_points.insert(index, {"cut_frame": frame, "raw_frame": frame, "event": event})
 
     def find_sentence_for_time(
         t_sec: float,
@@ -1178,6 +1339,24 @@ def run_step4(
                 )
         return fallback
 
+    opening_word_spans = [
+        (float(w.get("start_sec", w.get("start", 0.0))), float(w.get("end_sec", w.get("end", 0.0))))
+        for s in sentences for w in (s.get("words") or [])
+    ] if fast_choreography else []
+    aroll_locked_spans = [
+        (float(s["start_sec"]), float(s["end_sec"])) for s in sentences if s.get("a_roll_locked")
+    ] if choreography_broll else []
+
+    def _choreography_aroll_locked(t_start: float, t_end: float) -> bool:
+        if any(min(t_end, end) - max(t_start, start) > 1.0 / fps for start, end in aroll_locked_spans):
+            return True
+        if not fast_choreography:
+            return t_start < 3.2
+        return t_start < 3.0 and any(
+            start + 1.0 / fps < cut < end - 1.0 / fps
+            for start, end in opening_word_spans for cut in (t_start, t_end)
+        )
+
     n_segs = len(cut_points)
     audio_only_flags: List[bool] = []
     source_aroll_valid: List[bool] = []
@@ -1207,11 +1386,12 @@ def run_step4(
         # 严格校验本句原声是否真正对应可用的实拍 A-roll，绝不把无源配音硬配给无关真人口型！
         source_aroll_valid.append(bool(sm_p and sm_p in usable_aroll_paths))
 
-    def _can_be_safe_aroll(seg_idx: int) -> bool:
+    def _can_be_safe_aroll(seg_idx: int, *, use_visual_frames: bool = False) -> bool:
         if audio_only_flags[seg_idx] or not usable_arolls or broll_only_mode or not source_aroll_valid[seg_idx]:
             return False
-        t_in = frames_to_sec(cut_points[seg_idx]["raw_frame"], fps)
-        t_out = frames_to_sec(cut_points[seg_idx + 1]["raw_frame"] if seg_idx + 1 < n_segs else total_frames, fps)
+        frame_key = "cut_frame" if use_visual_frames else "raw_frame"
+        t_in = frames_to_sec(cut_points[seg_idx][frame_key], fps)
+        t_out = frames_to_sec(cut_points[seg_idx + 1][frame_key] if seg_idx + 1 < n_segs else total_frames, fps)
         overlapping = [s for s in sentences if min(t_out, float(s["end_sec"])) - max(t_in, float(s["start_sec"])) > 0.04]
         if not overlapping:
             overlapping = [find_sentence_for_time(t_in, cut_points[seg_idx]["event"])]
@@ -1375,9 +1555,45 @@ def run_step4(
             if not audio_only_flags[i_z] and source_aroll_valid[i_z]:
                 roles[i_z] = "a_roll"
 
-    # 反向校正（下沿）：镜头数被风格预算收过之后，B 覆盖可能掉到风格动态带以下。
-    # 素材够就按语义贴合度把 A 镜换成 B 镜（不硬套模版比例，换不动就如实记原因）。
-    if usable_arolls and not broll_only_mode and not zero_broll_mode and broll_pool and n_segs > 1:
+    # 按可用的实拍证据补足契约配额。其余风格沿用动态带下沿校正。
+    choreography_has_unfilled_shot = False
+    if choreography_broll and usable_arolls and not broll_only_mode:
+        matched = []
+        for i, cp in enumerate(cut_points):
+            start = frames_to_sec(cp["raw_frame"], fps)
+            end = seg_ends_est[i]
+            sent = find_broll_topic_sentence(start, end, find_sentence_for_time(start, cp["event"], t_end=end))
+            locked = _choreography_aroll_locked(start, end)
+            duration = seg_durs_est[i]
+            text = str(sent.get("text") or "")
+            if not locked and any(
+                float(m.get("duration_sec") or 0.0) + SOURCE_EPSILON_SEC >= duration
+                and not (fast_choreography and start < 3.0 and not _has_opening_broll_evidence(m, text))
+                and _score_broll(text, m, keywords=sent.get("keywords"))["tier"] in ("hit", "weak")
+                for m in live_brolls_for_choreography
+            ):
+                matched.append(i)
+            elif _can_be_safe_aroll(i):
+                choreography_has_unfilled_shot |= roles[i] == "b_roll" and not locked
+                roles[i] = "a_roll"
+
+        target_b_sec = total_dur * broll_target_ratio
+        max_b_sec = total_dur * max(broll_band[1], broll_target_ratio)
+        cur_b_sec = sum(seg_durs_est[i] for i in matched if roles[i] == "b_roll")
+        protected_tail = next(
+            (i for i in reversed(range(n_segs)) if roles[i] == "a_roll" and seg_ends_est[i] >= tail_floor),
+            None,
+        ) if target_aroll_ratio >= 0.18 and not fast_choreography else None
+        for i in sorted(matched, key=lambda idx: (-seg_durs_est[idx], idx)):
+            if roles[i] != "a_roll" or i == protected_tail:
+                continue
+            if cur_b_sec + seg_durs_est[i] / 2.0 > target_b_sec:
+                continue
+            if fast_choreography and cur_b_sec + seg_durs_est[i] > max_b_sec + SOURCE_EPSILON_SEC:
+                continue
+            roles[i] = "b_roll"
+            cur_b_sec += seg_durs_est[i]
+    elif usable_arolls and not broll_only_mode and not zero_broll_mode and broll_pool and n_segs > 1:
         seg_durs_up = [
             frames_to_sec((cut_points[i + 1]["raw_frame"] if i + 1 < n_segs else total_frames)
                           - cut_points[i]["raw_frame"], fps)
@@ -1609,10 +1825,11 @@ def run_step4(
         )
 
     # 真·J-cut (正帧移：声先画后) 与 真·L-cut (负帧移：高语义物证画面先入)
-    first_3s_cutoff_f = 3 * fps
     j_leads = [0] * n_segs
     if j_cut_frames > 0:
         for idx in range(1, n_segs):
+            if fast_choreography and cut_points[idx]["raw_frame"] < first_3s_cutoff_f:
+                continue
             if _cross_roll_needs_hard_cut(idx):
                 continue
             ev = cut_points[idx]["event"]
@@ -1638,6 +1855,8 @@ def run_step4(
                 l_lead = min(4, max(2, j_cut_frames))
                 cand_f = cut_points[idx]["raw_frame"] - l_lead
                 prev_f = cut_points[idx - 1]["cut_frame"]
+                if choreography_broll and style_id == "style_01" and cand_f < round(3.2 * fps):
+                    continue
                 if has_match and (cand_f - prev_f >= 14) and (cut_points[idx]["raw_frame"] < first_3s_cutoff_f or cand_f >= first_3s_cutoff_f):
                     cut_points[idx]["cut_frame"] = cand_f
                     j_leads[idx] = -l_lead
@@ -1684,7 +1903,7 @@ def run_step4(
     def sem_of_choice(m: Dict[str, Any], s: Dict[str, Any], used_count: int = 0,
                        need_sec: Optional[float] = None) -> Dict[str, Any]:
         """写进剪辑表的语义依据（与选片同口径）；旧口径对照时另外记一笔字面 tag 命中数。"""
-        sel = broll_match.score_clip(
+        sel = _score_broll(
             str(s.get("text", "")), m, used_count=used_count, need_sec=need_sec,
             keywords=s.get("keywords") or [],
         )
@@ -1786,6 +2005,8 @@ def run_step4(
         forbid_code: bool = False,
         matching_live_only: bool = False,
         require_full: bool = False,
+        require_opening_evidence: bool = False,
+        code_only: bool = False,
     ) -> Optional[Tuple[Dict[str, Any], str, BrollTake]]:
         """这镜配哪条 B-roll：先按「这句台词讲了什么画面」排，再拿质量/时长/复用次数同分裁决。"""
         nonlocal taboo_blocked_count
@@ -1793,11 +2014,14 @@ def run_step4(
         s_kws = [str(k) for k in sent.get("keywords", [])]
         is_praise = any(cue in s_txt for cue in POSITIVE_PRAISE_CUES)
         candidates = [m for m in broll_pool if not (forbid_code and m.get("role") == "code_broll")] or broll_pool
+        if code_only:
+            candidates = [m for m in candidates if m["role"] == "code_broll"]
         if matching_live_only:
             candidates = [
                 m for m in candidates
                 if m["role"] == "b_roll"
                 and not (set(m.get("taboo_tags") or []) & HARD_TABOO_ALWAYS or (is_praise and m.get("taboo_tags")))
+                and (not require_opening_evidence or _has_opening_broll_evidence(m, s_txt))
                 and sem_of_choice(m, sent, need_sec=seg_dur)["tier"] in ("hit", "weak")
             ]
         takes = {m["id"]: _broll_take(m, seg_dur) for m in candidates}
@@ -1836,7 +2060,7 @@ def run_step4(
                 sem_weight = sem_hits * 6.5
             else:
                 # 语义分是主序（0~100）：台词概念 ↔ 画面描述命中越多越前，质量/复用/时长已在 rank 里扣完
-                m_sel = broll_match.score_clip(
+                m_sel = _score_broll(
                     s_txt, m, used_count=usage_counts.get(m["id"], 0), need_sec=seg_dur, keywords=s_kws,
                 )
                 sem_weight = float(m_sel["rank"]) * BROLL_SEM_RANK_WEIGHT
@@ -2017,6 +2241,20 @@ def run_step4(
                 use_aroll = True
                 roles[idx] = "a_roll"
                 cur_kb_sec -= seg_dur
+        if choreography_broll and not use_aroll:
+            window_locked = _choreography_aroll_locked(t_start, t_end)
+            if not window_locked:
+                broll_pick = pick_best_broll(
+                    broll_sent, seg_dur, last_group, t_start, prev_mp, prev_so,
+                    prev_motion=last_motion, prev_shot_size=last_shot_size, matching_live_only=True,
+                    require_opening_evidence=fast_choreography and t_start < 3.0,
+                )
+            if broll_pick is None:
+                choreography_has_unfilled_shot |= not window_locked
+                if (str(sent.get("source_media") or "") in usable_aroll_paths
+                        and _can_be_safe_aroll(idx, use_visual_frames=True)):
+                    use_aroll = True
+                    roles[idx] = "a_roll"
         if use_aroll:
             ar = next((a for a in usable_arolls if a["normalized_mp4"] == sent.get("source_media")), usable_arolls[0])
             ar_mp = str(ar["normalized_mp4"])
@@ -2029,11 +2267,13 @@ def run_step4(
             if (
                 shortfall > MAX_AROLL_SHORTFALL_SEC + SOURCE_EPSILON_SEC
                 and not aroll_locked and not zero_broll_mode
+                and not (fast_choreography and t_start < 3.0 and _choreography_aroll_locked(t_start, t_end))
                 and (not kinetic_stage_mode or (t_start >= 3.0 and cur_kb_sec + seg_dur <= max_kinetic_b_sec))
             ):
                 broll_pick = pick_best_broll(
                     broll_sent, seg_dur, last_group, t_start, prev_mp, prev_so,
                     prev_motion=last_motion, prev_shot_size=last_shot_size, matching_live_only=True,
+                    require_opening_evidence=fast_choreography and t_start < 3.0,
                 )
                 if broll_pick is not None:
                     use_aroll = False
@@ -2050,7 +2290,7 @@ def run_step4(
             vf_extra = ""
             cur_zoom = 1.0
             if idx > 0 and roles[idx - 1] == "a_roll" and not has_prop_show and allow_punch:
-                cur_zoom = 1.15 if last_aroll_zoom == 1.0 else 1.0
+                cur_zoom = punch_scale if last_aroll_zoom == 1.0 else 1.0
                 if cur_zoom > 1.01:
                     vf_extra = _build_eye_locked_vf(ar.get("eye_anchor"), zoom=cur_zoom)
                     punch_in_count += 1
@@ -2092,7 +2332,19 @@ def run_step4(
                 "purpose": purpose,
             })
         if not use_aroll:
-            if broll_pick is None:
+            if broll_pick is None and choreography_broll:
+                # 真人画面确实不可用时沿用已有图卡补镜，避免拿无关实拍凑配额。
+                if not any(m["role"] == "code_broll" for m in broll_pool):
+                    generated = ensure_code_broll_pool(
+                        pipeline_dir, sentences, [], track, style_id=style_id, total_dur=total_dur,
+                    )
+                    broll_pool.extend(generated)
+                    usage_counts.update({m["id"]: 0 for m in generated})
+                broll_pick = pick_best_broll(
+                    broll_sent, seg_dur, last_group, t_start, prev_mp, prev_so,
+                    prev_motion=last_motion, prev_shot_size=last_shot_size, code_only=True,
+                )
+            if broll_pick is None and not choreography_broll:
                 cur_code_dur = sum(float(c["duration_sec"]) for c in clips if c.get("track_role") == "code_broll")
                 forbid_code = (cur_code_dur + seg_dur) / max(0.1, total_dur) > 0.45 and any(
                     m["role"] == "b_roll" and (take := _broll_take(m, seg_dur)) is not None
@@ -2271,6 +2523,7 @@ def run_step4(
     # 分层剪辑模型（人层 + 底图层）：有高占比抠像叠 B-roll 语法的风格（如 style_21）
     # 将连续主体讲解区改造为「前景抠像人物（口型同步）+ 底图 B-roll（按镜切换）」，避免 A/B 互切频闪。
     layered_model_info: Dict[str, Any] = {"enabled": False, "clips": 0, "seconds": 0.0, "coverage": 0.0, "runs": 0}
+    original_layer_shots: Dict[str, Dict[str, Any]] = {}
     cut_elem_rule = element_rules.get_element_rule(style_id, "cutout")
     v_cut_rule = treatment_policy.style_rules(style_id).get("cutout") or {}
     _cut_scope = v_cut_rule.get("scope") or {}
@@ -2544,14 +2797,38 @@ def run_step4(
                 bg_sem = c_obj.get("sem_match")
                 bg_sig = c_obj.get("media_signal")
             else:
+                t_layer = float(c_obj["timeline_in_sec"])
+                if choreography_broll and (
+                    _choreography_aroll_locked(t_layer, float(c_obj["timeline_out_sec"]))
+                    or broll_actual_dur + dur_c / 2.0 > total_dur * broll_target_ratio
+                ):
+                    continue
                 sent_c = sent_by_id.get(str(c_obj.get("sentence_id") or "")) or {"text": c_obj.get("sentence_text", ""), "keywords": []}
                 prev_bg = str((clips[ci - 1].get("pip_layout") or {}).get("secondary_media_path") or clips[ci - 1].get("media_path") or "") if ci > 0 else ""
                 prev_bg_out = float((clips[ci - 1].get("pip_layout") or {}).get("secondary_out_sec") or clips[ci - 1].get("source_out_sec") or 0.0) if ci > 0 else 0.0
+                evidence_sent = sent_c
                 bg_pick = pick_best_broll(
-                    sent_c, dur_c, last_group, float(c_obj.get("timeline_in_sec") or 0.0),
+                    sent_c, dur_c, last_group, t_layer,
                     prev_bg, prev_bg_out, prev_motion=last_motion, prev_shot_size=last_shot_size,
-                    forbid_code=True, require_full=True,
+                    forbid_code=True, require_full=True, matching_live_only=choreography_broll,
+                    require_opening_evidence=fast_choreography and t_layer < 3.0,
                 )
+                if (
+                    bg_pick is None and fast_choreography and ci == 0
+                    and not broll_match.concepts_detail(str(sent_c.get("text") or ""))
+                ):
+                    # 自我介绍继续显示同步人像，底图可由这段录制接下来的台词提供依据。
+                    for next_sent in sentences[sentence_pos[c_obj["sentence_id"]] + 1:]:
+                        if next_sent.get("source_media") != fg_mp:
+                            break
+                        bg_pick = pick_best_broll(
+                            next_sent, dur_c, last_group, t_layer,
+                            prev_bg, prev_bg_out, prev_motion=last_motion, prev_shot_size=last_shot_size,
+                            matching_live_only=True,
+                        )
+                        if bg_pick is not None:
+                            evidence_sent = next_sent
+                            break
                 if bg_pick is None:
                     continue
                 br_pick, br_src, bg_take = bg_pick
@@ -2559,10 +2836,19 @@ def run_step4(
                 bg_in, bg_out = bg_take.start, bg_take.end
                 _record_broll_use(br_pick, bg_take)
                 last_group = str(br_pick.get("scene_group", last_group))
-                bg_sem = sem_of_choice(br_pick, sent_c, need_sec=dur_c)
+                bg_sem = sem_of_choice(br_pick, evidence_sent, need_sec=dur_c)
+                if evidence_sent is not sent_c:
+                    bg_sem.update(
+                        score=broll_match.WEAK_MIN, tier=broll_match.TIER_WEAK, verdict=broll_match.TIER_WEAK,
+                        why="开场同步人像的底图与随后同源台词同场景", evidence_sentence_id=evidence_sent["id"],
+                    )
                 bg_sem["source"] = br_src
                 bg_sig = describe_clip(br_pick)[:160]
+                if choreography_broll:
+                    broll_actual_dur += dur_c
 
+            if choreography_broll:
+                original_layer_shots[c_obj["clip_id"]] = dict(c_obj)
             c_obj["track_role"] = "a_roll"
             c_obj["media_path"] = fg_mp
             c_obj["source_in_sec"] = fg_sin
@@ -2700,8 +2986,11 @@ def run_step4(
                     cfg = {**pip_spec, "mode": pip_mode, "single_source": True}
             elif ab_pattern == "cutout_broll_alternating":
                 if role == "a_roll":
-                    sec_m, sec_i = _alt_broll(main_media)
-                    cfg = _dual_cfg(c_obj, sec_m, sec_i) if sec_m else {**pip_spec, "mode": pip_mode, "single_source": True}
+                    cfg = {**pip_spec, "mode": pip_mode, "single_source": True}
+                    if not choreography_broll:
+                        sec_m, sec_i = _alt_broll(main_media)
+                        if sec_m:
+                            cfg = _dual_cfg(c_obj, sec_m, sec_i)
             elif ab_pattern == "dual_window_broll_switcher":
                 # 真草稿里主轨缩成小窗且叠加层是「大画面」时（如 style_09），B-roll 段必须把真人塞回窗口里
                 if pip_mode in ("dark_doc_circle_avatar_pip", "geometry_pip_main_shrunk"):
@@ -2949,6 +3238,36 @@ def run_step4(
         cutout_gate = {"error": str(_pe), "candidates": 0, "allowed": 0, "dropped": 0, "rows": []}
         print(f"[step4] [WARN] 抠像触发条件未执行（{_pe}），本片一律不抠")
 
+    if original_layer_shots:
+        # 分层不可用时回到已经选好的原镜，保留合法实拍及其语义依据。
+        kept_layers = set()
+        for i, clip in enumerate(clips):
+            original = original_layer_shots.get(clip["clip_id"])
+            if original is None:
+                continue
+            layout = clip.get("pip_layout") or {}
+            if layout.get("cutout") and layout.get("secondary_media_path"):
+                kept_layers.add(i)
+            else:
+                clip.clear()
+                clip.update(original)
+                pip_applied_count -= 1
+        if len(kept_layers) < len(original_layer_shots):
+            layered_sec = sum(float(clips[i]["duration_sec"]) for i in kept_layers)
+            layered_model_info.update(
+                enabled=bool(kept_layers), clips=len(kept_layers), seconds=round(layered_sec, 2),
+                coverage=round(layered_sec / max(0.1, total_dur), 3),
+                runs=sum(i - 1 not in kept_layers for i in kept_layers),
+            )
+            broll_actual_dur = layered_sec + sum(
+                float(c["duration_sec"]) for c in clips if c["track_role"] == "b_roll"
+            )
+            broll_ratio_actual = round(broll_actual_dur / max(0.1, total_dur), 3)
+            broll_ratio_with_cards = round((broll_actual_dur + code_card_dur) / max(0.1, total_dur), 3)
+
+    if choreography_broll and broll_ratio_actual < broll_band[0]:
+        broll_policy_note += f"。可用且对得上台词的实拍覆盖 {broll_ratio_actual:.1%}，保留其余口播镜头"
+
     # 风格变速可多吃源帧，但仍要停在已选连续安全区间内。
     broll_speed_limits: Dict[str, float] = {}
     for c_obj in clips:
@@ -2987,6 +3306,8 @@ def run_step4(
             c_obj["handles_guarded"] = True
         elif role == "code_broll":
             c_obj["handles_guarded"] = True
+        elif contract and role == "a_roll":
+            c_obj["speed"] = 1.0
         dur = float(c_obj["duration_sec"])
         source_span = max(0.0, c_obj["source_out_sec"] - c_obj["source_in_sec"])
         speed = clamp_speed(c_obj.get("speed"))
@@ -3066,6 +3387,13 @@ def run_step4(
     # 语义对位汇总 + 门禁判定都在写 EDL 前算好：门禁不达标也要先把账写下来，便于事后追
     sem_summary = summarize_broll_semantic(clips)
     sem_gate = broll_match.check_semantic_gate(sem_summary, allow=allow_broll_mismatch)
+    if choreography_has_unfilled_shot and live_brolls_for_choreography and not sem_summary["clips"]:
+        # 实拍未能通过选用条件，即使剪辑表退回纯口播，显式语义门禁仍需如实给出判定。
+        sem_gate.update(
+            raw_pass=False, waived=allow_broll_mismatch,
+            fails=["提供的实拍素材里没有可与台词对齐的可用镜头，本片保留口播画面"],
+        )
+        sem_gate["pass"] = allow_broll_mismatch
     sem_summary["gate"] = sem_gate
 
     edl = {
@@ -3073,6 +3401,7 @@ def run_step4(
         "fps": fps,
         "tight": True,
         "style_id": style_id,
+        "choreography_applied": choreography_applied,
         "edit_profile": edit_profile,
         "canvas": {"width": CANVAS_WIDTH, "height": CANVAS_HEIGHT},
         "total_duration_sec": total_dur,
@@ -3205,14 +3534,13 @@ def run_step4(
             f"无依据 {_sem['none']}（命中率 {_sem['hit_ratio']*100:.0f}%；"
             f"无依据=素材侧确实没描述或与这句没公共概念，不在剪辑里瞎配）"
         )
-        _gate = _sem.get("gate") or {}
-        if not _gate.get("raw_pass", True):
-            for _reason in (_gate.get("fails") or []):
-                print(f"[step4] [FAIL] B-roll 语义对位：{_reason}")
-            if _gate.get("waived"):
-                print("[step4] [WARN] 已用 --allow-broll-mismatch 显式放行：账本仍记为不达标")
-            elif enforce_broll_gate:
-                raise BrollSemanticGateError("；".join(_gate.get("fails") or []))
+    if not sem_gate["raw_pass"]:
+        for _reason in sem_gate["fails"]:
+            print(f"[step4] [FAIL] B-roll 语义对位：{_reason}")
+        if sem_gate["waived"]:
+            print("[step4] [WARN] 已用 --allow-broll-mismatch 显式放行：账本仍记为不达标")
+        elif enforce_broll_gate:
+            raise BrollSemanticGateError("；".join(sem_gate["fails"]))
     return edl
 
 
