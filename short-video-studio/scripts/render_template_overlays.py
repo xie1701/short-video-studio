@@ -974,16 +974,50 @@ def render_template_packaging_png(
 
     # 3. style_03：暗调深度深红实心底条双行大字
     if family == "red_bar_dual_line":
-        l1, l2 = _split_two_lines(main_text, max_first=8)
-        w, h = 780, (174 if l2 else 104)
+        from style_dna_profiles import resolve_style03_bar_layout
+
+        layout = resolve_style03_bar_layout(
+            main_text, str(elem.get("subtext") or ""), elem_kind, str(elem.get("display_role") or ""),
+        )
+        quote = layout["bar_mode"] == "quote_citation_card"
+        l1, l2 = layout["main_text"], layout["sub_text"]
+        if not quote and not l2:
+            l1, l2 = _split_two_lines(l1, max_first=8)
+        render_font = find_commercial_font([*(font_candidates or ()), *layout["font_candidates"]]) or serif_font
+        w = layout["width_px"]
+        text_w = min(w - 64, layout["text_width_px"])
+        main_fs = layout["giant_font_size_px"] if elem_kind == "center_burst_title" else layout["font_size_px"]
+        rows = []
+        for line, size, color in (
+            (l1, 42 if quote else main_fs, layout["main_hex"]),
+            (l2, 28 if quote else layout["font_size_px"], layout["sub_hex"]),
+        ):
+            sprite = _draw_kinetic_line_sprite(
+                " ".join(line.splitlines()), render_font, size, hex_to_rgba(color), max_w=text_w,
+                stroke_w=layout["stroke_px"], **layout["shadow"],
+            )
+            if sprite is not None:
+                if sprite.width > text_w:
+                    sprite = sprite.resize(
+                        (text_w, max(1, round(sprite.height * text_w / sprite.width))), Image.Resampling.LANCZOS,
+                    )
+                rows.append(sprite)
+        if not rows:
+            return None
+        row_heights = (
+            [row.height + 12 for row in rows] if quote
+            else [max(row.height for row in rows) + 26] * len(rows)
+        )
+        h = sum(row_heights)
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
-        d.rounded_rectangle([(0, 0), (w - 1, h - 1)], radius=8, fill=(182, 26, 26, 238))
-        if l2:
-            _paste_glyph_line(img, (w // 2, 52), l1, sans_font, w - 48, 56, 30, (255, 255, 255, 255), (40, 4, 4, 240), _sw(2), shadow_dy=0)
-            _paste_glyph_line(img, (w // 2, 122), l2, sans_font, w - 48, 56, 30, (255, 244, 150, 255), (40, 4, 4, 240), _sw(2), shadow_dy=0)
-        else:
-            _paste_glyph_line(img, (w // 2, h // 2), l1, sans_font, w - 48, 56, 30, (255, 255, 255, 255), (40, 4, 4, 240), _sw(2), shadow_dy=0)
+        d.rounded_rectangle((0, 0, w - 1, h - 1), radius=layout["radius_px"], fill=layout["bg_rgba"])
+        if quote:
+            d.rectangle((14, 10, 18, h - 11), fill=hex_to_rgba(layout["bar_hex"], 238))
+        y = 0
+        for row, row_h in zip(rows, row_heights):
+            img.alpha_composite(row, dest=((w - row.width) // 2, y + (row_h - row.height) // 2))
+            y += row_h
         return img
 
     # 4. style_05：人像前景压巨字 · 胸前高对比白字提问层（第 4 层）
@@ -1327,32 +1361,48 @@ def render_template_packaging_png(
 
     # 22. style_17：暖金强切探店 · 暖金细线勾边 + 方角深色字幕带（#000000B2）
     if family == "warm_gold_highlight":
-        l1, l2 = _split_two_lines(main_text, max_first=8)
-        layers = []
-        if elem_kind == "center_burst_title":
-            layers.append(
-                _draw_gradient_3d_text(
-                    l1 or main_text[:8], serif_font, 860, font_size=100,
-                    top_rgb=pal["light"], mid_rgb=pal["accent"], bot_rgb=pal["accent2"],
-                    extrude_rgb=_shade(pal["accent2"], 0.58), stroke_rgb=pal["accent2"], depth_px=5,
-                )
+        from style_dna_profiles import resolve_style17_frame_layout
+
+        layout = resolve_style17_frame_layout(
+            main_text, str(elem.get("subtext") or ""), elem_kind, elem.get("compare_mode"),
+        )
+        comparing = layout["layout_mode"] == "dual_gold_hairline_grid"
+        l1, l2 = layout["main_text"], layout["sub_text"]
+        if not l2 and (comparing or "\n" in l1):
+            l1, l2 = _split_two_lines(l1, max_first=8)
+        render_font = find_commercial_font([*(font_candidates or ()), *layout["font_candidates"]]) or serif_font
+        w = layout["width_px"]
+        main_fs = layout["giant_font_size_px"] if elem_kind == "center_burst_title" else layout["font_size_px"]
+        rows = [
+            _text_sprite(
+                " ".join(line.splitlines()), render_font, w - 64, size, hex_to_rgba(color),
+                stroke_w=_sw(layout["stroke_px"]), spacing_px=letter_spacing(ov_style, 2.0),
             )
+            for line, size, color in (
+                (l1, main_fs, layout["main_hex"]),
+                (l2, layout["font_size_px"], layout["sub_hex"]),
+            )
+        ]
+        if comparing:
+            row_h = max((row.height for row in rows if row is not None), default=0) + 28
+            plate = Image.new("RGBA", (w, 2 * row_h), layout["bg_rgba"])
+            d = ImageDraw.Draw(plate)
+            line = hex_to_rgba(layout["line_hex"])
+            line_w = layout["line_width_px"]
+            d.rectangle((0, 0, w - 1, plate.height - 1), outline=line, width=line_w)
+            d.rectangle((0, row_h, w - 1, row_h + line_w - 1), fill=line)
+            for i, row in enumerate(rows):
+                if row is not None:
+                    plate.alpha_composite(row, dest=((w - row.width) // 2, i * row_h + (row_h - row.height) // 2))
         else:
-            layers.append(
-                _text_sprite(
-                    l1 or main_text[:10], serif_font, 840, 84, (*pal["accent"], 255),
-                    stroke_rgba=(*pal["accent2"], 255), stroke_w=2,
-                    shadow_rgba=(0, 0, 0, 150), shadow_dy=4, spacing_px=letter_spacing(ov_style, 2.0),
-                )
-            )
-        if l2:
-            row = _text_sprite(
-                l2, serif_font, 700, 62, (*pal["text"], 255),
-                stroke_rgba=(0, 0, 0, 200), stroke_w=2, spacing_px=letter_spacing(ov_style, 1.0),
-            )
-            if row is not None:
-                layers.append(_plate_sprite(row, (0, 0, 0, 178), pad_x=22, pad_y=9, radius=0))
-        return _stack_sprites(layers, gap=10)
+            ink = _stack_sprites(rows, gap=8, pad=0, max_w=w - 44)
+            if ink is None:
+                return None
+            plate = _plate_sprite(ink, layout["bg_rgba"], pad_x=22, pad_y=10, radius=layout["radius_px"])
+        margin = 10
+        img = Image.new("RGBA", (plate.width + 2 * margin, plate.height + 2 * margin), (0, 0, 0, 0))
+        img.alpha_composite(plate, dest=(margin, margin))
+        return img
 
     # 23. style_21：门店工艺快切 · 门店标签式小签 + 暖黄大字（底部安全区内）
     if family == "high_broll_store_tag":
