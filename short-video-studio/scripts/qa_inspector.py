@@ -625,8 +625,9 @@ def inspect_video(
                 continue
             first_s, last_s = overlapping[0], overlapping[-1]
             base_end = float(last_s["end_sec"]) + 0.08
-            src_locked_ok = float(c.get("source_out_sec", 0.0)) <= float(last_s.get("source_out_sec", 99999.0)) + 0.06
-            dyn_end = float(last_s["end_sec"]) + float(last_s.get("pause_after_sec", 0.08)) + 0.04 if src_locked_ok else base_end
+            pause_after = max(0.0, float(last_s.get("pause_after_sec", 0.08)))
+            src_locked_ok = float(c.get("source_out_sec", 0.0)) <= float(last_s.get("source_out_sec", 99999.0)) + max(0.06, pause_after + 0.06)
+            dyn_end = float(last_s["end_sec"]) + pause_after + 0.04 if src_locked_ok else base_end
             # 允许相邻 B-roll L-cut 跨界延申 (<= 0.25s)
             l_lead_allowance = 0.0
             clip_pos = clips_list.index(c)
