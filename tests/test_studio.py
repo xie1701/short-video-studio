@@ -5666,6 +5666,454 @@ class ProductionPipelineV48Tests(unittest.TestCase):
         self.assertEqual(_lut_backoff_candidates(0.85), [0.85, 0.60])
         self.assertEqual(_lut_backoff_candidates(0.35), [0.35])
 
+    def test_t1_blur_window_enable_green_guard_broll_noise_and_tail_highlight(self):
+        """T1: gblur 严格限定于相对时间窗，绿墙伪影被钳制，外墙看板 OCR 不误判为饮茶，且 style_01 句尾重音高亮达标。"""
+        import re
+        import broll_match as BM
+        from step7_color_grade import _effect_filters, _resolve_style_color, _zone_balance_filter
+        from step5_subtitles import _apply_phrase_end_highlights, _subtitle_tail_highlight_target
+
+        # 1. style_21 gblur 必须带 :enable='between(t,...)' 而非整镜模糊
+        color21 = _resolve_style_color("style_21")
+        efs = _effect_filters(color21, clip_window=(1.33, 2.50))
+        blur_f = [f for f in efs if f.startswith("gblur=")]
+        self.assertEqual(len(blur_f), 1, efs)
+        self.assertIn("enable='between(t,", blur_f[0], blur_f[0])
+
+        # 2. style_01 绿墙反光伪影不得使 gm - rm > 0.04
+        color01 = _resolve_style_color("style_01")
+        cb01 = _zone_balance_filter(color01, {"rm": 0.0, "bm": 0.0}) or ""
+        m_gm = re.search(r"gm=([+-]?[0-9.]+)", cb01)
+        m_rm = re.search(r"rm=([+-]?[0-9.]+)", cb01)
+        self.assertIsNotNone(m_gm)
+        self.assertIsNotNone(m_rm)
+        self.assertLessEqual(float(m_gm.group(1)) - float(m_rm.group(1)), 0.04, cb01)
+
+        # 3. 餐厅外墙镜头携带招牌 OCR「早茶/点赞」不得误判饮茶 hit
+        exterior = {
+            "id": "ext87",
+            "description": "餐厅外墙仰拍全景",
+            "scene_tags_zh": ["门店外景", "建筑", "仰拍", "全景", "门头"],
+            "semantic_tags": ["门店外景", "建筑", "门头", "早茶", "桑拿火锅", "点赞"],
+        }
+        res_ext = BM.score_clip("上边摆好多卡座饮茶氛围非常舒服", exterior)
+        self.assertNotEqual(res_ext["tier"], "hit", res_ext)
+
+        # 4. style_01 句尾重音补标到约 54%，并剔除句尾虚词「嘅」
+        target_r = _subtitle_tail_highlight_target("style_01")
+        self.assertGreaterEqual(target_r, 0.50)
+        sample_entries = [
+            {
+                "id": "sub_1", "text": "嘅点赞茶楼", "suppressed": False, "keywords": [],
+                "words": [{"word": ch, "is_keyword": False} for ch in "嘅点赞茶楼"],
+            },
+            {
+                "id": "sub_2", "text": "岭南元素嘅", "suppressed": False, "keywords": [],
+                "words": [{"word": ch, "is_keyword": False} for ch in "岭南元素嘅"],
+            },
+            {
+                "id": "sub_3", "text": "中空", "suppressed": False, "keywords": [],
+                "words": [{"word": ch, "is_keyword": False} for ch in "中空"],
+            },
+        ]
+        added = _apply_phrase_end_highlights(sample_entries, target_r)
+        self.assertGreaterEqual(added, 1)
+        self.assertEqual(sample_entries[0]["keywords"], ["茶楼"])
+        self.assertEqual(sample_entries[1]["keywords"], ["元素"])
+
+    def test_t2_dual_bgm_and_opening_sfx_coupling(self):
+        """T2: sequential_handoff 与 intro_overlay_exit 均有确定性解析/程序化 sting，开场跨轨切换算 shot_change。"""
+        from common import ASSETS_DIR
+        from step3_lock_audio import SR, _build_procedural_intro_sting, _resolve_handoff_intro_bgm
+        from sfx_policy import SfxPolicy
+
+        with tempfile.TemporaryDirectory() as td:
+            pdir = Path(td)
+            main_bgm = ASSETS_DIR / "sound_vibe" / "bgm" / "style_01_bgm.m4a"
+            intro_p, _ = _resolve_handoff_intro_bgm(main_bgm, pdir, 2.83)
+            self.assertIsNotNone(intro_p)
+            self.assertTrue(intro_p.is_file())
+            self.assertNotEqual(intro_p.resolve(), main_bgm.resolve())
+
+            sting_p = _build_procedural_intro_sting(pdir / "03_intro_sting.wav", dur_sec=1.733)
+            self.assertIsNotNone(sting_p)
+            self.assertTrue(sting_p.is_file())
+            self.assertGreater(sting_p.stat().st_size, SR * 2)
+
+        pol01 = SfxPolicy("style_01")
+        ctx01 = {
+            "duration_sec": 12.0,
+            "cut_events": [
+                {"time_sec": 0.633, "type": "shot_change", "shot_type": "b_roll"},
+                {"time_sec": 8.0, "type": "sentence_start", "shot_type": "b_roll"},
+            ],
+            "sentences": [{"start_sec": 0.0, "end_sec": 12.0, "text": "整段话"}],
+        }
+        res01 = pol01.evaluate(
+            [
+                {"time_sec": 0.633, "origin": "cut", "event_type": "shot_change", "shot_type": "b_roll"},
+                {"time_sec": 8.0, "origin": "cut", "event_type": "sentence_start", "shot_type": "b_roll"},
+            ],
+            ctx01,
+        )
+        self.assertEqual(res01["n_accepted"], 1)
+        self.assertAlmostEqual(res01["accepted"][0]["time_sec"], 0.633, places=3)
+
+    def test_t3_out_anim_indicator_stickers_and_style01_burst_rendering(self):
+        """T3: style_21 支持指示贴纸与渐隐/下滑退场动效，style_01 门店斜标不触发 giant_text 且能完整渲染动态图层。"""
+        from common import find_bin
+        from render_template_overlays import render_animated_overlay_mov, render_template_packaging_png
+        import element_rules
+
+        # 1. indicator_sticker 两类图素均可无外部素材渲染
+        im_thumb = render_template_packaging_png({"kind": "indicator_sticker", "sticker_kind": "thumbs_up"}, style_id="style_21")
+        im_arrow = render_template_packaging_png({"kind": "indicator_sticker", "sticker_kind": "red_arrow"}, style_id="style_21")
+        self.assertIsNotNone(im_thumb)
+        self.assertIsNotNone(im_arrow)
+        self.assertEqual(im_thumb.size, (180, 180))
+
+        # 2. style_01 store_poster_burst 用 flower_text 渲染 3 层斜标，在 element_rules 里记为 flower 而非 giant_text
+        burst_elem = {
+            "kind": "flower_text",
+            "opening_mode": "store_poster_burst",
+            "display_role": "flower",
+            "anim_primitive": "三拍砸屏",
+            "text_or_asset": "三百万开茶楼",
+            "subtext": "点赞茶楼",
+            "tag_label": "实景探店",
+            "start_frame": 0,
+            "end_frame": 75,
+            "read_hold_sec": 2.5,
+            "final_bbox": {"x": 140, "y": 780, "w": 800, "h": 260},
+        }
+        im_burst = render_template_packaging_png(burst_elem, style_id="style_01")
+        self.assertIsNotNone(im_burst)
+        self.assertGreater(im_burst.width, 500)
+
+        # 3. indicator_sticker 带 out_anim='fade_out' 能导出有效透明 MOV
+        if find_bin("ffmpeg"):
+            with tempfile.TemporaryDirectory() as td:
+                mov_p = Path(td) / "st_fade.mov"
+                res = render_animated_overlay_mov(
+                    elem={
+                        "kind": "indicator_sticker",
+                        "sticker_kind": "thumbs_up",
+                        "anim_primitive": "弹入",
+                        "out_anim": "fade_out",
+                        "out_anim_sec": 0.45,
+                    },
+                    out_mov=mov_p,
+                    style_id="style_21",
+                    duration_sec=1.2,
+                    fps=30,
+                )
+                self.assertIsNotNone(res)
+                self.assertTrue(mov_p.is_file())
+                self.assertGreater(mov_p.stat().st_size, 1024)
+
+        # 4. element_rules.measure 把 indicator_sticker 计入 sticker
+        with tempfile.TemporaryDirectory() as td:
+            pdir = Path(td)
+            write_json(pdir / "06_packaging.json", {
+                "style_id": "style_21",
+                "visual_elements": [
+                    burst_elem,
+                    {"kind": "indicator_sticker", "sticker_kind": "thumbs_up", "start_frame": 10, "end_frame": 50},
+                ],
+            })
+            meas = element_rules.measure(pdir)
+            self.assertEqual((meas.get("sticker") or {}).get("count"), 1)
+            self.assertIsNone(meas.get("giant_text"))
+
+    def test_t5_element_rules_enforces_soul_elements(self):
+        """T5.1: dual_bgm_switch / in_anim / out_anim / sticker_pair / cutout描边 缺失时 element_rules.audit 必须红灯拦停。"""
+        import element_rules
+        from common import write_json
+
+        with tempfile.TemporaryDirectory() as td:
+            pdir = Path(td)
+            write_json(pdir / "03_audio_events.json", {
+                "locked_duration_sec": 15.0,
+                "sentences": [],
+                "bgm": {"file": "fake.mp3", "dual_bgm_switch": {"applied": False}},
+            })
+            write_json(pdir / "04_edl.json", {
+                "style_id": "style_21",
+                "clips": [
+                    {"clip_id": "c1", "track_role": "a_roll", "duration_sec": 3.0, "cutout": True,
+                     "pip_layout": {"mode": "layered_cutout_over_broll", "outline_px": 0, "torn_paper": False}},
+                    {"clip_id": "c2", "track_role": "b_roll", "duration_sec": 12.0, "cutout": False},
+                ],
+            })
+            write_json(pdir / "06_packaging.json", {
+                "style_id": "style_21",
+                "bgm": {"dual_bgm": False},
+                "sfx_cues": [],
+                "visual_elements": [
+                    {"id": "pkg_001", "kind": "center_burst_title", "text_or_asset": "三百万",
+                     "start_frame": 0, "end_frame": 60, "bbox": {"x": 200, "y": 200, "w": 400, "h": 180}},
+                    {"id": "pkg_002", "kind": "center_burst_title", "text_or_asset": "桑拿鸡",
+                     "start_frame": 180, "end_frame": 230, "bbox": {"x": 200, "y": 200, "w": 400, "h": 180}},
+                ],
+            })
+            aud = element_rules.audit(pdir)
+            self.assertFalse(aud["passed"], aud)
+            fail_els = {r["element"] for r in aud["fail_rows"]}
+            for req in ("dual_bgm_switch", "in_anim", "out_anim", "sticker", "cutout"):
+                self.assertIn(req, fail_els, f"缺失 {req} 时 element_rules 应 FAIL: {aud['fail_rows']}")
+
+            # 补齐全部灵魂要素后必须全绿通过
+            write_json(pdir / "03_audio_events.json", {
+                "locked_duration_sec": 15.0,
+                "sentences": [],
+                "bgm": {"file": "fake.mp3", "dual_bgm_switch": {"applied": True, "mode": "intro_overlay_exit", "target_switch_sec": 1.73}},
+            })
+            write_json(pdir / "04_edl.json", {
+                "style_id": "style_21",
+                "clips": [
+                    {"clip_id": "c1", "track_role": "a_roll", "duration_sec": 3.0, "cutout": True,
+                     "pip_layout": {"mode": "layered_cutout_over_broll", "outline_px": 12, "torn_paper": True}},
+                    {"clip_id": "c2", "track_role": "b_roll", "duration_sec": 12.0, "cutout": False},
+                ],
+            })
+            write_json(pdir / "06_packaging.json", {
+                "style_id": "style_21",
+                "bgm": {"dual_bgm": True, "switch_sec": 1.73},
+                "sfx_cues": [],
+                "visual_elements": [
+                    {"id": "pkg_001", "kind": "center_burst_title", "text_or_asset": "三百万",
+                     "start_frame": 0, "end_frame": 60, "jianying_anim_name": "缩小", "out_anim": "fade_out",
+                     "bbox": {"x": 200, "y": 200, "w": 400, "h": 180}},
+                    {"id": "pkg_002", "kind": "center_burst_title", "text_or_asset": "桑拿鸡",
+                     "start_frame": 180, "end_frame": 230, "jianying_anim_name": "缩小", "out_anim": "slide_down",
+                     "bbox": {"x": 200, "y": 200, "w": 400, "h": 180}},
+                    {"id": "pkg_003", "kind": "indicator_sticker", "sticker_kind": "thumbs_up", "paired_element_id": "pkg_001",
+                     "start_frame": 0, "end_frame": 45, "anim_primitive": "弹入", "out_anim": "fade_out",
+                     "bbox": {"x": 620, "y": 220, "w": 180, "h": 180}},
+                ],
+            })
+            aud_ok = element_rules.audit(pdir)
+            self.assertTrue(aud_ok["passed"], aud_ok["fail_rows"])
+
+    def test_corner_cutout_upper_torso_crop_and_shaky_preroll_skip(self):
+        from unittest import mock
+        import render_mp4 as RM
+        from step4_build_edl import run_step4
+        from common import write_json
+
+        # 1) 远/中全景坐姿角落抠像必须裁成齐胸腰上半身，不露出下方盘腿；特写镜头不再二次裁剪
+        crop_dist = RM._corner_cutout_crop_expr({"cx": 0.525, "cy": 0.351, "w": 0.224, "h": 0.126}, 1080, 1920)
+        self.assertTrue(crop_dist.startswith("crop="), crop_dist)
+        cw, ch, cx, cy = [int(v) for v in crop_dist.split("=", 1)[1].split(":")]
+        self.assertLess(ch, 1500)
+        self.assertGreater(cw, 300)
+        self.assertEqual(RM._corner_cutout_crop_expr({"cx": 0.5, "cy": 0.48, "w": 0.45, "h": 0.30}, 1080, 1920), "")
+
+        # 2) 起手晃动镜头（stability_score < 0.78）不得从 0.00s 起入画；全屏分层开场即便跨越 0.5s 气口停顿也须自 0.00s 连续进抠像
+        pdir = self.root / "s4_open_preroll"
+        pdir.mkdir()
+        ar_p = pdir / "ar_main.mp4"
+        br_shaky = pdir / "br_shaky.mp4"
+        br_steady = pdir / "br_steady.mp4"
+        for f in (ar_p, br_shaky, br_steady):
+            f.write_bytes(b"fake")
+        write_json(pdir / "01_manifest.json", {
+            "items": [
+                {"id": "ar1", "role": "a_roll", "normalized_mp4": str(ar_p), "duration_sec": 30.0,
+                 "usable": True, "stability_score": 0.95,
+                 "faces": [{"bbox": {"x": 0.35, "y": 0.28, "w": 0.25, "h": 0.16}, "cx": 0.47, "cy": 0.36}]},
+                {"id": "br_s", "role": "b_roll", "normalized_mp4": str(br_shaky), "duration_sec": 4.9,
+                 "stability_score": 0.65, "sharpness_score": 70.0,
+                 "description": "后厨厨师备菜特写", "semantic_tags": ["后厨", "厨师", "备菜"]},
+                {"id": "br_st", "role": "b_roll", "normalized_mp4": str(br_steady), "duration_sec": 12.0,
+                 "stability_score": 0.92, "sharpness_score": 85.0,
+                 "description": "门店环境茶楼空间", "semantic_tags": ["茶楼", "门店", "环境"]},
+            ],
+        })
+        write_json(pdir / "03_audio_events.json", {
+            "locked_duration_sec": 8.0,
+            "locked_duration_frames": 240,
+            "sentences": [
+                {"id": "s1", "text": "我系牛哥", "start_sec": 0.0, "end_sec": 0.70,
+                 "start_frame": 0, "end_frame": 21, "source_media": str(ar_p),
+                 "source_in_sec": 1.0, "source_out_sec": 1.70, "keywords": ["牛哥"]},
+                {"id": "s2", "text": "后厨厨师备菜好厉害", "start_sec": 0.70, "end_sec": 3.5,
+                 "start_frame": 21, "end_frame": 105, "source_media": str(ar_p),
+                 "source_in_sec": 2.25, "source_out_sec": 5.05, "keywords": ["后厨", "备菜"]},
+                {"id": "s3", "text": "门店空间非常舒服", "start_sec": 3.5, "end_sec": 8.0,
+                 "start_frame": 105, "end_frame": 240, "source_media": str(ar_p),
+                 "source_in_sec": 5.05, "source_out_sec": 9.55, "keywords": ["门店", "环境"]},
+            ],
+            "events": [
+                {"id": "e1", "type": "sentence_start", "time_sec": 0.0, "frame": 0, "sentence_id": "s1"},
+                {"id": "e2", "type": "stress", "time_sec": 0.50, "frame": 15, "sentence_id": "s2"},
+                {"id": "e3", "type": "sentence_start", "time_sec": 1.50, "frame": 45, "sentence_id": "s2"},
+                {"id": "e4", "type": "sentence_start", "time_sec": 3.50, "frame": 105, "sentence_id": "s3"},
+            ],
+        })
+        with mock.patch("face_framing.anchor_for", return_value={"cx": 0.47, "cy": 0.36, "w": 0.25, "h": 0.16}):
+            edl = run_step4(pdir, track="store", style_id="style_21")
+        self.assertTrue((edl["clips"][0].get("pip_layout") or {}).get("cutout"), edl["clips"][0])
+        for c in edl["clips"]:
+            mp_str = str((c.get("pip_layout") or {}).get("secondary_media_path") or c.get("media_path") or "")
+            if "br_shaky" in mp_str:
+                in_t = float((c.get("pip_layout") or {}).get("secondary_in_sec") if (c.get("pip_layout") or {}).get("secondary_media_path") else c.get("source_in_sec"))
+                self.assertGreaterEqual(in_t, 0.70, c)
+
+    def test_bgm_ref_norm_and_sfx_dedup_60s_coverage(self):
+        import math, wave
+        import numpy as np
+        import step6_packaging as S6
+        import step8_mix_audio as S8
+        from common import write_json
+
+        # 1) 安静 BGM (-24dB 身体 + 高峰值) 抬升至参考电平且软限幅不削波；正常/静音不被乱动
+        t = np.linspace(0, 2.0, 48000 * 2, endpoint=False, dtype=np.float32)
+        quiet_bgm = np.stack([0.089 * np.sin(2 * math.pi * 220 * t), 0.089 * np.sin(2 * math.pi * 220 * t)], axis=1)
+        quiet_bgm[1000:1010] = 0.78  # ~-2.1 dBFS peak
+        normed, gain = S8._normalize_bgm_ref_level(quiet_bgm)
+        self.assertGreaterEqual(gain, 9.0)
+        act = normed[np.abs(normed) > 0.002]
+        norm_rms_db = 20.0 * math.log10(max(1e-6, float(np.sqrt(np.mean(act ** 2)))))
+        self.assertGreaterEqual(norm_rms_db, -15.5)
+        self.assertLessEqual(float(np.max(np.abs(normed))), 0.90)
+
+        loud_ok = np.stack([0.28 * np.sin(2 * math.pi * 220 * t), 0.28 * np.sin(2 * math.pi * 220 * t)], axis=1)
+        _, g_ok = S8._normalize_bgm_ref_level(loud_ok)
+        self.assertEqual(g_ok, 0.0)
+        _, g_sil = S8._normalize_bgm_ref_level(np.zeros_like(quiet_bgm))
+        self.assertEqual(g_sil, 0.0)
+
+        # 2) 61s 成片 + 9 个唯一音效文件，48-60s 末段结构切点不被重复 role 倍增分母误杀
+        assets_iso = self.root / "assets_sfx61"
+        sfx_dir = assets_iso / "sound_vibe" / "sfx" / "style_21"
+        sfx_dir.mkdir(parents=True)
+        for nm in (
+            "accent_A.wav", "accent_B.wav", "accent_C.wav", "accent_D.wav",
+            "cut_A.wav", "cut_B.wav", "hook_A.wav", "info_A.wav", "info_B.wav",
+        ):
+            with wave.open(str(sfx_dir / nm), "w") as wf:
+                wf.setnchannels(2)
+                wf.setsampwidth(2)
+                wf.setframerate(48000)
+                wf.writeframes(b"\x00\x01\x00\x01" * 4800)
+
+        orig_assets = S6.ASSETS_DIR
+        orig_local = os.environ.get("SVS_LOCAL_ASSETS_DIR")
+        os.environ["SVS_LOCAL_ASSETS_DIR"] = str(self.root / "nonexistent_local")
+        S6.ASSETS_DIR = assets_iso
+        try:
+            pdir = self.root / "pkg_61s"
+            pdir.mkdir()
+            sents = [
+                {"id": f"s{i+1}", "text": f"第{i+1}句门店卖点介绍", "keywords": ["门店"],
+                 "start_sec": i * 3.0, "end_sec": (i + 1) * 3.0 - 0.1,
+                 "start_frame": i * 90, "end_frame": (i + 1) * 90 - 3, "emotion_or_info": "info"}
+                for i in range(20)
+            ]
+            clips = [
+                {"clip_id": f"c{i+1}", "track_role": "a_roll" if i % 2 == 0 else "b_roll", "media_path": "",
+                 "timeline_in_sec": i * 2.0, "timeline_out_sec": (i + 1) * 2.0,
+                 "timeline_in_frame": i * 60, "timeline_out_frame": (i + 1) * 60,
+                 "cut_event_frame": i * 60, "cut_event_id": f"e{i+1}", "cut_event_type": "sentence_start"}
+                for i in range(30)
+            ]
+            write_json(pdir / "03_audio_events.json", {
+                "locked_duration_sec": 60.5,
+                "sentences": sents,
+                "events": [{"id": f"e{i+1}", "type": "sentence_start", "time_sec": i * 2.0, "frame": i * 60,
+                            "sentence_id": f"s{min(20, i + 1)}"} for i in range(30)],
+            })
+            write_json(pdir / "04_edl.json", {"style_id": "style_21", "fps": 30, "clips": clips})
+            res = S6.run_step6(pdir, style_id="style_21")
+            late_cues = [c for c in res["sfx_cues"] if 49.0 <= float(c["time_sec"]) <= 59.5]
+            self.assertGreaterEqual(len(late_cues), 2, res["sfx_dropped"])
+        finally:
+            S6.ASSETS_DIR = orig_assets
+            if orig_local is not None:
+                os.environ["SVS_LOCAL_ASSETS_DIR"] = orig_local
+            else:
+                os.environ.pop("SVS_LOCAL_ASSETS_DIR", None)
+
+    def test_unified_color_grade_no_solarize_or_slice_pingpong(self):
+        """统一调色护栏：绿红采样伪影被等比限幅，暗调镜不触发 0.627 太阳化，同源切段零跳变。"""
+        import re
+        from unittest.mock import patch
+        import step7_color_grade as s7
+
+        # 1. style_01 绿墙与 style_21 红手掌采样污染必须被等比收敛，禁止重绿/重红染色
+        zt01 = s7._sanitize_zone_tint(s7._resolve_style_color("style_01").get("zone_tint"))
+        zt21 = s7._sanitize_zone_tint(s7._resolve_style_color("style_21").get("zone_tint"))
+        self.assertLessEqual(abs(zt01["midtone"][0]), 0.015)
+        self.assertLessEqual(zt01["midtone"][1], 0.005)
+        self.assertGreaterEqual(zt01["highlight"][2], -0.015)
+        self.assertLessEqual(abs(zt21["midtone"][0]), 0.015)
+
+        # 2. 暗部 0.005 低分布片段调 calibrate_clip_curve 时绝不得塌缩成 0.005/0.627 太阳化
+        sc21 = s7._resolve_style_color("style_21")
+        with patch.object(s7, "probe_luma_percentiles", return_value=(0.005, 0.40, 0.77)), \
+             patch.object(s7, "_probe_with_vf", return_value=(0.02, 0.42, 0.80)):
+            vf_dark, adj_dark, _res = s7.calibrate_clip_curve(
+                str(self.root / "dummy.mp4"), 0.0, 1.5,
+                {"brightness": 0.0, "contrast": 1.03, "saturation": 1.0, "rm": 0.0, "bm": 0.0},
+                sc21, None, 0.0, False,
+            )
+        self.assertTrue(vf_dark.startswith("eq="), vf_dark)
+        self.assertIsNotNone(adj_dark)
+        self.assertLessEqual(adj_dark[0], (0.005 + 0.145) * 255.0)
+        self.assertGreater(adj_dark[1] - adj_dark[0], 0.12 * 255.0)
+
+        # 3. 完整 run_step7：远景小人 (<0.8%画幅) 不触发 B&W 降饱和，且同源素材两刀切段曲线/饱和度/偏色完全一致
+        pdir = self.root / "pipe_color_unify"
+        pdir.mkdir(parents=True)
+        src_a = str(pdir / "norm_aroll.mp4")
+        src_b = str(pdir / "norm_broll.mp4")
+        src_dark = str(pdir / "norm_dark.mp4")
+        write_json(pdir / "01_manifest.json", {
+            "items": [
+                {"normalized_mp4": src_a, "faces": [{"x": 0.25, "y": 0.18, "w": 0.42, "h": 0.30}]},
+                {"normalized_mp4": src_b, "faces": [{"x": 0.45, "y": 0.50, "w": 0.04, "h": 0.03}]},  # 0.12% 远景小脸
+                {"normalized_mp4": src_dark, "faces": []},
+            ]
+        })
+        write_json(pdir / "04_edl.json", {
+            "style_id": "style_21",
+            "clips": [
+                {"clip_id": "clip_001", "track_role": "a_roll", "media_path": src_a, "source_in_sec": 0.0, "duration_sec": 2.0, "timeline_in_sec": 0.0},
+                {"clip_id": "clip_002", "track_role": "b_roll", "media_path": src_b, "source_in_sec": 1.0, "duration_sec": 1.5, "timeline_in_sec": 2.0},
+                {"clip_id": "clip_003", "track_role": "b_roll", "media_path": src_b, "source_in_sec": 4.0, "duration_sec": 1.5, "timeline_in_sec": 3.5},
+                {"clip_id": "clip_004", "track_role": "b_roll", "media_path": src_dark, "source_in_sec": 0.5, "duration_sec": 1.2, "timeline_in_sec": 5.0},
+            ],
+        })
+
+        def fake_stats(path, start_sec=0.0, dur_sec=3.0):
+            s = str(path)
+            if "aroll" in s:
+                return {"yavg": 110.0, "uavg": 120.0, "vavg": 133.0}
+            if "dark" in s:
+                return {"yavg": 65.0, "uavg": 124.0, "vavg": 130.0}
+            return {"yavg": 112.0 if start_sec < 2.0 else 120.0, "uavg": 116.0, "vavg": 134.0}
+
+        def fake_skin(path, bbox, at_sec=0.2, extra_vf=None):
+            return {"skin_y": 140.0, "skin_cb": 110.0, "skin_cr": 152.0, "mask_ratio": 0.96}
+
+        with patch.object(s7, "probe_clip_color_stats", side_effect=fake_stats), \
+             patch.object(s7, "probe_face_skin_ycbcr", side_effect=fake_skin), \
+             patch.object(s7, "_detect_clip_dynamic_faces", return_value={}):
+            plan = s7.run_step7(pdir, track="store", style_id="style_21")
+
+        by_id = {c["clip_id"]: c for c in plan["clip_plans"]}
+        self.assertEqual(by_id["clip_002"]["vf_filter"], by_id["clip_003"]["vf_filter"])
+        for cid, c in by_id.items():
+            self.assertGreaterEqual(float(c["base_correction"]["saturation"]), s7.MIN_SHOT_SAT_SCALE, cid)
+            self.assertIn("0.0500/", c["vf_filter"], cid)
+            self.assertIn("0.5000/", c["vf_filter"], cid)
+            self.assertIn("0.9500/", c["vf_filter"], cid)
+            self.assertLessEqual(abs(float(c["base_correction"]["brightness"])), 0.028, cid)
+            m_curves = re.search(r"curves=all='([^']+)'", c["vf_filter"])
+            self.assertIsNotNone(m_curves, cid)
+            # 所有片段共享完全一致的统一全局胶片曲线
+            self.assertEqual(m_curves.group(1), re.search(r"curves=all='([^']+)'", by_id["clip_001"]["vf_filter"]).group(1))
 
 
 if __name__ == "__main__":

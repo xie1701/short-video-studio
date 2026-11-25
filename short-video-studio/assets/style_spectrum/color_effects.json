@@ -1912,7 +1912,7 @@
             "start": 1.667,
             "duration": 0.167
           },
-          "sigma": 8.0,
+          "sigma": 3.0,
           "whole_frame": true
         },
         "spotlight": false,

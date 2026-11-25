@@ -56,7 +56,7 @@ func die(_ msg: String, code: Int32 = 1) -> Never {
 
 let args = CommandLine.arguments
 if args.count < 3 {
-    die("Usage: svs_person_matte <in.mp4> <out_matte.mp4> [out_outline.mp4] [outline_px] [quality:balanced|accurate]")
+    die("Usage: svs_person_matte <in.mp4> <out_matte.mp4> [out_outline.mp4] [outline_px] [quality:balanced|accurate] [edge:smooth|torn]")
 }
 
 let inURL = URL(fileURLWithPath: args[1])
@@ -64,6 +64,7 @@ let outMatteURL = URL(fileURLWithPath: args[2])
 let outOutlinePath = args.count >= 4 ? args[3] : ""
 let outlinePx = args.count >= 5 ? max(0.0, Double(args[4]) ?? 0.0) : 0.0
 let qualityArg = args.count >= 6 ? args[5] : "balanced"
+let edgeModeArg = args.count >= 7 ? args[6] : "smooth"
 
 let asset = AVURLAsset(url: inURL)
 let sem = DispatchSemaphore(value: 0)
@@ -183,7 +184,7 @@ func makeContrastMask(_ ci: CIImage) -> CIImage {
     return ci
 }
 
-func makeDilatedOutline(_ ci: CIImage, radius: Double) -> CIImage {
+func makeDilatedOutline(_ ci: CIImage, radius: Double, torn: Bool = false) -> CIImage {
     var cur = ci
     if let morph = CIFilter(name: "CIMorphologyMaximum") {
         morph.setValue(cur, forKey: kCIInputImageKey)
@@ -192,10 +193,25 @@ func makeDilatedOutline(_ ci: CIImage, radius: Double) -> CIImage {
             cur = out.cropped(to: targetRect)
         }
     }
+    if torn,
+       let rng = CIFilter(name: "CIRandomGenerator")?.outputImage?.cropped(to: targetRect),
+       let noiseBlur = CIFilter(name: "CIGaussianBlur"),
+       let disp = CIFilter(name: "CIDisplacementDistortion") {
+        noiseBlur.setValue(rng, forKey: kCIInputImageKey)
+        noiseBlur.setValue(3.2, forKey: kCIInputRadiusKey)
+        if let smoothNoise = noiseBlur.outputImage?.cropped(to: targetRect) {
+            disp.setValue(cur, forKey: kCIInputImageKey)
+            disp.setValue(smoothNoise, forKey: "inputDisplacementImage")
+            disp.setValue(max(12.0, radius * 1.35), forKey: kCIInputScaleKey)
+            if let out = disp.outputImage {
+                cur = out.cropped(to: targetRect)
+            }
+        }
+    }
     if let ctrl = CIFilter(name: "CIColorControls") {
         ctrl.setValue(cur, forKey: kCIInputImageKey)
-        ctrl.setValue(2.6, forKey: kCIInputContrastKey)
-        ctrl.setValue(0.08, forKey: kCIInputBrightnessKey)
+        ctrl.setValue(torn ? 4.2 : 2.6, forKey: kCIInputContrastKey)
+        ctrl.setValue(torn ? 0.12 : 0.08, forKey: kCIInputBrightnessKey)
         if let out = ctrl.outputImage {
             cur = out.cropped(to: targetRect)
         }
@@ -277,7 +293,7 @@ while reader.status == .reading {
 
     renderCI(maskCI, into: matteAdaptor, pts: relPTS)
     if let ot = outlineTuple {
-        let dilCI = makeDilatedOutline(maskCI, radius: outlinePx)
+        let dilCI = makeDilatedOutline(maskCI, radius: outlinePx, torn: edgeModeArg == "torn")
         renderCI(dilCI, into: ot.2, pts: relPTS)
     }
     frameCount += 1
@@ -353,6 +369,7 @@ def _generate_mediapipe_matte_video(
     out_outline_mp4: Optional[Path] = None,
     outline_px: int = 10,
     fps: int = DEFAULT_FPS,
+    torn_paper: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """非 macOS 跨平台兜底：检测 mediapipe + cv2 逐帧生成人像 Alpha 与轮廓白边。"""
     try:
@@ -417,6 +434,14 @@ def _generate_mediapipe_matte_video(
                     m_proc.stdin.write(mask_u8.tobytes())
                 if o_proc and o_proc.stdin and kernel is not None:
                     dil = cv2.dilate((mask_u8 >= 120).astype(np.uint8) * 255, kernel, iterations=1)
+                    if torn_paper and outline_px >= 4:
+                        yy, xx = np.ogrid[:h, :w]
+                        jag = (
+                            np.sin(xx * 0.23 + yy * 0.17) * 0.5
+                            + np.cos(xx * 0.41 - yy * 0.31) * 0.5
+                        )
+                        blur_dil = cv2.GaussianBlur(dil.astype(np.float32), (0, 0), sigmaX=max(1.5, outline_px * 0.28))
+                        dil = np.where((blur_dil + jag * 42.0) >= 120.0, 255, 0).astype(np.uint8)
                     o_proc.stdin.write(dil.tobytes())
                 frames += 1
     finally:
@@ -449,6 +474,7 @@ def generate_person_matte_video(
     outline_px: int = 10,
     quality: str = "balanced",
     fps: int = DEFAULT_FPS,
+    torn_paper: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """
     为指定视频逐帧生成人像前景 Alpha 蒙版视频（及可选沿人体轮廓膨胀的白边蒙版视频）。
@@ -500,6 +526,7 @@ def generate_person_matte_video(
             str(tmp_outline) if tmp_outline else "",
             str(max(0, int(outline_px))),
             quality if quality in ("balanced", "accurate") else "balanced",
+            "torn" if torn_paper else "smooth",
         ]
         try:
             proc = subprocess.run(args, capture_output=True, text=True, timeout=180)
@@ -521,6 +548,7 @@ def generate_person_matte_video(
         out_outline_mp4=tmp_outline,
         outline_px=outline_px,
         fps=fps,
+        torn_paper=torn_paper,
     )
     return _finalize(mp_meta)
 

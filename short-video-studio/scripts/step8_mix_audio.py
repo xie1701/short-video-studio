@@ -47,6 +47,37 @@ AAC_TP_HEADROOM_DB = 1.2
 _MASTER_TP_TARGET = TP_MAX_DBTP  # 真正的封口在 render 封装那次（AAC 首编时挂 alimiter），母带这里只按交付目标卡
 
 
+def _normalize_bgm_ref_level(
+    bgm_arr: np.ndarray,
+    target_rms_db: float = -14.5,
+    floor_trigger_db: float = -16.0,
+) -> tuple:
+    """将偏安静的源片提取 BGM（如 -24dB 抒情前奏）参考归一至 -14.5dB 并软限幅护峰。"""
+    if bgm_arr.size == 0:
+        return bgm_arr, 0.0
+    nz = np.abs(bgm_arr) > 0.002
+    if int(np.count_nonzero(nz)) < 400:
+        return bgm_arr, 0.0
+    act_rms = float(np.sqrt(np.mean(bgm_arr[nz].astype(np.float64) ** 2)))
+    act_rms_db = 20.0 * math.log10(max(1e-6, act_rms))
+    if act_rms_db >= floor_trigger_db or act_rms_db <= -42.0:
+        return bgm_arr, 0.0
+    gain_db = min(14.0, max(0.0, target_rms_db - act_rms_db))
+    if gain_db < 0.25:
+        return bgm_arr, 0.0
+    boosted = bgm_arr.astype(np.float32) * float(10.0 ** (gain_db / 20.0))
+    ceil_lin, knee = 0.891, 0.65  # -1.0 dBFS 软饱和峰限幅，防止瞬态鼓点削波
+    abs_x = np.abs(boosted)
+    over = abs_x > knee
+    if np.any(over):
+        span = max(1e-5, ceil_lin - knee)
+        soft = np.sign(boosted) * (knee + span * np.tanh((abs_x - knee) / span))
+        normed = np.where(over, soft, boosted).astype(np.float32)
+    else:
+        normed = boosted.astype(np.float32)
+    return normed, round(gain_db, 2)
+
+
 def _estimate_raw_noise_floor_db(pipeline_dir: Path, fallback_voice: np.ndarray) -> float:
     """
     优先从 01_manifest 原始长音轨测未裁切环境谷值底噪（p8），防止在已去静音的 03_locked_voice 上测到轻声词尾。
@@ -171,6 +202,7 @@ def run_step8(
     if len(bgm_arr) < n_samples:
         bgm_arr = np.concatenate([bgm_arr, np.zeros((n_samples - len(bgm_arr), 2), dtype=np.float32)], axis=0)
     bgm_arr = bgm_arr[:n_samples]
+    bgm_arr, bgm_ref_norm_gain_db = _normalize_bgm_ref_level(bgm_arr)
 
     if sfx_in.exists():
         sfx_arr, _ = load_stereo_wav_np(sfx_in)
@@ -338,16 +370,24 @@ def run_step8(
                 loc1 = min(n_samples, int(round((on_t + 0.45) * SR)))
                 if loc1 <= loc0 + 16:
                     continue
-                loc_pk = float(np.max(np.abs(sfx_arr[loc0:loc1])))
-                safe_scale = min(need_scale, 0.72 / max(1e-4, loc_pk))
-                if safe_scale <= 1.05:
-                    continue
-                env_loc = np.full(loc1 - loc0, safe_scale, dtype=np.float32)
+                # 对低频峰值已接近上限但 2–8kHz 仍偏暗的音效（如敲锣），优先抬 2–8kHz 泛音并对瞬态波峰做软削峰保护，
+                # 避免盲目拉大低频把 alimiter 压限触发，反把人声高频一起压塌。
+                loc_seg = sfx_arr[loc0:loc1].astype(np.float64)
+                nosfx_loc_pk = float(np.max(np.abs(pre_mix_nosfx[loc0:loc1])))
+                hf_boost = min(4.0, max(0.0, (need_scale - 1.0) * 1.25))
+                loc_hf = np.column_stack([sp_sig.sosfiltfilt(sos_hf, loc_seg[:, ch]) for ch in range(2)])
+                loc_adj = loc_seg * min(1.35, 1.0 + 0.25 * (need_scale - 1.0)) + hf_boost * loc_hf
+                safe_ceil = min(0.62, max(0.44, 0.98 - nosfx_loc_pk))
+                adj_pk = float(np.max(np.abs(loc_adj)))
+                if adj_pk > safe_ceil:
+                    loc_adj = np.tanh(loc_adj / max(1e-4, safe_ceil)) * safe_ceil
                 fn = min(fade_n, (loc1 - loc0) // 4)
                 if fn > 1:
-                    env_loc[:fn] = np.linspace(1.0, safe_scale, fn, dtype=np.float32)
-                    env_loc[-fn:] = np.linspace(safe_scale, 1.0, fn, dtype=np.float32)
-                sfx_arr[loc0:loc1] *= env_loc[:, None]
+                    blend = np.ones((loc1 - loc0, 1), dtype=np.float64)
+                    blend[:fn, 0] = np.linspace(0.0, 1.0, fn)
+                    blend[-fn:, 0] = np.linspace(1.0, 0.0, fn)
+                    loc_adj = loc_seg * (1.0 - blend) + loc_adj * blend
+                sfx_arr[loc0:loc1] = loc_adj.astype(np.float32)
         except Exception:
             pass
 
@@ -471,6 +511,7 @@ def run_step8(
         "dual_band_ducking": dual_band_ok,
         "voice_denoised": bool(use_denoise),
         "bgm_ducking_applied": True,
+        "bgm_ref_norm_gain_db": bgm_ref_norm_gain_db,
         "broll_ambient_mixed_count": broll_ambient_mixed_count,
         "stem_bus_safe_scale": round(bus_safe_scale, 4),
         "duration_sec": round(n_samples / float(SR), 4),

@@ -211,10 +211,14 @@ def _extract_clean_flower_phrase(
         if 2 <= len(pks) <= max_len and pks in txt and pks not in _FLOWER_BAN_EXACT:
             return pks
 
-    # 提取数字+量词/核心实体短语（如 25张卡座、8个包房、99元双人餐）
-    num_m = re.search(r"([零一二两三四五六七八九十百千万\d]+(?:\.\d+)?[个张间家次倍元块万亿%％折平米天小时分钟秒][\u4e00-\u9fff]{0,4})", clean_txt)
-    if num_m and 2 <= len(num_m.group(1)) <= max_len:
-        return num_m.group(1)
+    # 提取数字+量词/核心实体短语（如 25张卡座、8个包房、99元双人餐；避免「三百万喺金湾开」在「开/嘅/咗」处断句）
+    num_m = re.search(r"([零一二两三四五六七八九十百千万\d]+(?:\.\d+)?[个张间家次倍元块万亿%％折平米天小时分钟秒](?:[喺在嘅的][^，。！？\s]{0,2}|[\u4e00-\u9fff]{0,3}))", clean_txt)
+    if num_m:
+        cand_nm = num_m.group(1)
+        if len(cand_nm) > max_len or cand_nm.endswith(("开", "做", "去", "系", "是", "有", "摆")):
+            cand_nm = cand_nm[:-1] if len(cand_nm) >= 3 else cand_nm
+        if 2 <= len(cand_nm) <= max_len:
+            return cand_nm
 
     for kw in _display_keywords(sent):
         ks = str(kw).strip()
@@ -360,16 +364,26 @@ def _flower_label_for_style(label: str, chars_max: int) -> str:
 
 
 def _display_keywords(sent: Dict[str, Any]) -> List[str]:
-    """上屏用的关键词：优先取 step3 过滤好的 `display_keywords`（只在正文里出现过的词）。
-
-    没有这个字段的旧管道产物，退回 `keywords` 里能在正文找到的那几个；
-    一个都没有就空着，让花字走「数字+量词」「整句短语」那两条路，绝不把口令打上屏。
-    """
-    got = sent.get("display_keywords")
-    if isinstance(got, list):
-        return [str(k) for k in got if str(k).strip()]
+    """上屏用的关键词：优先取 step3 过滤好的 `display_keywords`（只在正文里出现过的词），并自动还原被上游截断的数字单位（「六百→六百平」）。"""
     txt = str(sent.get("text") or "")
-    return [str(k) for k in (sent.get("keywords") or []) if str(k).strip() and str(k) in txt]
+    got = sent.get("display_keywords")
+    raw_list = (
+        [str(k) for k in got if str(k).strip()]
+        if isinstance(got, list)
+        else [str(k) for k in (sent.get("keywords") or []) if str(k).strip() and str(k) in txt]
+    )
+    out: List[str] = []
+    for k in raw_list:
+        ks = re.sub(r"\s+", "", k)
+        if ks in ("一个", "一些", "这种", "那个", "这个"):
+            continue
+        if ks in txt and re.fullmatch(r"[零〇一二两三四五六七八九十百千万亿0-9]+分?", ks):
+            m_u = re.search(re.escape(ks) + r"(?:分之[一二三四五六七八九十]+(?![百千万亿])|[平平米个间张条倍万亿块元]?)", txt)
+            if m_u and len(m_u.group(0)) > len(ks):
+                ks = m_u.group(0)
+        if ks and ks not in out:
+            out.append(ks)
+    return out
 
 
 def rotate_sfx(
@@ -427,15 +441,19 @@ def _enhance_sfx_presence(arr: np.ndarray, sr: int = SR) -> np.ndarray:
         hf_ratio = hf_rms / max(1e-5, full_rms)
         if hf_ratio >= 0.28 or hf_rms < 1e-5:
             return arr
-        # 仅按比例混合原 SFX 自身的 2–8kHz 分量，使其清晰度达到 hf_ratio≈0.35（绝不混入人工噪波）
-        target_hf = max(hf_rms, full_rms * 0.35)
-        alpha = min(6.0, max(0.0, (target_hf - hf_rms) / hf_rms))
-        out = arr.astype(np.float64).copy()
-        out[:, 0] += alpha * sp_sig.sosfiltfilt(sos, out[:, 0])
-        out[:, 1] += alpha * sp_sig.sosfiltfilt(sos, out[:, 1])
+        # 对超低频主导的敲锣/重音 SFX 先轻微清理 110Hz 以下次声轰鸣（防混音撞限幅器反压人声），
+        # 再按比例混入原 SFX 自身的 2–8kHz 泛音清晰度并做柔性波峰收敛（绝不混入人工噪波）
+        sos_hp = sp_sig.butter(2, min(115.0, float(sr) * 0.25), btype="highpass", fs=float(sr), output="sos")
+        out = np.column_stack([sp_sig.sosfiltfilt(sos_hp, arr[:, ch].astype(np.float64)) for ch in range(arr.shape[1])])
+        hp_hf_rms = float(np.sqrt(np.mean(sp_sig.sosfiltfilt(sos, out.mean(axis=1)) ** 2) + 1e-12))
+        target_hf = max(hp_hf_rms, full_rms * 0.48)
+        alpha = min(7.0, max(0.0, (target_hf - hp_hf_rms) / max(1e-5, hp_hf_rms)))
+        if alpha > 0.0:
+            out[:, 0] += alpha * sp_sig.sosfiltfilt(sos, out[:, 0])
+            out[:, 1] += alpha * sp_sig.sosfiltfilt(sos, out[:, 1])
         pk = float(np.max(np.abs(out)))
-        if pk > 0.85:
-            out *= (0.85 / pk)
+        if pk > 0.72:
+            out = np.tanh(out / 0.72) * 0.68
         return out.astype(np.float32)
     except Exception:
         return arr
@@ -535,7 +553,7 @@ def _trim_giant_phrase(text: str, max_chars: int = 5) -> str:
     if len(clean) > lim:
         cut = _cut_at_word_boundary(clean, lim)
         clean = cut or clean[:lim]
-    _tail_particles = set("的得地了着过嘅咗啦呀啊呢嘛我你他她它佢")
+    _tail_particles = set("的得地了着过嘅咗啦呀啊呢嘛我你他她它佢喺在系是就到和与")
     while len(clean) >= 3 and clean[-1] in _tail_particles:
         clean = clean[:-1]
     return clean
@@ -656,10 +674,13 @@ def run_step6(
     if native_prof:
         # 尊重流派自己的 sfx_gain_db（仅允许上限到 -3.5dB，避免风格全被拉爆成统一响度）
         base_gain_db = max(-14.0, min(-3.5, float(native_prof.get("sfx_gain_db", -9.5)) + 3.0))
+        if sfx_per_min_tgt >= 25.0:
+            base_gain_db = max(base_gain_db, -4.5)
         prof_gap = float(native_prof.get("sfx_min_gap_sec", dyn_gap_sec))
         min_sfx_gap = int(min(prof_gap, dyn_gap_sec) * fps)
     else:
-        base_gain_db = -8.5
+        # 高频快切风格（真值 sfx_per_min >= 25）原声里音效显著跳在 BGM 上方 8–10dB，适当抬高基准电平
+        base_gain_db = -5.0 if sfx_per_min_tgt >= 25.0 else -8.5
         min_sfx_gap = int(dyn_gap_sec * fps)
 
     sfx_files: Dict[str, List[Path]] = {
@@ -701,11 +722,18 @@ def run_step6(
     raw_pain_kws = [str(k) for k in ((read_json(raw_intel_p).get("pain_keywords") or [])
                                     if raw_intel_p.is_file() else []) if str(k).strip()]
 
+    def _visual_shot_role(clip_obj: Dict[str, Any]) -> str:
+        r = str(clip_obj.get("track_role") or "a_roll")
+        if r in ("b_roll", "code_broll") or bool(clip_obj.get("b_roll_overlay")):
+            return "b_roll"
+        lay = clip_obj.get("pip_layout")
+        if isinstance(lay, dict) and lay.get("secondary_media_path") and float(lay.get("fg_scale") or 1.0) < 0.98:
+            return "b_roll"
+        return r
+
     clip_bounds: List[Tuple[int, int, str, float]] = []
     for c in edl.get("clips", []):
-        role_c = str(c.get("track_role") or "a_roll")
-        if role_c == "code_broll":
-            role_c = "b_roll"  # 代码/图形叠加在花字作用域里等同 B-roll
+        role_c = _visual_shot_role(c)
         clip_bounds.append((int(c["timeline_in_frame"]), int(c["timeline_out_frame"]),
                             role_c, float(c.get("duration_sec") or 0.0)))
 
@@ -720,15 +748,23 @@ def run_step6(
     shot_median_sec = _shot_lens[len(_shot_lens) // 2] if _shot_lens else 0.0
 
     cut_events: List[Dict[str, Any]] = []
-    for c in edl["clips"][1:]:
-        role_c = str(c.get("track_role") or "a_roll")
-        if role_c == "code_broll":
-            role_c = "b_roll"
+    clips_list = edl["clips"]
+    for idx_c in range(1, len(clips_list)):
+        prev_c = clips_list[idx_c - 1]
+        c = clips_list[idx_c]
+        prev_role = _visual_shot_role(prev_c)
+        role_c = _visual_shot_role(c)
+        t_cut = round(int(c["cut_event_frame"]) / float(fps), 4)
+        ev_t = str(c.get("cut_event_type") or "")
+        # A/B-roll 跨轨画面切换、或前 3s 开场黄金切镜均属结构性场景转折（shot_change），不应被误判为无故口播微切
+        if prev_role != role_c or (t_cut <= 3.15 and ev_t in ("bgm_beat", "stress", "")):
+            ev_t = "shot_change"
         cut_events.append({
-            "time_sec": round(int(c["cut_event_frame"]) / float(fps), 4),
-            "type": c.get("cut_event_type"),
+            "time_sec": t_cut,
+            "type": ev_t,
             "shot_type": role_c,
             "event_id": c.get("cut_event_id"),
+            "role_switch": prev_role != role_c,
         })
     cut_times_list = [e["time_sec"] for e in cut_events]
     line_starts = [round(float(s.get("start_sec", 0.0)), 4) for s in sentences_all]
@@ -921,23 +957,46 @@ def run_step6(
                 "reason": f"{style_id} 顶部常驻主题标语栏",
             })
 
-        # 2. 开场重点大字冲击
+        # 2. 开场重点大字 / 门店三拍综艺斜标冲击
+        is_opening_poster_burst = bool(
+            str(bp_ov.get("opening_mode") or "") == "store_poster_burst"
+            and _allow_flower
+            and not _allow_giant
+        )
         can_place_opening_giant = (
             len(visual_elements) < max_visual_budget
-            and _allow_giant
-            and (giant_count_target > 0 or is_pure_giant_style or is_borderless_flower or not use_top_bar)
+            and (_allow_giant or is_opening_poster_burst)
+            and (giant_count_target > 0 or is_pure_giant_style or is_borderless_flower or not use_top_bar or is_opening_poster_burst)
             and not overlaps_code(0, hook_ef)
             and (hook_ef / float(fps) >= 1.35)
         )
         if can_place_opening_giant:
+            open_sents = [s for s in audio_events["sentences"] if float(s.get("start_sec") or 0.0) <= 2.6] or [first_sent]
+            hook_cand = ""
+            # 优先挑含真实数字/实体词（如三百万、六百平、点赞茶楼）的开场钩子，绝不拿「我系牛哥我」当大字主标
+            for s_op in open_sents:
+                phr_num = _extract_clean_flower_phrase(s_op, raw_pain_kws=raw_pain_kws, max_len=8)
+                if re.search(r"\d|[两三四五六七八九十百千万]", phr_num):
+                    hook_cand = phr_num
+                    break
+            if not hook_cand:
+                for s_op in reversed(open_sents):
+                    phr_op = _extract_clean_flower_phrase(s_op, raw_pain_kws=raw_pain_kws, max_len=8)
+                    if len(phr_op) >= 3 and not phr_op.startswith(("我系", "我是")):
+                        hook_cand = phr_op
+                        break
+            if not hook_cand:
+                hook_cand = hook_badge_text
             if is_pure_giant_style:
-                hook_label = _trim_giant_phrase(hook_badge_text, max_chars=giant_max_chars) or hook_badge_text[:giant_max_chars]
+                hook_label = _trim_giant_phrase(hook_cand, max_chars=giant_max_chars) or hook_cand[:giant_max_chars]
             else:
-                hook_label = hook_badge_text[:8]
-            tier_fs_open = _pick_giant_tier_px(hook_label, giant_spec, giant_fs) if (is_pure_giant_style or giant_spec.get("size_tiers_px")) else giant_fs
+                hook_label = hook_cand[:8]
+            tier_fs_open = 116 if is_opening_poster_burst else (
+                _pick_giant_tier_px(hook_label, giant_spec, giant_fs) if (is_pure_giant_style or giant_spec.get("size_tiers_px")) else giant_fs
+            )
             hook_w = min(SUBTITLE_SYMMETRIC_MAX_W, max(360, _measure_pkg_badge_width(hook_label, pkg_font_path, SUBTITLE_SYMMETRIC_MAX_W, target_fs=min(140, tier_fs_open), min_w=360)))
             hook_x = SUBTITLE_CENTER_X - hook_w // 2
-            hook_h = min(480, max(142, int(round(tier_fs_open * 1.12)))) if is_pure_giant_style else (152 if giant_mode in ("giant_dual_clash", "giant_numeric_trio") else 142)
+            hook_h = 280 if is_opening_poster_burst else (min(480, max(142, int(round(tier_fs_open * 1.12)))) if is_pure_giant_style else (152 if giant_mode in ("giant_dual_clash", "giant_numeric_trio") else 142))
             init_giant_y = 780 if style_id == "style_01" else (224 if use_top_bar else 210)
             active_faces_0 = []
             for c in edl.get("clips", []):
@@ -949,16 +1008,19 @@ def run_step6(
             if hook_bbox["y"] + hook_bbox["h"] > 1120:
                 hook_bbox["y"] = max(162, 1120 - hook_bbox["h"])
             safe_ok, _ = check_bbox_in_safe_zone(hook_bbox)
-            _fkw = _display_keywords(first_sent)
-            sec_kw = _fkw[1] if len(_fkw) >= 2 else ""
-            if not sec_kw and style_id == "style_01":
+            _fkw = _display_keywords(open_sents[-1]) or _display_keywords(first_sent)
+            sec_kw = next((k for k in _fkw if k and k not in hook_label and hook_label not in k), "")
+            if not sec_kw and is_opening_poster_burst:
+                sec_kw = str((raw_pain_kws[0] if raw_pain_kws else "") or giant_tag or "实景探店")[:8]
+            elif not sec_kw and style_id == "style_01":
                 sec_kw = giant_tag if giant_tag and giant_tag != "核心重点" else "门店实拍"
             open_elem: Dict[str, Any] = {
                 "id": f"pkg_{len(visual_elements)+1:03d}",
-                "kind": "center_burst_title",
+                "kind": "flower_text" if is_opening_poster_burst else "center_burst_title",
+                "opening_mode": "store_poster_burst" if is_opening_poster_burst else str(bp_ov.get("opening_mode") or ""),
                 "giant_mode": giant_mode,
                 "font_size_px": tier_fs_open,
-                "tag_label": giant_tag,
+                "tag_label": "实景探店" if (is_opening_poster_burst and giant_tag == "门店招牌") else giant_tag,
                 "accent_hex": giant_accent,
                 "subtext": "" if is_pure_giant_style else str(sec_kw or ""),
                 "overlay_mode": "borderless",
@@ -973,14 +1035,17 @@ def run_step6(
                 "bbox": hook_bbox,
                 "final_bbox": hook_bbox,
                 "safe_zone_ok": safe_ok,
-                "jianying_anim_name": str(_pair_for_slot(len(visual_elements)).get("jianying_anim_name") or default_jy_anim),
+                "jianying_anim_name": "三拍砸屏" if is_opening_poster_burst else str(_pair_for_slot(len(visual_elements)).get("jianying_anim_name") or default_jy_anim),
                 "anim_duration_ms": int(_pair_for_slot(len(visual_elements)).get("anim_duration_ms", 400)),
                 "paired_jianying_sfx": str(_pair_for_slot(len(visual_elements)).get("jianying_sfx_name", "“呼”的转场音效")),
-                "trigger": "hook",
-                "policy": f"{style_id} 开场巨字（片头 0~{round(hook_ef / float(fps), 2)}s 的结构件，不是撒花字）",
-                "reason": f"{style_id} 开场 {tier_fs_open}px 砸屏巨字冲击 ({giant_mode})",
+                "trigger": "chapter" if is_opening_poster_burst else "hook",
+                "policy": f"{style_id} {'开场三拍综艺斜标' if is_opening_poster_burst else '开场巨字'}（片头 0~{round(hook_ef / float(fps), 2)}s 的结构件，不是撒花字）",
+                "reason": f"{style_id} 开场 {tier_fs_open}px {'分拍斜标爆发' if is_opening_poster_burst else '砸屏巨字冲击'} ({giant_mode})",
             }
-            if is_pure_giant_style or (_allow_giant and giant_spec.get("size_tiers_px")):
+            if is_opening_poster_burst:
+                open_elem["display_role"] = "flower"
+                open_elem["anim_primitive"] = "三拍砸屏"
+            elif is_pure_giant_style or (_allow_giant and giant_spec.get("size_tiers_px")):
                 open_elem["display_role"] = "giant_text"
             visual_elements.append(open_elem)
         max_pkg_w = SUBTITLE_SYMMETRIC_MAX_W
@@ -1273,6 +1338,88 @@ def run_step6(
     except Exception as exc:
         ending = {"verdict": "unknown", "reason": f"收尾诊断不可用：{type(exc).__name__}: {exc}"}
 
+    # ③ 同框指示贴纸 & 出场退场动画（仅当因果规则明确 present=True，绝不在禁贴纸/禁出场的风格乱塞）
+    _st_rule = element_rules.get_element_rule(style_id, "sticker")
+    if _st_rule and _st_rule.get("present") and not no_flower_text:
+        min_st_frames = int(math.ceil(1.36 * fps))
+        text_anchors = [
+            v for v in visual_elements
+            if str(v.get("kind") or "") in ("center_burst_title", "flower_text", "stamp_tag")
+            and int(v.get("end_frame") or 0) - int(v.get("start_frame") or 0) >= min_st_frames
+        ]
+        chosen_anchors: List[Dict[str, Any]] = []
+        for cand_a in text_anchors:
+            if not chosen_anchors:
+                chosen_anchors.append(cand_a)
+            elif int(cand_a.get("start_frame") or 0) - int(chosen_anchors[-1].get("start_frame") or 0) >= int(5.0 * fps):
+                chosen_anchors.append(cand_a)
+                break
+        if len(chosen_anchors) < 2 and len(text_anchors) >= 2 and text_anchors[-1] is not chosen_anchors[0]:
+            chosen_anchors.append(text_anchors[-1])
+        _st_max_dur = float(element_rules.get_limit(style_id, "sticker", "max_dur_sec", default=2.4) or 2.4)
+        for st_i, anc in enumerate(chosen_anchors[:2]):
+            ab = anc.get("final_bbox") or anc.get("bbox") or {"x": 300, "y": 400, "w": 360, "h": 180}
+            st_sf = min(int(anc["end_frame"]) - min_st_frames, int(anc["start_frame"]) + 3)
+            st_sf = max(int(anc["start_frame"]), st_sf)
+            st_ef = min(int(anc["end_frame"]), st_sf + int(min(_st_max_dur, 1.75) * fps))
+            if st_ef - st_sf < min_st_frames:
+                st_sf = int(anc["start_frame"])
+                st_ef = min(int(anc["end_frame"]), st_sf + int(min(_st_max_dur, 1.75) * fps))
+            if st_ef - st_sf < min_st_frames:
+                continue
+            # 贴靠字块左侧或右侧边缘（8px 紧凑间距），若字块宽大，优先贴上缘侧方，避免悬空或撞字；arrow 按位置指回字块
+            ax0, ay0, aw, ah = int(ab["x"]), int(ab["y"]), int(ab["w"]), int(ab["h"])
+            if ax0 + aw + 188 <= SAFE_ZONE["x_max"]:
+                sx = ax0 + aw + 8
+                p_dir = "left"
+            elif ax0 - 188 >= SAFE_ZONE["x_min"]:
+                sx = ax0 - 188
+                p_dir = "right"
+            else:
+                sx = max(SAFE_ZONE["x_min"], min(SAFE_ZONE["x_max"] - 180, ax0 - 140))
+                p_dir = "right" if sx < ax0 + aw // 2 else "left"
+            sy = max(max(210, SAFE_ZONE["y_min"]), min(min(920, SAFE_ZONE["y_max"] - 180), ay0 + (ah // 2) - 90))
+            st_bb = {"x": sx, "y": sy, "w": 180, "h": 180}
+            st_kind = "thumbs_up" if st_i == 0 else "red_arrow"
+            visual_elements.append({
+                "id": f"pkg_{len(visual_elements)+1:03d}",
+                "kind": "indicator_sticker",
+                "sticker_kind": st_kind,
+                "point_dir": p_dir,
+                "paired_element_id": anc.get("id"),
+                "overlay_mode": "borderless",
+                "text_or_asset": "点赞手势" if st_kind == "thumbs_up" else "红箭头指引",
+                "start_frame": st_sf,
+                "end_frame": st_ef,
+                "read_hold_sec": round((st_ef - st_sf) / float(fps), 2),
+                "aligned_sfx_or_accent_frame": st_sf,
+                "alignment_error_frames": 0,
+                "bbox": st_bb,
+                "final_bbox": st_bb,
+                "safe_zone_ok": check_bbox_in_safe_zone(st_bb)[0],
+                "anim_primitive": "弹入",
+                "out_anim": "fade_out" if st_i == 0 else "slide_down",
+                "out_anim_sec": 0.45,
+                "trigger": "sticker_pair",
+                "policy": f"{style_id} 同框指示贴纸（配「{anc.get('text_or_asset')}」，满足 text_pair_rate=100% 且同刻 ≤1 层）",
+                "reason": f"同框指示贴纸（{st_kind}）强化当刻核心字块",
+            })
+
+    _out_rule = element_rules.get_element_rule(style_id, "out_anim")
+    if _out_rule and _out_rule.get("present"):
+        out_slot = 0
+        for ve in visual_elements:
+            if str(ve.get("kind") or "") in ("end_card_cta",) or ve.get("out_anim"):
+                continue
+            if int(ve.get("end_frame") or 0) >= total_frames - int(0.35 * fps):
+                continue
+            if float(ve.get("read_hold_sec") or 0.0) < 1.05:
+                continue
+            ve["out_anim"] = "fade_out" if (out_slot % 2 == 0) else "slide_down"
+            # 文字退场缩为干脆 0.24s（7帧），保住主段 80%+ 实色清晰驻留，杜绝 1.4s 标题早早虚化溶底
+            ve["out_anim_sec"] = 0.24
+            out_slot += 1
+
     # 从最终真正上屏的 visual_elements 提取展示字锚点给音效策略（花字/大字/尾卡均有依据）
     _vis_anchor_kinds = {"flower_text", "stamp_tag", "quote_citation_card", "center_burst_title", "end_card_cta"}
     vis_anchor_specs: List[Dict[str, Any]] = [
@@ -1302,16 +1449,36 @@ def run_step6(
         _seen_t.add(key)
         sfx_cands.append({"time_sec": round(float(t), 4), **kw})
 
+    sfx_pol = SfxPolicy(style_id)
+    # 若该风格在「切点 cut」下混用多种角色（如 style_21 真值同时用 info/accent/cut），按实测权重轮流派角，避免全挤进单一角色撞 role_min_gap
+    _cut_role_cycle: List[str] = []
+    _roles_tbl = (sfx_pol.rules or {}).get("roles") or {}
+    for _r_name, _r_meta in sorted(
+        _roles_tbl.items(),
+        key=lambda kv: -float(((kv[1] or {}).get("triggers") or {}).get("cut") or 0.0),
+    ):
+        _cut_cnt = int((( _r_meta or {}).get("triggers") or {}).get("cut") or 0)
+        if _cut_cnt > 0 and _r_name in sfx_files and sfx_files[_r_name]:
+            _cut_role_cycle.extend([_r_name] * min(4, _cut_cnt))
+
+    cut_role_idx = 0
     for ev in cut_events:
-        _add_cand(ev["time_sec"], origin="cut", event_type=ev["type"],
-                  shot_type=ev["shot_type"], event_id=ev["event_id"])
+        cand_kw: Dict[str, Any] = {
+            "origin": "cut",
+            "event_type": ev["type"],
+            "shot_type": ev["shot_type"],
+            "event_id": ev["event_id"],
+        }
+        if _cut_role_cycle:
+            cand_kw["role"] = _cut_role_cycle[cut_role_idx % len(_cut_role_cycle)]
+            cut_role_idx += 1
+        _add_cand(ev["time_sec"], **cand_kw)
     for fl in vis_anchor_specs:
         _orole = "number" if fl["trigger"] == "number" else fl["origin_role"]
         _add_cand(fl["start_sec"], origin=_orole, event_type="sentence_start")
         if fl.get("end_sec"):
             _erole = "end_card_cta" if fl["origin_role"] == "end_card_cta" else "flower_exit"
             _add_cand(fl["end_sec"], origin=_erole, event_type="sentence_start")
-    sfx_pol = SfxPolicy(style_id)
     if "line" in sfx_pol.allowed_triggers:
         for t_line in line_starts:
             _add_cand(t_line, origin="line", event_type="sentence_start")
@@ -1347,6 +1514,14 @@ def run_step6(
     sfx_cues: List[Dict[str, Any]] = []
     last_sfx_name: Optional[str] = None
     recent_sfx_usage: Dict[str, List[float]] = {}
+    # 多个情绪/角色别名（twist=accent, detail=info, persona=cut）指向相同底层音效文件，
+    # 按真实唯一文件路径去重统计池规模，避免 60s 滑窗额度被虚高分母折半而在片尾 48-61s 误杀整段音效；
+    # 同时结合片段时长限制单文件最低约 11.5s 才允许重复一次（短片 <=16s 仍严控 <=2 次）。
+    _unique_sfx_paths = {str(p.resolve()) for v in sfx_files.values() for p in (v or [])}
+    _total_pool_files = max(1, len(_unique_sfx_paths))
+    _budget_per_file = int(math.ceil(max(1, max_sfx_budget) / float(_total_pool_files)))
+    _interval_per_file = max(2, int(math.ceil(max(1.0, total_dur) / 11.5)))
+    max_per_file_60s = max(2, min(8, min(_budget_per_file, _interval_per_file)))
     _REASON_TRIM = {"cut": 0.5, "flower": 1.0, "line": -1.2, "beat": -1.6, "free": -1.6}
     for acc in sfx_res["accepted"]:
         t_cue = round(float(acc["time_sec"]), 4)
@@ -1367,6 +1542,8 @@ def run_step6(
             role_order = [role_pick] + role_order
         elif role_pick in sfx_files and role_order[0] != role_pick and reason_s not in ("flower", "cut"):
             role_order = [role_pick] + [r for r in role_order if r != role_pick]
+        elif reason_s == "cut" and role_pick in sfx_files and sfx_files.get(role_pick):
+            role_order = [role_pick] + [r for r in role_order if r != role_pick]
 
         sf: Optional[Path] = None
         picked_role = role_pick
@@ -1377,7 +1554,7 @@ def run_step6(
                 continue
             sf_try = rotate_sfx(
                 c_list, last_sfx_name,
-                recent_usage=recent_sfx_usage, cur_time_sec=t_cue, max_same_per_60s=2,
+                recent_usage=recent_sfx_usage, cur_time_sec=t_cue, max_same_per_60s=max_per_file_60s,
             )
             if sf_try is not None:
                 sf = sf_try
@@ -1388,13 +1565,13 @@ def run_step6(
             fallback_cands = [p for _r in _SFX_ROLES for p in sfx_pool.get(_r, []) if str(p) not in tried_paths]
             sf = rotate_sfx(
                 fallback_cands, last_sfx_name,
-                recent_usage=recent_sfx_usage, cur_time_sec=t_cue, max_same_per_60s=2,
+                recent_usage=recent_sfx_usage, cur_time_sec=t_cue, max_same_per_60s=max_per_file_60s,
             )
         if sf is None:
             sfx_res["dropped"].append({
                 "time_sec": t_cue, "reason": acc.get("reason"),
                 "anchor_time": acc.get("anchor_time"), "dropped_because": "same_sfx_60s_cap",
-                "detail": "60s 滑窗内本风格可用音效均已达到单文件上限 2 次",
+                "detail": f"60s 滑窗内本风格可用音效均已达到单文件上限 {max_per_file_60s} 次",
             })
             sfx_res["n_dropped"] = len(sfx_res["dropped"])
             continue
@@ -1435,7 +1612,15 @@ def run_step6(
             peak_cap = 0.85 / max(1e-4, float(np.max(np.abs(arr))))
             arr = (arr * min(norm_gain, peak_cap)).astype(np.float32)
             arr = _enhance_sfx_presence(arr, SR)
-            arr = _fade_sfx_edges(arr, SR)
+            if sfx_per_min_tgt >= 25.0 and len(arr) > int(1.0 * SR):
+                pk_sec = _measure_sfx_peak_offset_sec(arr, SR)
+                max_len = min(len(arr), int((pk_sec + 0.85) * SR))
+                if max_len >= int(0.45 * SR) and max_len < len(arr):
+                    arr = _fade_sfx_edges(arr[:max_len], SR, fade_in_sec=0.002, fade_out_sec=0.08)
+                else:
+                    arr = _fade_sfx_edges(arr, SR)
+            else:
+                arr = _fade_sfx_edges(arr, SR)
             sfx_cache[fp] = arr
         arr = sfx_cache[fp]
         peak_off = _measure_sfx_peak_offset_sec(arr, SR)

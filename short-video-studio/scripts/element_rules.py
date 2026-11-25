@@ -217,6 +217,7 @@ def measure(pipeline_dir: Path) -> Dict[str, Any]:
             "gap_min": round(min(gaps), 2) if gaps else None,
             "chars_max": max((len(str(e.get("text_or_asset") or "")) for e in flowers), default=None),
             "subtitle_band_overlap": overlap,
+            "opening_present": any(int(e.get("start_frame") or 0) <= 15 for e in flowers),
         }
     giants = [e for e in elems if str(e.get("kind")) in ("giant_text", "center_burst_title")]
     if giants:
@@ -226,9 +227,46 @@ def measure(pipeline_dir: Path) -> Dict[str, Any]:
             "font_sizes": [e.get("font_size_px") for e in giants if e.get("font_size_px")],
             "chars_max": max((len(str(e.get("text_or_asset") or "")) for e in giants), default=None),
         }
+    if elems:
+        in_cnt = sum(1 for e in elems if str(e.get("jianying_anim_name") or e.get("anim_primitive") or e.get("in_anim") or "").strip())
+        out_cnt = sum(1 for e in elems if str(e.get("out_anim") or "").strip())
+        m["in_anim"] = {"count": in_cnt, "total_elems": len(elems)}
+        if out_cnt > 0 or len(elems) >= 2:
+            m["out_anim"] = {"count": out_cnt, "total_elems": len(elems)}
+    ae_bgm = (ae.get("bgm") or {}) if isinstance(ae, dict) else {}
+    db_info = (ae_bgm.get("dual_bgm_switch") or {}) if isinstance(ae_bgm, dict) else {}
+    pkg_bgm = (pkg.get("bgm") or {}) if isinstance(pkg, dict) else {}
+    if db_info or pkg_bgm or ae_bgm.get("file"):
+        applied_db = bool(db_info.get("applied") or pkg_bgm.get("dual_bgm"))
+        m["dual_bgm_switch"] = {
+            "count": 1 if applied_db else 0,
+            "applied": applied_db,
+            "mode": str(db_info.get("mode") or ("sequential_handoff" if pkg_bgm.get("dual_bgm") else "")).strip(),
+            "switch_sec": db_info.get("target_switch_sec") or pkg_bgm.get("switch_sec"),
+        }
     end_cards = [e for e in elems if str(e.get("kind")) in ("end_card", "end_card_cta")]
     if end_cards:
         m["end_card"] = {"count": len(end_cards)}
+    text_like = [e for e in elems if str(e.get("kind")) in ("flower_text", "center_burst_title", "stamp_tag", "quote_citation_card")]
+    st_elems = [e for e in elems if str(e.get("kind")) == "indicator_sticker"]
+    if st_elems:
+        paired_st = 0
+        max_st_dur = 0.0
+        for se in st_elems:
+            sf_s, ef_s = int(se.get("start_frame") or 0), int(se.get("end_frame") or 0)
+            max_st_dur = max(max_st_dur, max(0.0, (ef_s - sf_s) / 30.0))
+            if se.get("paired_element_id") or any(
+                sf_s < int(te.get("end_frame") or 0) and ef_s > int(te.get("start_frame") or 0)
+                for te in text_like
+            ):
+                paired_st += 1
+        m["sticker"] = {
+            "segments": len(st_elems),
+            "count": len(st_elems),
+            "paired_count": paired_st,
+            "pair_rate": round(paired_st / float(len(st_elems)), 3),
+            "max_dur_sec": round(max_st_dur, 2),
+        }
     cues = pkg.get("sfx_cues") or []
     if cues:
         starts = sorted(float(c.get("time_sec") or c.get("start_sec") or 0.0) for c in cues)
@@ -269,13 +307,27 @@ def measure(pipeline_dir: Path) -> Dict[str, Any]:
             "coverage": round(cut_sec / max(dur, 0.01), 3),
             "runs": _count_runs([float(c.get("timeline_in_sec") or 0.0) for c in cut],
                                 [float(c.get("timeline_out_sec") or 0.0) for c in cut]),
+            "outlined": sum(1 for c in cut if int((c.get("pip_layout") or {}).get("outline_px") or 0) > 0),
+            "torn_paper": sum(1 for c in cut if bool((c.get("pip_layout") or {}).get("torn_paper"))),
             "dual_capable": dual_capable,
             "duration_sec": round(dur, 2),
         }
         m["speed"] = {"segments": sum(1 for c in clips if abs(float(c.get("speed") or 1.0) - 1.0) > 1e-6)}
         m["transition"] = {"segments": sum(1 for c in clips if str(c.get("transition") or "none") not in ("none", "", "None"))}
         m["pip"] = {"segments": sum(1 for c in clips if (c.get("pip_layout") or {}).get("mode") and (c.get("pip_layout") or {}).get("mode") != "none")}
-        m["sticker"] = {"segments": sum(1 for c in clips if c.get("sticker") or c.get("sticker_layers"))}
+        st_elem_cnt = sum(1 for e in elems if str(e.get("kind")) == "indicator_sticker")
+        st_clip_cnt = sum(1 for c in clips if c.get("sticker") or c.get("sticker_layers"))
+        if st_clip_cnt or st_elem_cnt:
+            prev_st = m.get("sticker") or {}
+            m["sticker"] = {
+                "segments": st_clip_cnt + st_elem_cnt,
+                "count": st_clip_cnt + st_elem_cnt,
+                "paired_count": prev_st.get("paired_count", st_clip_cnt),
+                "pair_rate": prev_st.get("pair_rate", 1.0),
+                "max_dur_sec": prev_st.get("max_dur_sec"),
+            }
+        elif "sticker" not in m:
+            m["sticker"] = {"segments": 0, "count": 0, "pkg_text_count": len(text_like), "no_flower_text": bool(pkg.get("no_flower_text"))}
     if plan:
         m["color_grade"] = {"lut_strength": plan.get("lut_strength")}
     m["_duration_sec"] = dur
@@ -344,6 +396,41 @@ def audit(pipeline_dir: Path) -> Dict[str, Any]:
                 add(key, "巨字条数", 0, "≥1（本套无普通花字，展示字须走巨字）", "FAIL",
                     "风格真值用巨字替代普通花字，产物实测 0 条巨字")
             continue
+        if key == "dual_bgm_switch" and obs is not None and dur_total >= 6.0:
+            ok_db = bool(obs.get("applied"))
+            add(key, "双段BGM切换", obs.get("mode") or ("0" if not ok_db else "applied"),
+                "已启用", "PASS" if ok_db else "FAIL",
+                f"已切换 @{obs.get('switch_sec')}s" if ok_db else "源草稿含双段BGM切换/sting交接，产物未应用")
+            continue
+        if key == "in_anim" and obs and int(obs.get("total_elems") or 0) > 0:
+            ok_in = int(obs.get("count") or 0) >= 1
+            add(key, "入场动画挂接数", f"{obs.get('count', 0)}/{obs.get('total_elems', 0)}",
+                "≥1", "PASS" if ok_in else "FAIL",
+                "展示元素已挂入场动画" if ok_in else "源草稿入场动画显式存在，产物全部包装元素均未挂入场动画")
+            continue
+        if key == "out_anim" and obs and int(obs.get("total_elems") or 0) >= 2 and dur_total >= 6.0:
+            ok_out = int(obs.get("count") or 0) >= 1
+            add(key, "出场动画挂接数", f"{obs.get('count', 0)}/{obs.get('total_elems', 0)}",
+                "≥1", "PASS" if ok_out else "FAIL",
+                "信息层已挂淡出/下滑退场" if ok_out else "源草稿出场动画显式存在，产物实测 0 条退场动画")
+            continue
+        if key == "sticker" and obs is not None:
+            st_cnt = int(obs.get("count") or 0)
+            if st_cnt == 0:
+                if dur_total >= 6.0 and pkg and not obs.get("no_flower_text") and int(obs.get("pkg_text_count") or 0) >= 2:
+                    add(key, "同框指示贴纸", 0, "≥1", "FAIL", "源草稿含同框指示贴纸，产物实测 0 条")
+                continue
+            pair_lim = _limit(el, "text_pair_rate")
+            if pair_lim is not None and float(pair_lim) >= 0.99 and obs.get("pair_rate") is not None:
+                ok_pair = float(obs["pair_rate"]) >= float(pair_lim) - 1e-6
+                add(key, "贴纸花字同框率", obs["pair_rate"], pair_lim, "PASS" if ok_pair else "FAIL",
+                    "与展示字同框成对" if ok_pair else "贴纸必须与核心花字/大字同框出现，禁止悬空单贴")
+            dur_lim = _limit(el, "max_dur_sec")
+            if dur_lim is not None and obs.get("max_dur_sec") is not None:
+                ok_sd = float(obs["max_dur_sec"]) <= float(dur_lim) + 0.05
+                add(key, "贴纸最长停留（秒）", obs["max_dur_sec"], f"≤{dur_lim}", "PASS" if ok_sd else "FAIL",
+                    "短促标注不拖沓" if ok_sd else "贴纸停留超时，变成常驻角标")
+            continue
         if not obs:
             continue
         lim_hit = _limit(el, "max_per_min", "per_min", "sfx_per_min", "density_per_min")
@@ -379,6 +466,17 @@ def audit(pipeline_dir: Path) -> Dict[str, Any]:
                 "真值是「y 带互斥」：同帧可以并存，但不能叠在同一块像素上")
         elif key == "flower":
             add(key, "花字压进字幕带（张）", 0, "0", "PASS", "y 带互斥成立")
+            if (not (els.get("giant_text") or {}).get("present")) and pkg and not pkg.get("no_flower_text"):
+                try:
+                    from render_template_overlays import get_style_blueprint
+                    _omode = str(((get_style_blueprint(style_id).get("overlay_style") or {}).get("opening_mode") or "")).strip()
+                except Exception:
+                    _omode = ""
+                if _omode == "store_poster_burst":
+                    ok_op = bool(obs.get("opening_present"))
+                    add(key, "开场结构钩子", "有" if ok_op else "0", "开场 ≤0.5s 上屏",
+                        "PASS" if ok_op else "FAIL",
+                        "已放置开场三拍斜标钩子" if ok_op else "门店斜标开场风格前 0.5s 缺失开场斜标钩子")
         if key == "cutout":
             share_lim = _limit(el, "max_coverage_ratio", "coverage_ratio", "max_share_of_person_layer")
             share_val = None
@@ -401,6 +499,24 @@ def audit(pipeline_dir: Path) -> Dict[str, Any]:
             ):
                 add(key, "分层抠像缺失", "0.0", f">0（上限 {share_lim}）", "FAIL",
                     "风格真值要求成段人物抠像叠 B-roll，产物实测 0%（退化为 A/B 来回切镜）")
+            if int(obs.get("segments") or 0) > 0:
+                stroke_drv = next(
+                    (d for d in (el.get("value_drivers") or [])
+                     if str(d.get("param") or "").startswith("matting.strokes")),
+                    None,
+                )
+                if stroke_drv:
+                    drv_txt = f"{stroke_drv.get('value') or ''} {stroke_drv.get('why_this_value') or ''}"
+                    if "带描边" in drv_txt or "单层描边" in drv_txt or "撕纸描边" in drv_txt:
+                        ok_outl = int(obs.get("outlined") or 0) >= 1
+                        add(key, "抠像轮廓描边", obs.get("outlined", 0), "≥1 段带描边",
+                            "PASS" if ok_outl else "FAIL",
+                            "前景与底图已做描边分离" if ok_outl else "源草稿抠像包含实体描边，产物实测 0 段描边")
+                    if "撕纸描边" in drv_txt and "单层描边" not in drv_txt:
+                        ok_torn = int(obs.get("torn_paper") or 0) >= 1
+                        add(key, "撕纸锯齿白边", obs.get("torn_paper", 0), "≥1 段撕纸描边",
+                            "PASS" if ok_torn else "FAIL",
+                            "已启用撕纸风轮廓" if ok_torn else "源草稿明确使用撕纸描边，产物未开启 torn_paper")
             add(key, "抠像段数 / 连续段数", f"{obs['segments']} / {obs['runs']}",
                 "见 limits.max_runs", "INFO", "真值是成段出现，不是每镜开一下关一下")
         if key == "color_grade":

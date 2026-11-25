@@ -252,8 +252,10 @@ def _draw_gradient_3d_text(
     extrude_rgb: Tuple[int, int, int] = (68, 28, 6),
     stroke_rgb: Tuple[int, int, int] = (42, 16, 4),
     depth_px: int = 10,
+    min_hairline_w: int = 0,
+    shadow_alpha: int = 185,
 ) -> Image.Image:
-    """渲染高质感 3D 金属渐变立体字（复刻 style_18 户外探盘等爆款立体字）。"""
+    """渲染高质感 3D 金属渐变立体字（复刻 style_18 / style_21 等爆款大字）。"""
     probe = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
     pd = ImageDraw.Draw(probe)
     fnt, fitted, _ = _fit_text(pd, text, font_path, max_w - 60, font_size, 44, stroke_w=8)
@@ -268,19 +270,22 @@ def _draw_gradient_3d_text(
     draw = ImageDraw.Draw(out)
     ox = pad - bb[0]
     oy = pad - bb[1]
+    eff_sw = max(int(min_hairline_w), _sw(8))
+    sh_a = max(120, min(255, int(shadow_alpha)))
 
     shadow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     sd = ImageDraw.Draw(shadow)
-    sd.text((ox + depth_px + 4, oy + depth_px + 6), fitted, font=fnt, fill=(0, 0, 0, 185), stroke_width=_sw(10), stroke_fill=(0, 0, 0, 185))
+    sd.text((ox + depth_px + 4, oy + depth_px + 6), fitted, font=fnt, fill=(0, 0, 0, sh_a), stroke_width=max(eff_sw, _sw(10)), stroke_fill=(0, 0, 0, sh_a))
     shadow = shadow.filter(ImageFilter.GaussianBlur(radius=6))
     out.alpha_composite(shadow)
 
     for d in range(depth_px, 0, -1):
         shade = 0.65 + 0.35 * (1.0 - d / max(1, depth_px))
         ec = (int(extrude_rgb[0] * shade), int(extrude_rgb[1] * shade), int(extrude_rgb[2] * shade), 255)
-        draw.text((ox + int(d * 0.45), oy + d), fitted, font=fnt, fill=ec, stroke_width=_sw(8), stroke_fill=ec)
+        draw.text((ox + int(d * 0.45), oy + d), fitted, font=fnt, fill=ec, stroke_width=eff_sw, stroke_fill=ec)
 
-    draw.text((ox, oy), fitted, font=fnt, fill=(*stroke_rgb, 255), stroke_width=_sw(8), stroke_fill=(*stroke_rgb, 255))
+    if eff_sw > 0:
+        draw.text((ox, oy), fitted, font=fnt, fill=(*stroke_rgb, 255), stroke_width=eff_sw, stroke_fill=(*stroke_rgb, 255))
 
     mask = Image.new("L", (w, h), 0)
     md = ImageDraw.Draw(mask)
@@ -503,25 +508,28 @@ def _build_style01_layers(
 
     if tag:
         badge_txt = tag
-        b_img = Image.new("RGBA", (440, 74), (0, 0, 0, 0))
-        bd = ImageDraw.Draw(b_img)
-        bf, bt, _ = _fit_text(bd, badge_txt, sans_font, 360, 34, 22)
+        # 2x 超采样抗锯齿绘制与轻微倾斜，杜绝 34px 小签旋转后边缘拉丝发糊
+        b_hi = Image.new("RGBA", (880, 148), (0, 0, 0, 0))
+        bd = ImageDraw.Draw(b_hi)
+        bf, bt, _ = _fit_text(bd, badge_txt, sans_font, 700, 68, 42)
         bb = bd.textbbox((0, 0), bt, font=bf)
-        bw = (bb[2] - bb[0]) + 44
-        bh = (bb[3] - bb[1]) + 24
-        bx0 = (440 - bw) // 2
-        bd.rounded_rectangle([(bx0, 8), (bx0 + bw, 8 + bh)], radius=10, fill=(226, 32, 32, 248), outline=(255, 255, 255, 240), width=3)
-        bd.text((220, 8 + bh // 2), bt, font=bf, fill=(255, 255, 255, 255), anchor="mm", stroke_width=_sw(2), stroke_fill=(90, 8, 8, 255))
-        b_rot = b_img.rotate(5, resample=Image.Resampling.BICUBIC, expand=True)
+        bw = (bb[2] - bb[0]) + 88
+        bh = (bb[3] - bb[1]) + 46
+        bx0 = (880 - bw) // 2
+        bd.rounded_rectangle([(bx0, 16), (bx0 + bw, 16 + bh)], radius=20, fill=(226, 32, 32, 248), outline=(255, 255, 255, 245), width=6)
+        bd.text((440, 16 + bh // 2), bt, font=bf, fill=(255, 255, 255, 255), anchor="mm", stroke_width=max(2, _sw(4)), stroke_fill=(90, 8, 8, 255))
+        b_rot = b_hi.rotate(4, resample=Image.Resampling.BICUBIC, expand=True)
         b_ink = b_rot.getbbox()
         if b_ink:
             b_rot = b_rot.crop(b_ink)
+            b_rot = b_rot.resize((max(40, b_rot.width // 2), max(20, b_rot.height // 2)), Image.Resampling.LANCZOS)
             layers.append((b_rot, (6, y_cur), 0.0))
-            y_cur += b_rot.height - 6
+            y_cur += b_rot.height - 4
 
-    if elem_kind == "center_burst_title":
+    is_burst_mode = (elem_kind == "center_burst_title") or (str(elem.get("opening_mode") or "") == "store_poster_burst")
+    if is_burst_mode:
         main_img = _draw_tilted_stroked_text(
-            l1 or main_text[:6], sans_font, 900, 126, (132, 255, 58, 255), (10, 12, 10, 255), stroke_w=11, tilt_deg=-4.5
+            l1 or main_text[:6], sans_font, 900, 122, (132, 255, 58, 255), (10, 12, 10, 255), stroke_w=11, tilt_deg=-4.5
         )
     else:
         main_img = _draw_tilted_stroked_text(
@@ -594,6 +602,66 @@ def letter_spacing(ov_style: Dict[str, Any], default: float) -> float:
     return float(default) if v is None else max(0.0, v)
 
 
+def _render_indicator_sticker_png(elem: Dict[str, Any]) -> Image.Image:
+    """程序化渲染无版权指示性贴纸（点赞手势 / 手绘红箭头），支持左/右朝向自适应，画布保持 180x180。"""
+    st_kind = str(elem.get("sticker_kind") or "thumbs_up").strip()
+    point_dir = str(elem.get("point_dir") or "right").strip().lower()
+    w, h = 180, 180
+    img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    if st_kind == "red_arrow":
+        # 醒目弧形红色指引箭头 + 白色内高光 + 深色厚轮廓；根据 point_dir 指向紧邻文字/主体一侧
+        pts = [(28, 34), (56, 22), (118, 92), (140, 74), (154, 146), (82, 134), (102, 114)]
+        d.polygon([(x + 4, y + 5) for x, y in pts], fill=(16, 16, 20, 205))
+        d.polygon(pts, fill=(244, 52, 52, 255), outline=(255, 255, 255, 248))
+        d.line([pts[0], pts[2], pts[4]], fill=(255, 196, 180, 225), width=4)
+        if point_dir == "left":
+            img = img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+        return img
+    # 默认手绘风点赞手势 + 辐射高光星芒
+    rays = [
+        ((32, 42), (48, 56)), ((82, 16), (84, 38)), ((132, 34), (118, 52)), ((148, 80), (128, 84)),
+    ]
+    for p0, p1 in rays:
+        d.line([p0, p1], fill=(255, 228, 92, 245), width=6)
+    # 拇指 + 拳头主体（暖白填色 + 黑粗漫画描边 + 金黄袖口）
+    d.rounded_rectangle([(32, 84), (62, 148)], radius=8, fill=(252, 211, 77, 255), outline=(20, 20, 24, 255), width=5)
+    thumb = [(66, 86), (84, 44), (104, 46), (100, 82), (138, 84), (144, 102), (138, 144), (66, 144)]
+    d.polygon(thumb, fill=(255, 255, 255, 255), outline=(20, 20, 24, 255))
+    d.line([(96, 102), (136, 102)], fill=(20, 20, 24, 220), width=4)
+    d.line([(96, 120), (134, 120)], fill=(20, 20, 24, 220), width=4)
+    if point_dir == "left":
+        img = img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+    return img
+
+
+def _render_end_card_slate_png(
+    elem: Dict[str, Any],
+    style_id: str,
+    font_candidates: Optional[List[str]] = None,
+) -> Optional[Image.Image]:
+    """统一渲染片尾收束互动卡：自带半透明深黑磨砂底板 + 细金/强调边线，避免直接漂在亮杂背景下看不清。"""
+    main_text = str(elem.get("text_or_asset") or elem.get("text") or "评论区聊聊").strip()
+    sub_text = str(elem.get("subtext") or "").strip()
+    if sub_text == main_text:
+        sub_text = ""
+    fnt_p = find_commercial_font(font_candidates) or find_commercial_font()
+    accent = _hex_rgb(elem.get("fg_hex") or "#FFE28A", (255, 226, 138))
+    cw, ch = 640, (176 if sub_text else 128)
+    img = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle([(2, 2), (cw - 3, ch - 3)], radius=18, fill=(14, 16, 22, 224), outline=(*accent, 210), width=3)
+    d.rounded_rectangle([(20, 14), (cw - 20, 19)], radius=3, fill=(*accent, 235))
+    f1, t1, _ = _fit_text(d, main_text, fnt_p, cw - 64, 54, 30, stroke_w=3)
+    y_main = 72 if sub_text else (ch // 2 + 4)
+    d.text((cw // 2 + 2, y_main + 3), t1, font=f1, fill=(0, 0, 0, 220), anchor="mm", stroke_width=3, stroke_fill=(0, 0, 0, 220))
+    d.text((cw // 2, y_main), t1, font=f1, fill=(*accent, 255), anchor="mm", stroke_width=3, stroke_fill=(20, 18, 12, 245))
+    if sub_text:
+        f2, t2, _ = _fit_text(d, sub_text, fnt_p, cw - 72, 34, 22, stroke_w=2)
+        d.text((cw // 2, 132), t2, font=f2, fill=(248, 248, 250, 255), anchor="mm", stroke_width=2, stroke_fill=(0, 0, 0, 220))
+    return img
+
+
 def render_template_packaging_png(
     elem: Dict[str, Any],
     style_id: str = "style_01",
@@ -603,6 +671,11 @@ def render_template_packaging_png(
     依据 24 套剪映模板蓝图渲染高还原度透明叠层：
     返回 RGBA Image（若无需特化则回退给 render_mp4 默认渲染）。
     """
+    elem_kind = str(elem.get("kind") or elem.get("type") or elem.get("element_type") or "flower_text")
+    if elem_kind == "indicator_sticker":
+        return _render_indicator_sticker_png(elem)
+    if elem_kind == "end_card_cta":
+        return _render_end_card_slate_png(elem, style_id=style_id, font_candidates=font_candidates)
     flower_paint(style_id)  # 先按该风格实测值设定本次花字的描边/阴影画法
     bp = get_style_blueprint(style_id)
     family = str(bp.get("template_family") or "")
@@ -1097,7 +1170,8 @@ def render_template_packaging_png(
                 _draw_gradient_3d_text(
                     l1 or main_text[:8], chosen_font, g_max_w, font_size=g_fs,
                     top_rgb=pal["text"], mid_rgb=pal["light"], bot_rgb=pal["accent"],
-                    extrude_rgb=_shade(pal["accent"], 0.62), stroke_rgb=_shade(pal["accent"], 0.86), depth_px=g_depth,
+                    extrude_rgb=(44, 34, 10), stroke_rgb=(26, 20, 6), depth_px=g_depth,
+                    min_hairline_w=3, shadow_alpha=230,
                 )
             )
         else:
@@ -1305,8 +1379,9 @@ def render_animated_overlay_mov(
     dur = max(0.35, float(duration_sec))
     n_frames = max(10, int(round(dur * fps)))
 
-    # 1. style_01 专属三拍分步砸屏（每层独立放大弹性过冲）
-    if anim_mode == "store_stagger_burst" and family == "store_poster_burst":
+    # 1. style_01 专属三拍分步砸屏（仅开场海报/花字触发，片尾卡/贴纸走各自专用组件）
+    _ek = str(elem.get("kind") or elem.get("type") or elem.get("element_type") or "")
+    if anim_mode == "store_stagger_burst" and family == "store_poster_burst" and _ek not in ("end_card_cta", "indicator_sticker"):
         sans_font = find_commercial_font(["AlimamaShuHeiTi-Bold.otf", "SmileySans-Oblique.ttf"])
         oblique_font = find_commercial_font(["SmileySans-Oblique.ttf", "AlimamaShuHeiTi-Bold.otf"])
         (raw_w, raw_h), layers = _build_style01_layers(elem, sans_font, oblique_font)
@@ -1507,6 +1582,34 @@ def render_animated_overlay_mov(
                 fr.alpha_composite(im, dest=(ox, py))
                 return fr.tobytes()
             frame_fn = _render_float_up
+
+    out_anim = str(elem.get("out_anim") or "").strip().lower()
+    if out_anim in ("fade_out", "渐隐", "slide_down", "向下滑动") and n_frames >= 14:
+        out_dur = max(0.24, min(0.55, float(elem.get("out_anim_sec") or 0.45)))
+        out_frames = max(4, min(n_frames // 2, int(round(out_dur * fps))))
+        orig_fn = frame_fn
+        slide = out_anim in ("slide_down", "向下滑动")
+
+        def _with_out_anim(fi: int) -> bytes:
+            raw = orig_fn(fi)
+            if fi < n_frames - out_frames:
+                return raw
+            v = min(1.0, (fi - (n_frames - out_frames) + 1) / float(out_frames))
+            alpha_k = max(0.0, 1.0 - (v ** 1.6))
+            im = Image.frombytes("RGBA", (cw, ch), raw)
+            r, g, b, a = im.split()
+            a = a.point(lambda px: int(px * alpha_k))
+            im = Image.merge("RGBA", (r, g, b, a))
+            if slide:
+                dy = int(round(36.0 * (v ** 1.5)))
+                if dy > 0:
+                    shifted = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+                    if ch > dy:
+                        shifted.alpha_composite(im.crop((0, 0, cw, ch - dy)), dest=(0, dy))
+                    im = shifted
+            return im.tobytes()
+
+        frame_fn = _with_out_anim
 
     cmd = [
         ffmpeg_bin, "-y",

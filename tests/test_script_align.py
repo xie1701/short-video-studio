@@ -144,6 +144,15 @@ class ForeignSpeechCutTests(unittest.TestCase):
         r = SA.keep_intervals("甲乙戊己", _words(spec))
         self.assertGreaterEqual(len(r["intervals"]), 2)
 
+    def test_dragged_090s_hesitation_is_cut_without_fragmenting(self):
+        """0.90s 拖音卡壳「诶」应被当气口切掉，但句中零散顺口助词不该跨句拼碎片。"""
+        spec = _grid("上边摆好多") + _grid("诶", start=1.10, step=0.90) + _grid("卡座中空", start=2.10)
+        r = SA.keep_intervals("上边摆好多卡座中空", _words(spec))
+        self.assertEqual(len(r["intervals"]), 2)
+        self.assertEqual(r["intervals"][0]["text"], "上边摆好多")
+        self.assertEqual(r["intervals"][1]["text"], "卡座中空")
+        self.assertTrue(any((c.get("speech") or "") == "诶" and c.get("action") == "cut" for c in r["cut_notes"]))
+
 
     def test_low_coverage_line_still_cuts_inner_junk(self):
         """成稿只对上 60% 的行，句中的别人的话照样要切（旧口径在这里整段保留）。"""
@@ -154,6 +163,14 @@ class ForeignSpeechCutTests(unittest.TestCase):
         for iv in r["intervals"]:
             self.assertNotIn("啦几多", iv["text"])
         self.assertGreaterEqual(len(r["intervals"]), 2)
+
+    def test_short_left_prefix_never_merges_across_retake_gap(self):
+        """左侧匹配虽短（<0.4s，如「𠮶边」），若中间夹着重来/打板口令 (>=0.65s)，绝不合并吞回 NG。"""
+        spec = _grid("𠮶边", step=0.14) + _grid("咧鱼池三二一组咧", start=0.35, step=0.22) + _grid("就系我哋嘅鱼池", start=2.80, step=0.14)
+        r = SA.keep_intervals("𠮶边就系我哋嘅鱼池", _words(spec))
+        self.assertGreaterEqual(len(r["intervals"]), 2)
+        for iv in r["intervals"]:
+            self.assertNotIn("三二一组", iv["text"])
 
 
 class DeadAirTests(unittest.TestCase):

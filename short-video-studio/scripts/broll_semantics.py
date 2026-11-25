@@ -145,6 +145,11 @@ def concepts_of(text: str) -> Dict[str, List[str]]:
     return out
 
 
+_EXT_VISUAL_RE = re.compile(r"外墙|建筑外观|外部|仰拍|仰视|街道|商业街|大楼外观|门店外景|店招|门头|店面")
+_INT_CONTENT_RE = re.compile(r"饮茶|早茶|喝茶|卡座|大厅|大堂|后厨|厨房|食材|海鲜|菜品|点心|火锅|蒸笼|茶客|厨师|备菜|炒制|摆盘|灶台|茶艺|冲茶|泡茶")
+_OCR_SIGNBOARD_NOISE_RE = re.compile(r"^(?:早茶|饮早茶|饮茶|蒸汽石锅粥|桑拿火锅|火锅|海鲜|点心|茶楼|餐桌|点赞|茶华楼|【?茶華楼|蒸上|DIANZAN)$")
+
+
 def describe_clip(item: Dict[str, Any]) -> str:
     """把素材侧所有可用文字信号合成一段描述（人工补的描述/标签优先，其次 OCR、中文文件名、视觉索引）。"""
     parts: List[str] = []
@@ -152,18 +157,33 @@ def describe_clip(item: Dict[str, Any]) -> str:
         v = str(item.get(key) or "").strip()
         if v:
             parts.append(v)
+    raw_cue_tokens = [
+        str(t).strip()
+        for k in ("manual_tags", "semantic_tags", "scene_tags_zh")
+        for t in (item.get(k) or [])
+        if str(t).strip() and not (k == "semantic_tags" and _OCR_SIGNBOARD_NOISE_RE.match(str(t).strip()))
+    ] + parts
+    cue_joined = " ".join(raw_cue_tokens)
+    is_exterior_only = bool(
+        cue_joined
+        and _EXT_VISUAL_RE.search(cue_joined)
+        and not _INT_CONTENT_RE.search(cue_joined)
+    )
     for key in ("manual_tags", "semantic_tags"):
         for t in item.get(key) or []:
             t_s = str(t).strip()
-            if t_s:
-                parts.append(t_s)
+            if not t_s:
+                continue
+            if is_exterior_only and key == "semantic_tags" and _OCR_SIGNBOARD_NOISE_RE.match(t_s):
+                continue
+            parts.append(t_s)
     for key in ("semantic_description", "action", "shot_type", "shot_size", "camera_motion", "location"):
         v = str(item.get(key) or "").strip()
         if v:
             parts.append(v)
     for t in item.get("ocr_texts") or item.get("texts") or []:
         txt = str(t.get("text") if isinstance(t, dict) else t).strip()
-        if txt:
+        if txt and not (is_exterior_only and _OCR_SIGNBOARD_NOISE_RE.match(txt[:24])):
             parts.append(txt[:24])
     for key in ("parent_dir", "rel_path", "folder"):
         v = str(item.get(key) or "").strip()

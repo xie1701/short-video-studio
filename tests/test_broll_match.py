@@ -261,6 +261,25 @@ class Step4SemanticSelectionTests(unittest.TestCase):
             self.assertEqual(r2.returncode, 0, r2.stdout[-800:] + r2.stderr[-800:])
             self.assertIn("放行", r2.stdout)
 
+    def test_exterior_signboard_ocr_suppressed_even_without_description(self):
+        import broll_semantics as BS
+
+        ext_no_desc = {
+            "id": "norm_ext_sign",
+            "normalized_mp4": "/tmp/svs_fixture/norm_ext.mp4",
+            "role": "b_roll",
+            "duration_sec": 12.0,
+            "sharpness_score": 80.0,
+            "stability_score": 0.9,
+            "description": None,
+            "semantic_tags": ["店面", "店招", "街道", "品牌", "门店外景", "空镜特写", "DIANZAN", "【茶華楼", "饮早茶", "蒸汽石锅粥", "蒸上"],
+            "best_in_sec": 0.4,
+        }
+        r_match = BM.score_clip("朝早做纯手工嘅早茶", ext_no_desc)
+        self.assertNotIn("饮早茶", BM.describe_clip(ext_no_desc))
+        self.assertEqual(r_match["tier"], "none", r_match)
+        self.assertNotIn("饮早茶", BS.describe_clip(ext_no_desc))
+
 
 if __name__ == "__main__":
     unittest.main()

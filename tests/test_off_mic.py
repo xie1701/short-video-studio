@@ -144,6 +144,21 @@ class OffMicAlignmentTests(unittest.TestCase):
         r = script_align.keep_intervals(text, words, off_mic_spans=[span])
         self.assertEqual(r.get("off_mic_sec"), 0.0)
 
+    def test_short_off_mic_prompt_cut_when_clean_repeat_exists(self):
+        """0.5–0.7s 的导演低声提词（「几多嘅厨房」）虽然文字撞上成稿且短于 0.8s，但后文紧接主讲人干净重说时必须砍掉。"""
+        text = "𠮶边就系我哋嘅厨房两百平嘅厨房"
+        words = _words("𠮶边就系我哋嘅几多嘅厨房两百平嘅厨房", step=0.18)
+        # 导演低声提示「几多嘅厨房」：7*0.18=1.26 .. 11*0.18=1.98 -> dur=0.72 (<0.80) 且硬档 27dB
+        span = {
+            "start_sec": 1.26, "end_sec": 1.98, "dur_sec": 0.72, "drop_db": 27.8,
+            "severity": "hard", "words": ["几", "多", "嘅", "厨", "房"], "text": "几多嘅厨房",
+        }
+        r = script_align.keep_intervals(text, words, off_mic_spans=[span])
+        self.assertGreater(r.get("off_mic_sec") or 0.0, 0.5)
+        joined = "".join(iv["text"] for iv in r["intervals"])
+        self.assertNotIn("几多", joined)
+        self.assertIn("两百平嘅厨房", joined)
+
 
 class RealCaseShapeTests(unittest.TestCase):
     """用现场那一行的真实形状复现：这段判定必须能砍掉「干炒蚝」那一串。"""

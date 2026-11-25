@@ -1369,7 +1369,7 @@
       "animation": "缩小",
       "punct_stripped": true,
       "lut_cube": "assets/style_spectrum/luts/style_21.cube",
-      "ass_style": "Style: Default,Alimama ShuHeiTi,60,&H00FFFFFF,&H0017BFFF,&H00000000,&HFF000000,-1,0,0,0,100,100,1,0,1,4,2,2,220,220,460,1",
+      "ass_style": "Style: Default,Source Han Serif CN Heavy,75,&H00FFFFFF,&H0017BFFF,&H00000000,&HFF000000,-1,0,0,0,100,100,1,0,1,4,2,2,220,220,460,1",
       "symmetry_center_x": 540,
       "symmetry_max_width_px": 640,
       "shadow": true,
@@ -1401,7 +1401,7 @@
       },
       "shadow_smoothing": 0.45,
       "shadow_alpha": 0.7,
-      "ass_font_family": "Alimama ShuHeiTi",
+      "ass_font_family": "Source Han Serif CN Heavy",
       "font_size_jianying_units": 12.0,
       "px_per_unit_at_1080": 6.25
     },

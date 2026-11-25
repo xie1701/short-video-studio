@@ -517,6 +517,46 @@ def _snap_tail_to_closed_mouth_valley(arr: np.ndarray, s1: int, sr: int = SR) ->
     return snap_to_zero_crossing(arr, valley_idx, int(0.008 * sr))
 
 
+def _build_procedural_intro_sting(out_wav: Path, dur_sec: float = 1.733) -> Optional[Path]:
+    """基于 synth_motion_sfx 无版权程序化合成开篇引子 sting（chime + riser + impact），绝不跨风格借用。"""
+    try:
+        from synth_motion_sfx import mix_sfx_cues, write_wav_stereo
+        d = max(0.9, min(3.8, float(dur_sec)))
+        cues = [
+            {"t": 0.04, "sfx": "chime", "gain": 0.42, "align": "start"},
+            {"t": max(0.35, d - 0.12), "sfx": "riser", "gain": 0.34, "align": "end"},
+            {"t": max(0.08, d - 0.10), "sfx": "impact", "gain": 0.28, "align": "peak"},
+        ]
+        arr = mix_sfx_cues(cues, total_duration_sec=d + 0.12, out_wav=None)
+        n = min(len(arr), max(int(0.6 * SR), int(round(d * SR))))
+        arr = arr[:n].copy()
+        fo = min(len(arr) // 4, int(0.18 * SR))
+        if fo > 2:
+            arr[-fo:] *= np.linspace(1.0, 0.0, fo, dtype=np.float32)[:, None]
+        return write_wav_stereo(out_wav, arr, sr=SR)
+    except Exception:
+        return None
+
+
+def _resolve_handoff_intro_bgm(bgm_path: Path, pipeline_dir: Path, dur_sec: float) -> Tuple[Optional[Path], Optional[Path]]:
+    """按本机专属资产 → 内置 CC0 对比床 → 程序化引子的顺序解析 sequential_handoff 前奏音轨。"""
+    la = local_assets_dir(ASSETS_DIR)
+    search_dirs = ([la / "sound_vibe" / "bgm"] if la is not None else []) + [ASSETS_DIR / "sound_vibe" / "bgm"]
+    for sdir in search_dirs:
+        if not sdir.is_dir():
+            continue
+        for p in sorted(sdir.glob("style_06_bgm.*")):
+            if p.suffix.lower() in (".mp3", ".m4a", ".wav", ".aac", ".flac") and p.is_file() and p.resolve() != bgm_path.resolve():
+                meta = sdir / "style_06_bgm.json"
+                return p, (meta if meta.is_file() else None)
+    for cname in ("style_03_bgm.m4a", "style_02_bgm.m4a", "style_05_bgm.m4a"):
+        p = ASSETS_DIR / "sound_vibe" / "bgm" / cname
+        if p.is_file() and p.resolve() != bgm_path.resolve():
+            meta = p.with_suffix(".json")
+            return p, (meta if meta.is_file() else None)
+    return _build_procedural_intro_sting(pipeline_dir / "03_intro_handoff.wav", dur_sec=dur_sec), None
+
+
 def run_step3(
     pipeline_dir: Path,
     track: str = "store",
@@ -906,18 +946,26 @@ def run_step3(
     intro_downs: List[float] = []
     active_sid = style_id or load_style_applied(pipeline_dir) or ("style_01" if track == "store" else "style_11")
     style_entry = load_style_spectrum_entry(active_sid) if active_sid else None
+    try:
+        import element_rules
+        db_rule = element_rules.get_element_rule(active_sid, "dual_bgm_switch")
+    except Exception:
+        db_rule = None
+    db_triggers = [str(t) for t in ((db_rule or {}).get("why_appears") or {}).get("triggers") or []]
     dual_cfg = (style_entry or {}).get("dual_bgm_structure") or {}
-    if bool(dual_cfg.get("enabled")) and total_dur >= 6.0:
+    if bool(dual_cfg.get("enabled")) and total_dur >= 6.0 and "intro_overlay_exit" not in db_triggers:
         intro_sec = max(1.8, min(3.8, float(dual_cfg.get("intro_duration_sec") or 2.83)))
         snap_cands = [s["end_sec"] for s in locked_sentences if 1.6 <= s["end_sec"] <= 3.8]
         if snap_cands:
             intro_sec = min(snap_cands, key=lambda t: abs(t - intro_sec))
-        intro_bgm_p = ASSETS_DIR / "sound_vibe" / "bgm" / "style_06_bgm.m4a"
-        if intro_bgm_p.is_file() and intro_bgm_p.resolve() != bgm_path.resolve():
+        intro_bgm_p, intro_meta_p = _resolve_handoff_intro_bgm(bgm_path, pipeline_dir, intro_sec)
+        if intro_bgm_p is not None and intro_bgm_p.is_file() and intro_bgm_p.resolve() != bgm_path.resolve():
             try:
                 intro_arr, _ = load_stereo_wav_np(intro_bgm_p)
                 sw_i = min(total_samples - int(1.0 * SR), max(int(1.2 * SR), int(round(intro_sec * SR))))
                 xf_b = min(int(0.22 * SR), sw_i // 3, (total_samples - sw_i) // 3)
+                if len(intro_arr) < sw_i + xf_b and len(intro_arr) >= max(16, sw_i // 2):
+                    intro_arr = np.concatenate([intro_arr, np.zeros(((sw_i + xf_b) - len(intro_arr), 2), dtype=np.float32)], axis=0)
                 if len(intro_arr) >= sw_i + xf_b and xf_b >= 16:
                     i_seg = intro_arr[: sw_i + xf_b].copy()
                     i_rms = float(np.sqrt(np.mean(i_seg ** 2) + 1e-10))
@@ -928,13 +976,12 @@ def run_step3(
                     locked_bgm[sw_i : sw_i + xf_b] = i_seg[sw_i : sw_i + xf_b] * np.cos(th) + locked_bgm[sw_i : sw_i + xf_b] * np.sin(th)
                     dual_bgm_applied = True
                     dual_bgm_switch_sec = round(sw_i / float(SR), 4)
-                    intro_meta_p = ASSETS_DIR / "sound_vibe" / "bgm" / "style_06_bgm.json"
-                    intro_meta = read_json(intro_meta_p) if intro_meta_p.is_file() else {}
+                    intro_meta = read_json(intro_meta_p) if (intro_meta_p is not None and intro_meta_p.is_file()) else {}
                     i_beats_raw = intro_meta.get("beat_times_sec") or []
                     i_downs_raw = intro_meta.get("downbeat_times_sec") or []
                     intro_beats = [round(float(t), 4) for t in i_beats_raw if float(t) < dual_bgm_switch_sec - 0.05]
                     intro_downs = [round(float(t), 4) for t in i_downs_raw if float(t) < dual_bgm_switch_sec - 0.05]
-                    add_event("bgm_section", dual_bgm_switch_sec, "双段BGM切换：引子转入正文主曲")
+                    add_event("bgm_section", dual_bgm_switch_sec, f"双段BGM切换：引子({intro_bgm_p.name})转入正文主曲")
             except Exception:
                 pass
 
@@ -946,15 +993,9 @@ def run_step3(
         "target_switch_sec": dual_bgm_switch_sec,
         "reason": "已启用双段BGM切换" if dual_bgm_applied else "",
     }
-    try:
-        import element_rules
-        db_rule = element_rules.get_element_rule(active_sid, "dual_bgm_switch")
-    except Exception:
-        db_rule = None
-    db_triggers = [str(t) for t in ((db_rule or {}).get("why_appears") or {}).get("triggers") or []]
     if db_rule and db_rule.get("present"):
         dual_bgm_meta["rule_present"] = True
-        if not dual_bgm_meta["mode"] and db_triggers:
+        if db_triggers and (not dual_bgm_meta["mode"] or dual_bgm_meta["mode"] == "dual_bgm_structure"):
             dual_bgm_meta["mode"] = db_triggers[0]
     if not dual_bgm_applied and db_rule and db_rule.get("present") and "intro_overlay_exit" in db_triggers and total_dur >= 4.0:
         try:
@@ -979,6 +1020,8 @@ def run_step3(
         for pat in ("00_intro_sting.*", "intro_sting.*"):
             sting_cands.extend(sorted(pipeline_dir.glob(pat)))
         intro_sting_p = next((p for p in sting_cands if p.is_file() and p.resolve() != bgm_path.resolve()), None)
+        if intro_sting_p is None:
+            intro_sting_p = _build_procedural_intro_sting(pipeline_dir / "03_intro_sting.wav", dur_sec=target_sw)
         if intro_sting_p is not None:
             try:
                 sting_arr, _ = load_stereo_wav_np(intro_sting_p)
@@ -1003,13 +1046,11 @@ def run_step3(
                         "mode": "intro_overlay_exit",
                         "target_switch_sec": dual_bgm_switch_sec,
                         "sting_file": str(intro_sting_p.resolve()),
-                        "reason": f"已在 0~{dual_bgm_switch_sec:.2f}s 叠入本风格专属前奏 sting 并淡出交棒正文主床",
+                        "reason": f"已在 0~{dual_bgm_switch_sec:.2f}s 叠入前奏 sting（{intro_sting_p.name}）并淡出交棒正文主床",
                     })
                     add_event("bgm_section", dual_bgm_switch_sec, "双段BGM前奏退场：转入正文主床")
             except Exception as exc:
                 dual_bgm_meta["reason"] = f"前奏 sting 加载失败，退回单一主床：{exc}"
-        else:
-            dual_bgm_meta["reason"] = f"缺少 {active_sid} 专属前奏 sting 音频（{active_sid}_intro.* / 00_intro_sting.*），保持单一正片床不跨风格借用"
 
     fade_out_n = min(len(locked_bgm), int(0.25 * SR))
     if fade_out_n > 2:

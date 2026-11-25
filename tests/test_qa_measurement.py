@@ -280,5 +280,98 @@ class SkinSectorClassificationTests(unittest.TestCase):
         self.assertEqual(v["source_limited_reason"], "insufficient_skin_pixels")
 
 
+class CantoneseSegmentationAndRepairTests(unittest.TestCase):
+    """对齐 leaderai-media-toolkit 的中文分词、术语映射与字符级时间轴订正回归测试。"""
+
+    def test_terms_rhs_extraction_and_no_midword_rebalance(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            tp = Path(td) / "terms.txt"
+            tp.write_text("# 注释\n随房 => 厨房\n桑娜鸡 => 桑拿鸡\n六百坪 => 六百平\n", encoding="utf-8")
+            terms = S5.load_protected_terms(tp, extra_terms=["一个", "两百平"])
+            self.assertIn("厨房", terms)
+            self.assertIn("桑拿鸡", terms)
+            self.assertIn("六百平", terms)
+            self.assertNotIn("一个", terms)
+
+        # 原文「所以好多人都觉得我好傻：一间六百平嘅店，厨房你要花三分之一、两百平去制造」不得拆开 好傻 / 两百平 / 三分之一
+        sent = {
+            "id": "s_ca",
+            "text": "所以好多人都觉得我好傻，一间六百平嘅店，厨房你要花三分之一两百平去制造。",
+            "start_sec": 0.0,
+            "end_sec": 6.5,
+            "keywords": ["六百", "三分", "一个"],
+            "words": [
+                {"word": ch, "start_sec": round(i * 0.18, 3), "end_sec": round((i + 1) * 0.18, 3), "is_keyword": ch in "一个"}
+                for i, ch in enumerate("所以好多人都觉得我好傻一间六百平嘅店厨房你要花三分之一两百平去制造")
+            ],
+        }
+        chunks = S5._merge_short_chunks(
+            S5.split_sentence_into_chunks(sent, max_chars=8, font_size=75, max_safe_px=608, protected_terms=["六百平", "两百平"]),
+            max_px=608,
+            font_size=75,
+            protected_terms=["六百平", "两百平"],
+        )
+        lines = [c["text"] for c in chunks]
+        for pair_bad in ("好|傻", "两百|平", "百|平", "三分|之一", "之|一"):
+            left_s, right_s = pair_bad.split("|")
+            for a, b in zip(lines, lines[1:]):
+                self.assertFalse(a.endswith(left_s) and b.startswith(right_s), f"拆词 {pair_bad} in {lines}")
+        for c in chunks:
+            self.assertNotIn("一个", c.get("keywords") or [])
+
+    def test_repair_missing_asr_chars_and_no_aux_highlight(self):
+        sent = {
+            "id": "s_rep",
+            "text": "佢饮茶嘅氛围我哋嘅四大天王。",
+            "start_sec": 0.0,
+            "end_sec": 3.0,
+            "keywords": ["大轩王啦"],
+            "words": [
+                {"word": ch, "start_sec": round(i * 0.2, 3), "end_sec": round((i + 1) * 0.2, 3), "is_keyword": True}
+                for i, ch in enumerate("佢饮茶嘅氛我哋嘅四大王啦")
+            ],
+        }
+        chunks = S5.split_sentence_into_chunks(sent, max_chars=10, font_size=75, max_safe_px=608)
+        joined = "".join(c["text"] for c in chunks)
+        self.assertIn("氛围", joined)
+        self.assertIn("四大天王", joined)
+        # 句末重音高亮不能落到「住有」「啦有」「得系」这种虚词组合上
+        entries = [
+            {
+                "id": "e1", "text": "跟住有啲", "suppressed": False, "keywords": [],
+                "words": [{"word": ch, "is_keyword": False} for ch in "跟住有啲"],
+            },
+            {
+                "id": "e2", "text": "我觉得系", "suppressed": False, "keywords": [],
+                "words": [{"word": ch, "is_keyword": False} for ch in "我觉得系"],
+            },
+        ]
+        S5._apply_phrase_end_highlights(entries, 1.0)
+        for ent in entries:
+            self.assertNotIn("住有", ent["keywords"])
+            self.assertNotIn("得系", ent["keywords"])
+
+    def test_repair_clamps_time_envelope_and_no_8char_split(self):
+        # 1) 句尾补字「我系牛哥我」/「佢饮茶嘅氛围」必须严锁在原始 word 起止时间内（绝不外扩 +0.16s 触发 sync fail）
+        orig_ws = [{"word": ch, "start_sec": round(i * 0.2, 3), "end_sec": round((i + 1) * 0.2, 3)} for i, ch in enumerate("佢饮茶嘅氛")]
+        rep = S5._repair_words_from_script(orig_ws, "佢饮茶嘅氛围")
+        self.assertEqual("".join(w["word"] for w in rep), "佢饮茶嘅氛围")
+        self.assertAlmostEqual(float(rep[0]["start_sec"]), float(orig_ws[0]["start_sec"]), places=4)
+        self.assertAlmostEqual(float(rep[-1]["end_sec"]), float(orig_ws[-1]["end_sec"]), places=4)
+
+        # 2) 「我觉得非常之舒服」（8 字）在安全带 632px 内不得拆成 3+5 残句「我觉得」
+        sent8 = {
+            "id": "s8",
+            "text": "我觉得非常之舒服",
+            "start_sec": 0.0,
+            "end_sec": 1.6,
+            "keywords": [],
+            "words": [{"word": ch, "start_sec": round(i * 0.17, 3), "end_sec": round((i + 1) * 0.17, 3)} for i, ch in enumerate("我觉得系非常之舒服")],
+        }
+        chunks8 = S5.split_sentence_into_chunks(sent8, max_chars=8, font_size=75, max_safe_px=632)
+        self.assertEqual([c["text"] for c in chunks8], ["我觉得非常之舒服"])
+
+
 if __name__ == "__main__":
     unittest.main()

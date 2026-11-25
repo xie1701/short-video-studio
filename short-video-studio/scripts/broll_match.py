@@ -354,18 +354,41 @@ def _kind_factor(concept: str) -> float:
     return KIND_FACTOR.get(kind, 1.0)
 
 
+_EXTERIOR_DESC_RE = re.compile(r"外墙|建筑外观|外部|仰拍|仰视|街道|商业街|大楼外观|门店外景|店招|门头|店面")
+_INTERIOR_FOOD_DESC_RE = re.compile(r"饮茶|早茶|喝茶|卡座|大厅|大堂|后厨|厨房|食材|海鲜|菜品|点心|火锅|蒸笼|茶客|厨师|备菜|炒制|摆盘|灶台|茶艺|冲茶|泡茶")
+_SIGNBOARD_OCR_NOISE_RE = re.compile(r"^(?:早茶|饮早茶|饮茶|蒸汽石锅粥|桑拿火锅|火锅|海鲜|点心|茶楼|餐桌|点赞|茶华楼|【?茶華楼|蒸上|DIANZAN)$")
+
+
 def describe_clip(item: Dict[str, Any]) -> str:
     """素材侧可匹配文本 = 画面标签 + 描述/备注（这是「画面里到底是什么」的唯一一手证据）。"""
-    parts: List[str] = []
+    desc_parts: List[str] = []
     for key in ("description", "vlm_description", "note", "user_note", "caption", "summary"):
         v = str(item.get(key) or "").strip()
         if v:
-            parts.append(v)
+            desc_parts.append(v)
+    desc_text = " ".join(desc_parts)
+    # description 为空时（纯自动视觉标签）也须识别「门店外景/店招/街道」，避免看板 OCR 误当成早茶/火锅实拍
+    non_ocr_tags = [
+        str(t).strip()
+        for key in ("scene_tags_zh", "semantic_tags", "manual_tags", "tags")
+        for t in (item.get(key) or [])
+        if str(t).strip() and not (key == "semantic_tags" and _SIGNBOARD_OCR_NOISE_RE.match(str(t).strip()))
+    ]
+    visual_cue_text = f"{desc_text} {' '.join(non_ocr_tags)}".strip()
+    is_exterior_only = bool(
+        visual_cue_text
+        and _EXTERIOR_DESC_RE.search(visual_cue_text)
+        and not _INTERIOR_FOOD_DESC_RE.search(visual_cue_text)
+    )
+    parts: List[str] = list(desc_parts)
     for key in ("scene_tags_zh", "semantic_tags", "manual_tags", "tags"):
         for t in item.get(key) or []:
             t_s = str(t).strip()
-            if t_s:
-                parts.append(t_s)
+            if not t_s:
+                continue
+            if is_exterior_only and key == "semantic_tags" and _SIGNBOARD_OCR_NOISE_RE.match(t_s):
+                continue
+            parts.append(t_s)
     for key in ("parent_dir", "folder", "rel_path"):
         v = str(item.get(key) or "").strip()
         if v:

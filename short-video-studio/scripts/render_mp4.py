@@ -1207,7 +1207,7 @@ def _compute_base_cache_key(
     eye_by_mp4: Dict[str, Any],
 ) -> str:
     payload = {
-        "version": 6,  # v6：逐镜取整零头摊回最后一镜 + 短镜末帧补帧（音视频流等长）
+        "version": 7,  # v7：修正 layered_cutout_over_broll face_anchor['cy'] 偏移与底部字幕安全带避让
         "edl": edl,
         "color_plan": color_plan,
         "sources": source_hashes,
@@ -1216,6 +1216,34 @@ def _compute_base_cache_key(
         "preview": preview,
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _corner_cutout_crop_expr(
+    fa: Optional[Dict[str, Any]],
+    canvas_w: int = CANVAS_WIDTH,
+    canvas_h: int = CANVAS_HEIGHT,
+) -> str:
+    """角落人像抠像（远/中全景坐姿）只裁取头至胸腰上半身，避免盘腿悬空在前景角落。"""
+    if not isinstance(fa, dict):
+        return ""
+    face_cx = float(fa.get("cx") if fa.get("cx") is not None else 0.5)
+    face_h = max(0.06, float(fa.get("h") or 0.15))
+    face_cy = float(
+        fa["cy"] if fa.get("cy") is not None
+        else (float(fa.get("y") or 0.42) + face_h * 0.5)
+    )
+    if face_h > 0.24 or face_cy > 0.52:
+        return ""
+    top_frac = max(0.0, face_cy - max(0.14, face_h * 1.45))
+    bot_frac = min(1.0, face_cy + max(0.32, face_h * 2.55))
+    span_h = max(0.46, bot_frac - top_frac)
+    if span_h >= 0.88:
+        return ""
+    ch = max(120, min(canvas_h, int(round(span_h * canvas_h)) & ~1))
+    cw = max(80, min(canvas_w, int(round(ch * canvas_w / float(canvas_h))) & ~1))
+    crop_x = max(0, min(canvas_w - cw, int(round(face_cx * canvas_w - cw / 2.0)) & ~1))
+    crop_y = max(0, min(canvas_h - ch, int(round(top_frac * canvas_h)) & ~1))
+    return f"crop={cw}:{ch}:{crop_x}:{crop_y}"
 
 
 def _cover_crop_vf(w: int, h: int, face_bias: bool = False, anchor: Optional[Dict[str, Any]] = None) -> str:
@@ -1761,7 +1789,8 @@ def _render_ai_person_matting_segment(
     stem = out_mp4.stem
     fg_clean = work_dir / f"{stem}_fgclean.mp4"
     matte_mp4 = work_dir / f"{stem}_matte.mp4"
-    outline_mp4 = (work_dir / f"{stem}_outline.mp4") if mode == "vision_portrait_cutout_pip" else None
+    outline_px = int(pip_cfg.get("outline_px") or (10 if mode == "vision_portrait_cutout_pip" else 0))
+    outline_mp4 = (work_dir / f"{stem}_outline.mp4") if outline_px > 0 else None
 
     clip_plain = dict(clip)
     clip_plain.pop("pip_layout", None)
@@ -1773,7 +1802,6 @@ def _render_ai_person_matting_segment(
     )
     run_cmd(clean_cmd)
 
-    outline_px = int(pip_cfg.get("outline_px") or 10) if mode == "vision_portrait_cutout_pip" else 0
     meta = generate_person_matte_video(
         fg_clean,
         matte_mp4,
@@ -1781,6 +1809,7 @@ def _render_ai_person_matting_segment(
         outline_px=outline_px,
         quality="balanced",
         fps=fps,
+        torn_paper=bool(pip_cfg.get("torn_paper", False)),
     )
     if not meta or not meta.get("has_person") or not matte_mp4.is_file():
         fg_clean.unlink(missing_ok=True)
@@ -1875,64 +1904,101 @@ def _render_ai_person_matting_segment(
         if mode == "layered_cutout_over_broll":
             if not has_sec:
                 return False
-            fg_scale = max(1.0, min(1.5, float(pip_cfg.get("fg_scale") or 1.2)))
-            fg_tx = max(-0.3, min(0.3, float(pip_cfg.get("fg_transform_x") or 0.0)))
-            fg_ty = max(-0.35, min(0.2, float(pip_cfg.get("fg_transform_y") or -0.10)))
+            fg_scale = max(0.35, min(1.65, float(pip_cfg.get("fg_scale") or 1.2)))
+            fg_tx = max(-0.6, min(0.6, float(pip_cfg.get("fg_transform_x") or 0.0)))
+            fg_ty = max(-0.6, min(0.4, float(pip_cfg.get("fg_transform_y") or -0.10)))
             fw = max(2, int(round(CANVAS_WIDTH * fg_scale)) & ~1)
             fh = max(2, int(round(CANVAS_HEIGHT * fg_scale)) & ~1)
-            ox = int(round((CANVAS_WIDTH - fw) / 2.0 + fg_tx * CANVAS_WIDTH / 2.0))
-            oy = int(round((1.0 - fg_ty) * CANVAS_HEIGHT / 2.0 - fh / 2.0))
             fa = pip_cfg.get("face_anchor") if isinstance(pip_cfg.get("face_anchor"), dict) else None
-            if fa:
-                head_y = max(0.0, float(fa.get("y") or 0.0) - float(fa.get("h") or 0.15) * 0.45) * fh
-                if oy + head_y < 0.03 * CANVAS_HEIGHT:
-                    oy = int(round(0.03 * CANVAS_HEIGHT - head_y))
-            # 确保底边不悬空、顶边不留黑带
-            oy = max(CANVAS_HEIGHT - fh, min(0, oy))
+            fg_crop_vf = ""
+            if fg_scale < 0.98:
+                ox = max(0, min(CANVAS_WIDTH - fw, int(round((fg_tx + 1.0 - fg_scale) * CANVAS_WIDTH / 2.0))))
+                oy = max(0, min(CANVAS_HEIGHT - fh, int(round((1.0 - fg_ty - fg_scale) * CANVAS_HEIGHT / 2.0))))
+                fg_crop_vf = _corner_cutout_crop_expr(fa, CANVAS_WIDTH, CANVAS_HEIGHT)
+                if fg_crop_vf and fg_ty <= 0.15:
+                    oy = CANVAS_HEIGHT - fh
+            else:
+                ox = int(round((CANVAS_WIDTH - fw) / 2.0 + fg_tx * CANVAS_WIDTH / 2.0))
+                oy = int(round((1.0 - fg_ty) * CANVAS_HEIGHT / 2.0 - fh / 2.0))
+                if fa:
+                    face_h = float(fa.get("h") or 0.15)
+                    face_cy = float(
+                        fa["cy"] if fa.get("cy") is not None
+                        else (float(fa.get("y") or 0.42) + face_h * 0.5)
+                    )
+                    head_y = max(0.0, face_cy - face_h * 0.72) * fh
+                    chin_y = min(1.0, face_cy + face_h * 0.62) * fh
+                    max_face_bot = SUBTITLE_SAFE_ZONE["y_min"] - 60
+                    if oy + chin_y > max_face_bot:
+                        oy = min(oy, int(round(max_face_bot - chin_y)))
+                    if oy + head_y < 0.03 * CANVAS_HEIGHT:
+                        oy = max(oy, int(round(0.03 * CANVAS_HEIGHT - head_y)))
+                # 全屏/放大前景确保底边不悬空、顶边不留黑带
+                oy = max(CANVAS_HEIGHT - fh, min(0, oy))
 
             sec_color_part = f",{color_vf}" if color_vf else ""
             sec_trim = (
                 f"fps=fps={fps},tpad=stop_mode=clone:stop_duration=3.0,"
                 f"trim=duration={clip_dur:.4f},setpts=PTS-STARTPTS"
             )
-            scale_fg = f",scale={fw}:{fh}:flags=lanczos" if (fw != CANVAS_WIDTH or fh != CANVAS_HEIGHT) else ""
+            fg_crop_prefix = f",{fg_crop_vf}" if fg_crop_vf else ""
+            fg_resize = f",scale={fw}:{fh}:flags=lanczos" if (fg_crop_vf or fw != CANVAS_WIDTH or fh != CANVAS_HEIGHT) else ""
+            scale_fg = f"{fg_crop_prefix}{fg_resize}"
             out_hex = str(pip_cfg.get("outline_hex") or "#FFFFFF")[:7]
-            if outline_mp4 and outline_mp4.is_file() and outline_px > 0:
-                fc = (
-                    f"[3:v]{sec_trim},{_cover_crop_vf(CANVAS_WIDTH, CANVAS_HEIGHT, face_bias=True)}{sec_color_part}[bg];"
-                    f"color=c={out_hex}:s={CANVAS_WIDTH}x{CANVAS_HEIGHT}:r={fps}:d={clip_dur + 0.2:.4f},format=rgba[wc];"
-                    f"[2:v]format=gray[om];"
-                    f"[wc][om]alphamerge{scale_fg}[white_outline];"
-                    f"[0:v]format=rgba[fg_raw];"
-                    f"[1:v]format=gray[mm];"
-                    f"[fg_raw][mm]alphamerge{scale_fg}[fg_cut];"
-                    f"[bg][white_outline]overlay=x={ox}:y={oy}:shortest=1[m1];"
-                    f"[m1][fg_cut]overlay=x={ox}:y={oy}:shortest=1,{tail_str}[vout]"
+            back_ovs = [b for b in (pip_cfg.get("back_overlays") or []) if b.get("path") and Path(str(b["path"])).is_file()]
+
+            cmd_inputs: List[str] = ["-i", str(fg_clean), "-i", str(matte_mp4)]
+            has_out_layer = bool(outline_mp4 and outline_mp4.is_file() and outline_px > 0)
+            out_idx = 2 if has_out_layer else -1
+            if has_out_layer:
+                cmd_inputs.extend(["-i", str(outline_mp4)])
+            sec_idx = len(cmd_inputs) // 2
+            cmd_inputs.extend(["-ss", f"{sec_in:.4f}", "-t", f"{clip_dur + 0.2:.4f}", "-i", sec_media])
+
+            fc_stages: List[str] = [
+                f"[{sec_idx}:v]{sec_trim},{_cover_crop_vf(CANVAS_WIDTH, CANVAS_HEIGHT, face_bias=True)}{sec_color_part}[bg0]"
+            ]
+            bg_lbl = "[bg0]"
+            for bi, bov in enumerate(back_ovs):
+                bpath = str(bov["path"])
+                bx, by = int(bov.get("x") or 0), int(bov.get("y") or 0)
+                rs = max(0.0, float(bov.get("rel_start") or 0.0))
+                re_t = max(rs + 0.04, float(bov.get("rel_end") or clip_dur))
+                ov_ss = max(0.0, float(bov.get("ov_offset") or 0.0))
+                in_i = (len([x for x in cmd_inputs if x == "-i"]))
+                if bpath.lower().endswith(".png"):
+                    cmd_inputs.extend(["-loop", "1", "-t", f"{clip_dur + 0.2:.4f}", "-i", bpath])
+                    b_stream = f"[{in_i}:v]"
+                else:
+                    if ov_ss > 0.01:
+                        cmd_inputs.extend(["-ss", f"{ov_ss:.4f}", "-i", bpath])
+                    elif rs > 0.01:
+                        cmd_inputs.extend(["-itsoffset", f"{rs:.4f}", "-i", bpath])
+                    else:
+                        cmd_inputs.extend(["-i", bpath])
+                    b_stream = f"[{in_i}:v]"
+                nxt_lbl = f"[bg_bt{bi}]"
+                fc_stages.append(
+                    f"{bg_lbl}{b_stream}overlay=x={bx}:y={by}:enable='between(t,{rs:.3f},{re_t:.3f})':shortest=0:eof_action=pass{nxt_lbl}"
                 )
-                run_cmd([
-                    ffmpeg_bin, "-y",
-                    "-i", str(fg_clean),
-                    "-i", str(matte_mp4),
-                    "-i", str(outline_mp4),
-                    "-ss", f"{sec_in:.4f}", "-t", f"{clip_dur + 0.2:.4f}", "-i", sec_media,
-                    "-an", "-filter_complex", fc, "-map", "[vout]",
-                    "-frames:v", str(clip_frames), "-c:v", "libx264", "-preset", "medium", "-crf", "15",
-                    "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS, str(out_mp4),
-                ])
-                return out_mp4.is_file()
-            fc = (
-                f"[2:v]{sec_trim},{_cover_crop_vf(CANVAS_WIDTH, CANVAS_HEIGHT, face_bias=True)}{sec_color_part}[bg];"
-                f"[0:v]format=rgba[fg_raw];"
-                f"[1:v]format=gray[mm];"
-                f"[fg_raw][mm]alphamerge{scale_fg}[fg_cut];"
-                f"[bg][fg_cut]overlay=x={ox}:y={oy}:shortest=1,{tail_str}[vout]"
-            )
+                bg_lbl = nxt_lbl
+
+            fc_stages.append(f"[0:v]format=rgba[fg_raw]")
+            fc_stages.append(f"[1:v]format=gray[mm]")
+            fc_stages.append(f"[fg_raw][mm]alphamerge{scale_fg}[fg_cut]")
+            if has_out_layer:
+                fc_stages.append(f"color=c={out_hex}:s={CANVAS_WIDTH}x{CANVAS_HEIGHT}:r={fps}:d={clip_dur + 0.2:.4f},format=rgba[wc]")
+                fc_stages.append(f"[{out_idx}:v]format=gray[om]")
+                fc_stages.append(f"[wc][om]alphamerge{scale_fg}[white_outline]")
+                fc_stages.append(f"{bg_lbl}[white_outline]overlay=x={ox}:y={oy}:shortest=1[m1]")
+                fc_stages.append(f"[m1][fg_cut]overlay=x={ox}:y={oy}:shortest=1,{tail_str}[vout]")
+            else:
+                fc_stages.append(f"{bg_lbl}[fg_cut]overlay=x={ox}:y={oy}:shortest=1,{tail_str}[vout]")
+
             run_cmd([
                 ffmpeg_bin, "-y",
-                "-i", str(fg_clean),
-                "-i", str(matte_mp4),
-                "-ss", f"{sec_in:.4f}", "-t", f"{clip_dur + 0.2:.4f}", "-i", sec_media,
-                "-an", "-filter_complex", fc, "-map", "[vout]",
+                *cmd_inputs,
+                "-an", "-filter_complex", ";".join(fc_stages), "-map", "[vout]",
                 "-frames:v", str(clip_frames), "-c:v", "libx264", "-preset", "medium", "-crf", "15",
                 "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS, str(out_mp4),
             ])
@@ -2065,7 +2131,7 @@ def build_graded_segment_cmd(
         z1 = max(1.0, float(kb.get("zoom_end", 1.06)))
         pan_x = float(kb.get("pan_x", 0.0))
         pan_y = float(kb.get("pan_y", 0.0))
-        if abs(z1 - z0) > 1e-4 or abs(pan_x) > 1e-4 or abs(pan_y) > 1e-4:
+        if abs(z1 - z0) > 1e-4 or abs(pan_x) > 1e-4 or abs(pan_y) > 1e-4 or z0 > 1.01 or z1 > 1.01:
             prog = f"min(t/{clip_dur:.4f},1)"
             z_expr = f"({z0:.4f}+({z1 - z0:.4f})*{prog})"
             vf_parts.append(
@@ -2362,7 +2428,7 @@ def build_base_video_track(
         sec_hash = sha256_file(Path(sec_p)) if sec_p and Path(sec_p).is_file() else ""
         pip_mode_k = str((clip.get("pip_layout") or {}).get("mode") or "")
         seg_key = compute_segment_cache_key({
-            "ver": 4,
+            "ver": 5,
             "cmd": cmd[:-1],
             "pip_layout": clip.get("pip_layout"),
             "pip_mode": pip_mode_k,
@@ -2504,7 +2570,6 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
     manifest = read_json(pipeline_dir / "01_manifest.json")
 
     master_wav, _ = _resolve_master_wav(pipeline_dir)
-    base_mp4 = build_base_video_track(pipeline_dir, edl, color_plan, master_wav, manifest=manifest, preview=preview)
     out_mp4 = pipeline_dir / ("output_preview.mp4" if preview else "output_final.mp4")
 
     work_dir = pipeline_dir / "_render_final"
@@ -2534,9 +2599,6 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
     font_path = subs_data.get("font_path") or find_commercial_font(tpl.get("font_candidates"))
     style_id = pkg_data.get("style_id") or load_style_applied(pipeline_dir) or "style_01"
 
-    # (path, px, py, s_t, e_t, blur_rect, fade_in, is_video_ov)
-    overlays: List[Tuple[Path, int, int, float, float, Optional[Tuple[int, int, int, int]], bool, bool]] = []
-
     def _scale_png_for_preview(src_p: Path, tag: str) -> Path:
         if not preview:
             return src_p
@@ -2546,6 +2608,134 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
             nh = max(2, int(round(im0.height * scale_k)))
             im0.resize((nw, nh), Image.Resampling.BILINEAR).save(dst_p)
         return dst_p
+
+    # 先预渲染包装图层，以便把与全屏分层抠像（layered_cutout_over_broll）重叠的大字/巨字压进「人物背后 4 层纵深」
+    prepared_pkg_ovs: List[Tuple[int, Dict[str, Any], Path, int, int, float, float, Optional[Tuple[int, int, int, int]], bool, bool]] = []
+    for idx, elem in enumerate(pkg_data.get("visual_elements") or []):
+        s_t = max(0.0, frames_to_sec(int(elem.get("start_frame", 0)), fps))
+        e_t = min(exact_dur, frames_to_sec(int(elem.get("end_frame", 0)), fps))
+        if e_t <= s_t:
+            continue
+        elem_kind_d = str(elem.get("kind") or elem.get("type") or "")
+        is_poster_burst = str(elem.get("opening_mode") or "") == "store_poster_burst"
+        if (not is_poster_burst) and (
+            elem_kind_d in ("flower_text", "stamp_tag")
+            or (elem_kind_d == "center_burst_title" and style_id in _DEDUPE_MINIMAL_STYLES)
+        ):
+            if _flower_duplicates_subtitle(str(elem.get("text_or_asset") or elem.get("text") or ""), s_t, e_t, subs_data.get("entries") or []):
+                continue
+        ov_path: Path
+        is_video_ov = False
+        pw, ph = 400, 120
+        if not preview:
+            try:
+                from render_template_overlays import render_animated_overlay_mov
+                mov_p = work_dir / f"pkg_{idx:03d}.mov"
+                fallback_img = render_packaging_png(elem, style_id=style_id, color_plan=color_plan, font_candidates=tpl.get("font_candidates"))
+                anim_res = render_animated_overlay_mov(
+                    elem=elem,
+                    out_mov=mov_p,
+                    style_id=style_id,
+                    duration_sec=max(0.4, e_t - s_t),
+                    fps=fps,
+                    font_candidates=tpl.get("font_candidates"),
+                    fallback_static_img=fallback_img,
+                )
+                if anim_res is not None and anim_res[0].is_file():
+                    ov_path, pw, ph = anim_res
+                    is_video_ov = True
+            except Exception:
+                is_video_ov = False
+        if not is_video_ov:
+            png_path = resolve_packaging_source(
+                elem, pipeline_dir, idx,
+                style_id=style_id, color_plan=color_plan, font_candidates=tpl.get("font_candidates"),
+            )
+            with Image.open(png_path) as im:
+                pw, ph = im.size
+            ov_path = _scale_png_for_preview(png_path, f"p{idx}")
+
+        elem_kind_s = str(elem.get("kind") or elem.get("type") or "")
+        if style_id == "style_01" and (elem_kind_s == "center_burst_title" or str(elem.get("opening_mode") or "") == "store_poster_burst"):
+            px = max(40, (CANVAS_WIDTH - pw) // 2)
+            py = max(720, min(860, 1110 - ph))
+        elif style_id == "style_18" and elem_kind_s == "center_burst_title":
+            px = max(40, (CANVAS_WIDTH - pw) // 2)
+            py = max(760, 1120 - ph)
+        elif elem_kind_s == "indicator_sticker":
+            def_x = max(SAFE_ZONE["x_min"], (CANVAS_WIDTH - pw) // 2)
+            def_y = SAFE_ZONE["y_min"] + 120
+            px, py = _place_from_final_bbox(elem, pw, ph, SAFE_ZONE, (def_x, def_y), [])
+        elif style_id == "style_05":
+            px = max(60, (CANVAS_WIDTH - pw) // 2)
+            py = max(840, min(950, 1120 - ph))
+        elif style_id == "style_08":
+            px, py = 72, 230
+        elif style_id == "style_06":
+            px, py = max(60, (CANVAS_WIDTH - pw) // 2), 235
+        elif style_id == "style_09":
+            px, py = 375, 960
+        elif style_id == "style_12":
+            px, py = max(40, (CANVAS_WIDTH - pw) // 2), 188
+        elif style_id == "style_14":
+            px, py = max(60, (CANVAS_WIDTH - pw) // 2), 915
+        elif style_id == "style_16":
+            px, py = max(60, (CANVAS_WIDTH - pw) // 2), 775
+        elif style_id == "style_22":
+            px, py = max(40, (CANVAS_WIDTH - pw) // 2), 62
+        else:
+            def_x = max(SAFE_ZONE["x_min"], (CANVAS_WIDTH - pw) // 2)
+            def_y = SAFE_ZONE["y_min"] + 40
+            px, py = _place_from_final_bbox(elem, pw, ph, SAFE_ZONE, (def_x, def_y), _faces_at_time(s_t))
+        if style_id not in ("style_09", "style_20") and (py + ph) > 1130:
+            py = max(140, 1130 - ph)
+        blur_rect = (px, py, pw, ph) if (not preview and elem.get("overlay_mode") == "focus_blur") else None
+        fade_in = bool((not preview) and (not is_video_ov) and int(elem.get("start_frame", 0)) > 0)
+        prepared_pkg_ovs.append((idx, elem, ov_path, px, py, s_t, e_t, blur_rect, fade_in, is_video_ov))
+
+    # 4 层纵深路由：当全屏/放大抠像镜与 center_burst_title 时段重叠时，把巨字放入抠像人物背后，避免字糊在主讲人脸上
+    edl_for_base = dict(edl)
+    clips_base = [dict(c) for c in (edl.get("clips") or [])]
+    skip_foreground_idxs: set = set()
+    if (not preview) and prepared_pkg_ovs:
+        for p_idx, p_elem, ov_p, bx, by, s_t, e_t, _br, _fi, _iv in prepared_pkg_ovs:
+            if str(p_elem.get("kind") or "") != "center_burst_title":
+                continue
+            cut_overlap = 0.0
+            matched_clips: List[Tuple[int, float, float]] = []
+            for ci, c_it in enumerate(clips_base):
+                lay = c_it.get("pip_layout") or {}
+                if str(lay.get("mode") or "") != "layered_cutout_over_broll":
+                    continue
+                if float(lay.get("fg_scale") or 1.2) < 0.98:
+                    continue
+                c_s = float(c_it.get("timeline_in_sec") or 0.0)
+                c_e = float(c_it.get("timeline_out_sec") or 0.0)
+                ov_l = min(c_e, e_t) - max(c_s, s_t)
+                if ov_l >= 0.20:
+                    cut_overlap += ov_l
+                    matched_clips.append((ci, max(c_s, s_t) - c_s, min(c_e, e_t) - c_s))
+            if matched_clips and cut_overlap >= min(0.25, (e_t - s_t) * 0.45):
+                skip_foreground_idxs.add(p_idx)
+                for ci, rs_c, re_c in matched_clips:
+                    c_s = float(clips_base[ci].get("timeline_in_sec") or 0.0)
+                    lay_new = dict(clips_base[ci].get("pip_layout") or {})
+                    b_list = list(lay_new.get("back_overlays") or [])
+                    b_list.append({
+                        "path": str(ov_p),
+                        "x": int(bx),
+                        "y": int(by),
+                        "rel_start": round(rs_c, 4),
+                        "rel_end": round(re_c, 4),
+                        "ov_offset": round(max(0.0, c_s - s_t), 4),
+                    })
+                    lay_new["back_overlays"] = b_list
+                    clips_base[ci]["pip_layout"] = lay_new
+    edl_for_base["clips"] = clips_base
+    base_mp4 = build_base_video_track(pipeline_dir, edl_for_base, color_plan, master_wav, manifest=manifest, preview=preview)
+
+    # (path, px, py, s_t, e_t, blur_rect, fade_in, is_video_ov)
+    overlays: List[Tuple[Path, int, int, float, float, Optional[Tuple[int, int, int, int]], bool, bool]] = []
 
     # style_06 黑底拍立得：常驻底部 Daily Vlog 副标
     if style_id == "style_06":
@@ -2572,85 +2762,9 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
         except Exception:
             pass
 
-    for idx, elem in enumerate(pkg_data.get("visual_elements") or []):
-        s_t = max(0.0, frames_to_sec(int(elem.get("start_frame", 0)), fps))
-        e_t = min(exact_dur, frames_to_sec(int(elem.get("end_frame", 0)), fps))
-        if e_t <= s_t:
+    for p_idx, _elem, ov_path, px, py, s_t, e_t, blur_rect, fade_in, is_video_ov in prepared_pkg_ovs:
+        if p_idx in skip_foreground_idxs:
             continue
-        elem_kind_d = str(elem.get("kind") or elem.get("type") or "")
-        if elem_kind_d in ("flower_text", "stamp_tag") or (elem_kind_d == "center_burst_title" and style_id in _DEDUPE_MINIMAL_STYLES):
-            if _flower_duplicates_subtitle(str(elem.get("text_or_asset") or elem.get("text") or ""), s_t, e_t, subs_data.get("entries") or []):
-                continue
-        ov_path: Path
-        is_video_ov = False
-        pw, ph = 400, 120
-
-        # 正式渲染默认启用 30fps 动态透明 .mov 动效引擎（8 种剪映核心动态文字动效）
-        if not preview:
-            try:
-                from render_template_overlays import render_animated_overlay_mov
-                mov_p = work_dir / f"pkg_{idx:03d}.mov"
-                fallback_img = render_packaging_png(elem, style_id=style_id, color_plan=color_plan, font_candidates=tpl.get("font_candidates"))
-                anim_res = render_animated_overlay_mov(
-                    elem=elem,
-                    out_mov=mov_p,
-                    style_id=style_id,
-                    duration_sec=max(0.4, e_t - s_t),
-                    fps=fps,
-                    font_candidates=tpl.get("font_candidates"),
-                    fallback_static_img=fallback_img,
-                )
-                if anim_res is not None and anim_res[0].is_file():
-                    ov_path, pw, ph = anim_res
-                    is_video_ov = True
-            except Exception:
-                is_video_ov = False
-
-        if not is_video_ov:
-            png_path = resolve_packaging_source(
-                elem, pipeline_dir, idx,
-                style_id=style_id, color_plan=color_plan, font_candidates=tpl.get("font_candidates"),
-            )
-            with Image.open(png_path) as im:
-                pw, ph = im.size
-            ov_path = _scale_png_for_preview(png_path, f"p{idx}")
-
-        # 24 套剪映模板专属精准落位（避脸安全带 + 严守主字幕硬隔离）
-        elem_kind_s = str(elem.get("kind") or elem.get("type") or "")
-        if style_id == "style_01" and elem_kind_s == "center_burst_title":
-            # style_01 开场综艺斜标移至中下部避脸安全区（不遮额头五官）
-            px = max(40, (CANVAS_WIDTH - pw) // 2)
-            py = max(720, min(860, 1110 - ph))
-        elif style_id == "style_18" and elem_kind_s == "center_burst_title":
-            # style_18 3D 金属扫光大字落在主讲人腹部下三分之一视觉焦点位，上半身五官保持干净
-            px = max(40, (CANVAS_WIDTH - pw) // 2)
-            py = max(760, 1120 - ph)
-        elif style_id == "style_05":
-            # style_05 第 4 层胸前高对比白字提问（前景压巨字）
-            px = max(60, (CANVAS_WIDTH - pw) // 2)
-            py = max(840, min(950, 1120 - ph))
-        elif style_id == "style_08":
-            px, py = 72, 230
-        elif style_id == "style_06":
-            px, py = max(60, (CANVAS_WIDTH - pw) // 2), 235
-        elif style_id == "style_09":
-            px, py = 375, 960
-        elif style_id == "style_12":
-            px, py = max(40, (CANVAS_WIDTH - pw) // 2), 188
-        elif style_id == "style_14":
-            px, py = max(60, (CANVAS_WIDTH - pw) // 2), 915
-        elif style_id == "style_16":
-            px, py = max(60, (CANVAS_WIDTH - pw) // 2), 775
-        elif style_id == "style_22":
-            px, py = max(40, (CANVAS_WIDTH - pw) // 2), 62
-        else:
-            def_x = max(SAFE_ZONE["x_min"], (CANVAS_WIDTH - pw) // 2)
-            def_y = SAFE_ZONE["y_min"] + 40
-            px, py = _place_from_final_bbox(elem, pw, ph, SAFE_ZONE, (def_x, def_y), _faces_at_time(s_t))
-        if style_id not in ("style_09", "style_20") and (py + ph) > 1130:
-            py = max(140, 1130 - ph)
-        blur_rect = (px, py, pw, ph) if (not preview and elem.get("overlay_mode") == "focus_blur") else None
-        fade_in = bool((not preview) and (not is_video_ov) and int(elem.get("start_frame", 0)) > 0)
         overlays.append((
             ov_path,
             int(round(px * scale_k)),

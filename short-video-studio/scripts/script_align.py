@@ -40,7 +40,7 @@ SKIP_SPEECH_SEC = 0.60    # 夹在中间的「非成稿语音」超过这么久�
 MIN_JUNK_SEC = 0.30       # 更短的非成稿语音：只要不是纯口癖，也切（别人的插话常常只有两三个字）
 FILLER_RATIO_KEEP = 0.60  # 非成稿语音里口癖/语气词占比超过这个值，就算「他自己的口头语」，留着出声更自然
 MIN_RUN_SEC = 0.35        # 一刀下去剩下的碎段比这还短，就不切（段首/段尾的碎段直接丢）
-FILLER_LONG_SEC = 1.20    # 夹在中间的口癖再长也切不下手，但这个长度以上一律当碎话
+FILLER_LONG_SEC = 0.70    # 0.70s+ 拖音犹豫（如 0.90s 的「诶」）在成片里就是明显卡壳；短口癖 (<0.70s) 保留防卡带
 MERGE_GAP_SEC = 0.16      # 两段保留内容之间只隔这么点，并成一段
 # 离麦插话真要下刀的额外条件（见 keep_intervals 里的说明）
 OFF_MIC_CUT_MIN_SEC = 0.80      # 连续这么久的离麦话才砍，一两声碰撞/尾音不砍
@@ -284,7 +284,9 @@ def keep_intervals(
     blocked: set = set()
     hard: List[Dict[str, Any]] = []
     plan_chars = set(strip_punct(text))
-    for span in (off_mic_spans or []):
+    # 预先构造未封锁词列表，用于识别「短但句外/句内有高能干净重说」的导演低声提示（如 0.66s「几多嘅厨房」）
+    raw_spans = list(off_mic_spans or [])
+    for span in raw_spans:
         if str(span.get("severity") or "hard") != "hard":
             continue
         try:
@@ -294,10 +296,11 @@ def keep_intervals(
             continue
         dur = max(0.0, s1 - s0)
         # 只用「离麦」一个信号会误砍主讲人自己（转头、弯腰、离麦远一步）：电平照样掉 20dB+，
-        # 但说的就是成稿里的字。2026-11-24 实测栽过：「岭南元素」被切成「岭南元 | 素」、
-        # 「原汁原味」被切成「原 | 汁原味」。所以再加两个条件才真砍：
-        #   ① 够长（>= OFF_MIC_CUT_MIN_SEC），一两声碰撞/尾音不砍；
-        #   ② 这段话在成稿里对不太上（字的重合率 <= OFF_MIC_TEXT_MATCH_MAX）——对得上就是他自己说的。
+        # 但说的就是成稿里的字。2026-11-24 实测栽过：「岭南元素」被切成「岭南元 | 素」。
+        # 两条砍刀条件满足其一即可封锁：
+        #   ① 长段且不贴成稿（dur >= OFF_MIC_CUT_MIN_SEC 且 match_ratio <= OFF_MIC_TEXT_MATCH_MAX）；
+        #   ② 硬档多字旁白（dur >= 0.45s, 非单字口癖），且相同 >=2 字核心词在本段别处存在更干净的高能版本
+        #      （如导演小声提示「嘅厨房」之后，主讲人马上大声完整重说「两百平嘅厨房」）。
         span_words = [str(w.get("word") or "") if isinstance(w, dict) else str(w)
                       for w in (span.get("words") or [])]
         span_chars = [c for w in span_words for c in w if c and c not in _PUNCT]
@@ -306,7 +309,22 @@ def keep_intervals(
             match_ratio = hit / float(len(span_chars))
         else:
             match_ratio = 0.0
-        if dur < OFF_MIC_CUT_MIN_SEC or match_ratio > OFF_MIC_TEXT_MATCH_MAX:
+        is_long_unmatched = (dur >= OFF_MIC_CUT_MIN_SEC and match_ratio <= OFF_MIC_TEXT_MATCH_MAX)
+        has_clean_repeat = False
+        if not is_long_unmatched and dur >= 0.45 and len(span_chars) >= 2:
+            outside_chars = [
+                tok["ch"] for j, tok in enumerate(toks)
+                if j not in blocked
+                and not (s0 <= (float(tok["start_sec"]) + float(tok["end_sec"])) * 0.5 <= s1)
+                and tok["ch"] not in _FILLER_CHARS
+            ]
+            outside_str = "".join(outside_chars)
+            matched_core = "".join(c for c in span_chars if c in plan_chars and c not in _FILLER_CHARS)
+            if len(matched_core) >= 2:
+                has_clean_repeat = (matched_core in outside_str) or (
+                    len(matched_core) >= 3 and matched_core[-2:] in outside_str and matched_core[:2] in outside_str
+                )
+        if not (is_long_unmatched or has_clean_repeat):
             continue
         hard.append(span)
         for j, tok in enumerate(toks):
@@ -342,9 +360,11 @@ def keep_intervals(
     run_gaps: List[Dict[str, Any]] = []
     acc: List[Dict[str, Any]] = []
     for (ti_prev, tj_prev), (ti, tj) in zip(pairs, pairs[1:]):
-        acc += [toks[k] for k in range(tj_prev + 1, tj)]
+        # 只检验当前两颗匹配字之间这一个紧邻空隙，绝不跨过已匹配正文把两处零星助词凑成假废话
+        acc = [toks[k] for k in range(tj_prev + 1, tj)]
         span = sum(max(0.0, float(t["end_sec"]) - float(t["start_sec"])) for t in acc)
         gap_sil = float(toks[tj]["start_sec"]) - float(toks[tj_prev]["end_sec"])
+        gap_blocked = any(k in blocked for k in range(tj_prev + 1, tj))
         if not acc and gap_sil >= MAX_INNER_GAP_SEC:
             # 中间这一段压根没人说话：不是别人的插话，是冷场。切开，让下游接 0.17s 呼吸(
             # 只有左边已经攒够一口气才切，免得把句首一个字切成独立段)
@@ -359,12 +379,13 @@ def keep_intervals(
                 run_text_ends.append(ti)
                 acc = []
                 continue
-        if _is_junk_speech(acc, span):
+        if gap_blocked or _is_junk_speech(acc, span):
             run_gaps.append({
                 "speech": "".join(str(t["ch"]) for t in acc),
                 "span_sec": round(span, 3),
-                "start": round(float(acc[0]["start_sec"]), 3),
-                "end": round(float(acc[-1]["end_sec"]), 3),
+                "start": round(float(acc[0]["start_sec"]), 3) if acc else 0.0,
+                "end": round(float(acc[-1]["end_sec"]), 3) if acc else 0.0,
+                "blocked": gap_blocked,
             })
             runs.append([(ti, tj)])
             # 这一刀落在成稿的哪个字前面：右段从 `ti` 开始，左段就到 `ti` 为止。
@@ -375,47 +396,74 @@ def keep_intervals(
         else:
             runs[-1].append((ti, tj))
 
-    # ── 2. 每段跑的首尾时间（取字级时间，不含垫边）──
+    # ── 2. 每段跑的首尾时间（取字级时间，不含垫边），未真下刀的短碎跑段立刻合并回连续段 ──
     def _run_span(g: List[Tuple[int, int]]) -> Tuple[float, float]:
         a = float(toks[g[0][1]]["start_sec"])
         b = float(toks[g[-1][1]]["end_sec"])
         return a, b
 
-    keep: List[int] = list(range(len(runs)))
     cut_notes: List[Dict[str, Any]] = []
+    final_runs: List[List[Tuple[int, int]]] = [list(runs[0])]
+    final_text_ends: List[int] = []
+    cut_after_idx: set = set()
+    cut_before_idx: set = set()
     for k in range(len(runs) - 1):
-        a, b = _run_span(runs[k])
+        a, b = _run_span(final_runs[-1])
         c, d = _run_span(runs[k + 1])
         gap = run_gaps[k]
-        if str(gap.get("kind")) != "silence" and not _is_junk_speech_text(gap):
-            continue  # 纯口癖/太短，算不上别人的话
-        # 只有「一刀下去两边都还剩一整口气」才真下刀；
-        # 会在段首/段尾留下 0.3 秒碎段的，不切——那点碎段是成稿里的字，宁可留着他那半句。
+        is_cut_candidate = (
+            bool(gap.get("blocked"))
+            or str(gap.get("kind")) == "silence"
+            or _is_junk_speech_text(gap)
+        )
         left_dur, right_dur = b - a, d - c
-        if left_dur >= min_run_sec and right_dur >= min_run_sec:
+        gap_span_v = float(gap.get("span_sec") or 0.0)
+        # 凡跨 genuine retake / clapper / off_mic / 停顿 (>=0.65s 或被 blocked) 绝对禁止合并回去，否则 NG 重来口令会重新放回正片；
+        # 仅当两侧过碎且中间只是 <0.65s 微卡顿时才放行回并，免生 <0.4s 碎音。
+        must_cut = bool(gap.get("blocked")) or gap_span_v >= 0.65
+        if is_cut_candidate and (must_cut or (left_dur >= min_run_sec and right_dur >= min_run_sec)):
             cut_notes.append(dict(gap, action="cut"))
+            cut_after_idx.add(len(final_runs) - 1)
+            cut_before_idx.add(len(final_runs))
+            final_text_ends.append(run_text_ends[k])
+            final_runs.append(list(runs[k + 1]))
         else:
-            cut_notes.append(dict(gap, action="keep_stumble"))
+            if is_cut_candidate:
+                cut_notes.append(dict(gap, action="keep_stumble"))
+            final_runs[-1].extend(runs[k + 1])
 
     # ── 3. 落成区间 ──
     intervals: List[Dict[str, Any]] = []
     texts_bounds: List[Tuple[int, int]] = []
-    for idx in keep:
-        t_from = runs[idx][0][0] if idx == 0 else run_text_ends[idx - 1]
-        t_to = run_text_ends[idx] if idx < len(run_text_ends) else runs[idx][-1][0] + 1
+    for idx in range(len(final_runs)):
+        t_from = final_runs[idx][0][0] if idx == 0 else final_text_ends[idx - 1]
+        t_to = final_text_ends[idx] if idx < len(final_text_ends) else final_runs[idx][-1][0] + 1
         texts_bounds.append((max(0, t_from), max(0, t_to)))
-    for idx in keep:
-        g = runs[idx]
+    for idx, g in enumerate(final_runs):
         raw_start, raw_end = _run_span(g)
+        first_j, last_j = g[0][1], g[-1][1]
+        # 仅在真下刀点或被离麦封锁边界处收紧垫边，防误吞相邻的「诶/啦」或导演低声词
+        eff_lead = lead_sec
+        if first_j > 0 and (idx in cut_before_idx or (first_j - 1) in blocked):
+            prev_gap = max(0.0, raw_start - float(toks[first_j - 1]["end_sec"]))
+            if prev_gap < lead_sec:
+                eff_lead = max(0.02, prev_gap)
+        eff_tail = tail_sec
+        if last_j + 1 < len(toks) and (idx in cut_after_idx or (last_j + 1) in blocked):
+            next_gap = max(0.0, float(toks[last_j + 1]["start_sec"]) - raw_end)
+            if next_gap < tail_sec:
+                eff_tail = max(0.02, next_gap)
         b_from, b_to = texts_bounds[len(intervals)]
         intervals.append({
-            "start": round(max(0.0, raw_start - lead_sec), 4),
-            "end": round(raw_end + tail_sec, 4),
+            "start": round(max(0.0, raw_start - eff_lead), 4),
+            "end": round(raw_end + eff_tail, 4),
             # 文字取「本段在成稿里的起止边界」之间的原文，不是只取对上的那些字：
             # ASR 把「天」听成「轩」时「四大天王」不能被印成「四大王」；切开处漏配的字也要归到一侧。
             "text": "".join(t_chars[b_from:b_to]),
             "words": _words_in_span(words, raw_start, raw_end),
         })
+    keep: List[int] = list(range(len(final_runs)))
+    runs = final_runs
 
     # 相邻区间挨得极近（或因为垫边而重叠）就并成一段：那是同一口气，不该断
     merged_iv: List[Dict[str, Any]] = []
