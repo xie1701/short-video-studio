@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import shlex
 import subprocess
@@ -146,6 +147,37 @@ def _check_privacy_leaks(cwd: Path, files: List[str]) -> List[str]:
     return leaks
 
 
+_IGNORED_LOCAL_ASSET_GLOBS = (
+    "forensic/*.json",
+    "short-video-studio/assets/luts/style_*.cube",
+    "short-video-studio/assets/fonts/jianying",
+    "short-video-studio/assets/sound_vibe/bgm/*.mp3",
+    "short-video-studio/assets/sound_vibe/bgm/*.m4a",
+    "short-video-studio/assets/sound_vibe/sfx/style_*",
+)
+
+
+def _sync_ignored_local_assets(repo_root: Path, wt_dir: Path) -> int:
+    """将主仓 .gitignore 忽略的本地只读资产软链到 Worktree，方便 Worker 跑通全量测试。"""
+    linked = 0
+    seen: set[str] = set()
+    for pattern in _IGNORED_LOCAL_ASSET_GLOBS:
+        for src in sorted(repo_root.glob(pattern)):
+            rel = src.relative_to(repo_root).as_posix()
+            if rel in seen:
+                continue
+            seen.add(rel)
+            if _git(repo_root, "check-ignore", "-q", rel, check=False).returncode != 0:
+                continue
+            dst = wt_dir / rel
+            if dst.exists() or dst.is_symlink():
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(src, dst)
+            linked += 1
+    return linked
+
+
 def cmd_spawn(repo_root: Path, task_id: str) -> int:
     task_file = resolve_task_file(repo_root, task_id)
     meta = parse_task_frontmatter(task_file)
@@ -166,7 +198,8 @@ def cmd_spawn(repo_root: Path, task_id: str) -> int:
     if wt_dir.exists():
         wt_cur = _git(wt_dir, "branch", "--show-current", check=False).stdout.strip()
         if wt_cur == branch:
-            print(f"[spawn] Worktree 已就绪: {wt_dir} (branch: {branch})")
+            linked = _sync_ignored_local_assets(repo_root, wt_dir)
+            print(f"[spawn] Worktree 已就绪: {wt_dir} (branch: {branch}, 软链只读资产 {linked} 项)")
             return 0
         wt_clean, wt_dirty = _is_git_clean(wt_dir)
         if not wt_clean:
@@ -179,9 +212,11 @@ def cmd_spawn(repo_root: Path, task_id: str) -> int:
     else:
         _git(repo_root, "worktree", "add", "-b", branch, str(wt_dir), "main")
 
+    linked = _sync_ignored_local_assets(repo_root, wt_dir)
     print(f"[spawn] 已就绪: {wt_dir}")
     print(f"        分支:   {branch}")
     print(f"        任务单: {task_file.relative_to(repo_root)}")
+    print(f"        资产链: 软链本地只读资产 {linked} 项")
     return 0
 
 

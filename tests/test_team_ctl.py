@@ -17,6 +17,9 @@ def _init_temp_repo(base: Path) -> Path:
     subprocess.run(["git", "config", "user.name", "Tester"], cwd=repo, check=True)
     subprocess.run(["git", "config", "user.email", "tester@example.com"], cwd=repo, check=True)
     (repo / "AGENTS.md").write_text("# AGENTS\n", encoding="utf-8")
+    (repo / ".gitignore").write_text("forensic/*.json\n", encoding="utf-8")
+    (repo / "forensic").mkdir()
+    (repo / "forensic" / "local_rule.json").write_text('{"ok": true}\n', encoding="utf-8")
     (repo / "src").mkdir()
     (repo / "src" / "a.py").write_text("VAL = 1\n", encoding="utf-8")
     (repo / "src" / "b.py").write_text("VAL = 2\n", encoding="utf-8")
@@ -61,6 +64,9 @@ class TeamCtlTests(unittest.TestCase):
             self.assertEqual(team_ctl.cmd_spawn(repo, "T901"), 0)
             wt_dir = team_ctl.worktree_dir_for(repo, "codex")
             self.assertTrue(wt_dir.is_dir())
+            ignored_link = wt_dir / "forensic" / "local_rule.json"
+            self.assertTrue(ignored_link.is_symlink())
+            self.assertEqual(ignored_link.resolve(), (repo / "forensic" / "local_rule.json").resolve())
 
             # 主仓 main 上禁止通过 gate
             self.assertNotEqual(team_ctl.cmd_gate(repo, "T901", target_dir=repo), 0)
