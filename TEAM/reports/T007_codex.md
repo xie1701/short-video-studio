@@ -9,10 +9,18 @@
   3. 离线方案按台词安排否定连击、条目顺序、机制对比和留白，保留探店的数字与菜品清单，并在反转处压低配乐。
   4. 流水线优先读取校验通过的总谱。文件缺失或校验失败时可在内存中重新编排，保存由命令行显式触发。
 
+## 终审复测修复
+
+1. 普通叙事留下底字幕和气口，画面大字从完整分句和词边界取词。两幕连播后需要至少 0.35 秒无高光时间，才接下一幕。
+2. 单独报出的序数可并入间隔不超过 1.2 秒的结论句。「第一反应」「第一次」等日常搭配走常规叙事。
+3. 对比卡从原句取出可核对的正反两项，例如「✕ 师徒两个字」「✓ 分到钱」。任一侧缺少可靠短语时给这幕留白。
+4. 「三分之一两百平」拆为分数和面积。「一两百」等概数保留原样。数字高光优先选择面积、金额或比例等有明确量纲的信息。
+5. 门店清单按原句分隔和词级边界切分，兼顾无标点列表。补上私信、主页、预约、领取和点击五种引导语。人后弹幕按幕匹配镜头画像，未匹配的镜头使用全片构图设定。
+
 ## 改动文件清单（对照 allowed_files）
 
 - `short-video-studio/scripts/director_plan.py` 实现任务清单、总谱校验、离线生成、只读加载和命令行。
-- `tests/test_director_plan.py` 覆盖两种题材、用词与数字溯源、构图限制、音乐边界、回退和命令行落盘。
+- `tests/test_director_plan.py` 保留原有 19 项测试，新增 11 项复测用例，覆盖截断词、留白、序数、双边对比、数字、门店列表、引导语和逐镜构图。
 - `TEAM/reports/T007_codex.md` 记录交付接口、实测结果和已知边界。
 
 ## 闸门与测试实测输出
@@ -20,18 +28,21 @@
 执行命令 `"$HOME/.short-video-studio/venv/bin/python" dev_tools/team_ctl.py gate T007`
 
 ```text
-Ran 19 tests in 0.251s
+Ran 30 tests in 0.459s
 OK
-Ran 9 tests in 3.159s
+Ran 9 tests in 2.795s
 OK
 [gate] 分支校验通过: agent/codex/T007
-[gate] 变更白名单通过 (2 个文件): ['short-video-studio/scripts/director_plan.py', 'tests/test_director_plan.py']
+[gate] 变更白名单通过 (3 个文件): ['TEAM/reports/T007_codex.md', 'short-video-studio/scripts/director_plan.py', 'tests/test_director_plan.py']
 === GATE PASS: T007 ===
 ```
+
+屏蔽 `jieba` 后，导演总谱的 30 项测试在同一进程内复跑通过，耗时 0.275 秒。
 
 ## 接口对齐与遗留风险说明
 
 - 总谱按规格提供 `acts`、`theme_profile` 与 `music_cues`，覆盖率以锁定时间上的高光幕时长重算。原语枚举采用任务单逐项列出的 12 个值。
 - 只读加载器可直接供下游使用。命令行提供 `build-tasks`、`apply-plan` 和 `fallback` 三个入口。
-- 句子是排期的最小单位。锁定时间凑不出目标覆盖率时，保留句子边界并报告偏差。
+- 句子是排期的最小单位。有效高光的时长不足时，保留叙事留白并报告覆盖率偏差。
+- 复测使用反馈中的口播样句和测试时间轴。
 - 既有 `style_02` 回归记录了 `step4_build_edl.py` 中的文件句柄告警，该组 9 项测试全部通过。

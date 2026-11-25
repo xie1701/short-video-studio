@@ -18,6 +18,8 @@ from director_plan import (
     PLAN_FILENAME,
     TASKS_FILENAME,
     THEME_PROFILES,
+    _amount,
+    _numeric_focus,
     build_director_tasks,
     generate_deterministic_director_plan,
     load_or_build_director_plan,
@@ -385,6 +387,200 @@ class DirectorPlanTests(unittest.TestCase):
         result = self.validate(plan, source)
         self.assertTrue(result["ok"], result["errors"])
         self.assertTrue(any("highlight_coverage_ratio" in warning for warning in result["warnings"]))
+
+    def test_narration_does_not_fill_highlight_time_with_cut_off_keywords(self):
+        source = audio(
+            (0.0, 2.0, "先把合同印出来发给合作方"),
+            (2.1, 4.1, "以前我们想事情总要多问一遍"),
+            (4.2, 6.2, "把公司名改好再寄回原来的地址"),
+            (6.3, 8.3, "样品摆上去之后就把桌面清理一遍"),
+            (8.4, 10.4, "他管过人也帮其他团队安排过工作"),
+            (10.5, 13.0, "后来大家到资料室那找答案和记录"),
+        )
+        for sentence, fragment in zip(source["sentences"], (
+            "印出来发", "们想事情", "公司名改", "上去之后", "他管过人", "那找答案",
+        )):
+            sentence.update(keywords=[fragment], display_keywords=[fragment])
+        plan = generate_deterministic_director_plan(source)
+        self.assertTrue(all(
+            planned["primitive"] in ("plain_bridge", "clean_breath")
+            and not any(planned["visual_copy"].values())
+            for planned in plan["acts"]
+        ))
+        result = self.validate(plan, source)
+        self.assertTrue(result["ok"], result["errors"])
+        self.assertEqual(plan["highlight_coverage_ratio"], 0.0)
+        self.assertTrue(any("highlight_coverage_ratio" in warning for warning in result["warnings"]))
+
+        store = audio(
+            (0.0, 4.0, "这间门店一直由店长收好每天的排班记录"),
+            (4.5, 10.0, "我把以前写好的笔记重新放回去"),
+        )
+        plan = generate_deterministic_director_plan(store, composition_profile={"theme_hint": "store_vibrant"})
+        self.assertEqual(plan["theme_profile"], "store_vibrant")
+        self.assertEqual(plan["highlight_coverage_ratio"], 0.0)
+
+    def test_dense_opening_reserves_real_breathing_time(self):
+        source = audio(
+            (0.0, 2.0, "第一，核对订单"),
+            (2.05, 4.0, "第二，检查回款"),
+            (4.05, 6.0, "第三，登记往来"),
+            (6.05, 8.0, "第四，汇总票据"),
+            (8.05, 10.0, "第五，整理预算"),
+            (10.05, 12.0, "第六，复核合同"),
+            (12.2, 20.0, "这次复核由不同岗位一起在工作台完成"),
+        )
+        plan = generate_deterministic_director_plan(source)
+        self.assert_fallback_grounded(plan, source)
+        highlights = [
+            i for i, planned in enumerate(plan["acts"]) if planned["primitive"] == "framework_pillar"
+        ]
+        self.assertGreaterEqual(len(highlights), 3)
+        self.assertTrue(any(
+            0 < i < highlights[-1] and plan["acts"][i]["primitive"] == "clean_breath"
+            for i in range(len(plan["acts"]))
+        ))
+        active = 0
+        previous_end = -1.0
+        for i in highlights:
+            sentence = source["sentences"][i]
+            if sentence["start_sec"] - previous_end >= 0.35:
+                active = 0
+            active += 1
+            self.assertLessEqual(active, 2)
+            previous_end = sentence["end_sec"]
+
+    def test_standalone_ordinals_join_only_a_nearby_conclusion(self):
+        for heading, badge in (("第一", "01"), ("第二点", "02"), ("第三条", "03"), ("第四步", "04")):
+            with self.subTest(heading=heading):
+                source = audio(
+                    (0.0, 0.8, heading), (2.0, 4.2, "点单先付款"),
+                    (4.5, 10.0, "后台会用统一的表格核对完整的交易流程"),
+                )
+                plan = generate_deterministic_director_plan(source)
+                self.assert_fallback_grounded(plan, source)
+                combined = plan["acts"][0]
+                self.assertEqual(combined["sentence_ids"], ["sent_001", "sent_002"])
+                self.assertEqual(combined["primitive"], "framework_pillar")
+                self.assertEqual(combined["visual_copy"]["headline"], "点单先付款")
+                self.assertEqual(combined["visual_copy"]["accent_token"], badge)
+
+                source["sentences"][1]["start_sec"] = 2.01
+                plan = generate_deterministic_director_plan(source)
+                self.assertEqual(plan["acts"][0]["sentence_ids"], ["sent_001"])
+                self.assertNotIn("framework_pillar", [planned["primitive"] for planned in plan["acts"]])
+
+    def test_ordinal_collocations_do_not_produce_pillars(self):
+        for phrase in (
+            "第一反应是复核", "第一时间看通知", "第一眼先看价格", "第一次来柜台",
+            "第一名已经登记", "第一位已经签到", "第一批今天到货", "第一个月刚开张",
+        ):
+            with self.subTest(phrase=phrase):
+                source = audio((0.0, 4.0, phrase), (4.5, 10.0, "这些信息留在记录里方便同事翻查"))
+                plan = generate_deterministic_director_plan(source)
+                self.assertNotIn("framework_pillar", [planned["primitive"] for planned in plan["acts"]])
+
+    def test_long_contrast_extracts_grounded_short_positive_clause(self):
+        for location in ("店利润里", "店的利润里面"):
+            with self.subTest(location=location):
+                source = audio(
+                    (0.0, 4.0, f"师徒制核心不是师徒两个字是师傅能从徒弟的{location}分到钱"),
+                    (4.5, 10.0, "接下来要按照之前定好的方法一起核对"),
+                )
+                source["sentences"][0].update(keywords=["师傅能从"], display_keywords=["徒弟的店"])
+                plan = generate_deterministic_director_plan(source)
+                self.assert_fallback_grounded(plan, source)
+                self.assertEqual(plan["acts"][0]["primitive"], "concept_split_card")
+                self.assertEqual(plan["acts"][0]["visual_copy"]["items"], ["✕ 师徒两个字", "✓ 分到钱"])
+
+    def test_fails_closed_if_a_contrast_side_cannot_be_safely_shortened(self):
+        for phrase in ("核心不是规模而是供应商付款排班业务复盘", "核心不是供应商付款排班业务复盘而是规模"):
+            with self.subTest(phrase=phrase):
+                source = audio((0.0, 4.0, phrase), (4.5, 10.0, "大家一致把这项工作放到下周复核"))
+                plan = generate_deterministic_director_plan(source)
+                self.assertNotIn("concept_split_card", [planned["primitive"] for planned in plan["acts"]])
+                self.assertTrue(self.validate(plan, source)["ok"])
+
+    def test_fraction_followed_by_area_does_not_ground_a_fabricated_amount(self):
+        source = audio(
+            (0.0, 4.0, "展厅占三分之一两百平，份额是3分之12"),
+            (4.5, 10.0, "前后都有通道，工作人员可以在那里核对"),
+        )
+        plan = dict(self.plan, acts=[
+            act(1, primitive="num_anchor_dim_overlay", headline="200平", items=("三分之一", "4")),
+            act(2),
+        ])
+        result = self.validate(plan, source)
+        self.assertTrue(result["ok"], result["errors"])
+        plan["acts"][0]["visual_copy"]["headline"] = "1200平"
+        self.assert_error(self.validate(plan, source), "hallucinated_token")
+        self.assertEqual(_numeric_focus("展厅三分之一两百平"), ("两百平", "两百平"))
+        self.assertIsNone(_amount("一两百"))
+        self.assertIsNone(_amount("两三万"))
+        self.assertEqual(_numeric_focus("展厅一两百平"), ("", ""))
+
+    def test_numeric_focus_prefers_scale_and_ignores_single_classifiers(self):
+        for spoken, expected in (
+            ("一间六百平", "六百平"),
+            ("五十个人里百分之五", "百分之五"),
+            ("先说六百平还要投入两百万", "两百万"),
+            ("先说一句，去一次，看一间，挑一个", ""),
+            ("一平也是实测面积", "一平"),
+        ):
+            with self.subTest(spoken=spoken):
+                self.assertEqual(_numeric_focus(spoken), (expected, expected))
+
+    def test_store_lists_use_general_word_boundaries(self):
+        for items, has_words in (
+            (["手链", "耳饰", "发夹", "胸针"], False),
+            (["护目镜", "隔音塞", "扭力扳手", "工装指套"], True),
+        ):
+            with self.subTest(items=items):
+                source = audio(
+                    (0.0, 0.8, "门店四大单品"), (0.9, 4.4, "".join(items)),
+                    (4.8, 10.0, "沿走廊走下去就可以看到完整的陈列"),
+                )
+                if has_words:
+                    source["sentences"][1]["words"] = [{"word": item} for item in items]
+                profile = {"theme_hint": "store_vibrant"}
+                plan = generate_deterministic_director_plan(source, composition_profile=profile)
+                self.assert_fallback_grounded(plan, source, profile)
+                first = plan["acts"][0]
+                self.assertEqual(first["primitive"], "list_build_gather_dim_overlay")
+                self.assertEqual(first["sentence_ids"], ["sent_001", "sent_002"])
+                self.assertEqual(first["visual_copy"]["items"], items)
+
+    def test_cta_detects_new_action_words(self):
+        for action in ("私信", "主页", "预约", "领取", "点击"):
+            with self.subTest(action=action):
+                source = audio(
+                    (0.0, 4.0, f"{action}取得这次活动的详细资料"),
+                    (4.5, 10.0, "这份资料由现场工作人员统一整理"),
+                )
+                plan = generate_deterministic_director_plan(source)
+                self.assert_fallback_grounded(plan, source)
+                self.assertEqual(plan["acts"][0]["primitive"], "inline_emphasis_cta")
+                self.assertEqual(plan["acts"][0]["visual_copy"]["headline"], action)
+
+    def test_per_shot_composition_precedes_project_default(self):
+        self.plan["acts"][0]["primitive"] = "hero_anchor_plus_danmaku"
+        self.audio["sentences"][0]["source_media"] = "wide/scene.mov"
+        self.audio["sentences"][1]["source_media"] = "wide/scene.mov"
+        profile = {
+            "allow_behind_person": False,
+            "primary_stage_mode": "closeup_chest_stage",
+            "aroll_profiles": [
+                {"media_path": "wide/scene.mov", "allow_behind_person": True},
+                {"media_path": "close/scene.mov", "allow_behind_person": False},
+            ],
+        }
+        self.assertTrue(self.validate(profile=profile)["ok"])
+        self.audio["sentences"][1]["source_media"] = "unmatched.mov"
+        self.assert_error(self.validate(profile=profile), "behind_person_not_allowed")
+        profile["allow_behind_person"] = True
+        self.assertTrue(self.validate(profile=profile)["ok"])
+        self.audio["sentences"][1]["source_media"] = "close/scene.mov"
+        self.assert_error(self.validate(profile=profile), "behind_person_not_allowed")
 
     def test_load_prefers_valid_agent_plan_and_falls_back_read_only(self):
         audio_path = self.write_audio()

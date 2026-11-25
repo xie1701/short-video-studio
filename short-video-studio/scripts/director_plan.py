@@ -9,8 +9,9 @@ import sys
 import unicodedata
 from difflib import SequenceMatcher
 from fractions import Fraction
+from functools import lru_cache, partial
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from common import read_json, write_json
 
@@ -46,18 +47,25 @@ _ENTITY_END = re.compile(r"(?:集团|集團|公司|银行|銀行|资本|資本|�
 _CN_DIGITS = "零〇一二两兩三四五六七八九"
 _CN_TO_DIGITS = str.maketrans(_CN_DIGITS + "點点萬億", "0012223456789..万亿")
 _UNITS = {"十": 10, "百": 100, "千": 1000, "万": 10000, "亿": 100000000}
-_DIGIT_RUN = r"(?:[0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)"
+_CN_NONZERO = "一二两兩三四五六七八九"
+_SCALES = "十百千万亿萬億"
 _DIGITS = f"0-9{_CN_DIGITS}"
-_CN_POINT = rf"(?<=[{_DIGITS}])[點点](?=[{_DIGITS}])"
-_NUMERAL = rf"(?:{_DIGIT_RUN}|[{_CN_DIGITS}十百千万亿萬億]|{_CN_POINT})+"
+_NUMERAL = (
+    rf"(?:[{_DIGITS}{_SCALES}]|(?<=[0-9]),(?=[0-9]{{3}}(?![0-9]))"
+    rf"|(?<=[{_DIGITS}])[.點点](?=[{_DIGITS}]))+"
+)
+# 汉字分数后紧接另一组有量级的数字时，分子在前一个数词结束。
+_FRACTION = (
+    rf"{_NUMERAL}分之(?:[{_CN_DIGITS}](?=[0-9])|[{_DIGITS}](?=[{_CN_NONZERO}][{_SCALES}])|{_NUMERAL})"
+)
 _FIGURATIVE_NUMBER = re.compile(r"(?:万一|萬一|千[万萬](?=不要|不能|不可以|别|別|要|记得|記得|莫|得|小心))")
 _NUMBER = re.compile(
     rf"(?P<ordinal>第\s*)?(?P<negative>负|負|(?<![0-9])-)?"
     rf"(?P<percent>百分之)?(?P<bound>超过|超過|超|逾|至少)?"
-    rf"(?P<value>{_NUMERAL}(?:\s*[多余餘]?\s*[十百千万亿萬億])?)"
+    rf"(?P<value>{_FRACTION}|{_NUMERAL}(?:\s*[多余餘]?\s*[{_SCALES}])?)"
     r"(?P<tail>\s*(?:多|余|餘|以上|\+))?"
     r"(?P<measure>\s*(?:%|平方米|平方|平米|平|小时|小時|分钟|分鐘|公斤|人民币|人民幣|"
-    r"元|块|塊|蚊|年|月|天|秒|倍|成|折|人|家|间|間|个|個|斤|克|亩|畝))?"
+    r"元|块|塊|蚊|年|月|天|秒|倍|成|折|人|家|间|間|个|個|次|句|斤|克|亩|畝))?"
 )
 _AMOUNT_PARTS = re.compile(r"[0-9]+(?:\.[0-9]+)?|[十百千万亿]")
 _MEASURE_EQUIVALENTS = {
@@ -68,26 +76,37 @@ _MEASURE_EQUIVALENTS = {
 
 _CLAUSE = re.compile(r"[,，。！？!?、；;：:\n]+")
 _TRIM = " \t\r\n,，.。！？!?、；;：:「」『』“”"
-_NEGATION = re.compile(r"(?<![可但要还还是總总])(?:也|更|都|仲|亦)?(?:不是|并非|並非|唔[系係])")
+_NEGATION_WORD = r"并?不是|并非|並非|唔[系係]"
+_NEGATION = re.compile(rf"(?<![可但要还还是總总])(?:也|更|都|仲|亦)?(?:{_NEGATION_WORD})")
 _CORE = r"核心|本质|本質|重点|重點|关键|關鍵|机制|機制|问题|問題"
 _CONTRAST = re.compile(
-    rf"(?P<core>{_CORE})?\s*(?:并?不是|并非|並非|唔[系係])"
-    r"(?P<rejected>.+?)(?:而[是系係]|[,，]\s*(?:其实|其實)?[是系係])(?P<accepted>.+)"
+    rf"(?P<core>{_CORE})?\s*(?:{_NEGATION_WORD})(?P<rejected>[^。！？!?，,]+?)"
+    r"(?:(?:[，,]\s*)?而[是系係]|[,，]\s*(?:其实|其實)?[是系係]"
+    r"|(?<![不唔就还還也都又更仲])[是系係])(?P<accepted>.+)"
 )
-_UNPUNCTUATED_CONTRAST = re.compile(
-    rf"(?P<core>{_CORE})?(?:并?不是|并非|並非|唔[系係])"
-    r"(?P<rejected>[^。！？!?，,]+?)(?<![不唔就还還也都又更仲])[是系係](?P<accepted>.+)"
-)
-_TURN = re.compile(r"(?:不是|并非|唔[系係])[^。！？!?]{0,30}(?:的问题|嘅問題)|关键是|關鍵是|真相")
+_TURN = re.compile(rf"(?:{_NEGATION_WORD})[^。！？!?]{{0,30}}(?:的问题|嘅問題)|关键是|關鍵是|真相")
 _AMOUNT_LABEL = re.compile(r"(?:负债|負債|欠债|欠債|欠款|亏损|虧損|亏了|虧了|"
                            r"赔了|賠了|营收|營收|成本|利润|利潤)\s*(?:了|就|有)?\s*$")
-_LIST_LEAD = re.compile(r"[一二两兩三四五六七八九十]大(?:天王|招牌|特色)|主要有|包括|分为|分為")
+_NOT_ENUMERATION = (
+    "反应", "反應", "时间", "時間", "眼", "次", "名", "位", "批",
+    "天", "年", "月", "周", "週", "小时", "小時", "分钟", "分鐘", "秒",
+    "个小时", "個小時", "个月", "個月",
+)
+_ENUMERATION_SUFFIXES = "点點条條步项項"
+_CONCLUSION_BOUNDARIES = frozenset((
+    "里", "裡", "裏", "里面", "裡面", "裏面", "内", "內", "中", "当中", "當中", "之中",
+    "之后", "之後", "以后", "以後", "才能", "才会", "才會", "从而", "從而", "就能", "能够", "能夠",
+    "可以", "需要", "必须", "必須", "逐步", "最终", "最終",
+))
+_LIST_LEAD = re.compile(r"(?P<count>[二两兩三四五六七八九2-9])大(?:天王|招牌|特色|单品|單品|品类|品類|款式)"
+                        r"|主要有|包括|分为|分為")
 _LIST_JOIN = re.compile(r"[,，、；;：:]|同埋|以及|还有|還有|加埋")
-_STORE_TERMS = re.compile(r"探店|实体店|實體店|门店|門店|茶楼|茶樓|点心|點心|"
-                          r"招牌|后厨|後廚|餐厅|餐廳|菜单|菜單|到店|开店|開店|"
-                          r"桑拿[鸡雞]|[虾蝦][饺餃]|四大天王|[百千0-9]平")
-_DISH = re.compile(r"桑拿[鸡雞]|[虾蝦][饺餃]|叉[烧燒]包|凤爪|鳳爪|排骨")
-_CTA = re.compile(r"评论区|評論區|留言|关注|關注|点赞|點讚|收藏")
+_STORE_TERMS = re.compile(r"探店|实体店|實體店|门店|門店|店铺|店舖|门市|門市|展厅|展廳|茶楼|茶樓|点心|點心|"
+                          r"招牌|主打|后厨|後廚|餐厅|餐廳|菜单|菜單|到店|开店|開店|"
+                          r"四大天王|[百千0-9]平")
+_STORE_INTRO = re.compile(r"探店|(?:带|帶)大家(?:逛|睇|看)|走[进進]")
+_SHOWCASE = re.compile(r"(?:招牌|主打|特色)(?:菜|产品|產品|项目|項目)?(?:\s*(?:就)?[是系係]|[：:])")
+_CTA = re.compile(r"评论区|評論區|留言|关注|關注|点赞|點讚|收藏|私信|主页|主頁|预约|預約|领取|領取|点击|點擊")
 
 
 def _finite_number(value: Any) -> bool:
@@ -240,18 +259,27 @@ def build_director_tasks(
 
 def _allows_behind_person(profile: Optional[Dict[str, Any]], sentences: List[Dict[str, Any]]) -> bool:
     profile = profile or {}
-    if profile.get("allow_behind_person") is False or profile.get("primary_stage_mode") == "closeup_chest_stage":
-        return False
+    fallback = profile.get("allow_behind_person")
+    if type(fallback) is not bool:
+        fallback = profile.get("primary_stage_mode") != "closeup_chest_stage"
+
+    by_path: Dict[str, bool] = {}
+    by_stem: Dict[str, bool] = {}
     profiles = profile.get("aroll_profiles")
-    if not isinstance(profiles, list):
-        return True
-    sources = {Path(_media_name(sentence.get("source_media"))).stem for sentence in sentences}
-    for item in profiles:
-        if isinstance(item, dict) and item.get("allow_behind_person") is False:
-            name = Path(_media_name(item.get("media_path"))).stem
-            if not name or "" in sources or name in sources:
-                return False
-    return True
+    for item in profiles if isinstance(profiles, list) else ():
+        if not isinstance(item, dict) or type(item.get("allow_behind_person")) is not bool:
+            continue
+        media = str(item.get("media_path") or "").replace("\\", "/")
+        stem = Path(_media_name(media)).stem
+        if stem:
+            allowed = item["allow_behind_person"]
+            by_path[media] = by_path.get(media, True) and allowed
+            by_stem[stem] = by_stem.get(stem, True) and allowed
+    sources = {str(sentence.get("source_media") or "").replace("\\", "/") for sentence in sentences}
+    return all(
+        by_path.get(source, by_stem.get(Path(_media_name(source)).stem, fallback))
+        for source in sources or {""}
+    )
 
 
 def _normalize(text: str) -> str:
@@ -263,9 +291,20 @@ def _display_length(text: str) -> int:
 
 
 def _amount(text: str) -> Optional[Fraction]:
-    text = re.sub(r"[\s,多余餘]", "", text).translate(_CN_TO_DIGITS)
+    text = re.sub(r"[\s,多余餘]", "", text)
     if len(text) > 40:
         return None
+    denominator, marker, numerator = text.partition("分之")
+    if marker:
+        whole, share = _amount(denominator), _amount(numerator)
+        return share / whole if whole and share is not None else None
+
+    # 连读的「一两百」「三四万」是概数。保留原样，避免换算为单一金额。
+    coefficients = re.split(rf"[{_SCALES}.點点]", text)
+    if any(re.fullmatch(rf"[0-9{_CN_NONZERO}][{_CN_NONZERO}]+", part)
+           for part in coefficients):
+        return None
+    text = text.translate(_CN_TO_DIGITS)
     parts = _AMOUNT_PARTS.findall(text)
     if not parts or "".join(parts) != text:
         return None
@@ -546,71 +585,211 @@ def _visual_copy(headline: str = "", items: tuple[str, ...] = (), accent: str = 
     return {"headline": headline, "items": list(items), "accent_token": accent, "footnote": ""}
 
 
-def _phrase(text: str, sentences: List[Dict[str, Any]], limit: int = _DISPLAY_LIMIT) -> str:
-    """优先用完整短分句，长句使用确实出现在句内的关键词或原始词。"""
-    candidates = _CLAUSE.split(text)
+def _is_short_phrase(phrase: str, limit: int = _DISPLAY_LIMIT, minimum: int = 2) -> bool:
+    return (
+        minimum <= _display_length(phrase) <= limit
+        and bool(_HAN.search(phrase) or _LATIN.search(_normalize(phrase)))
+    )
+
+
+def _phrase(text: str, limit: int = _DISPLAY_LIMIT) -> str:
+    for clause in _CLAUSE.split(text):
+        phrase = clause.strip(_TRIM)
+        if _is_short_phrase(phrase, limit):
+            return phrase
+    return ""
+
+
+@lru_cache(maxsize=1)
+def _offline_tokenizer() -> Callable[[str], List[str]]:
+    try:
+        from jieba import Tokenizer
+    except ImportError:
+        from step5_subtitles import tokenize_semantic_words
+
+        terms = sorted(word for word in _CONCLUSION_BOUNDARIES if len(word) > 1)
+        return partial(tokenize_semantic_words, terms=terms)
+    # 使用独立词典，避免在导入字幕或其他风格时改动公共分词状态。
+    return partial(Tokenizer().lcut, HMM=False)
+
+
+def _word_sequences(text: str, sentences: List[Dict[str, Any]]) -> Iterator[tuple[str, ...]]:
+    """只在完整原句分词的边界上截取词组。"""
     for sentence in sentences:
-        candidates.extend(_string_list(sentence.get("display_keywords")) + _string_list(sentence.get("keywords")))
-        candidates.extend(
-            word.get("text") or word.get("word") or ""
-            for word in (sentence.get("words") or []) if isinstance(word, dict)
-        )
-    for phrase in candidates:
-        if isinstance(phrase, str):
-            phrase = phrase.strip(_TRIM)
-            if (2 <= _display_length(phrase) <= limit and phrase in text
-                    and (_HAN.search(phrase) or _LATIN.search(_normalize(phrase)))):
-                return phrase
+        rows = sentence.get("words")
+        if not isinstance(rows, list):
+            continue
+        words = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            value = row.get("text") or row.get("word")
+            if isinstance(value, str):
+                word = unicodedata.normalize("NFKC", value).strip(_TRIM)
+                if word:
+                    words.append(word)
+        start = "".join(words).find(text)
+        if start < 0:
+            continue
+        stop = start + len(text)
+        chunk, offset = [], 0
+        for word in words:
+            end = offset + len(word)
+            if start <= offset and end <= stop:
+                chunk.append(word)
+            if end >= stop:
+                break
+            offset = end
+        if len(chunk) > 1 and any(len(word) > 1 for word in chunk) and "".join(chunk) == text:
+            yield tuple(chunk)
+
+    words = tuple(_offline_tokenizer()(text))
+    if len(words) > 1 and "".join(words) == text:
+        yield words
+
+
+def _short_conclusion(text: str, sentences: List[Dict[str, Any]], limit: int = _DISPLAY_LIMIT) -> str:
+    if phrase := _phrase(text, limit):
+        return phrase
+    for clause in (part.strip(_TRIM) for part in _CLAUSE.split(text)):
+        if not clause:
+            continue
+        for words in _word_sequences(clause, sentences):
+            for i in range(len(words) - 2, -1, -1):
+                if words[i] in _CONCLUSION_BOUNDARIES:
+                    suffix = "".join(words[i + 1:])
+                    if _is_short_phrase(suffix, limit) and suffix not in _CONCLUSION_BOUNDARIES:
+                        return suffix
     return ""
 
 
 def _numeric_focus(text: str) -> tuple[str, str]:
+    best_score = None
+    best = ("", "")
     for match in _NUMBER.finditer(text):
         value, unit, ordinal, bound = _number_key(match)
         if ordinal or not isinstance(value, Fraction):
             continue
-        if not (unit or abs(value) >= 10 or bound):
+        magnitude = abs(value)
+        if magnitude == 1 and unit in ("", "个", "间", "次", "句", "家"):
+            continue
+        if not (unit or magnitude >= 10 or bound):
             continue
         label = _AMOUNT_LABEL.search(text[:match.start()])
+        raw_value = match["value"]
         number = match[0].strip()
         if label and unit in ("", "元") and value >= 10000 and value % 10000 == 0 and bound != "minimum":
             number = f"{value // 10000}万" + ("+" if bound == "over" else "")
-        elif re.search(r"[多余餘][十百千万亿萬億]$", number):
-            number = re.sub(r"[多余餘]", "", number) + "+"
+        elif number[-1] in _SCALES and any(ch in raw_value for ch in "多余餘"):
+            number = number.translate(str.maketrans("", "", "多余餘")) + "+"
         if _display_length(number) > _DISPLAY_LIMIT:
             continue
-        if label:
-            headline = label[0].strip() + number
-            if _display_length(headline) <= _DISPLAY_LIMIT:
-                return headline, number
-        return number, number
-    return "", ""
-
-
-def _contrast(text: str) -> Optional[re.Match[str]]:
-    return _CONTRAST.search(text) or _UNPUNCTUATED_CONTRAST.search(text)
+        strong = unit in ("平", "元", "%", "亩") or any(ch in raw_value for ch in "万萬亿億")
+        score = (strong, magnitude, label is not None)
+        if best_score is None or score > best_score:
+            headline = label[0].strip() + number if label else number
+            best = (headline if _display_length(headline) <= _DISPLAY_LIMIT else number, number)
+            best_score = score
+    return best
 
 
 def _group_text(sentences: List[Dict[str, Any]]) -> str:
     return "，".join(unicodedata.normalize("NFKC", s.get("text", "")).strip(_TRIM) for s in sentences)
 
 
+def _ordinals(text: str) -> List[re.Match[str]]:
+    return [
+        match for match in _NUMBER.finditer(text)
+        if match["ordinal"] and not text[match.end("value"):].lstrip().startswith(_NOT_ENUMERATION)
+    ]
+
+
+def _ordinal_body(text: str) -> str:
+    text = text.lstrip()
+    if text and text[0] in _ENUMERATION_SUFFIXES:
+        text = text[1:]
+    return text.strip(_TRIM)
+
+
+def _list_word_options(
+    part: str, sentences: List[Dict[str, Any]], expected: Optional[int],
+) -> Iterator[tuple[str, ...]]:
+    for words in _word_sequences(part, sentences):
+        if all(_is_short_phrase(word) for word in words):
+            yield words
+        elif expected:
+            # 明确报出总项数时，允许字级分词的相邻单字组成双字词。
+            items = []
+            single = ""
+            for word in words:
+                if len(word) == 1:
+                    if single:
+                        items.append(single + word)
+                        single = ""
+                    else:
+                        single = word
+                elif single:
+                    break
+                else:
+                    items.append(word)
+            else:
+                if not single and len(items) > 1 and all(_is_short_phrase(item) for item in items):
+                    yield tuple(items)
+
+
+def _list_items(tail: str, sentences: List[Dict[str, Any]], lead: re.Match[str]) -> tuple[str, ...]:
+    count = lead["count"]
+    expected = int(count.translate(_CN_TO_DIGITS)) if count else None
+    body = re.split(r"[。！？!?]", tail, maxsplit=1)[0]
+    parts = [part.strip(_TRIM) for part in _LIST_JOIN.split(body) if part.strip(_TRIM)]
+    if (len(parts) == expected or (expected is None and len(parts) >= 2)) and all(
+        _is_short_phrase(part, minimum=1) for part in parts
+    ):
+        return tuple(parts[:4])
+    if expected is None:
+        if len(parts) == 1:
+            return next(_list_word_options(parts[0], sentences, None), ())[:4]
+        return ()
+
+    by_count: Dict[int, tuple[str, ...]] = {0: ()}
+    for part in parts:
+        options = [(part,)] if _is_short_phrase(part, minimum=1) else []
+        options.extend(_list_word_options(part, sentences, expected))
+        splits: Dict[int, tuple[str, ...]] = {}
+        for previous in by_count.values():
+            for option in options:
+                items = previous + option
+                if len(items) <= expected:
+                    splits.setdefault(len(items), items)
+        by_count = splits
+    return by_count.get(expected, ())[:4]
+
+
 def _group_end(sentences: List[Dict[str, Any]], index: int, store: bool) -> int:
-    """给分在相邻句里的否定排比或反转留出同一幕。"""
-    first = _group_text(sentences[index:index + 1])
-    lead = _LIST_LEAD.search(first) if store else None
-    if lead and not first[lead.end():].strip(_TRIM) and index + 1 < len(sentences):
-        following = sentences[index + 1]
-        if following["start_sec"] - sentences[index]["end_sec"] <= 1.2 and _DISH.search(following.get("text", "")):
-            return index + 2
-    if _contrast(first) or "≠" in first or not (_NEGATION.search(first) or _numeric_focus(first)[0]):
-        return index + 1
+    """把相邻的序数结论、并列项或反转分句留在同一幕。"""
     end = index + 1
-    for following in sentences[end:end + 2]:
-        text = following.get("text", "").lstrip()
-        if following["start_sec"] - sentences[end - 1]["end_sec"] > 1.2:
-            break
-        if _contrast(text) or "≠" in text:
+    first = _group_text(sentences[index:end])
+    max_gap = 1.2 + 1e-9
+    if end == len(sentences) or sentences[end]["start_sec"] - sentences[index]["end_sec"] > max_gap:
+        return end
+
+    following = _group_text(sentences[end:end + 1])
+    ordinals = _ordinals(first)
+    if len(ordinals) == 1:
+        marker = ordinals[0]
+        if not first[:marker.start()].strip(_TRIM) and not _ordinal_body(first[marker.end():]):
+            return end + 1 if following and not _ordinals(following) else end
+
+    lead = _LIST_LEAD.search(first) if store else None
+    if lead and not first[lead.end():].strip(_TRIM) and _list_items(following, sentences[end:end + 1], lead):
+        return end + 1
+
+    if _CONTRAST.search(first) or "≠" in first or not (_NEGATION.search(first) or _numeric_focus(first)[0]):
+        return end
+    for sentence in sentences[end:end + 2]:
+        text = _group_text([sentence])
+        if (sentence["start_sec"] - sentences[end - 1]["end_sec"] > max_gap
+                or _CONTRAST.search(text) or "≠" in text):
             break
         after_negation = end > index + 1 or _NEGATION.search(first)
         positive = after_negation and text.startswith(("是", "而是", "而系", "而係"))
@@ -618,49 +797,39 @@ def _group_end(sentences: List[Dict[str, Any]], index: int, store: bool) -> int:
             break
         end += 1
     joined = _group_text(sentences[index:end])
-    return end if len(_NEGATION.findall(joined)) >= 2 or _contrast(joined) else index + 1
+    return end if len(_NEGATION.findall(joined)) >= 2 or _CONTRAST.search(joined) else index + 1
 
 
-def _negation_items(text: str, sentences: List[Dict[str, Any]]) -> tuple[str, ...]:
+def _negation_items(text: str, contrast: Optional[re.Match[str]]) -> tuple[str, ...]:
     matches = list(_NEGATION.finditer(text))
     items = []
-    contrast = _contrast(text)
-    for index, match in enumerate(matches):
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+    for i, match in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
         if contrast and match.end() == contrast.start("rejected"):
             end = min(end, contrast.end("rejected"))
-        predicate = re.split(r"[,，。！？!?、；;]|而[是系係]", text[match.end():end], maxsplit=1)[0]
-        phrase = _phrase(match[0].lstrip("也更都仲亦") + predicate, sentences)
-        if phrase:
+        predicate = _CLAUSE.split(text[match.end():end], maxsplit=1)[0].strip(_TRIM)
+        if predicate and (phrase := _phrase(match[0].lstrip("也更都仲亦") + predicate)):
             items.append(f"✕ {phrase}")
     return tuple(dict.fromkeys(items))
-
-
-def _ordinals(text: str) -> List[re.Match[str]]:
-    return [
-        match for match in _NUMBER.finditer(text)
-        if match["ordinal"] and (match["measure"] or "").strip() not in ("天", "年", "月", "秒", "小时", "小時")
-    ]
 
 
 def _framework_copy(
     text: str, ordinals: List[re.Match[str]], sentences: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
     rows = []
-    for index, match in enumerate(ordinals):
-        end = ordinals[index + 1].start() if index + 1 < len(ordinals) else len(text)
+    for i, match in enumerate(ordinals):
+        end = ordinals[i + 1].start() if i + 1 < len(ordinals) else len(text)
         value = _amount(match["value"])
         if value is None or value < 1 or value != int(value):
             continue
-        number = f"{int(value):02d}"
-        lead = re.sub(r"^[条條点點步项項]\s*", "", text[match.end():end].lstrip(_TRIM))
-        title = _phrase(lead, sentences, limit=6)
-        rows.append((number, title))
+        title = _short_conclusion(_ordinal_body(text[match.end():end]), sentences, limit=6)
+        if title:
+            rows.append((f"{int(value):02d}", title))
     if not rows:
         return _visual_copy()
     number, title = rows[0]
     items = tuple(
-        f"{badge} · {label}" if _display_length(badge + label) <= _DISPLAY_LIMIT and label else badge
+        f"{badge} · {label}" if _display_length(badge + label) <= _DISPLAY_LIMIT else badge
         for badge, label in rows[1:]
     )
     return _visual_copy(title, items, number)
@@ -669,63 +838,60 @@ def _framework_copy(
 def _propose(
     text: str, sentences: List[Dict[str, Any]], store: bool, opening: bool, behind: bool,
 ) -> tuple[str, Dict[str, Any]]:
-    contrast = _contrast(text)
+    contrast = _CONTRAST.search(text)
     if "≠" in text or (contrast and contrast["core"]):
         if "≠" in text:
             left, right = text.split("≠", 1)
             subject = ""
         else:
             left, right = contrast["rejected"], contrast["accepted"]
-            subject = _phrase(text[:contrast.start()].rstrip("的嘅 "), sentences)
-        rejected, accepted = _phrase(left, sentences), _phrase(right, sentences)
-        items = tuple(f"{symbol} {word}" for symbol, word in (("✕", rejected), ("✓", accepted)) if word)
-        return "concept_split_card", _visual_copy(subject or accepted or rejected, items, accepted)
+            subject = _phrase(text[:contrast.start()].rstrip("的嘅 "))
+        rejected = _short_conclusion(left, sentences)
+        accepted = _short_conclusion(right, sentences)
+        if rejected and accepted:
+            sides = (f"✕ {rejected}", f"✓ {accepted}")
+            return "concept_split_card", _visual_copy(subject or accepted, sides, accepted)
+        return "plain_bridge", _visual_copy()
 
-    negations = _negation_items(text, sentences)
-    if len(_NEGATION.findall(text)) >= 2 or contrast:
-        headline, accent = _numeric_focus(text)
-        if not headline:
-            headline = _phrase(contrast["accepted"], sentences) if contrast else (negations[0][2:] if negations else "")
-        return "negation_strike", _visual_copy(headline, negations, accent)
+    if contrast or len(_NEGATION.findall(text)) >= 2:
+        negations = _negation_items(text, contrast)
+        if negations:
+            headline, accent = _numeric_focus(text)
+            if not headline:
+                headline = _short_conclusion(contrast["accepted"], sentences) if contrast else negations[0][2:]
+            return "negation_strike", _visual_copy(headline, negations, accent)
 
     ordinals = _ordinals(text)
     if ordinals:
-        return "framework_pillar", _framework_copy(text, ordinals, sentences)
+        visual = _framework_copy(text, ordinals, sentences)
+        if visual["headline"]:
+            return "framework_pillar", visual
 
     if store:
         lead = _LIST_LEAD.search(text)
-        if lead:
-            tail = re.split(r"[。！？!?]", text[lead.end():], maxsplit=1)[0]
-            items = []
-            for part in _LIST_JOIN.split(tail):
-                dishes = _DISH.findall(part)
-                if len(dishes) > 1:
-                    items.extend(dishes)
-                elif word := _phrase(part, sentences):
-                    items.append(word)
-            items = list(dict.fromkeys(items))
-            if len(items) >= 2:
-                return "list_build_gather_dim_overlay", _visual_copy(lead[0], tuple(items[:4]))
+        if lead and (items := _list_items(text[lead.end():], sentences, lead)):
+            return "list_build_gather_dim_overlay", _visual_copy(lead[0], items)
         headline, accent = _numeric_focus(text)
         if headline:
             return "num_anchor_dim_overlay", _visual_copy(headline, accent=accent)
-        if dish := _DISH.search(text):
-            return "entity_stack_plus_top", _visual_copy(dish[0])
+        showcase = _SHOWCASE.search(text)
+        if showcase and (title := _phrase(text[showcase.end():])):
+            return "entity_stack_plus_top", _visual_copy(title)
     if call := _CTA.search(text):
         return "inline_emphasis_cta", _visual_copy(call[0])
-    turn = _TURN.search(text)
-    title = _phrase(text[turn.end():] if turn else text, sentences)
-    if not title and store and opening and (cue := _STORE_TERMS.search(text)):
-        title = cue[0]
-    if title:
-        if opening:
-            primitive = "hero_anchor_plus_danmaku" if store and behind else "hero_intro_pop"
-            return primitive, _visual_copy(title)
-        return "entity_stack_plus_top", _visual_copy(title)
+    if opening and store and (cue := _STORE_INTRO.search(text)):
+        primitive = "hero_anchor_plus_danmaku" if behind else "hero_intro_pop"
+        return primitive, _visual_copy(cue[0])
+    if opening and (turn := _TURN.search(text)):
+        if title := _short_conclusion(text[turn.end():], sentences):
+            return "hero_intro_pop", _visual_copy(title)
     return "plain_bridge", _visual_copy()
 
 
 _Candidate = tuple[List[Dict[str, Any]], str, Dict[str, Any]]
+_HighlightState = tuple[float, float, int, int, tuple[int, ...]]
+_BREATH_GAP_SEC = 0.35
+_MAX_HIGHLIGHT_STREAK = 2
 
 
 def _choose_highlights(candidates: List[_Candidate], total: float) -> set[int]:
@@ -733,37 +899,44 @@ def _choose_highlights(candidates: List[_Candidate], total: float) -> set[int]:
         return set()
     priorities = {
         "negation_strike": 110, "concept_split_card": 105, "framework_pillar": 58,
-        "list_build_gather_dim_overlay": 100, "num_anchor_dim_overlay": 90,
+        "list_build_gather_dim_overlay": 100, "num_anchor_dim_overlay": 90, "entity_stack_plus_top": 35,
         "hero_anchor_plus_danmaku": 45, "hero_intro_pop": 20, "inline_emphasis_cta": 24,
     }
 
-    # 每 0.1% 保留一组候选，比较时使用实测秒数，减少选镜次序对覆盖率的影响。
-    def rank(state: tuple) -> tuple:
-        seconds, _, importance, selected = state
+    def rank(state: _HighlightState) -> tuple:
+        seconds, _, _, importance, selected = state
         ratio = seconds / total
         return (max(_TARGET_LOW - ratio, ratio - _TARGET_HIGH, 0.0),
                 -importance, abs(ratio - 0.45), len(selected))
 
-    choices: Dict[int, tuple] = {0: (0.0, 0.0, 0, ())}
+    choices: Dict[tuple[int, float, int], _HighlightState] = {(0, 0.0, 0): (0.0, 0.0, 0, 0, ())}
+
+    def keep(state: _HighlightState) -> None:
+        seconds, previous_end, streak, _, _ = state
+        # 同一覆盖率下保留不同的高光结束时间与连击数，绝不挤掉还能接下一幕的排期。
+        bucket = (round(seconds / total * 1000), previous_end, streak)
+        if bucket not in choices or rank(state) < rank(choices[bucket]):
+            choices[bucket] = state
+
     seen: Dict[str, int] = {}
     for index, (sentences, primitive, visual) in enumerate(candidates):
         if primitive in _QUIET_PRIMITIVES or not (visual["headline"] or visual["items"] or visual["accent_token"]):
             continue
         start, end = _span(sentences)
-        priority = priorities.get(primitive, 0)
-        if priority:
-            repetitions = seen.get(primitive, 0)
-            seen[primitive] = repetitions + 1
-            priority //= min(3, repetitions + 1)
-        elif _DISH.fullmatch(visual["headline"]):
-            priority = 35
-        for seconds, previous_end, importance, selected in list(choices.values()):
+        repetitions = seen.get(primitive, 0)
+        seen[primitive] = repetitions + 1
+        priority = priorities.get(primitive, 0) // min(3, repetitions + 1)
+        previous_choices = choices.values()
+        choices = {}
+        for seconds, previous_end, streak, importance, selected in previous_choices:
+            if start - previous_end >= _BREATH_GAP_SEC - 1e-9:
+                previous_end, streak = 0.0, 0
+            keep((seconds, previous_end, streak, importance, selected))
+            if streak >= _MAX_HIGHLIGHT_STREAK:
+                continue
             added = max(0.0, end - max(start, previous_end))
-            state = (seconds + added, max(previous_end, end), importance + priority, selected + (index,))
-            bucket = round(state[0] / total * 1000)
-            if bucket not in choices or rank(state) < rank(choices[bucket]):
-                choices[bucket] = state
-    return set(min(choices.values(), key=rank)[3])
+            keep((seconds + added, max(previous_end, end), streak + 1, importance + priority, selected + (index,)))
+    return set(min(choices.values(), key=rank)[4])
 
 
 def _music_cues(candidates: List[_Candidate], total: float, store: bool) -> List[Dict[str, Any]]:
@@ -777,7 +950,7 @@ def _music_cues(candidates: List[_Candidate], total: float, store: bool) -> List
         })
     for group, _, _ in candidates:
         text = _group_text(group)
-        if not (_TURN.search(text) or _contrast(text) or "≠" in text):
+        if not (_TURN.search(text) or _CONTRAST.search(text) or "≠" in text):
             continue
         act_start, act_end = _span(group)
         start = max(0.0, occupied_until, min(act_start - 0.08, total - 0.45))
