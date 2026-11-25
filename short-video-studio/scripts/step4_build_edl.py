@@ -626,6 +626,28 @@ def _has_opening_broll_evidence(item: Dict[str, Any], text: str) -> bool:
                for concept, (_, strength) in visible.items())
 
 
+_SIGNBOARD_WALL_NOISE_CUES = ("宣传墙", "围挡", "广告墙", "广告牌", "海报墙")
+_SIGNBOARD_SPOKEN_ALLOW_CUES = ("招牌", "广告", "宣传", "标语", "海报", "墙")
+_DEICTIC_STUB_RE = re.compile(r"^(?:𠮶边|那边|呢边|这边|这里|呢度|那里)?(?:就系|就是)?(?:我哋|我们)?嘅?$")
+
+
+def _is_signboard_wall_noise(item: Dict[str, Any], spoken_text: str) -> bool:
+    """台词未提招牌/广告墙时，识别纯宣传围挡/标语墙镜头以免字面蹭词抢占真实空间画面。"""
+    spoken = str(spoken_text or "")
+    if any(tok in spoken for tok in _SIGNBOARD_SPOKEN_ALLOW_CUES):
+        return False
+    haystack = " ".join([str(item.get("description") or ""), *_broll_tags(item)])
+    return any(tok in haystack for tok in _SIGNBOARD_WALL_NOISE_CUES)
+
+
+def _is_deictic_pointing_stub(text: str, duration_sec: float) -> bool:
+    """识别 <1.25s 且无具体实体的指向过渡短句（如「𠮶边就系我哋嘅」），锁留 A-roll 承接指代动作。"""
+    if float(duration_sec or 0.0) >= 1.25:
+        return False
+    clean = re.sub(r"[\s，。！？；：、,.!?;:]+", "", str(text or ""))
+    return bool(clean) and bool(_DEICTIC_STUB_RE.fullmatch(clean))
+
+
 def _prune_cut_points_to_budget(cut_points: List[Dict[str, Any]], target_shots: int,
                                shot_max_sec: float, fps: int, total_dur: float,
                                can_merge=None) -> tuple:
@@ -1654,10 +1676,15 @@ def run_step4(
                 continue
             s_obj_k = find_broll_topic_sentence(t_sk, t_ek, find_sentence_for_time(t_sk, cut_points[idx_k]["event"]))
             s_txt_k = str(s_obj_k.get("text") or "")
+            if _is_deictic_pointing_stub(s_txt_k, dur_k) and source_aroll_valid[idx_k] and not audio_only_flags[idx_k]:
+                roles[idx_k] = "a_roll"
+                continue
             s_kws_k = [str(x) for x in (s_obj_k.get("keywords") or [])]
             best_sc_k = 0.0
             best_v_k = "none"
             for bm in live_b_only:
+                if _is_signboard_wall_noise(bm, s_txt_k):
+                    continue
                 sc_res = broll_match.score_clip(s_txt_k, bm, used_count=0, need_sec=dur_k, keywords=s_kws_k)
                 if float(sc_res.get("score") or 0.0) > best_sc_k:
                     best_sc_k = float(sc_res.get("score") or 0.0)
@@ -2064,6 +2091,8 @@ def run_step4(
                     s_txt, m, used_count=usage_counts.get(m["id"], 0), need_sec=seg_dur, keywords=s_kws,
                 )
                 sem_weight = float(m_sel["rank"]) * BROLL_SEM_RANK_WEIGHT
+                if _is_signboard_wall_noise(m, s_txt):
+                    sem_weight -= 20.0
             # 一手原始痛点词/物证优先匹配加权
             intel_bonus = 0.0
             if raw_pain_kws and any(pk in s_txt and (pk in fname_m or any(pk in tg for tg in tags)) for pk in raw_pain_kws):
@@ -2333,17 +2362,24 @@ def run_step4(
             })
         if not use_aroll:
             if broll_pick is None and choreography_broll:
-                # 真人画面确实不可用时沿用已有图卡补镜，避免拿无关实拍凑配额。
-                if not any(m["role"] == "code_broll" for m in broll_pool):
-                    generated = ensure_code_broll_pool(
-                        pipeline_dir, sentences, [], track, style_id=style_id, total_dur=total_dur,
+                if live_brolls_for_choreography:
+                    # 实拍片存在真实 B-roll 池时优先从实拍池补足，绝不强行生成伪 PPT 图卡打断实拍质感
+                    broll_pick = pick_best_broll(
+                        broll_sent, seg_dur, last_group, t_start, prev_mp, prev_so,
+                        prev_motion=last_motion, prev_shot_size=last_shot_size, forbid_code=True,
                     )
-                    broll_pool.extend(generated)
-                    usage_counts.update({m["id"]: 0 for m in generated})
-                broll_pick = pick_best_broll(
-                    broll_sent, seg_dur, last_group, t_start, prev_mp, prev_so,
-                    prev_motion=last_motion, prev_shot_size=last_shot_size, code_only=True,
-                )
+                if broll_pick is None and not live_brolls_for_choreography:
+                    # 仅在完全没有任何可用实拍画面时才允许回落图卡兜底
+                    if not any(m["role"] == "code_broll" for m in broll_pool):
+                        generated = ensure_code_broll_pool(
+                            pipeline_dir, sentences, [], track, style_id=style_id, total_dur=total_dur,
+                        )
+                        broll_pool.extend(generated)
+                        usage_counts.update({m["id"]: 0 for m in generated})
+                    broll_pick = pick_best_broll(
+                        broll_sent, seg_dur, last_group, t_start, prev_mp, prev_so,
+                        prev_motion=last_motion, prev_shot_size=last_shot_size, code_only=True,
+                    )
             if broll_pick is None and not choreography_broll:
                 cur_code_dur = sum(float(c["duration_sec"]) for c in clips if c.get("track_role") == "code_broll")
                 forbid_code = (cur_code_dur + seg_dur) / max(0.1, total_dur) > 0.45 and any(

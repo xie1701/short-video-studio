@@ -1640,8 +1640,12 @@ def render_animated_overlay_mov(
     # 三拍砸屏（style_01）与 3D 金属扫光（style_18）是该风格的签名动效，不参与轮换。
     prim_list = [str(p) for p in (ov_style.get("anim_primitives") or []) if str(p or "").strip()]
     raw_prim = str(elem.get("anim_primitive") or "").strip()
+    _ek = str(elem.get("kind") or elem.get("type") or elem.get("element_type") or "")
     if raw_prim:
         anim_mode = resolve_anim_mode(raw_prim, anim_mode)
+    elif _ek == "kinetic_stage_item" and not str(elem.get("motion_mode") or "").strip():
+        # 动态舞台中仅做静置/压暗让位的元素（anim_key=None），绝不套用风格默认弹幕滚动以免横向裁切
+        anim_mode = "static"
     elif prim_list and anim_mode not in SIGNATURE_ANIM_MODES:
         slot = int(elem.get("anim_slot") or 0)
         anim_mode = resolve_anim_mode(prim_list[slot % len(prim_list)], anim_mode)
@@ -1652,7 +1656,6 @@ def render_animated_overlay_mov(
     n_frames = max(10, int(round(dur * fps)))
 
     # 1. style_01 专属三拍分步砸屏（仅开场海报/花字触发，片尾卡/贴纸走各自专用组件）
-    _ek = str(elem.get("kind") or elem.get("type") or elem.get("element_type") or "")
     if anim_mode == "store_stagger_burst" and family == "store_poster_burst" and _ek not in ("end_card_cta", "indicator_sticker"):
         sans_font = find_commercial_font(["AlimamaShuHeiTi-Bold.otf", "SmileySans-Oblique.ttf"])
         oblique_font = find_commercial_font(["SmileySans-Oblique.ttf", "AlimamaShuHeiTi-Bold.otf"])
@@ -1725,7 +1728,9 @@ def render_animated_overlay_mov(
         # 6 类新增入场原语 + 缩小/放大细分子型（见 overlay_motion）
         motion_dir = str(elem.get("direction") or "").strip() or None
         motion_fn = make_motion_frame_fn(anim_mode, base_img, cw, ch, ox, oy, fps, dur, direction=motion_dir) if anim_mode in MOTION_MODES else None
-        if motion_fn is not None:
+        if anim_mode == "static":
+            frame_fn = lambda _fi: settled_bytes
+        elif motion_fn is not None:
             frame_fn = motion_fn
 
         elif anim_mode == "shimmer_3d_gold":

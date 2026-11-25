@@ -448,8 +448,11 @@ def split_clean_phrases(
         return []
 
     raw_chunks: List[str] = []
-    # 先剔除助词“的/嘅/个/种/只”被单独孤立在句末
-    _no_hang_tail = set("的嘅了着过个种只在把被从向和跟与同")
+    # 先剔除助词“的/嘅/个/种/只”及量词冠词（如「一间」「一个」）被单独孤立在句末
+    _no_hang_tail = set("的嘅了着过个种只在把被从向和跟与同") | {
+        "一间", "一个", "一家", "一套", "一份", "一种",
+        "这间", "那间", "呢间", "𠮶间", "这种", "那种", "呢种", "𠮶种", "这个", "那个", "呢个", "𠮶个",
+    }
     for cl in clauses:
         if len(cl) <= target_max:
             raw_chunks.append(cl)
@@ -523,6 +526,7 @@ _NUM_UNIT_RE = re.compile(
 _ENGLISH_UNIT_TOKEN_RE = re.compile(r"[A-Za-z0-9]+|[%％\+＋]")
 _EXTRA_COHESIVE = [
     "𠮶种", "这种", "那种", "呢种", "呢个", "𠮶个", "呢间", "𠮶间",
+    "一间", "一个", "一家", "一套", "一份",
     "纯手工", "原汁原味", "四大天王", "叉烧包", "桑拿鸡", "点赞茶楼",
     "评论区", "三分之一", "非常之", "我觉得", "性价比", "实体店", "工厂老板",
     "品质OK", "OK嘅", "好多", "好食", "有啲", "中空", "卡座", "灯笼", "岭南元素",
@@ -930,21 +934,22 @@ def plan_kinetic_stage(
                     variant="bridge_bar", x_norm=0.0, y_norm=-0.52, font_size_units=15.0,
                     anim_key=None, z_layer="foreground", track_lane=1,
                 ))
-            danmaku_lanes_y = [0.42, 0.22, 0.62, 0.32]
+            danmaku_lanes_y = [0.34, 0.20, 0.40, 0.14]
             danmaku_slots = mapped[1:] if len(mapped) > 1 else mapped
-            # 若最后两小块太碎，适当并成 <=4 条高节奏弹幕全覆盖至意群结束
-            while len(danmaku_slots) > 4:
+            # 仅合并结尾过碎块（合并后不超过 8 字），避免拼成超长条被人物或画边切半
+            while len(danmaku_slots) > 4 and len(danmaku_slots[-2][0] + danmaku_slots[-1][0]) <= 8:
                 t_a, sa, _ = danmaku_slots[-2]
                 t_b, _, eb = danmaku_slots[-1]
                 danmaku_slots[-2:] = [(t_a + t_b, sa, eb)]
             for di, (d_txt, ds, de) in enumerate(danmaku_slots):
                 d_end = min(ge, max(ds + 1.15, de + 0.40))
+                is_left = (di % 2 == 0)
                 g_items.append(_make_item(
                     item_id=next_id(), group_id=f"grp_{gi:02d}", text=d_txt,
                     start_sec=ds, end_sec=d_end, fps=fps,
-                    variant="danmaku_line", x_norm=(-0.24 if di % 2 == 0 else 0.24),
+                    variant="danmaku_line", x_norm=(-0.20 if is_left else 0.20),
                     y_norm=danmaku_lanes_y[di % len(danmaku_lanes_y)],
-                    font_size_units=16.0, anim_key="loop:弹幕滚动",
+                    font_size_units=14.5, anim_key=("in:向右露出" if is_left else "in:向左露出"),
                     z_layer="behind_person", track_lane=3 + (di % 3),
                 ))
 
@@ -1001,9 +1006,9 @@ def plan_kinetic_stage(
                 sum_start = max(gs + gd * 0.65, ge - 1.0)
                 gather_t = max(gs + gd * 0.48, sum_start - 0.45)
 
-            scatter_pos = [(-0.36, -0.30), (0.36, -0.30), (-0.36, -0.46), (0.36, -0.46)]
+            scatter_pos = [(-0.26, -0.28), (0.26, -0.28), (-0.26, -0.45), (0.26, -0.45)]
             gather_ys = [-0.26, -0.39, -0.52, -0.65]
-            item_anims = ["in:向右集合", "in:激光雕刻", "in:随机上升", "in:开幕"]
+            item_anims = ["in:向右集合", "in:随机上升", "in:渐显", "in:向下露出"]
 
             for ki, ((_raw_it, ks, _ke), num_txt) in enumerate(zip(first_item_hits, numbered_items)):
                 xn, yn = scatter_pos[ki % len(scatter_pos)]
@@ -1018,14 +1023,15 @@ def plan_kinetic_stage(
                     g_end_s = gather_t
                 else:
                     g_end_s = ks
-                # 阶段 2：全部收拢居中竖排 + 到 sum_start 自动压暗 (dim_alpha=0.35) 给前景让位！
-                dim_rel = max(0.05, sum_start - g_end_s)
+                # 阶段 2：全部收拢居中竖排；在 sum_start 前急速压暗并在 sum_start 砸出终句时干脆退场，不再与前景大字叠压成团
+                phase2_end = min(ge, sum_start + 0.08)
+                dim_rel = max(0.05, min(phase2_end - g_end_s - 0.05, (sum_start - 0.14) - g_end_s))
                 g_items.append(_make_item(
                     item_id=next_id(), group_id=f"grp_{gi:02d}", text=num_txt,
-                    start_sec=g_end_s, end_sec=ge, fps=fps,
+                    start_sec=g_end_s, end_sec=phase2_end, fps=fps,
                     variant="hero_lime", x_norm=0.0, y_norm=gather_ys[ki % len(gather_ys)],
                     font_size_units=16.5, anim_key=None, track_lane=1 + ki,
-                    dim_after_sec=dim_rel, dim_alpha=0.34,
+                    dim_after_sec=dim_rel, dim_alpha=0.14,
                 ))
 
             # 阶段 3：若有前置小句（如“招牌特色炒面”）在居中上方过桥展示，随后压暗并砸出前景大字
@@ -1131,7 +1137,7 @@ def plan_kinetic_stage(
                 g_items.append(_make_item(
                     item_id=next_id(), group_id=f"grp_{gi:02d}", text=num_str,
                     start_sec=num_s, end_sec=ge, fps=fps,
-                    variant="hero_lime", x_norm=0.0, y_norm=-0.43, font_size_units=29.0,
+                    variant="hero_lime", x_norm=0.0, y_norm=-0.34, font_size_units=25.0,
                     anim_key="in:滚入", track_lane=1,
                     dim_after_sec=dim_rel, dim_alpha=0.38 if has_post else 1.0,
                 ))
@@ -1140,7 +1146,7 @@ def plan_kinetic_stage(
                     g_items.append(_make_item(
                         item_id=next_id(), group_id=f"grp_{gi:02d}", text=o_txt,
                         start_sec=os_t, end_sec=max(os_t + 0.25, o_end), fps=fps,
-                        variant="hero_white", x_norm=0.0, y_norm=-0.53, font_size_units=20.0,
+                        variant="hero_white", x_norm=0.0, y_norm=-0.59, font_size_units=19.0,
                         anim_key=("in:晕开" if oi == 0 else None), track_lane=2,
                     ))
             else:
