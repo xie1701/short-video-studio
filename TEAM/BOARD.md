@@ -17,12 +17,12 @@
 | [T003](tasks/T003_style03_17_dna.md) | **Codex** | `agent/codex/T003` (已合入并清理) | `short-video-studio/scripts/style_dna_profiles.py`<br>`short-video-studio/scripts/render_template_overlays.py`<br>`short-video-studio/assets/style_spectrum/style_spectrum_library.json`<br>`tests/test_style03_17_dna.py` | `MERGED`（已合入 `main` 并补齐红底条文字阴影比例缩放，清理 Worktree） | 与 T004 文件零交集，真并行 |
 | [T004](tasks/T004_style01_21_choreographer.md) | **DeepSeek Harness** | `agent/deepseek/T004` (已合入并清理) | `short-video-studio/scripts/style_01_21_choreographer.py`<br>`short-video-studio/scripts/style_lock.py`<br>`tests/test_style01_21_dna.py` | `MERGED`（已合入 `main` 并清理 Worktree） | 与 T003 文件零交集，真并行 |
 
-## Sprint 3 · 多风格 DNA 真接入主流水线 step4 / step6（并行派单中）
+## Sprint 3 · 多风格 DNA 真接入主流水线 step4 / step6（已完成合并）
 
 | 任务单 | 负责 Agent | 分支与 Worktree | 锁定独占文件 (`allowed_files`) | 当前状态 | 依赖与前置 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| [T005](tasks/T005_sprint3_step4_rhythm.md) | **Codex** | `agent/codex/T005` | `short-video-studio/scripts/step4_build_edl.py`<br>`tests/test_sprint3_step4_rhythm.py` | `IN_PROGRESS`（已建 Worktree 并派发） | 与 T006 文件零交集，真并行 |
-| [T006](tasks/T006_sprint3_step6_dna.md) | **DeepSeek Harness** | `agent/deepseek/T006` | `short-video-studio/scripts/step6_packaging.py`<br>`tests/test_sprint3_step6_dna.py` | `IN_PROGRESS`（已建 Worktree 并派发） | 与 T005 文件零交集，真并行 |
+| [T005](tasks/T005_sprint3_step4_rhythm.md) | **Codex** | `agent/codex/T005` (已合入并清理) | `short-video-studio/scripts/step4_build_edl.py`<br>`tests/test_sprint3_step4_rhythm.py` | `MERGED`（已合入 `main` 并清理 Worktree） | 与 T006 文件零交集，真并行 |
+| [T006](tasks/T006_sprint3_step6_dna.md) | **DeepSeek Harness** | `agent/deepseek/T006` (已合入并清理) | `short-video-studio/scripts/step6_packaging.py`<br>`tests/test_sprint3_step6_dna.py` | `MERGED`（已合入 `main` 并清理 Worktree） | 与 T005 文件零交集，真并行 |
 
 ## 状态机约定
 `READY` → `IN_PROGRESS`（已派发）→ `IN_REVIEW`（Worker 过 `gate` 并交回执）→ `MERGED`（总控合入 `main` + 端到端出片验收完成）
