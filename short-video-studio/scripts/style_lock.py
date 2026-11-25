@@ -18,12 +18,14 @@
 用法：
   python3 scripts/style_lock.py --pipeline-dir <项目>/pipeline          # 只检查，PASS/FAIL
   python3 scripts/style_lock.py --style-id style_01                     # 只查库与蓝图自洽
+  python3 scripts/style_lock.py --style-id style_01 --check-dna         # 附加深层 DNA 自检
   python3 scripts/style_lock.py --pipeline-dir <p> --json               # 机读
   python3 scripts/style_lock.py --pipeline-dir <p> \
       --waive subtitles.font_size --waive subtitles.keyword_color \
       --reason "用户说字太小，同意这两项放大"                            # 只在用户点头后运行
   python3 scripts/style_lock.py --pipeline-dir <p> --clear-waiver
 退出码：0 = 完全套用（或偏离项都有用户豁免）；3 = 存在未经同意的偏离。
+传 --check-dna 时，原风格锁与 DNA 深层体检都通过才返回 0。
 """
 
 from __future__ import annotations
@@ -334,6 +336,292 @@ def audit_assets(style_id: str) -> Dict[str, Any]:
     return {"ok": not devs, "style_id": style_id, "deviations": devs, "waived": [], "notes": []}
 
 
+def check_style_dna_integrity(style_id: str) -> Dict[str, Any]:
+    """只读深层体检：描边真值、B-roll 占比、画中画几何与编舞契约是否出现隐性漂移。
+
+    与 `audit_assets()` 的分工：那边查「蓝图字幕覆盖 vs 字幕模板」的字面一致；
+    这里查更底层的 DNA —— 实测无描边的风格不许被悄悄加粗黑边、B-roll 目标占比要落在
+    实测区间且与转场包装/编舞器同源、画中画几何与 540px 对称居中不越界。
+    """
+    sid = str(style_id or "").strip()
+    checks: List[Dict[str, Any]] = []
+    issues: List[str] = []
+
+    def _add(
+        cid: str,
+        name: str,
+        ok: bool,
+        expected: Any = None,
+        actual: Any = None,
+        detail: str = "",
+    ) -> bool:
+        row: Dict[str, Any] = {"id": cid, "name": name, "ok": bool(ok)}
+        if expected is not None:
+            row["expected"] = expected
+        if actual is not None:
+            row["actual"] = actual
+        if detail:
+            row["detail"] = detail
+        checks.append(row)
+        if not ok:
+            issues.append(f"{name}：约定 {_fmt(expected)}，实际 {_fmt(actual)}")
+        return bool(ok)
+
+    def _int_or(value: Any, default: int = 0) -> int:
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return default
+
+    lib = _load_lib()
+    tpls = _templates()
+    bps = _blueprints()
+    entry = _lib_entry(lib, sid) if sid else None
+    if entry is None:
+        _add("style_exists", "风格在库里存在", False, "库里能查到该风格", "没查到")
+        return {"ok": False, "style_id": sid, "checks": checks, "issues": issues}
+
+    tpl = tpls.get(sid) or {}
+    bp = bps.get(sid) or {}
+    _add("style_exists", "风格在库里存在", True, sid, sid)
+    _add("subtitle_template_present", "字幕模板存在", bool(tpl), "templates.json 有该风格", "缺失")
+    _add("blueprint_present", "风格蓝图存在", bool(bp), "template_blueprints.json 有该风格", "缺失")
+
+    # 1) 描边真值：库里实测无描边，字幕/蓝图就不许悄悄改出粗黑描边
+    flower = entry.get("flower_text_spec") or {}
+    sub_spec = entry.get("subtitle_spec") or {}
+    bp_sub = bp.get("subtitle_override") or {}
+    stroke_modes = {
+        "flower": str(flower.get("stroke_mode") or "none").strip().lower(),
+        "subtitle": str(sub_spec.get("stroke_mode") or "").strip().lower(),
+        "template": str(tpl.get("stroke_mode") or "").strip().lower(),
+        "blueprint": str(bp_sub.get("stroke_mode") or "").strip().lower(),
+    }
+    stroke_widths = {
+        "flower": flower.get("stroke_width"),
+        "subtitle": sub_spec.get("stroke_width"),
+        "template": tpl.get("stroke_width"),
+        "blueprint": bp_sub.get("stroke_width"),
+    }
+    bad_widths = {}
+    for key, value in stroke_widths.items():
+        if value is None:
+            continue
+        try:
+            if float(value) < 0:
+                bad_widths[key] = value
+        except (TypeError, ValueError):
+            bad_widths[key] = value
+    if stroke_modes["flower"] == "none":
+        stroke_ok = (
+            all(stroke_modes[k] in ("", "none") for k in ("subtitle", "template", "blueprint"))
+            and not bad_widths
+            and all(float(stroke_widths[k] or 0.0) == 0.0
+                    for k in ("flower", "subtitle", "template", "blueprint"))
+        )
+    else:
+        observed = {stroke_modes[k] for k in ("subtitle", "template", "blueprint") if stroke_modes[k]}
+        stroke_ok = len(observed) <= 1 and (not observed or stroke_modes["flower"] in observed) and not bad_widths
+    _add(
+        "stroke_mode_consistency",
+        "描边真值与蓝图/字幕一致（无描边不许悄悄加粗黑边）",
+        stroke_ok,
+        {"flower": stroke_modes["flower"], "stroke_width": 0},
+        {**stroke_modes, **{f"{k}_width": v for k, v in stroke_widths.items()}},
+    )
+
+    # 2) B-roll 占比：目标值 0..1，落在实测区间，且与转场包装量级自洽
+    target_raw = entry.get("broll_overlay_ratio_target")
+    try:
+        target = float(target_raw)
+    except (TypeError, ValueError):
+        target = None
+    _add("broll_ratio_range", "B-roll 占比目标在 0..1", target is not None and 0.0 <= target <= 1.0, "0.0 ~ 1.0", target_raw)
+
+    tp = entry.get("transition_and_packaging") or {}
+    tp_target_raw = tp.get("broll_overlay_ratio_target")
+    band = entry.get("broll_target_band_pct") or []
+    band_ok = True
+    if isinstance(band, (list, tuple)) and len(band) == 2 and target is not None:
+        try:
+            lo, hi = sorted((float(band[0]), float(band[1])))
+        except (TypeError, ValueError):
+            band_ok = False
+        else:
+            lo, hi = lo / 100.0, hi / 100.0
+            band_ok = lo - 1e-9 <= target <= hi + 1e-9
+            if tp_target_raw is not None:
+                try:
+                    band_ok = band_ok and lo - 1e-9 <= float(tp_target_raw) <= hi + 1e-9
+                except (TypeError, ValueError):
+                    band_ok = False
+    if target is not None and tp_target_raw is not None:
+        try:
+            band_ok = band_ok and abs(target - float(tp_target_raw)) <= 0.15
+        except (TypeError, ValueError):
+            band_ok = False
+    _add(
+        "broll_ratio_band",
+        "B-roll 占比与实测区间/转场包装自洽",
+        band_ok,
+        {"target": target, "band_pct": band},
+        {"target": target_raw, "transition_target": tp_target_raw},
+    )
+
+    # 3) 编舞契约：style_01 / style_21 的节奏真值必须与库同源，口播倍速锁 1.0
+    opening_min = {"style_01": 3, "style_21": 4}
+    if sid in opening_min:
+        try:
+            from style_01_21_choreographer import STYLE_RHYTHM_CONTRACTS
+            contract = STYLE_RHYTHM_CONTRACTS.get(sid) or {}
+        except ImportError:
+            contract = {}
+        if not contract:
+            _add("choreographer_contract", "编舞契约可用", True, "可导入", "未安装，跳过", "skip")
+        else:
+            try:
+                c_target = float(contract.get("broll_target_ratio"))
+            except (TypeError, ValueError):
+                c_target = None
+            try:
+                c_speed = float(contract.get("aroll_speed_lock"))
+            except (TypeError, ValueError):
+                c_speed = None
+            try:
+                c_open = int(contract.get("opening_cuts_3s"))
+            except (TypeError, ValueError):
+                c_open = None
+            try:
+                c_scale = float(contract.get("punch_in_scale"))
+            except (TypeError, ValueError):
+                c_scale = None
+            contract_ok = (
+                target is not None
+                and c_target is not None
+                and abs(c_target - target) <= 1e-6
+                and c_speed is not None
+                and abs(c_speed - 1.0) <= 1e-9
+                and c_open is not None
+                and c_open >= opening_min[sid]
+                and c_scale is not None
+                and 1.0 <= c_scale <= 1.3
+            )
+            _add(
+                "choreographer_contract",
+                "编舞契约与库真值同源（口播倍速锁 1.0）",
+                contract_ok,
+                {"broll_target_ratio": target, "aroll_speed_lock": 1.0,
+                 "opening_cuts_3s": f">={opening_min[sid]}", "punch_in_scale": "1.0~1.3"},
+                {"broll_target_ratio": c_target, "aroll_speed_lock": c_speed,
+                 "opening_cuts_3s": c_open, "punch_in_scale": c_scale},
+            )
+
+    # 4) 画中画：模式明确、蓝图与库一致、几何在可用范围
+    pip = entry.get("pip_composition_spec") or {}
+    pip_mode = str(pip.get("mode") or "").strip()
+    _add("pip_mode_present", "画中画模式已明确", bool(pip_mode), "非空", pip_mode or "空")
+    bp_pip_mode = str((bp.get("pip_spec") or {}).get("mode") or "").strip()
+    if bp_pip_mode:
+        _add("pip_mode_consistent", "画中画模式与蓝图一致", bp_pip_mode == pip_mode, pip_mode, bp_pip_mode)
+    try:
+        main_scale = float((pip.get("main") or {}).get("scale", 1.0))
+    except (TypeError, ValueError):
+        main_scale = -1.0
+    bad_windows: List[Dict[str, Any]] = []
+    for win in pip.get("windows") or []:
+        try:
+            wx = float(win.get("x", 0.0))
+            wy = float(win.get("y", 0.0))
+            ws = float(win.get("scale", 1.0))
+        except (TypeError, ValueError):
+            bad_windows.append({"raw": win})
+            continue
+        if not (-1.5 <= wx <= 1.5 and -1.5 <= wy <= 1.5 and 0.1 <= ws <= 3.0):
+            bad_windows.append({"x": wx, "y": wy, "scale": ws})
+    _add(
+        "pip_geometry",
+        "画中画几何在可用范围",
+        0.5 <= main_scale <= 2.0 and not bad_windows,
+        "主画面 scale 0.5~2.0；窗口 x/y ±1.5、scale 0.1~3.0",
+        {"main_scale": main_scale, "bad_windows": bad_windows},
+    )
+
+    # 5) 画幅与字幕对称居中：1080x1920 9:16，字幕中心 540、最大宽度 <= 640
+    meta = entry.get("meta") or {}
+    canvas_ok = (
+        _int_or(meta.get("width")) == 1080
+        and _int_or(meta.get("height")) == 1920
+        and str(meta.get("aspect") or "") == "9:16"
+    )
+    _add(
+        "canvas_9_16",
+        "画幅 1080x1920 9:16",
+        canvas_ok,
+        {"width": 1080, "height": 1920, "aspect": "9:16"},
+        {"width": meta.get("width"), "height": meta.get("height"), "aspect": meta.get("aspect")},
+    )
+    center = sub_spec.get("symmetry_center_x")
+    max_width = sub_spec.get("symmetry_max_width_px")
+    tpl_center = tpl.get("symmetry_center_x")
+    tpl_max_width = tpl.get("symmetry_max_width_px")
+
+    def _width_ok(value: Any) -> bool:
+        try:
+            width = float(value)
+        except (TypeError, ValueError):
+            return False
+        return 0 < width <= 640
+
+    symmetry_ok = (
+        _int_or(center) == 540
+        and _width_ok(max_width)
+        and (tpl_center is None or _int_or(tpl_center) == 540)
+        and (tpl_max_width is None or _width_ok(tpl_max_width))
+    )
+    _add(
+        "subtitle_symmetry",
+        "字幕 540px 对称居中且不超宽",
+        symmetry_ok,
+        "center=540，max_width<=640",
+        {"center": center, "max_width": max_width,
+         "template_center": tpl_center, "template_max_width": tpl_max_width},
+    )
+
+    # 6) 源草稿零转场是硬约束，库里的转场说明也不许混进叠化/闪白
+    transitions = tp.get("transitions") or []
+    transitions_ok = bool(transitions) and all("硬切" in str(item) for item in transitions)
+    _add("hard_cut_only", "零转场硬切", transitions_ok, "全部为硬切", transitions)
+
+    return {
+        "ok": all(row["ok"] for row in checks),
+        "style_id": sid,
+        "checks": checks,
+        "issues": issues,
+    }
+
+
+def render_dna_report(dna: Dict[str, Any]) -> str:
+    """把 DNA 体检结果写成普通人一眼能看懂的两三行。"""
+    lines = [f"[风格DNA] {'PASS' if dna.get('ok') else 'FAIL'}：{dna.get('style_id') or '（未记录）'}"]
+    for row in dna.get("checks") or []:
+        lines.append(f"  {'✓' if row.get('ok') else '✗'} {row.get('name')}")
+    if dna.get("issues"):
+        lines.append("  需要修正：" + "；".join(str(x) for x in dna["issues"]))
+    return "\n".join(lines)
+
+
+def _merge_dna_report(rep: Dict[str, Any], dna: Dict[str, Any]) -> Dict[str, Any]:
+    """在原风格锁报告上附加 DNA 结果；没传 --check-dna 时这条路径根本不会走。"""
+    merged = dict(rep)
+    merged["dna"] = dna
+    merged["ok"] = bool(rep.get("ok")) and bool(dna.get("ok"))
+    if not dna.get("ok"):
+        merged["notes"] = list(merged.get("notes") or []) + [
+            f"DNA 自检未通过：{item}" for item in (dna.get("issues") or [])
+        ]
+    return merged
+
+
 def write_waiver(pipeline_dir: Path, style_id: str, fields: List[str], reason: str, approved_by: str = "用户") -> Path:
     """记录用户同意的偏离项。只能在对应用户点头之后运行——不点头就不该有这个文件。"""
     p = pipeline_dir / WAIVER_NAME
@@ -354,8 +642,11 @@ def render_report(rep: Dict[str, Any]) -> str:
     lines: List[str] = []
     sid = rep.get("style_id") or "（未记录）"
     name = rep.get("style_name_cn") or ""
+    dna = rep.get("dna")
     if rep.get("ok"):
         lines.append(f"[风格锁] PASS：{sid} {name} 完全按库里标准执行（未发现未经同意的改动）")
+    elif isinstance(dna, dict) and not rep.get("deviations"):
+        lines.append(f"[风格锁] FAIL：{sid} {name} 的深层 DNA 自检没通过")
     else:
         lines.append(f"[风格锁] FAIL：{sid} {name} 有 {len(rep.get('deviations') or [])} 处偏离库标准，且没有用户同意")
     for d in rep.get("deviations") or []:
@@ -364,9 +655,15 @@ def render_report(rep: Dict[str, Any]) -> str:
         lines.append(f"  ✓ 已由用户同意偏离：{', '.join(rep['waived'])}")
     for n in rep.get("notes") or []:
         lines.append(f"  · {n}")
+    if isinstance(dna, dict):
+        lines.extend(render_dna_report(dna).splitlines())
     if not rep.get("ok"):
-        lines.append("  下一步：要么改回库里的值，要么先问用户，用户同意后再运行")
-        lines.append("  python3 scripts/style_lock.py --pipeline-dir <项目>/pipeline --waive <字段> --reason \"用户原话\"")
+        dna_failed = isinstance(dna, dict) and not dna.get("ok")
+        if rep.get("deviations") or not dna_failed:
+            lines.append("  下一步：要么改回库里的值，要么先问用户，用户同意后再运行")
+            lines.append("  python3 scripts/style_lock.py --pipeline-dir <项目>/pipeline --waive <字段> --reason \"用户原话\"")
+        if dna_failed:
+            lines.append("  下一步：把上面点名漂移的字段改回风格库真值，再运行 --check-dna")
     return "\n".join(lines)
 
 
@@ -378,11 +675,14 @@ def main() -> None:
     ap.add_argument("--reason", default="", help="用户同意偏离的原话")
     ap.add_argument("--approved-by", default="用户")
     ap.add_argument("--clear-waiver", action="store_true", help="删掉豁免文件（回到严格 100%% 套用）")
+    ap.add_argument("--check-dna", action="store_true", help="附加只读深层 DNA 自检（描边/B-roll 占比/画中画/编舞契约）")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args()
 
     if args.style_id and not args.pipeline_dir:
         rep = audit_assets(args.style_id)
+        if args.check_dna:
+            rep = _merge_dna_report(rep, check_style_dna_integrity(args.style_id))
         print(json.dumps(rep, ensure_ascii=False, indent=2) if args.json else render_report(rep))
         sys.exit(0 if rep["ok"] else 3)
 
@@ -407,6 +707,18 @@ def main() -> None:
         path = write_waiver(pdir, rep["style_id"], args.waive, args.reason, args.approved_by)
         print(f"[风格锁] 已记录用户同意的偏离 -> {path}")
         rep = audit_pipeline(pdir)
+
+    if args.check_dna:
+        dna_style_id = str(rep.get("style_id") or args.style_id or "").strip()
+        if dna_style_id:
+            rep = _merge_dna_report(rep, check_style_dna_integrity(dna_style_id))
+        else:
+            rep = _merge_dna_report(rep, {
+                "ok": False,
+                "style_id": "",
+                "checks": [],
+                "issues": ["管线没有记录用的是哪套风格，无法做 DNA 自检"],
+            })
 
     print(json.dumps(rep, ensure_ascii=False, indent=2) if args.json else render_report(rep))
     sys.exit(0 if rep["ok"] else 3)
