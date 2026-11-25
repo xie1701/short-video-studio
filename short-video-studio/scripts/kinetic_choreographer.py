@@ -453,6 +453,7 @@ def split_clean_phrases(
     _no_hang_tail = set("的嘅只在把被从向和跟与同") | {
         "一间", "一个", "一家", "一套", "一份", "一种",
         "这间", "那间", "呢间", "𠮶间", "这种", "那种", "呢种", "𠮶种", "这个", "那个", "呢个", "𠮶个",
+        "也不",
     }
     _attach_tail_suffix = set("了着过得")
     for cl in clauses:
@@ -538,10 +539,50 @@ _ENGLISH_UNIT_TOKEN_RE = re.compile(r"[A-Za-z0-9]+|[%％\+＋]")
 _EXTRA_COHESIVE = [
     "𠮶种", "这种", "那种", "呢种", "呢个", "𠮶个", "呢间", "𠮶间",
     "一间", "一个", "一家", "一套", "一份", "一种", "有种", "几个", "没这个", "这个", "前提",
+    "负债", "破产", "那年", "替你", "也不",
     "纯手工", "原汁原味", "四大天王", "叉烧包", "桑拿鸡", "点赞茶楼",
     "评论区", "三分之一", "非常之", "我觉得", "性价比", "实体店", "工厂老板",
     "品质OK", "OK嘅", "好多", "好食", "有啲", "中空", "卡座", "灯笼", "岭南元素",
 ]
+
+
+def _split_into_n_at_word_bounds(
+    text: str,
+    n: int,
+    protected_terms: Optional[List[str]] = None,
+) -> List[str]:
+    """沿语义词界与完整数字跨度把短句分为 n 块，避免暴力按下标腰斩双字词（如「负债」「200多万」）。"""
+    clean = clean_display_text(text)
+    L = len(clean)
+    if n <= 1 or L < n * 2:
+        return [clean] if clean else []
+    toks = tokenize_semantic_words(clean, terms=protected_terms)
+    num_spans = [m.span() for m in re.finditer(r"[0-9]+(?:[.:][0-9]+)?[多余来上下左右]?[%％\+＋万亿千百平年倍成折元块家间店人份]*", clean)]
+    bounds: List[int] = []
+    pos = 0
+    for tk in toks[:-1]:
+        pos += len(tk)
+        if not (2 <= pos <= L - 2):
+            continue
+        if any(s < pos < e for s, e in num_spans):
+            continue
+        if clean[pos] in "的嘅了着过得":
+            continue
+        bounds.append(pos)
+    if n == 2:
+        if bounds:
+            b = min(bounds, key=lambda x: abs(x - L / 2.0))
+            return [clean[:b], clean[b:]]
+        mid = L // 2
+        return [clean[:mid], clean[mid:]]
+    if n == 3:
+        pairs = [(b1, b2) for i, b1 in enumerate(bounds) for b2 in bounds[i + 1 :] if b2 - b1 >= 2]
+        if pairs:
+            b1, b2 = min(pairs, key=lambda p: abs(p[0] - L / 3.0) + abs(p[1] - 2.0 * L / 3.0))
+            return [clean[:b1], clean[b1:b2], clean[b2:]]
+        mid = max(2, L // 3)
+        return [clean[:mid], clean[mid : mid * 2], clean[mid * 2 :]]
+    return [clean]
 
 
 def _make_item(
@@ -898,8 +939,7 @@ def plan_kinetic_stage(
         elif pattern == "staged_3tier_build":
             phrases = split_clean_phrases(g_split_txt, target_min=3, target_max=7, protected_terms=protected_terms)
             if len(phrases) < 3:
-                mid = max(2, len(g_txt) // 3)
-                phrases = [g_txt[:mid], g_txt[mid : mid * 2], g_txt[mid * 2 :]]
+                phrases = _split_into_n_at_word_bounds(g_txt, 3, protected_terms=protected_terms)
             elif len(phrases) > 3:
                 # 均并回 3 层，保证与原片一致的三行金字塔
                 k1 = phrases[0]
@@ -1084,8 +1124,7 @@ def plan_kinetic_stage(
             else:
                 blocks = split_clean_phrases(g_split_txt, target_min=3, target_max=8, protected_terms=protected_terms)
             if len(blocks) == 1 and len(blocks[0]) >= 4:
-                mid = len(blocks[0]) // 2
-                blocks = [blocks[0][:mid], blocks[0][mid:]]
+                blocks = _split_into_n_at_word_bounds(blocks[0], 2, protected_terms=protected_terms)
             mapped = map_chunks_to_times(blocks, tl, gs, ge)
             # 若超 3 块：前 (len-2) 块作清爽无截断前置过渡句，最后 2~3 块做左右/上下对比压轴！
             n_pre = max(0, len(mapped) - 3)

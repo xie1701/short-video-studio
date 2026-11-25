@@ -235,6 +235,19 @@ class Style02PolishRegressionTests(unittest.TestCase):
         red_slams = [str(it.get("text_or_asset") or "") for it in plan["items"] if it.get("variant") == "red_slam"]
         self.assertTrue(red_slams and red_slams[0] in ("不是人的问题", "人的问题"), red_slams)
 
+        intro_plan = kc.plan_kinetic_stage({
+            "locked_duration_sec": 6.0,
+            "sentences": [
+                {"id": "s0", "text": "公司破产那年我负债200多万", "start_sec": 0.0, "end_sec": 2.9, "start_frame": 0, "end_frame": 87},
+                self._cta(3.3),
+            ],
+            "events": [],
+        }, style_id="style_02")
+        intro_texts = [str(it.get("text_or_asset") or "") for it in intro_plan["items"] if it.get("group_id") == "grp_00"]
+        self.assertEqual(len(intro_texts), 3, intro_texts)
+        self.assertFalse(any(t.endswith("负") or t.startswith("债") for t in intro_texts), intro_texts)
+        self.assertTrue(any("负债" in t for t in intro_texts), intro_texts)
+
 
 if __name__ == "__main__":
     unittest.main()
