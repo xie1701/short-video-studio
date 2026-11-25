@@ -1774,68 +1774,9 @@ def run_step4(
                 multi_sentence_aroll_flags = new_ms
                 n_segs = len(cut_points)
 
-    # ── 同源 A-roll 句尾气口碎片合并：防止非句界节拍点在句尾静默/轻尾气口切出无语音覆盖的幽灵 A-roll 碎片 ──
-    if n_segs >= 2:
-        m_cp, m_roles, m_ao, m_sv, m_bm, m_ms = [], [], [], [], [], []
-        for idx in range(n_segs):
-            merged_into_prev = False
-            if m_cp and m_roles[-1] == "a_roll" and roles[idx] == "a_roll":
-                ev_type = str((cut_points[idx].get("event") or {}).get("type") or "")
-                if ev_type != "sentence_start":
-                    prev_t0 = frames_to_sec(m_cp[-1]["raw_frame"], fps)
-                    t_s = frames_to_sec(cut_points[idx]["raw_frame"], fps)
-                    t_e = frames_to_sec(cut_points[idx + 1]["raw_frame"] if idx + 1 < n_segs else total_frames, fps)
-                    if (t_e - t_s) <= 0.85 and (t_e - prev_t0) <= 2.35:
-                        s_prev = find_sentence_for_time(prev_t0, m_cp[-1]["event"], t_end=t_s)
-                        s_curr = find_sentence_for_time(t_s, cut_points[idx]["event"], t_end=t_e)
-                        if (
-                            s_prev.get("id")
-                            and s_prev.get("id") == s_curr.get("id")
-                            and str(s_prev.get("source_media") or "") == str(s_curr.get("source_media") or "")
-                        ):
-                            other_ov = max(
-                                (
-                                    min(t_e, float(sx.get("end_sec", 0.0))) - max(t_s, float(sx.get("start_sec", 0.0)))
-                                    for sx in sentences
-                                    if sx.get("id") != s_curr.get("id")
-                                ),
-                                default=0.0,
-                            )
-                            if other_ov < 0.12:
-                                s_words = s_curr.get("words") or []
-                                if s_words:
-                                    word_ov = sum(
-                                        max(
-                                            0.0,
-                                            min(t_e, float(w.get("end", w.get("end_sec", 0.0))))
-                                            - max(t_s, float(w.get("start", w.get("start_sec", 0.0)))),
-                                        )
-                                        for w in s_words
-                                    )
-                                    is_breath_tail = word_ov < 0.28
-                                else:
-                                    is_breath_tail = (float(s_curr.get("end_sec", 0.0)) - t_s) <= 0.50
-                                if is_breath_tail:
-                                    merged_into_prev = True
-            if not merged_into_prev:
-                m_cp.append(cut_points[idx])
-                m_roles.append(roles[idx])
-                m_ao.append(audio_only_flags[idx])
-                m_sv.append(source_aroll_valid[idx])
-                m_bm.append(budget_merged_flags[idx])
-                m_ms.append(multi_sentence_aroll_flags[idx])
-        if len(m_cp) != len(cut_points):
-            cut_points = m_cp
-            roles = m_roles
-            audio_only_flags = m_ao
-            source_aroll_valid = m_sv
-            budget_merged_flags = m_bm
-            multi_sentence_aroll_flags = m_ms
-            n_segs = len(cut_points)
-
     # ── A-roll 跨物理跳剪句界防冻帧/防越界保护 ──
-    # 单源连续口播被 step3 剪去较长换气停顿（source_in - prev.source_out > 0.35s）或跨源文件拼接时，
-    # 若一条 A-roll 镜头跨过这个跳剪断层，_aroll_take 会卡死在前句结尾并产生源窗口短缺冻帧或越界违规。
+    # 单源连续口播被 step3 剪去较长换气停顿（source_in - prev.source_out > 0.35s）、插入停顿导致音画漂移（>0.14s），
+    # 或跨源文件拼接时，若一条 A-roll 镜头跨过断层，_aroll_take 会卡死前句结尾或顺延越界，必须先在句界拆齐。
     if usable_arolls and not broll_only_mode and len(sentences) >= 2:
         jump_boundaries: List[Tuple[Dict[str, Any], Dict[str, Any], int, Dict[str, Any]]] = []
         sent_start_ev_by_id = {
@@ -1854,9 +1795,11 @@ def run_step4(
                 _mp_p == _mp_c
                 and _sc.get("source_in_sec") is not None
                 and _sp.get("source_out_sec") is not None
-                and abs(float(_sc["source_in_sec"]) - float(_sp["source_out_sec"])) > 0.35
             ):
-                _is_jump = True
+                _src_gap = float(_sc["source_in_sec"]) - float(_sp["source_out_sec"])
+                _tl_gap = float(_sc["start_sec"]) - float(_sp["end_sec"])
+                if abs(_src_gap) > 0.35 or abs(_tl_gap - _src_gap) > 0.14:
+                    _is_jump = True
             if not _is_jump:
                 continue
             _ev_ns = sent_start_ev_by_id.get(str(_sc.get("id") or ""))
@@ -1927,6 +1870,70 @@ def run_step4(
                     _idx_j += 1
                 if not _changed:
                     break
+            n_segs = len(cut_points)
+
+    # ── 同源 A-roll 句尾气口碎片合并（置于跳剪句界对齐之后，收拢新拆出的句末 ≤0.70s 纯节拍/气口残片） ──
+    if n_segs >= 2:
+        m_cp, m_roles, m_ao, m_sv, m_bm, m_ms = [], [], [], [], [], []
+        for idx in range(n_segs):
+            merged_into_prev = False
+            if m_cp and m_roles[-1] == "a_roll" and roles[idx] == "a_roll":
+                ev_type = str((cut_points[idx].get("event") or {}).get("type") or "")
+                if ev_type != "sentence_start":
+                    prev_t0 = frames_to_sec(m_cp[-1]["raw_frame"], fps)
+                    t_s = frames_to_sec(cut_points[idx]["raw_frame"], fps)
+                    t_e = frames_to_sec(cut_points[idx + 1]["raw_frame"] if idx + 1 < n_segs else total_frames, fps)
+                    if (t_e - t_s) <= 0.85 and (t_e - prev_t0) <= 2.35:
+                        s_prev = find_sentence_for_time(prev_t0, m_cp[-1]["event"], t_end=t_s)
+                        s_curr = find_sentence_for_time(t_s, cut_points[idx]["event"], t_end=t_e)
+                        if (
+                            s_prev.get("id")
+                            and s_prev.get("id") == s_curr.get("id")
+                            and str(s_prev.get("source_media") or "") == str(s_curr.get("source_media") or "")
+                        ):
+                            other_ov = max(
+                                (
+                                    min(t_e, float(sx.get("end_sec", 0.0))) - max(t_s, float(sx.get("start_sec", 0.0)))
+                                    for sx in sentences
+                                    if sx.get("id") != s_curr.get("id")
+                                ),
+                                default=0.0,
+                            )
+                            if other_ov < 0.12:
+                                s_words = s_curr.get("words") or []
+                                beat_tail = bool(
+                                    ev_type in ("bgm_beat", "bgm_downbeat")
+                                    and t_e >= float(s_curr.get("end_sec", 0.0)) - 0.04
+                                    and (float(s_curr.get("end_sec", 0.0)) - t_s) <= 0.70
+                                )
+                                if s_words:
+                                    word_ov = sum(
+                                        max(
+                                            0.0,
+                                            min(t_e, float(w.get("end", w.get("end_sec", 0.0))))
+                                            - max(t_s, float(w.get("start", w.get("start_sec", 0.0)))),
+                                        )
+                                        for w in s_words
+                                    )
+                                    is_breath_tail = (word_ov < 0.28) or beat_tail
+                                else:
+                                    is_breath_tail = ((float(s_curr.get("end_sec", 0.0)) - t_s) <= 0.50) or beat_tail
+                                if is_breath_tail:
+                                    merged_into_prev = True
+            if not merged_into_prev:
+                m_cp.append(cut_points[idx])
+                m_roles.append(roles[idx])
+                m_ao.append(audio_only_flags[idx])
+                m_sv.append(source_aroll_valid[idx])
+                m_bm.append(budget_merged_flags[idx])
+                m_ms.append(multi_sentence_aroll_flags[idx])
+        if len(m_cp) != len(cut_points):
+            cut_points = m_cp
+            roles = m_roles
+            audio_only_flags = m_ao
+            source_aroll_valid = m_sv
+            budget_merged_flags = m_bm
+            multi_sentence_aroll_flags = m_ms
             n_segs = len(cut_points)
 
     def _cross_roll_needs_hard_cut(idx: int) -> bool:

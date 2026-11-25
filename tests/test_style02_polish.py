@@ -192,17 +192,23 @@ class Style02PolishRegressionTests(unittest.TestCase):
                 {"id": f"e{i}", "type": "sentence_start", "time_sec": s["start_sec"], "frame": s["start_frame"], "sentence_id": s["id"]}
                 for i, s in enumerate(sents, 1)
             ]
-            # 添加一个刚好贴在跳剪前 ~0.13s 的中间重音，过去会跨过 s3/s4 气口造成冻帧
+            # 添加一个刚好贴在跳剪前 ~0.13s 的中间重音，与句尾 bgm_downbeat 以及 s1->s2 之间的 step3 停顿漂移 (>0.14s)
+            sents[1]["pause_after_sec"] = 0.17
+            sents[0]["source_out_sec"] = 2.61
+            sents.append({"id": "s5", "text": "接着讲下一段要点", "start_sec": 8.60, "end_sec": 10.60, "start_frame": 258, "end_frame": 318, "source_media": a_mp, "source_in_sec": 10.80, "source_out_sec": 12.80, "keywords": ["要点"]})
+            evts.append({"id": "e5", "type": "sentence_start", "time_sec": 8.60, "frame": 258, "sentence_id": "s5"})
             evts.append({"id": "e_mid", "type": "stress", "time_sec": 4.84, "frame": 145, "sentence_id": "s2"})
+            evts.append({"id": "e_s4_mid", "type": "stress", "time_sec": 6.80, "frame": 204, "sentence_id": "s4"})
+            evts.append({"id": "e_beat_tail", "type": "bgm_downbeat", "time_sec": 7.90, "frame": 237, "sentence_id": "s4"})
             evts.sort(key=lambda e: e["time_sec"])
             write_json(pdir / "01_manifest.json", {"items": [{
                 "id": "a1", "role": "a_roll", "video_grade": "usable",
-                "normalized_mp4": a_mp, "duration_sec": 12.0,
+                "normalized_mp4": a_mp, "duration_sec": 14.0,
                 "sharpness_score": 450.0, "stability_score": 0.92,
                 "faces": [{"bbox": {"x": 0.3, "y": 0.15, "w": 0.35, "h": 0.35}}],
             }]})
             write_json(pdir / "03_audio_events.json", {
-                "locked_duration_sec": 8.5, "locked_duration_frames": 255,
+                "locked_duration_sec": 10.7, "locked_duration_frames": 321,
                 "sentences": sents, "events": evts,
             })
             edl = s4.run_step4(pdir, track="creator", edit_profile="talking", style_id="style_02")
@@ -210,6 +216,8 @@ class Style02PolishRegressionTests(unittest.TestCase):
                 shortfall = float(c["duration_sec"]) - (float(c["source_out_sec"]) - float(c["source_in_sec"]))
                 self.assertLessEqual(shortfall, 0.08, f"{c['clip_id']} 跨气口短缺冻帧: {c}")
                 self.assertFalse(c.get("freeze_tail"), c)
+                if c.get("cut_event_type") == "bgm_downbeat" and float(c["timeline_in_sec"]) >= 7.80:
+                    self.assertGreater(float(c["duration_sec"]), 0.75, f"不应切出句尾纯粹节拍残片: {c}")
 
     def test_ordinal_separation_no_aspect_split_and_problem_anchor(self):
         ph1 = kc.split_clean_phrases("删掉公司名改了几个数字", target_min=3, target_max=8)
