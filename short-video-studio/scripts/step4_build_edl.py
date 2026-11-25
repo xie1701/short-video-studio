@@ -12,11 +12,13 @@ v5 升级：
 from __future__ import annotations
 
 import argparse
+import math
 import re
 import statistics
 import sys
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 SCRIPTS_ROOT = Path(__file__).resolve().parent
 if str(SCRIPTS_ROOT) not in sys.path:
@@ -27,6 +29,7 @@ from common import (
     CANVAS_WIDTH,
     DEFAULT_FPS,
     EDIT_PROFILES,
+    clamp_speed,
     frames_to_sec,
     load_style_applied,
     load_style_spectrum_entry,
@@ -73,6 +76,9 @@ AROLL_UNUSABLE_JITTER_HARD = 15.0
 BROLL_SHAKY_STAB_MIN = 0.20
 BROLL_BLURRY_SHARP_MIN = 250.0
 BROLL_QUALITY_FLOOR_PEN = 18.0
+MAX_AROLL_SHORTFALL_SEC = 0.25
+MAX_AROLL_TAIL_EXTENSION_SEC = 1.0
+SOURCE_EPSILON_SEC = 0.0001
 # 推镜预算：整片挂推镜的镜头占比上限，主轨另有更紧的上限（真值里主轨机位基本不动）
 PUSH_SHOT_RATIO = 0.35
 PUSH_SHOT_RATIO_AROLL = 0.15
@@ -81,6 +87,34 @@ PUSH_SHOT_RATIO_AROLL = 0.15
 
 class BrollSemanticGateError(RuntimeError):
     """B-roll 与台词对不上到越线（fail-closed）：默认只审计，显式开启后必须中断出片。"""
+
+
+class BrollTake(NamedTuple):
+    start: float
+    end: float
+    safe_out: float
+    reason: str
+    fresh: bool
+
+
+def _declared_safe_window(data: Dict[str, Any], duration: float) -> Optional[Tuple[float, float]]:
+    try:
+        start, end = float(data["safe_in_sec"]), float(data["safe_out_sec"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if math.isfinite(start) and math.isfinite(end) and 0.0 <= start < min(end, duration):
+        return start, min(end, duration)
+    return None
+
+
+def _default_broll_handles(duration: float, need_sec: float, stability: float) -> Tuple[float, float]:
+    if duration < need_sec + 1.2:
+        # 尽量居中取用，短到放不下时也为两端留下少量余量。
+        margin = max(duration * 0.05, (duration - need_sec) / 2.0)
+        return margin, margin
+    tail = min(0.50, duration * 0.10)
+    head = min(0.90, duration * 0.18) if stability < 0.78 else min(0.65, duration * 0.12)
+    return min(head, duration - need_sec - tail), tail
 
 
 # 旧口径对照开关：只用于证明"以前为什么对不上"，正常出片必须走概念桥
@@ -175,6 +209,11 @@ def _apply_excluded_rules_to_items(pipeline_dir: Path, items: List[Dict[str, Any
     return out
 
 
+def _excluded_source_spans(windows: List[Dict[str, Any]]) -> List[Tuple[float, float]]:
+    spans = [(float(w.get("start_sec", 0.0)), float(w.get("end_sec", 0.0))) for w in windows]
+    return sorted((start, end) for start, end in spans if start < end)
+
+
 def _avoid_excluded_windows(
     src_in: float,
     seg_dur: float,
@@ -184,14 +223,7 @@ def _avoid_excluded_windows(
     """若目标切片 [src_in, src_in+seg_dur] 与任一人工标废时间窗重叠，自动前移跳过标废区间。"""
     if not excluded_windows:
         return src_in
-    wins = sorted(
-        [
-            (float(w.get("start_sec", 0.0)), float(w.get("end_sec", 0.0)))
-            for w in excluded_windows
-            if float(w.get("end_sec", 0.0)) > float(w.get("start_sec", 0.0))
-        ],
-        key=lambda x: x[0],
-    )
+    wins = _excluded_source_spans(excluded_windows)
     cand = float(src_in)
     for _ in range(len(wins) + 1):
         overlap = next((w for w in wins if cand < w[1] and (cand + seg_dur) > w[0]), None)
@@ -443,7 +475,7 @@ def ensure_code_broll_pool(
             e_mode = extra_modes[extra_idx % len(extra_modes)]
             e_kw = (s_pick.get("keywords") or [None])[0] or str(s_pick.get("text", "核心要点"))[:8]
             e_items = [
-                {"label": str(s.get("keywords", [None])[0] or s["text"][:10]), "subtitle": s["text"][:18]}
+                    {"label": str((s.get("keywords") or [None])[0] or s["text"][:10]), "subtitle": s["text"][:18]}
                 for s in sentences[extra_idx % len(sentences) : (extra_idx % len(sentences)) + 2]
             ] or [{"label": e_kw, "subtitle": str(s_pick.get("text", ""))[:18]}]
             render_broll_clip_pillow(
@@ -696,6 +728,9 @@ def run_step4(
         for g in (kinetic_stage_plan.get("groups") or [])
         if g.get("a_roll_locked")
     ]
+    kinetic_group_by_sentence = {
+        sid: group for group in kinetic_stage_plan.get("groups", []) for sid in group["sentence_ids"]
+    }
 
     def _overlaps_kinetic_locked(t_s: float, t_e: float) -> bool:
         return any(min(t_e, g_e) - max(t_s, g_s) >= 0.12 for g_s, g_e in kinetic_locked_spans)
@@ -923,8 +958,6 @@ def run_step4(
     ]
     for ev in chosen_cuts:
         raw_frame = int(ev["frame"])
-        if ev["time_sec"] <= 2.85:
-            raw_frame = min(raw_frame, 3 * fps - 2)
         if raw_frame - cut_points[-1]["cut_frame"] >= 12 and total_frames - raw_frame >= 10:
             cut_points.append({"cut_frame": raw_frame, "raw_frame": raw_frame, "event": ev})
 
@@ -1020,8 +1053,12 @@ def run_step4(
                 snap_f = int(round(s_t0 * fps))
                 snap_ev = next(
                     (e for e in events if e.get("type") == "sentence_start" and e.get("sentence_id") == s_cand.get("id")),
-                    {"id": f"evt_tail_{s_cand.get('id')}", "type": "sentence_start", "time_sec": round(s_t0, 4), "frame": snap_f, "sentence_id": s_cand.get("id")},
+                    None,
                 )
+                if snap_ev is None:
+                    snap_ev = next((e for e in events if abs(int(e["frame"]) - snap_f) <= 1), None)
+                if snap_ev is None:
+                    continue
                 snap_f = int(snap_ev.get("frame", snap_f))
                 snapped = False
                 for k in range(len(cut_points) - 1, 0, -1):
@@ -1363,12 +1400,11 @@ def run_step4(
                 sc_res = broll_match.score_clip(s_txt_k, bm, used_count=0, need_sec=dur_k, keywords=s_kws_k)
                 if float(sc_res.get("score") or 0.0) > best_sc_k:
                     best_sc_k = float(sc_res.get("score") or 0.0)
-                    best_v_k = str(sc_res.get("verdict") or "none")
+                    best_v_k = str(sc_res.get("tier") or "none")
             if best_v_k in ("hit", "weak") and best_sc_k >= 0.30:
                 # 若本镜当前被判为 a_roll 但其实处于可证据锚定的实体过渡窗内且语义贴合，可作为高光实拍候选
                 _b_cands_by_idx.append((best_sc_k, idx_k, dur_k))
-                if _can_be_safe_aroll(idx_k) or True:
-                    roles[idx_k] = "b_roll"
+                roles[idx_k] = "b_roll"
             else:
                 if source_aroll_valid[idx_k] and not audio_only_flags[idx_k]:
                     roles[idx_k] = "a_roll"
@@ -1393,7 +1429,7 @@ def run_step4(
                 cur_kb_sec -= d_db
         broll_policy_note = (
             f"动态花字舞台模式：锁死 {sum(1 for g in (kinetic_stage_plan.get('groups') or []) if g.get('a_roll_locked'))} 组花字窗口为 A-roll，"
-            f"仅在实体过渡窗按语义证据切入 B-roll（实际 {cur_kb_sec/max(0.1,total_dur)*100:.1f}% ≤ 30%）"
+            "仅在实体过渡窗按语义证据切入 B-roll"
         )
 
         # 确保自抠像人后弹幕窗内的 A-roll 单镜不超过 2.35s（贴合跳剪节奏并合规过 treatment_policy 2.5s 上限）
@@ -1435,11 +1471,31 @@ def run_step4(
                 multi_sentence_aroll_flags = new_ms
                 n_segs = len(cut_points)
 
+    def _cross_roll_needs_hard_cut(idx: int) -> bool:
+        if kinetic_stage_mode:
+            return True
+        if roles[idx - 1] == roles[idx]:
+            return False
+        cut = cut_points[idx]
+        at = frames_to_sec(cut["raw_frame"], fps)
+        end = frames_to_sec(cut_points[idx + 1]["raw_frame"] if idx + 1 < n_segs else total_frames, fps)
+        after = find_sentence_for_time(at, cut["event"], t_end=end)
+        before = next((s for s in reversed(sentences) if float(s["start_sec"]) < at - 0.5 / fps), after)
+        group_before = before.get("beat_group", before.get("beat_group_id"))
+        group_after = after.get("beat_group", after.get("beat_group_id"))
+        return (
+            (group_before is not None and group_after is not None and group_before != group_after)
+            or (before.get("a_roll_locked") and after.get("pattern") == "plain_bridge")
+            or (roles[idx] == "a_roll" and (cut["event"]["type"] == "sentence_start" or before["id"] != after["id"]))
+        )
+
     # 真·J-cut (正帧移：声先画后) 与 真·L-cut (负帧移：高语义物证画面先入)
     first_3s_cutoff_f = 3 * fps
     j_leads = [0] * n_segs
     if j_cut_frames > 0:
         for idx in range(1, n_segs):
+            if _cross_roll_needs_hard_cut(idx):
+                continue
             ev = cut_points[idx]["event"]
             if roles[idx - 1] != "a_roll" and ev["type"] in ("sentence_start", "pause_end", "keyword_accent"):
                 cand_f = cut_points[idx]["raw_frame"] + j_cut_frames
@@ -1527,22 +1583,77 @@ def run_step4(
             rel["legacy_tag_hits"] = legacy_score(str(s.get("text", "")), m, s.get("keywords") or [])
         return rel
 
-    def _broll_head_handle_sec(m_item: Dict[str, Any], need_dur: float) -> float:
-        """实拍 B-roll 起手保护手柄：稳帧差的镜头强制跳过前 0.85s 晃动/举牌段。"""
-        if m_item.get("role") != "b_roll":
-            return 0.0
-        avail_d = float(m_item.get("duration_sec", 0.0) or 0.0)
-        if avail_d <= 2.0:
-            return 0.0
-        stab_raw = m_item.get("stability_score")
-        stab_d = float(stab_raw) if stab_raw is not None else 1.0
-        if stab_d < 0.78:
-            max_skip = max(0.0, avail_d - max(1.2, min(float(need_dur), avail_d * 0.65)))
-            if max_skip >= 0.45:
-                return round(min(0.85, max_skip), 3)
-        if avail_d >= float(need_dur) + 0.80:
-            return 0.40
-        return 0.0
+    @lru_cache(maxsize=None)
+    def _audit_broll(media_path: str) -> Dict[str, Any]:
+        try:
+            if Path(media_path).is_file():
+                from clip_boundary_audit import analyze_clip_safe_window
+
+                return analyze_clip_safe_window(media_path) or {}
+        except Exception:
+            # 检测模块可选，单条素材解码失败也可用默认边距继续排片。
+            pass
+        return {}
+
+    def _broll_take(
+        item: Dict[str, Any], need_sec: float, *, secondary_in: Optional[float] = None,
+    ) -> Optional[BrollTake]:
+        duration = float(item.get("duration_sec", 3.0))
+        if duration <= 0.0:
+            return None
+        if item["role"] == "code_broll":
+            return BrollTake(0.0, min(duration, need_sec), duration, "", True)
+
+        media_path = str(item["normalized_mp4"])
+        bounds = _declared_safe_window(item, duration)
+        reason = "manifest"
+        if bounds is None:
+            bounds = _declared_safe_window(_audit_broll(media_path), duration)
+            reason = "audit_safe_window"
+        if bounds is None:
+            stability = item.get("stability_score")
+            head, tail = _default_broll_handles(duration, need_sec, 1.0 if stability is None else float(stability))
+            bounds = (head, duration - tail)
+            reason = "default_handle_margin"
+        safe_in, safe_out = bounds
+
+        # 人工标废窗优先于自动检测。选片与落窗共用这些连续可用区间。
+        spans: List[Tuple[float, float]] = []
+        cursor = safe_in
+        for start, end in _excluded_source_spans(item.get("excluded_windows") or []):
+            if end <= cursor or start >= safe_out:
+                continue
+            if start - 0.05 > cursor:
+                spans.append((cursor, start - 0.05))
+            cursor = min(safe_out, end + 0.05)
+        if cursor < safe_out:
+            spans.append((cursor, safe_out))
+        if not spans:
+            return None
+
+        floor = max_out_by_mp.get(media_path, 0.0) if secondary_in is None else 0.0
+        hint = used_cursors[item["id"]] if secondary_in is None else secondary_in
+        forward = [(max(lo, floor), hi) for lo, hi in spans if hi > max(lo, floor) + SOURCE_EPSILON_SEC]
+        for candidates, fresh in ((forward, True), (spans, False)):
+            for lo, hi in candidates:
+                if hi - lo + SOURCE_EPSILON_SEC >= need_sec:
+                    start = max(lo, min(hint, hi - need_sec))
+                    return BrollTake(start, min(hi, start + need_sec), hi, reason, fresh)
+        # 素材不够覆盖整镜时，优先保留可顺播的最长一段。该源耗尽后只回用干净区间。
+        lo, hi = max(forward or spans, key=lambda span: span[1] - span[0])
+        return BrollTake(lo, hi, hi, reason, bool(forward))
+
+    def _covers_shot(take: BrollTake, need_sec: float) -> bool:
+        return take.end - take.start + SOURCE_EPSILON_SEC >= need_sec
+
+    def _record_broll_use(item: Dict[str, Any], take: BrollTake) -> None:
+        bid = item["id"]
+        path = str(item["normalized_mp4"])
+        if item["role"] == "b_roll":
+            max_out_by_mp[path] = max(max_out_by_mp.get(path, 0.0), take.end)
+            used_cursors[bid] = take.end + 0.10
+        usage_counts[bid] = usage_counts.get(bid, 0) + 1
+        used_media_counts[path] = used_media_counts.get(path, 0) + 1
 
     def pick_best_broll(
         sent: Dict[str, Any],
@@ -1554,13 +1665,31 @@ def run_step4(
         prev_motion: str = "static",
         prev_shot_size: str = "medium",
         forbid_code: bool = False,
-    ) -> Tuple[Dict[str, Any], str]:
+        matching_live_only: bool = False,
+        require_full: bool = False,
+    ) -> Optional[Tuple[Dict[str, Any], str, BrollTake]]:
         """这镜配哪条 B-roll：先按「这句台词讲了什么画面」排，再拿质量/时长/复用次数同分裁决。"""
         nonlocal taboo_blocked_count
         s_txt = str(sent.get("text", ""))
         s_kws = [str(k) for k in sent.get("keywords", [])]
         is_praise = any(cue in s_txt for cue in POSITIVE_PRAISE_CUES)
         candidates = [m for m in broll_pool if not (forbid_code and m.get("role") == "code_broll")] or broll_pool
+        if matching_live_only:
+            candidates = [
+                m for m in candidates
+                if m["role"] == "b_roll"
+                and not (set(m.get("taboo_tags") or []) & HARD_TABOO_ALWAYS or (is_praise and m.get("taboo_tags")))
+                and sem_of_choice(m, sent, need_sec=seg_dur)["tier"] in ("hit", "weak")
+            ]
+        takes = {m["id"]: _broll_take(m, seg_dur) for m in candidates}
+        candidates = [
+            m for m in candidates
+            if (take := takes[m["id"]]) is not None
+            and (not (require_full or matching_live_only) or _covers_shot(take, seg_dur))
+            and (not matching_live_only or take.fresh)
+        ]
+        if not candidates:
+            return None
 
         # Agent 已经逐句指定素材（04b_broll_choice.json）→ 直接采信，只在表里标明是谁选的
         forced = broll_match.agent_choice_for(agent_choices, t_start) if agent_choices else None
@@ -1568,10 +1697,8 @@ def run_step4(
             mp_forced = str(forced.get("media_path") or "")
             for m in candidates:
                 if broll_match.same_media(str(m.get("normalized_mp4") or m.get("media_path") or ""), mp_forced):
-                    return m, "agent"
+                    return m, "agent", takes[m["id"]]
 
-        best_m = candidates[0]
-        best_score = -1e9
         blocked_here = False
         cand_rows: List[Dict[str, Any]] = []
         for m in candidates:
@@ -1616,23 +1743,21 @@ def run_step4(
                 m.get("role") != "code_broll"
                 and (stab_v < BROLL_SHAKY_STAB_MIN or (pool_has_crisp and sharp_v < BROLL_BLURRY_SHARP_MIN))
             ) else 0.0
-            avail = float(m.get("duration_sec", 3.0))
             mp_str = str(m.get("normalized_mp4") or "")
-            h_m = _broll_head_handle_sec(m, seg_dur)
-            eff_cur = max(h_m, float(used_cursors.get(m["id"], 0.0)), float(max_out_by_mp.get(mp_str, 0.0)))
+            take = takes[m["id"]]
+            full_fresh = take.fresh and _covers_shot(take, seg_dur)
             same_media_pen = 0.0
             if mp_str == prev_media_path:
-                if m.get("role") == "code_broll" or (avail - max(eff_cur, prev_src_out + 0.05) < seg_dur):
+                if m.get("role") == "code_broll" or not full_fresh or take.start < prev_src_out - SOURCE_EPSILON_SEC:
                     same_media_pen = 800.0
                 else:
                     # 真值里同一文件会被反复取不同时间窗（段/文件 4.3），轻微扣分即可；
                     # 旧值 18.0 等于「禁止回用」，是「每镜换地方」的直接推手。
                     same_media_pen = 3.0
-            rem = avail - eff_cur
-            exhausted_pen = 500.0 if (m.get("role") != "code_broll" and rem < seg_dur) else 0.0
-            if m.get("role") != "code_broll" and rem < min(0.5, seg_dur * 0.5):
+            exhausted_pen = 500.0 if (m.get("role") == "b_roll" and not full_fresh) else 0.0
+            if m.get("role") == "b_roll" and (not take.fresh or take.end - take.start < min(0.5, seg_dur * 0.5)):
                 exhausted_pen += 1500.0
-            dur_bonus = 2.0 if rem >= seg_dur else (0.5 if avail >= seg_dur else -2.0)
+            dur_bonus = 2.0 if full_fresh else (0.5 if _covers_shot(take, seg_dur) else -2.0)
             live_bonus = 3.5 if (t_start < 3.0 and m.get("role") == "b_roll") else 0.0
             reuse_adj = scene_budget.reuse_bonus(
                 style_id, mp_str, used_media_counts, len(used_media_counts), t_start,
@@ -1647,17 +1772,13 @@ def run_step4(
                 + dur_bonus + live_bonus + reuse_adj
                 - taboo_pen - same_media_pen - exhausted_pen - motion_pen - blur_shake_pen
             )
-            cand_rows.append({"m": m, "sem": sem_part, "cont": cont_part, "sc": sem_part + cont_part})
-        if cand_rows:
-            top_sem = max(r["sem"] for r in cand_rows)
-            band = [r for r in cand_rows if r["sem"] >= top_sem - BROLL_SEM_TIE_BAND]
-            band.sort(key=lambda r: (-r["cont"], -r["sem"]))
-            best_row = band[0]
-            best_m = best_row["m"]
-            best_score = best_row["sc"]
+            cand_rows.append({"m": m, "sem": sem_part, "cont": cont_part})
+        top_sem = max(r["sem"] for r in cand_rows)
+        band = [r for r in cand_rows if r["sem"] >= top_sem - BROLL_SEM_TIE_BAND]
+        best_m = max(band, key=lambda r: (r["cont"], r["sem"]))["m"]
         if blocked_here and not best_m.get("taboo_tags"):
             taboo_blocked_count += 1
-        return best_m, "rules"
+        return best_m, "rules", takes[best_m["id"]]
 
     clips: List[Dict[str, Any]] = []
     last_group = "shoot_default"
@@ -1666,49 +1787,101 @@ def run_step4(
     last_aroll_zoom = 1.0
     punch_in_count = 0
     lcut_real_count = 0
+    broll_takes: Dict[str, BrollTake] = {}
+    sentence_pos = {s["id"]: i for i, s in enumerate(sentences)}
+
+    def _aroll_take(
+        item: Dict[str, Any], sent: Dict[str, Any], start: float, end: float, need_sec: float,
+    ) -> Tuple[float, float, float]:
+        path = str(item["normalized_mp4"])
+        duration = float(item["duration_sec"])
+        first_in = float(sent.get("source_in_sec", 0.0))
+        src_in = first_in + max(0.0, start - float(sent["start_sec"]))
+        limit = duration
+        if sent.get("source_media") == path:
+            last_out = float(sent.get("source_out_sec", duration))
+            next_pos = sentence_pos[sent["id"]] + 1
+            # 同一句或同源连续台词才可延展。跨机位或跳过了废片时，不能借后句的源窗口。
+            for following in sentences[next_pos:]:
+                if (str(following.get("source_media") or "") != path
+                        or float(following["start_sec"]) >= end - 0.04
+                        or abs(float(following.get("source_in_sec", 0.0)) - last_out) > 0.35):
+                    break
+                last_out = max(last_out, float(following.get("source_out_sec", duration)))
+                next_pos += 1
+            next_source_in = min(
+                (float(s["source_in_sec"]) for s in sentences[next_pos:]
+                 if s.get("source_media") == path and float(s.get("source_in_sec", -1.0)) > first_in),
+                default=duration,
+            )
+            # 句尾气口原速顺延，出点受后句入点、素材末尾和标废窗约束。
+            limit = min(duration, last_out + MAX_AROLL_TAIL_EXTENSION_SEC, max(last_out, next_source_in))
+            for excluded_in, excluded_out in _excluded_source_spans(item.get("excluded_windows") or []):
+                if excluded_in < limit and excluded_out > last_out:
+                    limit = min(limit, max(last_out, excluded_in))
+                    break
+        else:
+            src_in = min(max(0.0, duration - need_sec), src_in)
+            first_in = 0.0
+
+        floor = max(0.0, max_out_by_mp.get(path, 0.0), first_in)
+        src_in = max(floor, src_in)
+        shortfall = max(0.0, src_in + need_sec - limit)
+        src_in = max(floor, src_in - min(shortfall, MAX_AROLL_SHORTFALL_SEC))
+        return src_in, min(limit, src_in + need_sec), first_in
 
     for idx, cp in enumerate(cut_points):
         f_start = cp["cut_frame"]
         f_end = cut_points[idx + 1]["cut_frame"] if idx + 1 < n_segs else total_frames
         t_start = frames_to_sec(f_start, fps)
         t_end = frames_to_sec(f_end, fps)
-        seg_dur = round(t_end - t_start, 4)
+        seg_dur = frames_to_sec(f_end - f_start, fps)
         ev = cp["event"]
+        clip_id = f"clip_{idx+1:03d}"
         sent = find_sentence_for_time(t_start, ev, t_end=t_end)
         broll_sent = find_broll_topic_sentence(t_start, t_end, sent)
         has_prop_show = any(cue in sent.get("text", "") for cue in PROP_SHOW_CUES)
 
         use_aroll = (roles[idx] == "a_roll")
+        broll_pick = None
+        prev_mp = str(clips[-1]["media_path"]) if clips else ""
+        prev_so = float(clips[-1]["source_out_sec"]) if clips else 0.0
+        if kinetic_stage_mode and not use_aroll and source_aroll_valid[idx] and not audio_only_flags[idx]:
+            broll_pick = pick_best_broll(
+                broll_sent, seg_dur, last_group, t_start, prev_mp, prev_so,
+                prev_motion=last_motion, prev_shot_size=last_shot_size, matching_live_only=True,
+            )
+            if broll_pick is None:
+                use_aroll = True
+                roles[idx] = "a_roll"
+                cur_kb_sec -= seg_dur
         if use_aroll:
             ar = next((a for a in usable_arolls if a["normalized_mp4"] == sent.get("source_media")), usable_arolls[0])
-            offset_in_sent = max(0.0, t_start - float(sent["start_sec"]))
-            if sent.get("source_media") == ar["normalized_mp4"]:
-                src_in = round(float(sent.get("source_in_sec", 0.0)) + offset_in_sent, 4)
-                # 跨句连续长镜：源窗口要一直开到「最后一句的 source_out」，
-                # 否则只取第一句的窗口会发生尾部冻帧（多句同源首尾相接时视频是连续表演）
-                cover_sents = [
-                    s for s in sentences
-                    if min(t_end, float(s["end_sec"])) - max(t_start, float(s["start_sec"])) > 0.04
-                    and str(s.get("source_media") or "") == str(sent.get("source_media") or "")
-                ]
-                last_cov = cover_sents[-1] if cover_sents else sent
-                sent_src_end = float(last_cov.get("source_out_sec", ar["duration_sec"]))
-                max_src_out = min(ar["duration_sec"], sent_src_end)
-            else:
-                src_in = round(min(max(0.0, ar["duration_sec"] - seg_dur), float(sent.get("source_in_sec", 0.0)) + offset_in_sent), 4)
-                max_src_out = ar["duration_sec"]
-
-            # 相邻同源单调推进校验（消除任何误差引起的轻微倒带）
             ar_mp = str(ar["normalized_mp4"])
-            if ar_mp in max_out_by_mp:
-                src_in = max(src_in, max_out_by_mp[ar_mp])
-            src_in = min(src_in, max(0.0, max_src_out - 0.05))
-            # 源窗口差在 1 帧以内是时间量化误差，不是真冻帧（渲不出来的一帧不算冻）
-            need_freeze = src_in + seg_dur > max_src_out + 1.0 / max(1, fps)
-            src_out = round(min(max_src_out, src_in + seg_dur), 4)
-            if (src_out - src_in) < max(0.25, seg_dur - 1.2) and len(broll_pool) > 0:
-                use_aroll = False
-                roles[idx] = "b_roll"
+            src_in, src_out, first_in = _aroll_take(ar, sent, t_start, t_end, seg_dur)
+            shortfall = seg_dur - (src_out - src_in)
+            aroll_locked = (
+                sent.get("a_roll_locked") or (kinetic_group_by_sentence.get(sent["id"]) or {}).get("a_roll_locked")
+                or _overlaps_kinetic_locked(t_start, t_end)
+            )
+            if (
+                shortfall > MAX_AROLL_SHORTFALL_SEC + SOURCE_EPSILON_SEC
+                and not aroll_locked and not zero_broll_mode
+                and (not kinetic_stage_mode or (t_start >= 3.0 and cur_kb_sec + seg_dur <= max_kinetic_b_sec))
+            ):
+                broll_pick = pick_best_broll(
+                    broll_sent, seg_dur, last_group, t_start, prev_mp, prev_so,
+                    prev_motion=last_motion, prev_shot_size=last_shot_size, matching_live_only=True,
+                )
+                if broll_pick is not None:
+                    use_aroll = False
+                    roles[idx] = "b_roll"
+                    if kinetic_stage_mode:
+                        cur_kb_sec += seg_dur
+            if use_aroll and src_in >= src_out:
+                # 同源已经用尽而本镜必须保留真人，只能回用本句的有效源区间。
+                src_in = max(0.0, min(first_in, src_out - min(seg_dur, 2.0 / fps)))
+                src_out = min(src_out, src_in + seg_dur)
         if use_aroll:
             max_out_by_mp[ar_mp] = max(float(max_out_by_mp.get(ar_mp, 0.0)), src_out)
 
@@ -1731,13 +1904,12 @@ def run_step4(
             last_motion = str(ar.get("camera_motion") or "static")
             last_shot_size = "closeup" if cur_zoom > 1.01 else str(ar.get("shot_size") or "medium")
             clips.append({
-                "clip_id": f"clip_{idx+1:03d}",
+                "clip_id": clip_id,
                 "track_role": "a_roll",
                 "media_path": ar["normalized_mp4"],
                 "source_in_sec": src_in,
                 "source_out_sec": src_out,
                 "tight": True,
-                "freeze_tail": need_freeze,
                 "timeline_in_sec": t_start,
                 "timeline_out_sec": t_end,
                 "timeline_in_frame": f_start,
@@ -1758,59 +1930,28 @@ def run_step4(
                 "purpose": purpose,
             })
         if not use_aroll:
-            has_fresh_live = any(
-                m.get("role") == "b_roll"
-                and (
-                    float(m.get("duration_sec", 0.0))
-                    - max(
-                        float(used_cursors.get(m["id"], 0.0)),
-                        float(max_out_by_mp.get(str(m.get("normalized_mp4") or ""), 0.0)),
-                    )
-                ) >= min(0.6, seg_dur * 0.5)
-                for m in broll_pool
-            )
-            cur_code_dur = sum(float(c["duration_sec"]) for c in clips if c.get("track_role") == "code_broll")
-            forbid_code = has_fresh_live and ((cur_code_dur + seg_dur) / max(0.1, total_dur) > 0.45)
-            prev_mp = str(clips[-1]["media_path"]) if clips else ""
-            prev_so = float(clips[-1]["source_out_sec"]) if clips else 0.0
-
-            br, br_source = pick_best_broll(
-                broll_sent, seg_dur, last_group, t_start, prev_mp, prev_so,
-                prev_motion=last_motion, prev_shot_size=last_shot_size, forbid_code=forbid_code,
-            )
-            bid = br["id"]
-            mp_str = str(br["normalized_mp4"])
-            avail = float(br.get("duration_sec", 3.0))
-            handle_s = _broll_head_handle_sec(br, seg_dur)
-            max_usable_out = avail - (0.40 if (br.get("role") == "b_roll" and avail >= seg_dur + 0.80) else 0.0)
-
-            if br["role"] == "code_broll":
-                src_in = 0.0
-                used_cursors[bid] = src_in + seg_dur + 0.10
-                src_out = round(min(avail, src_in + seg_dur), 4)
-            else:
-                min_floor = max(handle_s, float(max_out_by_mp.get(mp_str, 0.0)))
-                cur_pos = max(min_floor, float(used_cursors.get(bid, min_floor)))
-                if cur_pos + seg_dur <= max_usable_out or (avail - cur_pos >= seg_dur):
-                    src_in = round(cur_pos, 4)
-                elif avail - min_floor >= 0.30:
-                    src_in = round(min_floor, 4)
-                else:
-                    src_in = round(min(min_floor, max(0.0, avail - 0.05)), 4)
-                if br.get("excluded_windows"):
-                    src_in = _avoid_excluded_windows(src_in, seg_dur, avail, br["excluded_windows"])
-                src_out = round(min(avail, src_in + seg_dur), 4)
-                max_out_by_mp[mp_str] = max(float(max_out_by_mp.get(mp_str, 0.0)), src_out)
-                used_cursors[bid] = round(src_out + 0.10, 4)
-
-            usage_counts[bid] = usage_counts.get(bid, 0) + 1
-            _mp_of_br = str(br.get("normalized_mp4") or "")
-            used_media_counts[_mp_of_br] = used_media_counts.get(_mp_of_br, 0) + 1
+            if broll_pick is None:
+                cur_code_dur = sum(float(c["duration_sec"]) for c in clips if c.get("track_role") == "code_broll")
+                forbid_code = (cur_code_dur + seg_dur) / max(0.1, total_dur) > 0.45 and any(
+                    m["role"] == "b_roll" and (take := _broll_take(m, seg_dur)) is not None
+                    and take.fresh and _covers_shot(take, seg_dur)
+                    for m in broll_pool
+                )
+                broll_pick = pick_best_broll(
+                    broll_sent, seg_dur, last_group, t_start, prev_mp, prev_so,
+                    prev_motion=last_motion, prev_shot_size=last_shot_size, forbid_code=forbid_code,
+                )
+            if broll_pick is None:
+                raise ValueError(f"{clip_id} 没有可用的外插画面区间，请补充素材或检查标废范围")
+            br, br_source, take = broll_pick
+            _record_broll_use(br, take)
+            src_in, src_out = take.start, take.end
             last_group = str(br.get("scene_group", last_group))
             last_motion = str(br.get("camera_motion") or "static")
             last_shot_size = str(br.get("shot_size") or "medium")
-            need_freeze = src_in + seg_dur > avail + 0.01
             eff_role = str(br["role"])  # 统一保留 b_roll/code_broll，不写入悬空 "freeze"
+            if eff_role == "b_roll":
+                broll_takes[clip_id] = take
             kb_cfg = {"zoom_start": 1.0, "zoom_end": 1.06, "reason": "长镜头微推"} if (seg_dur > pacing["static_sec"] and eff_role == "b_roll") else None
 
             if j_leads[idx] < 0:
@@ -1840,15 +1981,13 @@ def run_step4(
             sem_here = sem_of_choice(br, broll_sent, need_sec=seg_dur)
             sem_here["source"] = br_source
             clips.append({
-                "clip_id": f"clip_{idx+1:03d}",
+                "clip_id": clip_id,
                 "track_role": eff_role,
                 "media_path": br["normalized_mp4"],
                 "source_in_sec": src_in,
                 "source_out_sec": src_out,
                 "tight": True,
-                "handles_guarded": bool(br["role"] == "code_broll" or (src_in >= 0.39 and (avail - src_out) >= 0.39)),
                 "audio_only_masked": audio_only_flags[idx],
-                "freeze_tail": need_freeze,
                 "timeline_in_sec": t_start,
                 "timeline_out_sec": t_end,
                 "timeline_in_frame": f_start,
@@ -1886,6 +2025,8 @@ def run_step4(
     code_card_dur = sum(float(c["duration_sec"]) for c in clips if c.get("track_role") == "code_broll")
     broll_ratio_actual = round(broll_actual_dur / max(0.1, total_dur), 3)
     broll_ratio_with_cards = round((broll_actual_dur + code_card_dur) / max(0.1, total_dur), 3)
+    if kinetic_stage_mode and usable_arolls:
+        broll_policy_note += f"（实拍占比 {broll_ratio_actual:.1%}）"
 
     # 按风格谱 pip_composition_spec 为分镜挂载真·画中画构图参数 (pip_layout)
     pip_spec = (style_entry or {}).get("pip_composition_spec") or {}
@@ -2233,6 +2374,8 @@ def run_step4(
                 continue
             fg_mp, fg_sin, fg_sout = win
             if str(c_obj.get("track_role")) == "b_roll":
+                if not _covers_shot(broll_takes[c_obj["clip_id"]], dur_c):
+                    continue
                 bg_mp = str(c_obj.get("media_path") or "")
                 bg_in = float(c_obj.get("source_in_sec") or 0.0)
                 bg_out = float(c_obj.get("source_out_sec") or bg_in)
@@ -2242,28 +2385,17 @@ def run_step4(
                 sent_c = sent_by_id.get(str(c_obj.get("sentence_id") or "")) or {"text": c_obj.get("sentence_text", ""), "keywords": []}
                 prev_bg = str((clips[ci - 1].get("pip_layout") or {}).get("secondary_media_path") or clips[ci - 1].get("media_path") or "") if ci > 0 else ""
                 prev_bg_out = float((clips[ci - 1].get("pip_layout") or {}).get("secondary_out_sec") or clips[ci - 1].get("source_out_sec") or 0.0) if ci > 0 else 0.0
-                br_pick, br_src = pick_best_broll(
+                bg_pick = pick_best_broll(
                     sent_c, dur_c, last_group, float(c_obj.get("timeline_in_sec") or 0.0),
-                    prev_bg, prev_bg_out, prev_motion=last_motion, prev_shot_size=last_shot_size, forbid_code=True,
+                    prev_bg, prev_bg_out, prev_motion=last_motion, prev_shot_size=last_shot_size,
+                    forbid_code=True, require_full=True,
                 )
+                if bg_pick is None:
+                    continue
+                br_pick, br_src, bg_take = bg_pick
                 bg_mp = str(br_pick["normalized_mp4"])
-                avail_bg = float(br_pick.get("duration_sec", 3.0))
-                h_bg = _broll_head_handle_sec(br_pick, dur_c)
-                min_fl = max(h_bg, float(max_out_by_mp.get(bg_mp, 0.0)))
-                cur_p = max(min_fl, float(used_cursors.get(br_pick["id"], min_fl)))
-                if cur_p + dur_c <= avail_bg - h_bg or (avail_bg - cur_p >= dur_c):
-                    bg_in = round(cur_p, 4)
-                elif avail_bg - min_fl >= 0.30:
-                    bg_in = round(min_fl, 4)
-                else:
-                    bg_in = round(min(min_fl, max(0.0, avail_bg - 0.05)), 4)
-                if br_pick.get("excluded_windows"):
-                    bg_in = _avoid_excluded_windows(bg_in, dur_c, avail_bg, br_pick["excluded_windows"])
-                bg_out = round(min(avail_bg, bg_in + dur_c), 4)
-                max_out_by_mp[bg_mp] = max(float(max_out_by_mp.get(bg_mp, 0.0)), bg_out)
-                used_cursors[br_pick["id"]] = round(bg_out + 0.10, 4)
-                usage_counts[br_pick["id"]] = usage_counts.get(br_pick["id"], 0) + 1
-                used_media_counts[bg_mp] = used_media_counts.get(bg_mp, 0) + 1
+                bg_in, bg_out = bg_take.start, bg_take.end
+                _record_broll_use(br_pick, bg_take)
                 last_group = str(br_pick.get("scene_group", last_group))
                 bg_sem = sem_of_choice(br_pick, sent_c, need_sec=dur_c)
                 bg_sem["source"] = br_src
@@ -2583,6 +2715,23 @@ def run_step4(
             used_self_matte += cd
             pip_applied_count += 1
 
+    # 副镜渲染按整镜时长读源。安全区间如果撑不满，就保留原镜的单源构图。
+    live_broll_by_path = {str(m["normalized_mp4"]): m for m in broll_pool if m["role"] == "b_roll"}
+    for c_obj in clips:
+        lay = c_obj.get("pip_layout") or {}
+        secondary = live_broll_by_path.get(str(lay.get("secondary_media_path") or ""))
+        if secondary is None:
+            continue
+        dur = float(c_obj["duration_sec"])
+        take = _broll_take(secondary, dur, secondary_in=float(lay.get("secondary_in_sec") or 0.0))
+        if take is not None and _covers_shot(take, dur):
+            lay.update(secondary_in_sec=take.start, secondary_out_sec=take.end, boundary_trim_reason=take.reason)
+        else:
+            for key in ("secondary_media_path", "secondary_in_sec", "secondary_out_sec",
+                        "swap_main_secondary", "speaker_media_path", "speaker_in_sec"):
+                lay.pop(key, None)
+            lay["single_source"] = True
+
     # 会裁切的构图（小窗/缩窗/推近/相框/圆窗）先在剪辑表里定好人脸锚点：
     # 剪辑表自己就能交代"这个窗口是按脸取的还是素材里根本没脸"，渲染与导出共用同一份依据
     CUT_MODES = {
@@ -2638,9 +2787,23 @@ def run_step4(
         cutout_gate = {"error": str(_pe), "candidates": 0, "allowed": 0, "dropped": 0, "rows": []}
         print(f"[step4] [WARN] 抠像触发条件未执行（{_pe}），本片一律不抠")
 
-    # 变速触发条件：只压 B-roll 的无信息等待；A-roll 口播永远原速（规则同样来自 24 套真值）。
+    # 风格变速可多吃源帧，但仍要停在已选连续安全区间内。
+    broll_speed_limits: Dict[str, float] = {}
+    for c_obj in clips:
+        if c_obj["track_role"] == "b_roll":
+            path = str(c_obj["media_path"])
+            limit = broll_takes[c_obj["clip_id"]].safe_out
+            broll_speed_limits[path] = min(broll_speed_limits.get(path, limit), limit)
+    speed_manifest = {
+        **manifest,
+        "items": [
+            {**m, "duration_sec": broll_speed_limits[str(m["normalized_mp4"])]}
+            if str(m.get("normalized_mp4")) in broll_speed_limits else m
+            for m in manifest["items"]
+        ],
+    }
     try:
-        speed_plan = treatment_policy.apply_speed_policy(clips, style_entry, pipeline_dir, style_id, manifest)
+        speed_plan = treatment_policy.apply_speed_policy(clips, style_entry, pipeline_dir, style_id, speed_manifest)
         print(treatment_policy.summarize_speed(speed_plan))
         for _r in speed_plan.get("rows") or []:
             if _r.get("allowed"):
@@ -2651,6 +2814,32 @@ def run_step4(
                 _c["speed"] = 1.0
         speed_plan = {"error": str(_se), "applied": 0, "rows": []}
         print(f"[step4] [WARN] 变速触发条件未执行（{_se}），全片原速")
+
+    # 分层和风格处理可能改过源窗口，按最终可播放时长复查。原声时间线始终锁定。
+    for c_obj in clips:
+        role = c_obj["track_role"]
+        if role == "b_roll":
+            take = broll_takes[c_obj["clip_id"]]
+            c_obj["source_out_sec"] = min(c_obj["source_out_sec"], take.safe_out)
+            c_obj["boundary_trim_reason"] = take.reason
+            c_obj["handles_guarded"] = True
+        elif role == "code_broll":
+            c_obj["handles_guarded"] = True
+        dur = float(c_obj["duration_sec"])
+        source_span = max(0.0, c_obj["source_out_sec"] - c_obj["source_in_sec"])
+        speed = clamp_speed(c_obj.get("speed"))
+        if (role == "b_roll" and source_span > 0.0
+                and dur - source_span / speed > MAX_AROLL_SHORTFALL_SEC + SOURCE_EPSILON_SEC):
+            # 补镜的安全区间放不满时可以放慢画面。
+            speed = clamp_speed(source_span / dur)
+            c_obj["speed"] = speed
+            c_obj["speed_reason"] = "可用画面比镜头短，画面放慢顺播，原声保持不动"
+            c_obj.update(keep_broll_ambient=False, ambient_audio_path=None, ambient_gain_db=None)
+        shortfall = dur - source_span / speed
+        c_obj["freeze_tail"] = shortfall > 1.0 / fps + SOURCE_EPSILON_SEC
+        warn_threshold = 1.0 / fps if role == "a_roll" else MAX_AROLL_SHORTFALL_SEC
+        if shortfall > warn_threshold + SOURCE_EPSILON_SEC:
+            print(f"[step4] [WARN] {c_obj['clip_id']} 的可用画面仍短 {shortfall:.2f}s，请补充可用素材")
 
     # 转场 / 叠加层 / 画面特效：step4 不铺它们（铺在套用端），但要把「这一片一处都没套」和为什么记下来，
     # 否则报告里看不出到底是「没这个能力」还是「按条件拒绝了」。
