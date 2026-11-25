@@ -230,10 +230,10 @@ class AbCutTrimTests(unittest.TestCase):
                     for i in range(4)
                 ]
                 pipe, audio = self._pipeline(f"intercut_{with_groups}", sentences, [voice, broll])
-                edl = run_step4(pipe, style_id="style_01", grammar="dynamic")
+                edl = run_step4(pipe, style_id="style_04", grammar="dynamic")
                 clips = edl["clips"]
-                self.assertEqual([c["track_role"] for c in clips], ["a_roll", "b_roll", "b_roll", "a_roll"])
-                self.assertEqual([c["j_cut_lead_frames"] for c in clips], [0, lead, 3, 0])
+                self.assertEqual([c["track_role"] for c in clips], ["a_roll", "a_roll", "b_roll", "a_roll"])
+                self.assertEqual([c["j_cut_lead_frames"] for c in clips], [0, 0, lead, 0])
                 self._assert_cut_event_alignment(edl, audio)
 
 
