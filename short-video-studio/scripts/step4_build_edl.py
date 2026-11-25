@@ -606,13 +606,17 @@ def _pick_choreography_opening_events(
     return picked
 
 
-def _has_opening_broll_evidence(item: Dict[str, Any], text: str) -> bool:
-    tags = [
+def _broll_tags(item: Dict[str, Any]) -> List[str]:
+    return [
         str(tag).strip()
         for key in ("semantic_tags", "manual_tags", "scene_tags_zh", "tags")
         for tag in (item.get(key) or [])
         if str(tag).strip()
     ]
+
+
+def _has_opening_broll_evidence(item: Dict[str, Any], text: str) -> bool:
+    tags = _broll_tags(item)
     if any(tag in text for tag in tags):
         return True
     # 允许标签或描述用同一实物的近义名称，例如「虾饺」和「饺子」。
@@ -766,6 +770,36 @@ def run_step4(
     fast_choreography = bool(contract and style_id == "style_21")
     choreography_broll = bool(contract and not prefer_broll_only)
     live_brolls_for_choreography = [m for m in broll_pool if m["role"] == "b_roll"] if choreography_broll else []
+
+    def _score_broll(
+        text: str,
+        item: Dict[str, Any],
+        *,
+        keywords: Optional[List[str]] = None,
+        used_count: int = 0,
+        need_sec: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        score = broll_match.score_clip(text, item, keywords=keywords, used_count=used_count, need_sec=need_sec)
+        if (
+            fast_choreography and choreography_broll
+            and item["role"] == "b_roll" and score["tier"] == broll_match.TIER_NONE
+        ):
+            # 台词明确讲到素材标签时，词表未收录的同场景依据也可以用于选镜。
+            visible = broll_match.describe_clip(item)
+            tags = [
+                tag for tag in dict.fromkeys(_broll_tags(item))
+                if len(tag) >= 2 and tag in text and tag in visible
+                and tag not in ("实拍", "空镜", "近景", "特写", "全景", "中景", "远景")
+            ][:6]
+            if tags:
+                weak = broll_match.WEAK_MIN
+                score.update(
+                    rank=round(score["rank"] + (weak - score["score"]) * 100, 2),
+                    score=weak, tier=broll_match.TIER_WEAK,
+                    hits=[f"素材标签「{tag}」" for tag in tags],
+                    why=f"画面标签与台词相同（{'、'.join(tags)}）",
+                )
+        return score
 
     deictic_gaps = detect_script_media_gaps(sentences, broll_pool)
     if deictic_gaps:
@@ -1535,7 +1569,7 @@ def run_step4(
             if not locked and any(
                 float(m.get("duration_sec") or 0.0) + SOURCE_EPSILON_SEC >= duration
                 and not (fast_choreography and start < 3.0 and not _has_opening_broll_evidence(m, text))
-                and broll_match.score_clip(text, m, keywords=sent.get("keywords"))["tier"] in ("hit", "weak")
+                and _score_broll(text, m, keywords=sent.get("keywords"))["tier"] in ("hit", "weak")
                 for m in live_brolls_for_choreography
             ):
                 matched.append(i)
@@ -1544,15 +1578,18 @@ def run_step4(
                 roles[i] = "a_roll"
 
         target_b_sec = total_dur * broll_target_ratio
+        max_b_sec = total_dur * max(broll_band[1], broll_target_ratio)
         cur_b_sec = sum(seg_durs_est[i] for i in matched if roles[i] == "b_roll")
         protected_tail = next(
             (i for i in reversed(range(n_segs)) if roles[i] == "a_roll" and seg_ends_est[i] >= tail_floor),
             None,
-        ) if target_aroll_ratio >= 0.18 else None
+        ) if target_aroll_ratio >= 0.18 and not fast_choreography else None
         for i in sorted(matched, key=lambda idx: (-seg_durs_est[idx], idx)):
             if roles[i] != "a_roll" or i == protected_tail:
                 continue
             if cur_b_sec + seg_durs_est[i] / 2.0 > target_b_sec:
+                continue
+            if fast_choreography and cur_b_sec + seg_durs_est[i] > max_b_sec + SOURCE_EPSILON_SEC:
                 continue
             roles[i] = "b_roll"
             cur_b_sec += seg_durs_est[i]
@@ -1866,7 +1903,7 @@ def run_step4(
     def sem_of_choice(m: Dict[str, Any], s: Dict[str, Any], used_count: int = 0,
                        need_sec: Optional[float] = None) -> Dict[str, Any]:
         """写进剪辑表的语义依据（与选片同口径）；旧口径对照时另外记一笔字面 tag 命中数。"""
-        sel = broll_match.score_clip(
+        sel = _score_broll(
             str(s.get("text", "")), m, used_count=used_count, need_sec=need_sec,
             keywords=s.get("keywords") or [],
         )
@@ -2023,7 +2060,7 @@ def run_step4(
                 sem_weight = sem_hits * 6.5
             else:
                 # 语义分是主序（0~100）：台词概念 ↔ 画面描述命中越多越前，质量/复用/时长已在 rank 里扣完
-                m_sel = broll_match.score_clip(
+                m_sel = _score_broll(
                     s_txt, m, used_count=usage_counts.get(m["id"], 0), need_sec=seg_dur, keywords=s_kws,
                 )
                 sem_weight = float(m_sel["rank"]) * BROLL_SEM_RANK_WEIGHT
@@ -2769,12 +2806,29 @@ def run_step4(
                 sent_c = sent_by_id.get(str(c_obj.get("sentence_id") or "")) or {"text": c_obj.get("sentence_text", ""), "keywords": []}
                 prev_bg = str((clips[ci - 1].get("pip_layout") or {}).get("secondary_media_path") or clips[ci - 1].get("media_path") or "") if ci > 0 else ""
                 prev_bg_out = float((clips[ci - 1].get("pip_layout") or {}).get("secondary_out_sec") or clips[ci - 1].get("source_out_sec") or 0.0) if ci > 0 else 0.0
+                evidence_sent = sent_c
                 bg_pick = pick_best_broll(
-                    sent_c, dur_c, last_group, float(c_obj.get("timeline_in_sec") or 0.0),
+                    sent_c, dur_c, last_group, t_layer,
                     prev_bg, prev_bg_out, prev_motion=last_motion, prev_shot_size=last_shot_size,
                     forbid_code=True, require_full=True, matching_live_only=choreography_broll,
                     require_opening_evidence=fast_choreography and t_layer < 3.0,
                 )
+                if (
+                    bg_pick is None and fast_choreography and ci == 0
+                    and not broll_match.concepts_detail(str(sent_c.get("text") or ""))
+                ):
+                    # 自我介绍继续显示同步人像，底图可由这段录制接下来的台词提供依据。
+                    for next_sent in sentences[sentence_pos[c_obj["sentence_id"]] + 1:]:
+                        if next_sent.get("source_media") != fg_mp:
+                            break
+                        bg_pick = pick_best_broll(
+                            next_sent, dur_c, last_group, t_layer,
+                            prev_bg, prev_bg_out, prev_motion=last_motion, prev_shot_size=last_shot_size,
+                            matching_live_only=True,
+                        )
+                        if bg_pick is not None:
+                            evidence_sent = next_sent
+                            break
                 if bg_pick is None:
                     continue
                 br_pick, br_src, bg_take = bg_pick
@@ -2782,7 +2836,12 @@ def run_step4(
                 bg_in, bg_out = bg_take.start, bg_take.end
                 _record_broll_use(br_pick, bg_take)
                 last_group = str(br_pick.get("scene_group", last_group))
-                bg_sem = sem_of_choice(br_pick, sent_c, need_sec=dur_c)
+                bg_sem = sem_of_choice(br_pick, evidence_sent, need_sec=dur_c)
+                if evidence_sent is not sent_c:
+                    bg_sem.update(
+                        score=broll_match.WEAK_MIN, tier=broll_match.TIER_WEAK, verdict=broll_match.TIER_WEAK,
+                        why="开场同步人像的底图与随后同源台词同场景", evidence_sentence_id=evidence_sent["id"],
+                    )
                 bg_sem["source"] = br_src
                 bg_sig = describe_clip(br_pick)[:160]
                 if choreography_broll:
