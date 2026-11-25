@@ -6115,6 +6115,129 @@ class ProductionPipelineV48Tests(unittest.TestCase):
             # 所有片段共享完全一致的统一全局胶片曲线
             self.assertEqual(m_curves.group(1), re.search(r"curves=all='([^']+)'", by_id["clip_001"]["vf_filter"]).group(1))
 
+    def test_v49_multistyle_aac_tp_flower_cutout_tail_and_dual_banner(self):
+        import numpy as np
+        from common import TP_MAX_DBTP, find_bin, find_commercial_font, load_subtitle_templates, measure_lufs_ebur128
+        from render_mp4 import DELIVERY_AUDIO_VF, render_subtitle_png
+        from step3_lock_audio import SR, save_stereo_wav_np
+        from step4_build_edl import run_step4
+        from step5_subtitles import _compute_authoritative_subtitle_bbox, split_semantic_two_lines
+        from step6_packaging import run_step6
+
+        # 1. 高频削波与采样间潜峰经 4x 过采样 DELIVERY_AUDIO_VF + AAC 192k 封装不得触发吉布斯振铃真峰超标
+        ffmpeg = find_bin("ffmpeg")
+        self.assertIn("aresample=192000", DELIVERY_AUDIO_VF)
+        self.assertIn("lowpass=f=18000", DELIVERY_AUDIO_VF)
+        if ffmpeg:
+            n_samp = int(2.0 * SR)
+            t = np.arange(n_samp, dtype=np.float32) / float(SR)
+            # 构造叠加 19.2kHz 拟音阶跃 + 12kHz π/4 相移采样间峰的极端输入
+            pulse = 0.675 * np.sign(np.sin(2.0 * np.pi * 19200.0 * t)) * np.where((t >= 0.4) & (t <= 0.7), 1.0, 0.25)
+            inter_sample = 0.65 * np.sin(2.0 * np.pi * 12000.0 * t + np.pi / 4.0) * np.where((t >= 1.0) & (t <= 1.3), 1.0, 0.0)
+            sig = np.clip(pulse + inter_sample, -0.98, 0.98)
+            wav_in = self.root / "hf_pulse.wav"
+            m4a_out = self.root / "hf_pulse.m4a"
+            save_stereo_wav_np(wav_in, np.column_stack([sig, sig]).astype(np.float32))
+            subprocess.run(
+                [ffmpeg, "-y", "-i", str(wav_in), "-af", DELIVERY_AUDIO_VF, "-c:a", "aac", "-b:a", "192k", "-ar", "48000", str(m4a_out)],
+                check=True, capture_output=True,
+            )
+            m_aac = measure_lufs_ebur128(m4a_out)
+            self.assertTrue(m_aac["valid"])
+            self.assertLessEqual(m_aac["true_peak_dbtp"], TP_MAX_DBTP, m_aac)
+
+        # 2. 双行横幅与花字板按词边界断行，禁止把专词与数字量词拦腰劈断
+        for src, kws, must_keep in [
+            ("我系牛哥我", ["牛哥"], "牛哥"),
+            ("卡座一个中空", ["中空"], "卡座"),
+            ("两百平嘅厨房", ["两百平", "厨房"], "两百平"),
+            ("可以喺评论区讲下", ["评论区"], "评论区"),
+            ("招牌特色炒面", ["炒面"], "特色"),
+        ]:
+            l1, l2 = split_semantic_two_lines(src, keywords=kws)
+            self.assertTrue(l1 and l2, (src, l1, l2))
+            self.assertIn(must_keep, (l1 if must_keep in l1 else l2), (src, l1, l2))
+        tpl2 = load_subtitle_templates()["style_02"]
+        fnt_p = find_commercial_font(tpl2.get("font_candidates"))
+        bb, _ = _compute_authoritative_subtitle_bbox("我系牛哥我", tpl2, fnt_p, [], keywords=["牛哥"])
+        self.assertGreater(bb["h"], 160)
+        png_dual = self.root / "dual_word_safe.png"
+        pw, ph = render_subtitle_png({"text": "我系牛哥我", "keywords": ["牛哥"], "words": []}, tpl2, fnt_p, png_dual)
+        self.assertGreater(pw, 160)
+        self.assertGreater(ph, 150)
+
+        # 2b. style_02/style_03 粤语花字（喺/嘅/咗）通过逐字回退渲染，像素绝对不得等同于主字体的缺失字形豆腐块
+        from render_template_overlays import render_template_packaging_png
+        im_hai = render_template_packaging_png({"id": "c_h", "kind": "center_burst_title", "text_or_asset": "喺"}, "style_03")
+        im_tofu = render_template_packaging_png({"id": "c_t", "kind": "center_burst_title", "text_or_asset": "\uffff"}, "style_03")
+        self.assertIsNotNone(im_hai)
+        self.assertIsNotNone(im_tofu)
+        self.assertFalse(np.array_equal(np.array(im_hai), np.array(im_tofu)), "粤语字喺渲染仍退化为缺字豆腐块")
+        im_03 = render_template_packaging_png({"id": "c_03", "kind": "center_burst_title", "text_or_asset": "三百万喺金湾"}, "style_03")
+        im_02 = render_template_packaging_png({"id": "c_02", "kind": "flower_text", "text_or_asset": "两百平嘅厨房"}, "style_02")
+        self.assertIsNotNone(im_03)
+        self.assertIsNotNone(im_02)
+        self.assertGreater(int(np.count_nonzero(np.array(im_02)[:, :, 1] > 220)), 300)
+
+        # 3. 多句 style_02 / style_03 解锁视觉包装且仍抑制顶部常驻栏；style_17 开场标题与贴纸避让 0.85 外框边线
+        pdir_pkg = self.root / "pkg_multistyle"
+        pdir_pkg.mkdir()
+        sents_multi = [
+            {"id": "s1", "text": "花咗三百万喺金湾", "keywords": ["三百万", "金湾"], "start_sec": 0.0, "end_sec": 2.2, "start_frame": 0, "end_frame": 66, "emotion_or_info": "hook"},
+            {"id": "s2", "text": "开咗一间六百平点赞茶楼", "keywords": ["六百平", "茶楼"], "start_sec": 2.5, "end_sec": 5.2, "start_frame": 75, "end_frame": 156, "emotion_or_info": "info"},
+            {"id": "s3", "text": "呢个两百平嘅透明厨房", "keywords": ["两百平", "厨房"], "start_sec": 6.0, "end_sec": 9.0, "start_frame": 180, "end_frame": 270, "emotion_or_info": "twist"},
+            {"id": "s4", "text": "虾饺排骨凤爪全手工现做", "keywords": ["虾饺", "全手工"], "start_sec": 9.8, "end_sec": 13.0, "start_frame": 294, "end_frame": 390, "emotion_or_info": "detail"},
+            {"id": "s5", "text": "你觉得呢个布局值唔值得点赞", "keywords": ["点赞"], "start_sec": 13.5, "end_sec": 16.5, "start_frame": 405, "end_frame": 495, "emotion_or_info": "ending"},
+        ]
+        evts_multi = [{"id": f"e{i}", "type": "sentence_start", "time_sec": s["start_sec"], "frame": s["start_frame"], "sentence_id": s["id"]} for i, s in enumerate(sents_multi, 1)]
+        clips_multi = [
+            {"clip_id": f"c{i}", "track_role": ("a_roll" if i % 2 == 1 else "b_roll"), "media_path": "", "timeline_in_sec": s["start_sec"], "timeline_out_sec": s["end_sec"], "timeline_in_frame": s["start_frame"], "timeline_out_frame": s["end_frame"], "cut_event_frame": s["start_frame"], "cut_event_id": f"e{i}"}
+            for i, s in enumerate(sents_multi, 1)
+        ]
+        write_json(pdir_pkg / "03_audio_events.json", {"locked_duration_sec": 16.5, "sentences": sents_multi, "events": evts_multi})
+        for sid_test in ("style_02", "style_03"):
+            write_json(pdir_pkg / "04_edl.json", {"style_id": sid_test, "clips": clips_multi})
+            res_p = run_step6(pdir_pkg, style_id=sid_test)
+            kinds_p = [str(e.get("kind")) for e in res_p["visual_elements"]]
+            self.assertNotIn("persistent_top_bar", kinds_p)
+            self.assertGreaterEqual(len(kinds_p), 2, (sid_test, kinds_p))
+        write_json(pdir_pkg / "04_edl.json", {"style_id": "style_17", "clips": clips_multi})
+        res_17 = run_step6(pdir_pkg, style_id="style_17")
+        for ve in res_17["visual_elements"]:
+            fb = ve.get("final_bbox") or {}
+            self.assertGreaterEqual(int(fb.get("y", 0)), 245, ve)
+            self.assertGreaterEqual(int(fb.get("x", 0)), 105, ve)
+
+        # 4. 全幅低覆盖抠像 (style_02/style_03 max_cov ~0.18) 允许触发 layered_model，且保留尾段 A-roll 收尾
+        pdir_edl = self.root / "edl_multistyle"
+        pdir_edl.mkdir()
+        a_mp = str(pdir_edl / "a1.mp4")
+        b_mps = [str(pdir_edl / f"b{k}.mp4") for k in range(1, 5)]
+        manifest_items = [{"id": "a1", "role": "a_roll", "video_grade": "usable", "normalized_mp4": a_mp, "duration_sec": 24.0, "sharpness_score": 420.0, "stability_score": 0.9, "faces": [{"bbox": {"x": 0.3, "y": 0.15, "w": 0.35, "h": 0.32}}]}]
+        for k, bmp in enumerate(b_mps, 1):
+            manifest_items.append({"id": f"b{k}", "role": "b_roll", "video_grade": "usable", "normalized_mp4": bmp, "duration_sec": 5.0, "semantic_tags": ["茶楼", "厨房", "虾饺"], "manual_tags": ["实拍"]})
+        write_json(pdir_edl / "01_manifest.json", {"items": manifest_items})
+        sents_edl = [
+            {"id": f"se{k}", "text": txt, "keywords": [kw], "source_media": a_mp, "source_in_sec": k * 1.2, "source_out_sec": k * 1.2 + 1.15, "start_sec": k * 1.2, "end_sec": k * 1.2 + 1.15, "start_frame": k * 36, "end_frame": k * 36 + 34, "emotion_or_info": "info"}
+            for k, (txt, kw) in enumerate([
+                ("开了一间六百平点赞茶楼", "茶楼"),
+                ("两百平透明厨房真材实料", "厨房"),
+                ("纯手工做早茶虾饺凤爪", "虾饺"),
+                ("环境非常舒服适合饮茶", "茶楼"),
+                ("招牌特色炒面镬气十足", "茶楼"),
+                ("大厅卡座宽敞舒适明亮", "茶楼"),
+                ("欢迎大家来实地试吃体验", "茶楼"),
+                ("每天纯手工新鲜现蒸供应", "茶楼"),
+            ])
+        ]
+        evts_edl = [{"id": f"ev{k}", "type": "sentence_start", "time_sec": s["start_sec"], "frame": s["start_frame"], "sentence_id": s["id"]} for k, s in enumerate(sents_edl, 1)]
+        write_json(pdir_edl / "03_audio_events.json", {"locked_duration_sec": 9.6, "locked_duration_frames": 288, "sentences": sents_edl, "events": evts_edl})
+        for sid_e in ("style_02", "style_03"):
+            edl_out = run_step4(pdir_edl, track="creator", edit_profile="talking", style_id=sid_e)
+            self.assertTrue((edl_out.get("layered_model") or {}).get("enabled"), (sid_e, edl_out.get("cutout_gate"), edl_out.get("layered_model")))
+            tail_arolls = [c for c in edl_out["clips"] if c.get("track_role") == "a_roll" and float(c["timeline_out_sec"]) >= 4.0]
+            self.assertTrue(tail_arolls, (sid_e, edl_out["clips"]))
+
 
 if __name__ == "__main__":
     unittest.main()

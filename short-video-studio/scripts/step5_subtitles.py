@@ -18,7 +18,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
@@ -72,11 +72,14 @@ _COMMON_TWO_CHAR_WORDS = {
     "好多", "好似", "新鲜", "海鲜", "鱼池", "灯笼", "造型", "岭南", "元素", "三分之一",
     "四大天王", "纯手工", "装修", "进度", "评论区", "乜嘢", "同埋", "食过", "绝对", "品质",
     "原汁原味", "卡座", "中空", "制造业", "制造", "觉得", "可以", "中意", "评论", "供应",
+    "牛哥", "金湾", "餐饮", "特色", "炒面", "招牌", "桑拿鸡", "桑拿", "叉烧包", "排骨",
+    "凤爪", "虾饺", "点赞", "环境", "位置", "大概", "其实", "平时", "夜晚", "晚上",
+    "早上", "朝早", "手工", "本地", "传统", "广式",
 }
 _SPOKEN_CANTONESE_COHESIVE = {
     "我哋", "佢哋", "你哋", "就系", "唔系", "唔知", "唔好", "唔同", "依家", "点解", "跟住",
     "非常之", "饮茶", "早茶", "茶楼", "厨房", "氛围", "好傻", "好食", "好多", "好似",
-    "纯手工", "三分之一", "四大天王", "原汁原味", "评论区",
+    "纯手工", "三分之一", "四大天王", "原汁原味", "评论区", "牛哥", "桑拿鸡", "叉烧包",
 }
 _STOP_KEYWORDS = {
     "一个", "一些", "呢个", "𠮶个", "这种", "那个", "这个", "什么", "所以",
@@ -235,6 +238,87 @@ def tokenize_semantic_words(sentence: str, terms: Optional[List[str]] = None) ->
         else:
             merged.append(tok)
     return merged
+
+
+def split_semantic_two_lines(
+    text: str,
+    keywords: Optional[Sequence[str]] = None,
+    terms: Optional[Sequence[str]] = None,
+    max_first: Optional[int] = None,
+) -> Tuple[str, str]:
+    """按语义词边界平衡切分为双行，绝不在专有名词、保护词、数字量词或粤语粘连词中间腰斩。"""
+    t = str(text or "").strip()
+    if not t:
+        return "", ""
+    if "\n" in t:
+        parts = [p.strip() for p in t.splitlines() if p.strip()]
+        return (parts[0], parts[1]) if len(parts) >= 2 else (parts[0] if parts else "", "")
+    for sep in ("，", "。", "！", "？", "：", " ", "/", "|", "·"):
+        if sep in t:
+            parts = [p.strip() for p in t.split(sep, 1) if p.strip()]
+            if len(parts) == 2:
+                return (parts[0][:max_first] if max_first else parts[0]), parts[1]
+    if len(t) < 5 or (max_first is not None and len(t) <= max_first and len(t) < 6):
+        return t, ""
+
+    kw_list = [str(k).strip() for k in (keywords or []) if str(k).strip()]
+    prot = sorted(
+        set([str(x).strip() for x in (terms or []) if len(str(x).strip()) >= 2])
+        | set(k for k in kw_list if len(k) >= 2)
+        | _SPOKEN_CANTONESE_COHESIVE,
+        key=len,
+        reverse=True,
+    )
+    toks = tokenize_semantic_words(t, terms=prot)
+    bounds: List[int] = [0]
+    for tk in toks:
+        bounds.append(bounds[-1] + len(tk))
+
+    prot_spans: List[Tuple[int, int]] = []
+    for tm in prot:
+        for m in re.finditer(re.escape(tm), t):
+            prot_spans.append((m.start(), m.end()))
+    for m in re.finditer(
+        r"(?:[零〇一二两三四五六七八九十百千万亿廿]+分之[零〇一二两三四五六七八九十百千万亿]+|"
+        r"[0-9]+(?:[.:][0-9]+)?[%％倍度年多万亿岁个次米元块斤克天月时分秒件家店条步项位层种平张台间人只杯碗盘]*|"
+        r"[零一二两三四五六七八九十百千万亿几多]+(?:[点余多来])?[零一二两三四五六七八九十百千万亿]*[个张间块元平米斤克秒分天年月人位套条次倍成折%]?)",
+        t,
+    ):
+        if m.end() - m.start() >= 2:
+            prot_spans.append((m.start(), m.end()))
+
+    cands = [b for b in bounds if 2 <= b <= len(t) - 2 and not any(s < b < e for s, e in prot_spans)]
+    if not cands:
+        cands = [b for b in bounds if 1 <= b <= len(t) - 1 and not any(s < b < e for s, e in prot_spans)]
+    if not cands:
+        cut_fallback = min(max_first or len(t), (len(t) + 1) // 2)
+        return t[:cut_fallback], t[cut_fallback:]
+
+    kw_starts = set()
+    for kw in kw_list:
+        idx_k = t.find(kw)
+        if 2 <= idx_k <= len(t) - 2:
+            kw_starts.add(idx_k)
+
+    mid = len(t) / 2.0
+    best_pos = cands[0]
+    best_cost = float("inf")
+    for pos in cands:
+        cost = abs(pos - mid) * 1.4
+        if max_first is not None and pos > max_first:
+            cost += (pos - max_first) * 25.0
+        if pos in kw_starts:
+            cost -= 6.0
+        left_last = t[pos - 1]
+        right_first = t[pos]
+        if left_last in _DP_NO_TAIL_CHARS:
+            cost += 8.0
+        if right_first in _DP_NO_LEAD_CHARS:
+            cost += 12.0
+        if cost < best_cost:
+            best_cost = cost
+            best_pos = pos
+    return t[:best_pos], t[best_pos:]
 
 
 def dp_segment_short_lines(
@@ -541,6 +625,8 @@ def _compute_authoritative_subtitle_bbox(
     tpl: Dict[str, Any],
     font_path: Optional[str],
     face_boxes_px: List[Dict[str, Any]],
+    keywords: Optional[Sequence[str]] = None,
+    terms: Optional[Sequence[str]] = None,
 ) -> Tuple[Dict[str, int], int]:
     """按画布绝对正中 x=540 对称安全带 [220, 860] 计算尺寸并仅在垂直方向避开人脸五官，产出四端统一 final_bbox。
 
@@ -557,8 +643,7 @@ def _compute_authoritative_subtitle_bbox(
     if dual_banner and ("\n" in str(text or "") or clean_len >= 5):
         raw_t = str(text or "").strip()
         if "\n" not in raw_t:
-            cut_at = (len(raw_t) + 1) // 2
-            l1, l2 = raw_t[:cut_at], raw_t[cut_at:]
+            l1, l2 = split_semantic_two_lines(raw_t, keywords=keywords, terms=terms)
         else:
             parts = raw_t.splitlines()
             l1, l2 = parts[0], (parts[1] if len(parts) > 1 else "")
@@ -1545,7 +1630,10 @@ def run_step5(
                 if float(c["timeline_in_sec"]) < en_sec and float(c["timeline_out_sec"]) > st_sec:
                     active_faces.extend(faces_by_mp4.get(str(c.get("media_path", "")), []))
 
-            final_bbox, face_avoid_dy = _compute_authoritative_subtitle_bbox(ch["text"], tpl, font_path, active_faces)
+            ch_kws = ch.get("keywords", sent.get("keywords", []))
+            final_bbox, face_avoid_dy = _compute_authoritative_subtitle_bbox(
+                ch["text"], tpl, font_path, active_faces, keywords=ch_kws, terms=sent_prot,
+            )
             safe_ok, safe_msg = check_bbox_in_safe_zone(final_bbox)
 
             suppressed = False
@@ -1564,7 +1652,7 @@ def run_step5(
                 "text": ch["text"],
                 "start_sec": st_sec,
                 "end_sec": en_sec,
-                "keywords": ch.get("keywords", sent.get("keywords", [])),
+                "keywords": ch_kws,
                 "words": ch["words"],
                 "bbox": final_bbox,
                 "final_bbox": final_bbox,
@@ -1573,6 +1661,10 @@ def run_step5(
                 "safe_msg": safe_msg,
                 "suppressed": suppressed,
             }
+            if dual_banner and "\n" not in str(ch["text"]) and len(str(ch["text"]).strip()) >= 5:
+                dl1, dl2 = split_semantic_two_lines(str(ch["text"]), keywords=ch_kws, terms=sent_prot)
+                if dl2:
+                    entry_obj["display_lines"] = [dl1, dl2]
             if sent.get("merged_sentence_ids"):
                 entry_obj["merged_sentence_ids"] = list(sent["merged_sentence_ids"])
             if suppressed:

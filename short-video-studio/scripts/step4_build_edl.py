@@ -937,6 +937,79 @@ def run_step4(
             )
             grammar_notes.append("shot_budget_capped: " + shot_budget_capped)
 
+    # ── 尾段收口帧对齐：慢节拍切点若正好跨过尾镜口播 jump-cut（如 53.90s→57.93s 跨 54.86s 句首），对齐到句首以便 A-roll 完整收尾 ──
+    if usable_arolls and not broll_only_mode and target_aroll_ratio >= 0.18 and sentences and len(cut_points) >= 2:
+        _t_tail_floor = total_dur - max(3.5, min(10.0, total_dur * 0.45))
+
+        def _tail_seg_aroll_viable(t0: float, t1: float) -> bool:
+            if t1 < _t_tail_floor:
+                return False
+            ov_s = [s for s in sentences if min(t1, float(s["end_sec"])) - max(t0, float(s["start_sec"])) > 0.04]
+            if not ov_s:
+                return False
+            if any(
+                str(s.get("source_media") or "") not in usable_aroll_paths
+                or str(s.get("source_video_grade") or vgrade_by_mp4.get(str(s.get("source_media") or ""), "usable")) in ("audio_only", "ng")
+                for s in ov_s
+            ):
+                return False
+            if len(ov_s) == 1:
+                return True
+            if len({str(s.get("source_media") or "") for s in ov_s}) != 1:
+                return False
+            return all(
+                abs(float(ov_s[k + 1].get("source_in_sec", 0.0)) - float(ov_s[k].get("source_out_sec", 0.0))) <= 0.35
+                for k in range(len(ov_s) - 1)
+            )
+
+        _has_viable_tail = any(
+            _tail_seg_aroll_viable(
+                frames_to_sec(cut_points[i]["raw_frame"], fps),
+                frames_to_sec(cut_points[i + 1]["raw_frame"] if i + 1 < len(cut_points) else total_frames, fps),
+            )
+            for i in range(len(cut_points))
+        )
+        if not _has_viable_tail:
+            _max_shot_lim = float((shot_budget or {}).get("shot_max_sec") or 12.0)
+            for s_cand in reversed(sentences):
+                sm_c = str(s_cand.get("source_media") or "")
+                vg_c = str(s_cand.get("source_video_grade") or vgrade_by_mp4.get(sm_c, "usable"))
+                s_t0 = float(s_cand.get("start_sec") or 0.0)
+                if sm_c not in usable_aroll_paths or vg_c in ("audio_only", "ng"):
+                    continue
+                if s_t0 < _t_tail_floor or total_dur - s_t0 < 1.0:
+                    continue
+                snap_f = int(round(s_t0 * fps))
+                snap_ev = next(
+                    (e for e in events if e.get("type") == "sentence_start" and e.get("sentence_id") == s_cand.get("id")),
+                    {"id": f"evt_tail_{s_cand.get('id')}", "type": "sentence_start", "time_sec": round(s_t0, 4), "frame": snap_f, "sentence_id": s_cand.get("id")},
+                )
+                snap_f = int(snap_ev.get("frame", snap_f))
+                snapped = False
+                for k in range(len(cut_points) - 1, 0, -1):
+                    cp_t = frames_to_sec(cut_points[k]["raw_frame"], fps)
+                    prev_t = frames_to_sec(cut_points[k - 1]["raw_frame"], fps)
+                    nxt_t = frames_to_sec(cut_points[k + 1]["raw_frame"] if k + 1 < len(cut_points) else total_frames, fps)
+                    if (
+                        str(cut_points[k]["event"].get("type") or "") != "sentence_start"
+                        and abs(s_t0 - cp_t) <= 2.2
+                        and s_t0 - prev_t >= 0.80
+                        and s_t0 - prev_t <= max(_max_shot_lim, 6.0)
+                        and nxt_t - s_t0 >= 0.80
+                    ):
+                        cut_points[k] = {"cut_frame": snap_f, "raw_frame": snap_f, "event": snap_ev}
+                        snapped = True
+                        break
+                if snapped:
+                    break
+                # 若附近无非句首切点可吸附，直接在安全位置插入句首切点保住尾段 A-roll 收尾
+                ins_idx = next((k for k, cp in enumerate(cut_points) if cp["raw_frame"] > snap_f), len(cut_points))
+                left_t = frames_to_sec(cut_points[ins_idx - 1]["raw_frame"], fps)
+                right_t = frames_to_sec(cut_points[ins_idx]["raw_frame"] if ins_idx < len(cut_points) else total_frames, fps)
+                if s_t0 - left_t >= 0.80 and right_t - s_t0 >= 0.80:
+                    cut_points.insert(ins_idx, {"cut_frame": snap_f, "raw_frame": snap_f, "event": snap_ev})
+                    break
+
     def find_sentence_for_time(
         t_sec: float,
         ev: Dict[str, Any] | None = None,
@@ -1193,9 +1266,16 @@ def run_step4(
         cur_b_sec = sum(d for r, d in zip(roles, seg_durs_up) if r != "a_roll")
         floor_sec = max(0.0, total_dur * broll_band[0] - total_dur * 0.02)
         if cur_b_sec < floor_sec:
+            tail_keep_floor = total_dur - max(3.5, min(10.0, total_dur * 0.45))
+            tail_aroll_indices = [
+                k for k in range(n_segs)
+                if roles[k] == "a_roll" and seg_ends_est[k] >= tail_keep_floor
+            ]
+            # 当目标 A-roll 占比 ≥ 18% 时，保留尾段最后 1 镜 A-roll 收口，防止 B-roll 补齐把末尾全吞成纯 B 镜导致质检挂科
+            protected_tail_i = tail_aroll_indices[-1] if (target_aroll_ratio >= 0.18 and tail_aroll_indices) else None
             up_cands = []
             for i_u in range(n_segs):
-                if roles[i_u] != "a_roll":
+                if roles[i_u] != "a_roll" or i_u == protected_tail_i:
                     continue
                 t_s = frames_to_sec(cut_points[i_u]["raw_frame"], fps)
                 s_obj = find_sentence_for_time(t_s, cut_points[i_u]["event"])
@@ -1764,11 +1844,16 @@ def run_step4(
     _is_corner_cutout = bool(
         _matting_win and 0.35 <= float(_matting_win.get("scale") or 1.0) <= 0.95
     )
+    _is_full_frame_cutout = bool(
+        str(_cut_scope.get("window_scale_sec") or "") == "full_frame"
+        and _cut_cov >= 0.08
+        and int(element_rules.get_limit(style_id, "cutout", "max_runs", default=0) or 0) >= 1
+    )
     has_person_over_broll = bool(
         cut_elem_rule and cut_elem_rule.get("present") and v_cut_rule.get("enabled")
         and ab_pattern not in ("depth_hook_then_framed_broll", "dual_window_broll_switcher", "container_internal_switch")
         and (
-            (_cut_cov >= 0.30 and str(_cut_scope.get("window_scale_sec") or "") == "full_frame")
+            _is_full_frame_cutout
             or pip_mode in ("vision_portrait_cutout_pip", "data_news_cutout_pip")
             or _is_corner_cutout
         )
@@ -1816,7 +1901,17 @@ def run_step4(
             outline_px_layer = 10 if (_matting_win.get("stroke_hex") and "0 段" not in stroke_drv) else 0
             torn_paper_layer = False
         else:
-            outline_px_layer = 12 if (pip_mode == "vision_portrait_cutout_pip" or (_has_mat_stroke and "0 段" not in stroke_drv)) else 0
+            has_mat_stroke_fx = (
+                pip_mode == "vision_portrait_cutout_pip"
+                or (_has_mat_stroke and "0 段" not in stroke_drv)
+            )
+            m_sz = re.search(r"\[\s*(0\.\d+)\s*\]", stroke_drv)
+            if not has_mat_stroke_fx:
+                outline_px_layer = 0
+            elif m_sz and float(m_sz.group(1)) <= 0.15 and "撕" not in stroke_drv:
+                outline_px_layer = 6
+            else:
+                outline_px_layer = 12
             torn_paper_layer = bool(("撕" in stroke_drv) or (style_id == "style_21" and outline_px_layer > 0))
         outline_hex_layer = str((_matting_win or {}).get("stroke_hex") or "#FFFFFF")[:7]
 

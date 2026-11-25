@@ -783,13 +783,30 @@ def run_step6(
     # 「这一版会不会有花字/大字上屏」先定下来：不上屏的文字不能当音效的锚点，
     # 否则音效会以"花字出现"为理由响，而画面上根本没有那张字。
     suppress_top_dup = False
+    framed_top_y = 210
+    framed_x_min = SAFE_ZONE["x_min"]
+    framed_x_max = SAFE_ZONE["x_max"]
     try:
         from render_template_overlays import get_style_blueprint
-        bp_ov = (get_style_blueprint(style_id).get("overlay_style") or {})
+        bp_full = get_style_blueprint(style_id) or {}
+        bp_ov = (bp_full.get("overlay_style") or {})
         suppress_top_dup = bool(bp_ov.get("suppress_top_duplicate_flower", False))
+        bp_pip = bp_full.get("pip_spec") or {}
+        if not bool(bp_pip.get("cutout")):
+            win_scales = [
+                float(w.get("scale") or 1.0)
+                for w in (bp_pip.get("windows") or [])
+                if isinstance(w, dict) and 0.65 <= float(w.get("scale") or 1.0) <= 0.94
+            ]
+            if win_scales:
+                min_ws = min(win_scales)
+                framed_top_y = max(210, int(round(1920 * (1.0 - min_ws) * 0.5)) + 106)
+                pad_x_in = int(round(1080 * (1.0 - min_ws) * 0.5)) + 26
+                framed_x_min = max(SAFE_ZONE["x_min"], pad_x_in)
+                framed_x_max = min(SAFE_ZONE["x_max"], 1080 - pad_x_in)
     except Exception:
         suppress_top_dup = False
-    _emit_flowers = not no_flower_text and not (suppress_top_dup and not (keep_manual_texts and prev_visuals)) and (_allow_flower or _allow_giant)
+    _emit_flowers = not no_flower_text and (_allow_flower or _allow_giant)
 
     # ① 花字/重点词候选：一句一词，文案从这句人声里提炼（先定视觉上屏项，再对齐音效锚点）
     flower_pol = FlowerPolicy(style_id)
@@ -910,7 +927,7 @@ def run_step6(
     top_ef = min(int(min(4.2, total_dur * 0.45) * fps), total_frames)
     hook_ef = min(max(int(math.ceil(1.4 * fps)), int(2.2 * fps)) if total_dur >= 1.5 else total_frames, total_frames)
 
-    if no_flower_text or (suppress_top_dup and not (keep_manual_texts and prev_visuals)):
+    if no_flower_text:
         visual_elements = []
     elif keep_manual_texts and prev_visuals:
         # --keep-edl 换风格时：完整保留已有花字文案与起止帧，只按新风格更新配色与视觉参数
@@ -928,8 +945,8 @@ def run_step6(
             ne["final_bbox"] = fb
             visual_elements.append(ne)
     else:
-        # 1. 若风格启用「顶部常驻标题栏」(如 style_05/06/08/09/12/14/22)，严格落在安全区 y=162
-        if use_top_bar and total_dur >= 3.2 and not overlaps_code(0, top_ef):
+        # 1. 若风格启用「顶部常驻标题栏」(如 style_05/06/08/09/12/14/22)，严格落在安全区 y=162；suppress_top_dup 严禁顶部常驻重复条
+        if use_top_bar and not suppress_top_dup and total_dur >= 3.2 and not overlaps_code(0, top_ef):
             top_label = f"{hook_badge_text[:10]}"
             top_w = _measure_pkg_badge_width(top_label, pkg_font_path, SUBTITLE_SYMMETRIC_MAX_W, target_fs=34, min_w=280)
             top_bb = {"x": SUBTITLE_CENTER_X - top_w // 2, "y": 162, "w": top_w, "h": 58}
@@ -963,8 +980,22 @@ def run_step6(
             and _allow_flower
             and not _allow_giant
         )
+        _open_has_num = any(
+            re.search(r"\d|[两三四五六七八九十百千万]", str(s_op.get("text") or ""))
+            for s_op in audio_events["sentences"]
+            if float(s_op.get("start_sec") or 0.0) <= 2.6
+        )
+        _suppress_open_dup = bool(
+            suppress_top_dup
+            and (
+                len(audio_events["sentences"]) <= 1
+                or int(giant_count_target or 0) <= 0
+                or not _open_has_num
+            )
+        )
         can_place_opening_giant = (
             len(visual_elements) < max_visual_budget
+            and not _suppress_open_dup
             and (_allow_giant or is_opening_poster_burst)
             and (giant_count_target > 0 or is_pure_giant_style or is_borderless_flower or not use_top_bar or is_opening_poster_burst)
             and not overlaps_code(0, hook_ef)
@@ -997,7 +1028,7 @@ def run_step6(
             hook_w = min(SUBTITLE_SYMMETRIC_MAX_W, max(360, _measure_pkg_badge_width(hook_label, pkg_font_path, SUBTITLE_SYMMETRIC_MAX_W, target_fs=min(140, tier_fs_open), min_w=360)))
             hook_x = SUBTITLE_CENTER_X - hook_w // 2
             hook_h = 280 if is_opening_poster_burst else (min(480, max(142, int(round(tier_fs_open * 1.12)))) if is_pure_giant_style else (152 if giant_mode in ("giant_dual_clash", "giant_numeric_trio") else 142))
-            init_giant_y = 780 if style_id == "style_01" else (224 if use_top_bar else 210)
+            init_giant_y = 780 if style_id == "style_01" else (max(framed_top_y, 224) if use_top_bar else framed_top_y)
             active_faces_0 = []
             for c in edl.get("clips", []):
                 if int(c["timeline_in_frame"]) < hook_ef and int(c["timeline_out_frame"]) > 0:
@@ -1050,10 +1081,14 @@ def run_step6(
             visual_elements.append(open_elem)
         max_pkg_w = SUBTITLE_SYMMETRIC_MAX_W
 
-        last_vis_end = hook_ef + (int(1.2 * fps) if is_pure_giant_style else int(2.2 * fps))
+        last_vis_end = (
+            hook_ef + (int(1.2 * fps) if is_pure_giant_style else int(2.2 * fps))
+            if any(str(v.get("kind") or "") != "persistent_top_bar" for v in visual_elements)
+            else 0
+        )
         last_sent = audio_events["sentences"][-1] if audio_events["sentences"] else None
-        stamp_zone_ys = (280, 820, 230, 890)
-        giant_zone_ys = (230, 310, 400)
+        stamp_zone_ys = (max(framed_top_y, 280), 820, max(framed_top_y, 230), 890)
+        giant_zone_ys = (max(framed_top_y, 230), max(framed_top_y + 40, 310), 400)
         stamp_seq = 0
         has_end_cta = False
         _tail_reserve_f = int(total_dur * 0.75 * fps) if (_allow_end_card and total_dur >= 4.0) else int((total_dur - 1.35) * fps)
@@ -1093,6 +1128,12 @@ def run_step6(
                     continue
 
                 kw_label = str(spec.get("text") or "") or _extract_clean_flower_phrase(sent, raw_pain_kws=raw_pain_kws, max_len=8)
+                if suppress_top_dup:
+                    sent_plain = re.sub(r"[^\w\u4e00-\u9fff]+", "", str(sent.get("text") or ""))
+                    kw_plain = re.sub(r"[^\w\u4e00-\u9fff]+", "", kw_label)
+                    if len(audio_events["sentences"]) <= 1 or (kw_plain and kw_plain == sent_plain):
+                        _flower_skip(spec, "suppress_top_duplicate_flower：抑制单句/与整句字幕纯复读花字")
+                        continue
                 active_faces = []
                 for c in edl.get("clips", []):
                     if int(c["timeline_in_frame"]) < ef and int(c["timeline_out_frame"]) > sf:
@@ -1369,16 +1410,16 @@ def run_step6(
                 continue
             # 贴靠字块左侧或右侧边缘（8px 紧凑间距），若字块宽大，优先贴上缘侧方，避免悬空或撞字；arrow 按位置指回字块
             ax0, ay0, aw, ah = int(ab["x"]), int(ab["y"]), int(ab["w"]), int(ab["h"])
-            if ax0 + aw + 188 <= SAFE_ZONE["x_max"]:
+            if ax0 + aw + 188 <= framed_x_max:
                 sx = ax0 + aw + 8
                 p_dir = "left"
-            elif ax0 - 188 >= SAFE_ZONE["x_min"]:
+            elif ax0 - 188 >= framed_x_min:
                 sx = ax0 - 188
                 p_dir = "right"
             else:
-                sx = max(SAFE_ZONE["x_min"], min(SAFE_ZONE["x_max"] - 180, ax0 - 140))
+                sx = max(framed_x_min, min(framed_x_max - 180, ax0 - 140))
                 p_dir = "right" if sx < ax0 + aw // 2 else "left"
-            sy = max(max(210, SAFE_ZONE["y_min"]), min(min(920, SAFE_ZONE["y_max"] - 180), ay0 + (ah // 2) - 90))
+            sy = max(max(framed_top_y, SAFE_ZONE["y_min"]), min(min(920, SAFE_ZONE["y_max"] - 180), ay0 + (ah // 2) - 90))
             st_bb = {"x": sx, "y": sy, "w": 180, "h": 180}
             st_kind = "thumbs_up" if st_i == 0 else "red_arrow"
             visual_elements.append({

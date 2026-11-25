@@ -152,15 +152,21 @@ def _fit_text(
     t = str(text or "").strip()
     if not t:
         return get_cached_font(font_path, min_fs), "", min_fs
+
+    def _w_px(txt: str, size: int) -> float:
+        base_f = get_cached_font(font_path, size)
+        c_fonts = [glyph_font_for(ch, font_path, size) for ch in txt]
+        if all(cf == base_f for cf in c_fonts):
+            bb = draw.textbbox((0, 0), txt, font=base_f, stroke_width=stroke_w)
+            return float(bb[2] - bb[0])
+        return sum(draw.textlength(ch, font=cf) for ch, cf in zip(txt, c_fonts)) + stroke_w * 2
+
     for fs in range(max_fs, min_fs - 1, -2):
-        fnt = get_cached_font(font_path, fs)
-        bb = draw.textbbox((0, 0), t, font=fnt, stroke_width=stroke_w)
-        if (bb[2] - bb[0]) <= max_w:
-            return fnt, t, fs
+        if _w_px(t, fs) <= max_w:
+            return get_cached_font(font_path, fs), t, fs
     fnt = get_cached_font(font_path, min_fs)
     while len(t) > 2:
-        bb = draw.textbbox((0, 0), t + "…", font=fnt, stroke_width=stroke_w)
-        if (bb[2] - bb[0]) <= max_w:
+        if _w_px(t + "…", min_fs) <= max_w:
             return fnt, t + "…", min_fs
         t = t[:-1]
     return fnt, t, min_fs
@@ -230,15 +236,66 @@ def _split_two_lines(text: str, max_first: int = 8) -> Tuple[str, str]:
     t = str(text or "").strip()
     if not t:
         return "", ""
-    for sep in ("，", "。", "！", "？", "：", " ", "/", "|", "·"):
-        if sep in t:
-            parts = [p.strip() for p in t.split(sep, 1) if p.strip()]
-            if len(parts) == 2:
-                return parts[0][:10], parts[1][:12]
-    if len(t) <= max_first:
-        return t, ""
-    mid = min(max_first, max(3, len(t) // 2))
-    return t[:mid], t[mid : mid + 10]
+    from step5_subtitles import split_semantic_two_lines
+    l1, l2 = split_semantic_two_lines(t, max_first=max_first)
+    return l1[:max(max_first, 10)], l2[:12]
+
+
+def _draw_glyph_run(
+    draw: ImageDraw.ImageDraw,
+    ox: int,
+    oy: int,
+    text: str,
+    font_path: Optional[str],
+    fs: int,
+    main_fnt: Any,
+    fill: Any,
+    stroke_width: int = 0,
+    stroke_fill: Any = None,
+    has_fallback: bool = False,
+    base_offset_y: int = 0,
+) -> None:
+    """绘制一行文字：无缺字时走高速单次 draw.text，缺字（如粤语喺/嘅/咗）自动按基线逐字回退。"""
+    if not has_fallback:
+        draw.text((ox, oy), text, font=main_fnt, fill=fill, stroke_width=stroke_width, stroke_fill=stroke_fill)
+        return
+    x = float(ox)
+    by = float(oy + base_offset_y)
+    for ch in text:
+        cf = glyph_font_for(ch, font_path, fs)
+        draw.text((x, by), ch, font=cf, fill=fill, anchor="ls", stroke_width=stroke_width, stroke_fill=stroke_fill)
+        x += draw.textlength(ch, font=cf)
+
+
+def _paste_glyph_line(
+    canvas: Image.Image,
+    pos: Tuple[int, int],
+    text: str,
+    font_path: Optional[str],
+    max_w: int,
+    font_size: int,
+    min_fs: int,
+    fill_rgba: Tuple[int, int, int, int],
+    stroke_rgba: Optional[Tuple[int, int, int, int]] = None,
+    stroke_w: int = 0,
+    shadow_rgba: Optional[Tuple[int, int, int, int]] = None,
+    shadow_dy: int = 4,
+    anchor: str = "mm",
+) -> None:
+    """复用 _text_sprite（自带粤语逐字字形回退）向已有画布居中或左对齐贴入一行字，彻底消除豆腐块。"""
+    if not str(text or "").strip():
+        return
+    sp = _text_sprite(
+        text, font_path, max_w, font_size, fill_rgba,
+        stroke_rgba=stroke_rgba, stroke_w=stroke_w,
+        shadow_rgba=shadow_rgba, shadow_dy=shadow_dy, shadow_blur=1.0, min_fs=min_fs,
+    )
+    if sp is None:
+        return
+    cx, cy = int(pos[0]), int(pos[1])
+    px = cx if anchor == "lm" else (cx - sp.width // 2)
+    py = cy - sp.height // 2
+    canvas.alpha_composite(sp, dest=(max(0, px), max(0, py)))
 
 
 def _draw_gradient_3d_text(
@@ -255,41 +312,55 @@ def _draw_gradient_3d_text(
     min_hairline_w: int = 0,
     shadow_alpha: int = 185,
 ) -> Image.Image:
-    """渲染高质感 3D 金属渐变立体字（复刻 style_18 / style_21 等爆款大字）。"""
+    """渲染高质感 3D 金属渐变立体字（复刻 style_18 / style_21 等爆款大字，含缺字逐字回退）。"""
     probe = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
     pd = ImageDraw.Draw(probe)
-    fnt, fitted, _ = _fit_text(pd, text, font_path, max_w - 60, font_size, 44, stroke_w=8)
-    bb = pd.textbbox((0, 0), fitted, font=fnt, stroke_width=8)
-    tw = max(80, bb[2] - bb[0])
-    th = max(60, bb[3] - bb[1])
+    fnt, fitted, fs = _fit_text(pd, text, font_path, max_w - 60, font_size, 44, stroke_w=8)
+    char_fonts = [glyph_font_for(ch, font_path, fs) for ch in fitted]
+    has_fb = any(cf != fnt for cf in char_fonts)
     pad = 28
+    if has_fb:
+        metrics = [cf.getmetrics() for cf in char_fonts] or [fnt.getmetrics()]
+        ascent = max(m[0] for m in metrics)
+        descent = max(m[1] for m in metrics)
+        tw = max(80, int(math.ceil(sum(pd.textlength(ch, font=cf) for ch, cf in zip(fitted, char_fonts)))) + 16)
+        th = max(60, ascent + descent + 16)
+        ox, oy = pad + 8, pad + 8
+        base_off = ascent
+    else:
+        bb = pd.textbbox((0, 0), fitted, font=fnt, stroke_width=8)
+        tw = max(80, bb[2] - bb[0])
+        th = max(60, bb[3] - bb[1])
+        ox, oy = pad - bb[0], pad - bb[1]
+        base_off = 0
     w = tw + pad * 2 + depth_px + 8
     h = th + pad * 2 + depth_px + 8
 
     out = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(out)
-    ox = pad - bb[0]
-    oy = pad - bb[1]
     eff_sw = max(int(min_hairline_w), _sw(8))
     sh_a = max(120, min(255, int(shadow_alpha)))
 
     shadow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     sd = ImageDraw.Draw(shadow)
-    sd.text((ox + depth_px + 4, oy + depth_px + 6), fitted, font=fnt, fill=(0, 0, 0, sh_a), stroke_width=max(eff_sw, _sw(10)), stroke_fill=(0, 0, 0, sh_a))
+    _draw_glyph_run(sd, ox + depth_px + 4, oy + depth_px + 6, fitted, font_path, fs, fnt, (0, 0, 0, sh_a),
+                    stroke_width=max(eff_sw, _sw(10)), stroke_fill=(0, 0, 0, sh_a), has_fallback=has_fb, base_offset_y=base_off)
     shadow = shadow.filter(ImageFilter.GaussianBlur(radius=6))
     out.alpha_composite(shadow)
 
     for d in range(depth_px, 0, -1):
         shade = 0.65 + 0.35 * (1.0 - d / max(1, depth_px))
         ec = (int(extrude_rgb[0] * shade), int(extrude_rgb[1] * shade), int(extrude_rgb[2] * shade), 255)
-        draw.text((ox + int(d * 0.45), oy + d), fitted, font=fnt, fill=ec, stroke_width=eff_sw, stroke_fill=ec)
+        _draw_glyph_run(draw, ox + int(d * 0.45), oy + d, fitted, font_path, fs, fnt, ec,
+                        stroke_width=eff_sw, stroke_fill=ec, has_fallback=has_fb, base_offset_y=base_off)
 
     if eff_sw > 0:
-        draw.text((ox, oy), fitted, font=fnt, fill=(*stroke_rgb, 255), stroke_width=eff_sw, stroke_fill=(*stroke_rgb, 255))
+        _draw_glyph_run(draw, ox, oy, fitted, font_path, fs, fnt, (*stroke_rgb, 255),
+                        stroke_width=eff_sw, stroke_fill=(*stroke_rgb, 255), has_fallback=has_fb, base_offset_y=base_off)
 
     mask = Image.new("L", (w, h), 0)
     md = ImageDraw.Draw(mask)
-    md.text((ox, oy), fitted, font=fnt, fill=255)
+    _draw_glyph_run(md, ox, oy, fitted, font_path, fs, fnt, 255, has_fallback=has_fb, base_offset_y=base_off)
 
     grad = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     gd = ImageDraw.Draw(grad)
@@ -331,17 +402,13 @@ def _draw_tilted_stroked_text(
     tilt_deg: float = -5.0,
 ) -> Image.Image:
     stroke_w = _sw(stroke_w)
-    probe = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
-    pd = ImageDraw.Draw(probe)
-    fnt, fitted, _ = _fit_text(pd, text, font_path, max_w - 40, font_size, 34, stroke_w=stroke_w)
-    bb = pd.textbbox((0, 0), fitted, font=fnt, stroke_width=stroke_w)
-    tw, th = max(40, bb[2] - bb[0]), max(40, bb[3] - bb[1])
-    pad = 22
-    img = Image.new("RGBA", (tw + pad * 2, th + pad * 2), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    ox, oy = pad - bb[0], pad - bb[1]
-    d.text((ox + 5, oy + 6), fitted, font=fnt, fill=(0, 0, 0, 195), stroke_width=stroke_w, stroke_fill=(0, 0, 0, 195))
-    d.text((ox, oy), fitted, font=fnt, fill=fill_rgba, stroke_width=stroke_w, stroke_fill=stroke_rgba)
+    img = _text_sprite(
+        str(text or "").strip(), font_path, max_w - 40, font_size, fill_rgba,
+        stroke_rgba=stroke_rgba, stroke_w=stroke_w,
+        shadow_rgba=(0, 0, 0, 195), shadow_dy=6, shadow_blur=1.5, min_fs=34,
+    )
+    if img is None:
+        return Image.new("RGBA", (40, 40), (0, 0, 0, 0))
     if abs(tilt_deg) > 0.2:
         img = img.rotate(-tilt_deg, resample=Image.Resampling.BICUBIC, expand=True)
     ink = img.getbbox()
@@ -517,7 +584,8 @@ def _build_style01_layers(
         bh = (bb[3] - bb[1]) + 46
         bx0 = (880 - bw) // 2
         bd.rounded_rectangle([(bx0, 16), (bx0 + bw, 16 + bh)], radius=20, fill=(226, 32, 32, 248), outline=(255, 255, 255, 245), width=6)
-        bd.text((440, 16 + bh // 2), bt, font=bf, fill=(255, 255, 255, 255), anchor="mm", stroke_width=max(2, _sw(4)), stroke_fill=(90, 8, 8, 255))
+        _paste_glyph_line(b_hi, (440, 16 + bh // 2), bt, sans_font, 700, 68, 42,
+                          (255, 255, 255, 255), stroke_rgba=(90, 8, 8, 255), stroke_w=max(2, _sw(4)), shadow_dy=0)
         b_rot = b_hi.rotate(4, resample=Image.Resampling.BICUBIC, expand=True)
         b_ink = b_rot.getbbox()
         if b_ink:
@@ -577,17 +645,10 @@ def render_style05_giant_back_png(
     fg_rgba = hex_to_rgba(accent_hex, default=(255, 212, 38, 255))
 
     canvas = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
-    d = ImageDraw.Draw(canvas)
-    fnt, fitted, fs = _fit_text(d, clean_t, sans_font, CANVAS_WIDTH - 48, 256, 140, stroke_w=8)
-    cy = 445
-    # 柔和深阴影增强立体层级
-    shadow = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
-    sd = ImageDraw.Draw(shadow)
-    sd.text((CANVAS_WIDTH // 2 + 8, cy + 12), fitted, font=fnt, fill=(0, 0, 0, 175), anchor="mm", stroke_width=_sw(8), stroke_fill=(0, 0, 0, 175))
-    shadow = shadow.filter(ImageFilter.GaussianBlur(radius=10))
-    canvas.alpha_composite(shadow)
-
-    d.text((CANVAS_WIDTH // 2, cy), fitted, font=fnt, fill=fg_rgba, anchor="mm", stroke_width=_sw(6), stroke_fill=(38, 26, 4, 210))
+    _paste_glyph_line(
+        canvas, (CANVAS_WIDTH // 2, 445), clean_t, sans_font, CANVAS_WIDTH - 48, 256, 140,
+        fg_rgba, stroke_rgba=(38, 26, 4, 210), stroke_w=_sw(6), shadow_rgba=(0, 0, 0, 175), shadow_dy=12,
+    )
     canvas.save(out_png)
     return out_png
 
@@ -652,13 +713,12 @@ def _render_end_card_slate_png(
     d = ImageDraw.Draw(img)
     d.rounded_rectangle([(2, 2), (cw - 3, ch - 3)], radius=18, fill=(14, 16, 22, 224), outline=(*accent, 210), width=3)
     d.rounded_rectangle([(20, 14), (cw - 20, 19)], radius=3, fill=(*accent, 235))
-    f1, t1, _ = _fit_text(d, main_text, fnt_p, cw - 64, 54, 30, stroke_w=3)
     y_main = 72 if sub_text else (ch // 2 + 4)
-    d.text((cw // 2 + 2, y_main + 3), t1, font=f1, fill=(0, 0, 0, 220), anchor="mm", stroke_width=3, stroke_fill=(0, 0, 0, 220))
-    d.text((cw // 2, y_main), t1, font=f1, fill=(*accent, 255), anchor="mm", stroke_width=3, stroke_fill=(20, 18, 12, 245))
+    _paste_glyph_line(img, (cw // 2, y_main), main_text, fnt_p, cw - 64, 54, 30, (*accent, 255),
+                      stroke_rgba=(20, 18, 12, 245), stroke_w=3, shadow_rgba=(0, 0, 0, 220), shadow_dy=3)
     if sub_text:
-        f2, t2, _ = _fit_text(d, sub_text, fnt_p, cw - 72, 34, 22, stroke_w=2)
-        d.text((cw // 2, 132), t2, font=f2, fill=(248, 248, 250, 255), anchor="mm", stroke_width=2, stroke_fill=(0, 0, 0, 220))
+        _paste_glyph_line(img, (cw // 2, 132), sub_text, fnt_p, cw - 72, 34, 22, (248, 248, 250, 255),
+                          stroke_rgba=(0, 0, 0, 220), stroke_w=2, shadow_dy=0)
     return img
 
 
@@ -719,13 +779,11 @@ def render_template_packaging_png(
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
         d.rounded_rectangle([(0, 0), (w - 1, h - 1)], radius=20, fill=(28, 32, 30, 224))
-        f1, t1, _ = _fit_text(d, l1, oblique_font, w - 56, 56, 30, stroke_w=3)
         if l2:
-            f2, t2, _ = _fit_text(d, l2, oblique_font, w - 56, 60, 32, stroke_w=3)
-            d.text((w // 2, 54), t1, font=f1, fill=(255, 255, 255, 255), anchor="mm", stroke_width=_sw(3), stroke_fill=(0, 0, 0, 240))
-            d.text((w // 2, 124), t2, font=f2, fill=(188, 255, 0, 255), anchor="mm", stroke_width=_sw(3), stroke_fill=(0, 0, 0, 240))
+            _paste_glyph_line(img, (w // 2, 54), l1, oblique_font, w - 56, 56, 30, (255, 255, 255, 255), (0, 0, 0, 240), _sw(3), shadow_dy=0)
+            _paste_glyph_line(img, (w // 2, 124), l2, oblique_font, w - 56, 60, 32, (188, 255, 0, 255), (0, 0, 0, 240), _sw(3), shadow_dy=0)
         else:
-            d.text((w // 2, h // 2), t1, font=f1, fill=(188, 255, 0, 255), anchor="mm", stroke_width=_sw(3), stroke_fill=(0, 0, 0, 240))
+            _paste_glyph_line(img, (w // 2, h // 2), l1, oblique_font, w - 56, 56, 30, (188, 255, 0, 255), (0, 0, 0, 240), _sw(3), shadow_dy=0)
         return img
 
     # 3. style_03：暗调深度深红实心底条双行大字
@@ -735,13 +793,11 @@ def render_template_packaging_png(
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
         d.rounded_rectangle([(0, 0), (w - 1, h - 1)], radius=8, fill=(182, 26, 26, 238))
-        f1, t1, _ = _fit_text(d, l1, sans_font, w - 48, 56, 30, stroke_w=2)
         if l2:
-            f2, t2, _ = _fit_text(d, l2, sans_font, w - 48, 56, 30, stroke_w=2)
-            d.text((w // 2, 52), t1, font=f1, fill=(255, 255, 255, 255), anchor="mm", stroke_width=_sw(2), stroke_fill=(40, 4, 4, 240))
-            d.text((w // 2, 122), t2, font=f2, fill=(255, 244, 150, 255), anchor="mm", stroke_width=_sw(2), stroke_fill=(40, 4, 4, 240))
+            _paste_glyph_line(img, (w // 2, 52), l1, sans_font, w - 48, 56, 30, (255, 255, 255, 255), (40, 4, 4, 240), _sw(2), shadow_dy=0)
+            _paste_glyph_line(img, (w // 2, 122), l2, sans_font, w - 48, 56, 30, (255, 244, 150, 255), (40, 4, 4, 240), _sw(2), shadow_dy=0)
         else:
-            d.text((w // 2, h // 2), t1, font=f1, fill=(255, 255, 255, 255), anchor="mm", stroke_width=_sw(2), stroke_fill=(40, 4, 4, 240))
+            _paste_glyph_line(img, (w // 2, h // 2), l1, sans_font, w - 48, 56, 30, (255, 255, 255, 255), (40, 4, 4, 240), _sw(2), shadow_dy=0)
         return img
 
     # 4. style_05：人像前景压巨字 · 胸前高对比白字提问层（第 4 层）
@@ -749,17 +805,11 @@ def render_template_packaging_png(
         l1, l2 = _split_two_lines(main_text, max_first=8)
         w, h = 860, (176 if l2 else 112)
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        d = ImageDraw.Draw(img)
-        f1, t1, _ = _fit_text(d, l1, sans_font, w - 48, 66, 34, stroke_w=7)
         if l2:
-            f2, t2, _ = _fit_text(d, l2, sans_font, w - 48, 66, 34, stroke_w=7)
-            d.text((w // 2 + 3, 52 + 4), t1, font=f1, fill=(0, 0, 0, 200), anchor="mm", stroke_width=_sw(7), stroke_fill=(0, 0, 0, 200))
-            d.text((w // 2, 52), t1, font=f1, fill=(255, 255, 255, 255), anchor="mm", stroke_width=_sw(7), stroke_fill=(10, 10, 14, 255))
-            d.text((w // 2 + 3, 124 + 4), t2, font=f2, fill=(0, 0, 0, 200), anchor="mm", stroke_width=_sw(7), stroke_fill=(0, 0, 0, 200))
-            d.text((w // 2, 124), t2, font=f2, fill=(255, 212, 38, 255), anchor="mm", stroke_width=_sw(7), stroke_fill=(10, 10, 14, 255))
+            _paste_glyph_line(img, (w // 2, 52), l1, sans_font, w - 48, 66, 34, (255, 255, 255, 255), (10, 10, 14, 255), _sw(7), (0, 0, 0, 200), 4)
+            _paste_glyph_line(img, (w // 2, 124), l2, sans_font, w - 48, 66, 34, (255, 212, 38, 255), (10, 10, 14, 255), _sw(7), (0, 0, 0, 200), 4)
         else:
-            d.text((w // 2 + 3, h // 2 + 4), t1, font=f1, fill=(0, 0, 0, 200), anchor="mm", stroke_width=_sw(7), stroke_fill=(0, 0, 0, 200))
-            d.text((w // 2, h // 2), t1, font=f1, fill=(255, 255, 255, 255), anchor="mm", stroke_width=_sw(7), stroke_fill=(10, 10, 14, 255))
+            _paste_glyph_line(img, (w // 2, h // 2), l1, sans_font, w - 48, 66, 34, (255, 255, 255, 255), (10, 10, 14, 255), _sw(7), (0, 0, 0, 200), 4)
         ink = img.getbbox()
         return img.crop(ink) if ink else img
 
@@ -779,11 +829,8 @@ def render_template_packaging_png(
         bot_line = l2 or sub_text[:8] or "真实干货"
         w, h = 680, 170
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        d = ImageDraw.Draw(img)
-        f1, t1, _ = _fit_text(d, top_line, sans_font, w - 30, 48, 28, stroke_w=5)
-        f2, t2, _ = _fit_text(d, bot_line, sans_font, w - 30, 64, 34, stroke_w=7)
-        d.text((22, 36), t1, font=f1, fill=(255, 255, 255, 255), anchor="lm", stroke_width=_sw(5), stroke_fill=(15, 23, 42, 245))
-        d.text((22, 114), t2, font=f2, fill=(255, 228, 72, 255), anchor="lm", stroke_width=_sw(7), stroke_fill=(15, 23, 42, 255))
+        _paste_glyph_line(img, (22, 36), top_line, sans_font, w - 30, 48, 28, (255, 255, 255, 255), (15, 23, 42, 245), _sw(5), shadow_dy=0, anchor="lm")
+        _paste_glyph_line(img, (22, 114), bot_line, sans_font, w - 30, 64, 34, (255, 228, 72, 255), (15, 23, 42, 255), _sw(7), shadow_dy=0, anchor="lm")
         ink = img.getbbox()
         return img.crop(ink) if ink else img
 
@@ -792,14 +839,11 @@ def render_template_packaging_png(
         l1, l2 = _split_two_lines(main_text, max_first=8)
         w, h = 860, 228
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        d = ImageDraw.Draw(img)
-        f1, t1, _ = _fit_text(d, l1, hand_font, w - 30, 90, 44)
         if l2:
-            f2, t2, _ = _fit_text(d, l2, hand_font, w - 30, 90, 44)
-            d.text((w // 2, 62), t1, font=f1, fill=(255, 255, 255, 252), anchor="mm")
-            d.text((w // 2, 158), t2, font=f2, fill=(255, 255, 255, 252), anchor="mm")
+            _paste_glyph_line(img, (w // 2, 62), l1, hand_font, w - 30, 90, 44, (255, 255, 255, 252), shadow_dy=0)
+            _paste_glyph_line(img, (w // 2, 158), l2, hand_font, w - 30, 90, 44, (255, 255, 255, 252), shadow_dy=0)
         else:
-            d.text((w // 2, 114), t1, font=f1, fill=(255, 255, 255, 252), anchor="mm")
+            _paste_glyph_line(img, (w // 2, 114), l1, hand_font, w - 30, 90, 44, (255, 255, 255, 252), shadow_dy=0)
         ink = img.getbbox()
         return img.crop(ink) if ink else img
 
@@ -810,17 +854,11 @@ def render_template_packaging_png(
             l2 = sub_text[:9]
         w, h = 920, (192 if l2 else 118)
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        d = ImageDraw.Draw(img)
-        f1, t1, _ = _fit_text(d, l1, sans_font, w - 48, 68, 36, stroke_w=7)
         if l2:
-            f2, t2, _ = _fit_text(d, l2, sans_font, w - 48, 74, 38, stroke_w=7)
-            d.text((w // 2 + 3, 56 + 4), t1, font=f1, fill=(0, 0, 0, 210), anchor="mm", stroke_width=_sw(7), stroke_fill=(0, 0, 0, 210))
-            d.text((w // 2, 56), t1, font=f1, fill=(255, 255, 255, 255), anchor="mm", stroke_width=_sw(7), stroke_fill=(12, 12, 14, 255))
-            d.text((w // 2 + 3, 138 + 4), t2, font=f2, fill=(0, 0, 0, 210), anchor="mm", stroke_width=_sw(7), stroke_fill=(0, 0, 0, 210))
-            d.text((w // 2, 138), t2, font=f2, fill=(198, 255, 0, 255), anchor="mm", stroke_width=_sw(7), stroke_fill=(12, 12, 14, 255))
+            _paste_glyph_line(img, (w // 2, 56), l1, sans_font, w - 48, 68, 36, (255, 255, 255, 255), (12, 12, 14, 255), _sw(7), (0, 0, 0, 210), 4)
+            _paste_glyph_line(img, (w // 2, 138), l2, sans_font, w - 48, 74, 38, (198, 255, 0, 255), (12, 12, 14, 255), _sw(7), (0, 0, 0, 210), 4)
         else:
-            d.text((w // 2 + 3, h // 2 + 4), t1, font=f1, fill=(0, 0, 0, 210), anchor="mm", stroke_width=_sw(7), stroke_fill=(0, 0, 0, 210))
-            d.text((w // 2, h // 2), t1, font=f1, fill=(198, 255, 0, 255), anchor="mm", stroke_width=_sw(7), stroke_fill=(12, 12, 14, 255))
+            _paste_glyph_line(img, (w // 2, h // 2), l1, sans_font, w - 48, 68, 36, (198, 255, 0, 255), (12, 12, 14, 255), _sw(7), (0, 0, 0, 210), 4)
         ink = img.getbbox()
         return img.crop(ink) if ink else img
 
@@ -830,13 +868,11 @@ def render_template_packaging_png(
         w, h = 780, (162 if l2 else 108)
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
-        f1, t1, _ = _fit_text(d, l1, sans_font, w - 40, 58, 32)
         if l2:
-            f2, t2, _ = _fit_text(d, l2, sans_font, w - 40, 62, 34)
-            d.text((w // 2, 46), t1, font=f1, fill=(255, 255, 255, 252), anchor="mm")
-            d.text((w // 2, 114), t2, font=f2, fill=(255, 191, 23, 255), anchor="mm")
+            _paste_glyph_line(img, (w // 2, 46), l1, sans_font, w - 40, 58, 32, (255, 255, 255, 252), shadow_dy=0)
+            _paste_glyph_line(img, (w // 2, 114), l2, sans_font, w - 40, 62, 34, (255, 191, 23, 255), shadow_dy=0)
         else:
-            d.text((w // 2, h // 2 - 6), t1, font=f1, fill=(255, 255, 255, 252), anchor="mm")
+            _paste_glyph_line(img, (w // 2, h // 2 - 6), l1, sans_font, w - 40, 58, 32, (255, 255, 255, 252), shadow_dy=0)
         d.line([(w // 2 - 110, h - 8), (w // 2 + 110, h - 8)], fill=(255, 191, 23, 180), width=3)
         ink = img.getbbox()
         return img.crop(ink) if ink else img
@@ -850,13 +886,11 @@ def render_template_packaging_png(
         d.rectangle([(0, 0), (w - 1, h - 1)], fill=(18, 14, 11, 196))
         d.line([(24, 6), (w - 24, 6)], fill=(200, 155, 84, 150), width=2)
         d.line([(24, h - 7), (w - 24, h - 7)], fill=(200, 155, 84, 150), width=2)
-        f1, t1, _ = _fit_text(d, l1, serif_font, w - 120, 56, 30)
         if l2:
-            f2, t2, _ = _fit_text(d, l2, serif_font, w - 120, 56, 30)
-            d.text((w // 2 - 20, 54), t1, font=f1, fill=(247, 239, 225, 255), anchor="mm")
-            d.text((w // 2 - 20, 124), t2, font=f2, fill=(242, 201, 125, 255), anchor="mm")
+            _paste_glyph_line(img, (w // 2 - 20, 54), l1, serif_font, w - 120, 56, 30, (247, 239, 225, 255), shadow_dy=0)
+            _paste_glyph_line(img, (w // 2 - 20, 124), l2, serif_font, w - 120, 56, 30, (242, 201, 125, 255), shadow_dy=0)
         else:
-            d.text((w // 2 - 20, h // 2), t1, font=f1, fill=(247, 239, 225, 255), anchor="mm")
+            _paste_glyph_line(img, (w // 2 - 20, h // 2), l1, serif_font, w - 120, 56, 30, (247, 239, 225, 255), shadow_dy=0)
         d.rounded_rectangle([(w - 76, h // 2 - 30), (w - 24, h // 2 + 30)], radius=6, fill=(166, 26, 28, 235), outline=(242, 201, 125, 230), width=2)
         sf = get_cached_font(serif_font, 22)
         d.text((w - 50, h // 2 - 12), "真", font=sf, fill=(255, 248, 232, 255), anchor="mm")
@@ -867,10 +901,8 @@ def render_template_packaging_png(
     if family == "cinema_serif_quiet":
         w, h = 760, 110
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        d = ImageDraw.Draw(img)
-        f1, t1, _ = _fit_text(d, main_text[:12], serif_font, w - 40, 54, 30, stroke_w=2)
-        d.text((w // 2 + 2, h // 2 + 3), t1, font=f1, fill=(0, 0, 0, 160), anchor="mm", stroke_width=_sw(2), stroke_fill=(0, 0, 0, 160))
-        d.text((w // 2, h // 2), t1, font=f1, fill=(255, 252, 245, 255), anchor="mm", stroke_width=_sw(2), stroke_fill=(32, 28, 24, 210))
+        _paste_glyph_line(img, (w // 2, h // 2), main_text[:12], serif_font, w - 40, 54, 30,
+                          (255, 252, 245, 255), (32, 28, 24, 210), _sw(2), (0, 0, 0, 160), 3)
         ink = img.getbbox()
         return img.crop(ink) if ink else img
 
@@ -879,25 +911,22 @@ def render_template_packaging_png(
         w, h = 580, 124
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
-        f1, t1, _ = _fit_text(d, main_text[:12], sans_font, w - 24, 52, 28)
-        d.text((12, 46), t1, font=f1, fill=(248, 246, 240, 255), anchor="lm")
+        _paste_glyph_line(img, (12, 46), main_text[:12], sans_font, w - 24, 52, 28, (248, 246, 240, 255), shadow_dy=0, anchor="lm")
         d.line([(12, 92), (min(w - 20, 380), 92)], fill=(204, 169, 102, 240), width=4)
         ink = img.getbbox()
         return img.crop(ink) if ink else img
 
     # 13. style_19：冷峻数据新闻白底黑字精悍条
     if family == "cool_data_news_cutout":
-        probe = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
-        pd = ImageDraw.Draw(probe)
-        f1, t1, _ = _fit_text(pd, main_text[:12], sans_font, 680, 48, 26)
-        bb = pd.textbbox((0, 0), t1, font=f1)
-        bw = (bb[2] - bb[0]) + 56
-        bh = (bb[3] - bb[1]) + 28
+        sp = _text_sprite(main_text[:12], sans_font, 680, 48, (15, 23, 42, 255), min_fs=26)
+        bw = (sp.width if sp else 120) + 56
+        bh = (sp.height if sp else 48) + 28
         img = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
         d.rounded_rectangle([(0, 0), (bw - 1, bh - 1)], radius=6, fill=(255, 255, 255, 238))
         d.rectangle([(0, 0), (10, bh - 1)], fill=(3, 105, 161, 255))
-        d.text((bw // 2 + 4, bh // 2), t1, font=f1, fill=(15, 23, 42, 255), anchor="mm")
+        if sp is not None:
+            img.alpha_composite(sp, dest=(max(14, (bw - sp.width) // 2 + 4), max(0, (bh - sp.height) // 2)))
         return img
 
     # 14. style_16：暗黑羽化书摘巨字（支持三格巨字与书摘双行金句）
@@ -905,14 +934,11 @@ def render_template_packaging_png(
         l1, l2 = _split_two_lines(main_text, max_first=8)
         w, h = 780, (176 if l2 else 116)
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        d = ImageDraw.Draw(img)
-        f1, t1, _ = _fit_text(d, l1, serif_font, w - 40, 70, 38)
         if l2:
-            f2, t2, _ = _fit_text(d, l2, serif_font, w - 40, 70, 38)
-            d.text((w // 2, 52), t1, font=f1, fill=(255, 255, 255, 255), anchor="mm")
-            d.text((w // 2, 128), t2, font=f2, fill=(250, 204, 21, 255), anchor="mm")
+            _paste_glyph_line(img, (w // 2, 52), l1, serif_font, w - 40, 70, 38, (255, 255, 255, 255), shadow_dy=0)
+            _paste_glyph_line(img, (w // 2, 128), l2, serif_font, w - 40, 70, 38, (250, 204, 21, 255), shadow_dy=0)
         else:
-            d.text((w // 2, h // 2), t1, font=f1, fill=(250, 204, 21, 255), anchor="mm")
+            _paste_glyph_line(img, (w // 2, h // 2), l1, serif_font, w - 40, 70, 38, (250, 204, 21, 255), shadow_dy=0)
         ink = img.getbbox()
         return img.crop(ink) if ink else img
 
@@ -922,8 +948,7 @@ def render_template_packaging_png(
         img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         d = ImageDraw.Draw(img)
         d.rounded_rectangle([(0, 0), (w - 1, h - 1)], radius=14, fill=(11, 13, 18, 238), outline=(250, 204, 21, 235), width=3)
-        f1, t1, _ = _fit_text(d, main_text[:14], sans_font, w - 60, 56, 30)
-        d.text((w // 2, h // 2), t1, font=f1, fill=(250, 204, 21, 255), anchor="mm")
+        _paste_glyph_line(img, (w // 2, h // 2), main_text[:14], sans_font, w - 60, 56, 30, (250, 204, 21, 255), shadow_dy=0)
         return img
 
     # 16. style_04：清冷奶油高光 · 极简轻描边宋体（留白多、无底框、无贴纸）

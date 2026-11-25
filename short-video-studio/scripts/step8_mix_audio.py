@@ -41,7 +41,7 @@ import numpy as np
 from step3_lock_audio import SR, load_stereo_wav_np, save_stereo_wav_np
 
 
-LIMITER_LIMIT = 0.68  # 母带/分轨统一峰值上限（-3.35 dBFS）：过采样真峰实测比样本峰高约 1 dB
+LIMITER_LIMIT = 0.65  # 母带/分轨统一峰值上限（-3.74 dBFS）：留足余量抑制过采样真峰与 AAC MDCT 重建过冲
 # AAC 封装代真峰抬升实测 1.0~1.1dB（2026-11-24：wav -1.6dBTP → 成片 -0.6dBTP），母带按扣掉余量的目标卡
 AAC_TP_HEADROOM_DB = 1.2
 _MASTER_TP_TARGET = TP_MAX_DBTP  # 真正的封口在 render 封装那次（AAC 首编时挂 alimiter），母带这里只按交付目标卡
@@ -412,7 +412,7 @@ def run_step8(
             run_cmd([
                 ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
                 "-i", str(wav_src),
-                "-af", f"volume={g_clamped:.2f}dB,alimiter=limit={LIMITER_LIMIT:.3f}:attack=1.5:release=40:level=disabled:latency=true",
+                "-af", f"volume={g_clamped:.2f}dB,aresample=192000,lowpass=f=18000,alimiter=limit={LIMITER_LIMIT:.3f}:attack=1.5:release=40:level=disabled:latency=true,aresample=48000",
                 "-ar", str(SR), "-ac", "2", "-acodec", "pcm_s16le",
                 str(wav_dst),
             ])

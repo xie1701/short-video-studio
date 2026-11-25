@@ -241,14 +241,18 @@ def render_subtitle_png(
 
     max_line_w = SUBTITLE_SYMMETRIC_MAX_W - pad_x * 2
     if dual_banner and "\n" not in raw_text and len(raw_text) >= 5:
-        # 通宽双行大字横幅（上白下荧光/暖黄/雅金）：优先在重点词前断行，否则对半断行
-        cut_at = (len(raw_text) + 1) // 2
-        for kw in sorted((str(k) for k in (entry.get("keywords") or []) if k), key=len, reverse=True):
-            k_idx = raw_text.find(kw)
-            if 2 <= k_idx <= len(raw_text) - 2:
-                cut_at = k_idx
-                break
-        raw_text = raw_text[:cut_at] + "\n" + raw_text[cut_at:]
+        # 通宽双行大字横幅（上白下荧光/暖黄/雅金）：优先复用 Step5 权威词边界断行，再回落语义词边界切分
+        dl = entry.get("display_lines")
+        if (
+            isinstance(dl, (list, tuple))
+            and len(dl) >= 2
+            and "".join(str(x).strip() for x in dl[:2]) == re.sub(r"\s+", "", raw_text)
+        ):
+            raw_text = f"{str(dl[0]).strip()}\n{str(dl[1]).strip()}"
+        else:
+            from step5_subtitles import split_semantic_two_lines
+            l1, l2 = split_semantic_two_lines(raw_text, keywords=entry.get("keywords"))
+            raw_text = f"{l1}\n{l2}" if l2 else l1
     lines_text = raw_text.splitlines() if "\n" in raw_text else [raw_text]
     if not lines_text:
         lines_text = [""]
@@ -510,8 +514,8 @@ def render_subtitle_png(
 # 用户实测 2026-11-24：白字压在亮墙/白鱼身上时 WCAG 单帧只有 1.3~3.2:1，字看不清。
 # 做法：先按标定值（boost=1.0）量一次；不够就沿同族系数阶梯加强投影，投影到顶仍不够才补细描边。
 # 目标取 4.2（高于质检硬门槛 3.8，给 H.264 缩放后的软化留余量）；暗底 boost 永远保持 1.0 不动标定值。
-# AAC 首编时挂真峰守门：交付文件的真峰由这一步封口（step8 限的是 wav，AAC 封装会再抬 1~1.7dB）
-DELIVERY_AUDIO_VF = "alimiter=limit=0.68:level=disabled:attack=1.5:release=40:latency=true"
+# AAC 首编时挂 4x 过采样真峰守门（192kHz True Peak Limiting + 18kHz 低通）：同步消除 48kHz 采样间潜峰与高频 MDCT 振铃过冲（五风格全实测 TP -1.5~-3.5dBTP）
+DELIVERY_AUDIO_VF = "aresample=192000,lowpass=f=18000,alimiter=limit=0.65:level=disabled:attack=1.5:release=40:latency=true,aresample=48000"
 SUBTITLE_CONTRAST_TARGET = 4.2
 SUBTITLE_SHADOW_BOOST_STEPS = (1.0, 1.4, 2.2)
 # 增强阶梯：按「偏离标定值从小到大」排，先加深投影（同族系数），投影到顶仍不行才补细描边（描边不是 style_21 的 DNA，
