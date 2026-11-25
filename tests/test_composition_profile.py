@@ -194,6 +194,38 @@ class PipelineCompositionTests(unittest.TestCase):
                                  [item["normalized_mp4"] for item in items])
                 self.assertTrue(all(row["sampled_frames"] == 0 for row in profile["aroll_profiles"]))
 
+    def test_primary_stage_uses_aroll_duration_majority_or_count_fallback(self):
+        cases = (
+            ("wide majority", (30, 30, 25), (15,), True),
+            ("closeup duration majority", (5, 5, 5), (85,), False),
+            ("equal duration", (10,), (10,), False),
+            ("fractional duration tie", (0.1, 0.2), (0.3,), False),
+            ("missing duration", (5, None, 5), (85,), True),
+            ("no aroll", (), (), False),
+        )
+        for case, wide_durations, closeup_durations, allow_behind in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                pipeline_dir = Path(tmp)
+                items = [
+                    aroll(f"wide_{i}.mp4", WIDE_FACE, duration=duration)
+                    for i, duration in enumerate(wide_durations)
+                ]
+                items.extend(
+                    aroll(f"closeup_{i}.mp4", CLOSE_FACE, duration=duration)
+                    for i, duration in enumerate(closeup_durations)
+                )
+                write_json(pipeline_dir / "01_manifest.json", {"items": items})
+
+                profile = composition.build_composition_profile(pipeline_dir)
+
+                self.assertIs(profile["allow_behind_person"], allow_behind)
+                stage = "wide_behind_person" if allow_behind else "closeup_chest_stage"
+                self.assertEqual(profile["primary_stage_mode"], stage)
+                self.assertEqual(
+                    [row["allow_behind_person"] for row in profile["aroll_profiles"]],
+                    [True] * len(wide_durations) + [False] * len(closeup_durations),
+                )
+
     def test_prefers_usable_aroll_then_falls_back_to_all_video_takes(self):
         items = [
             aroll("clean.mp4", WIDE_FACE, usable=True),

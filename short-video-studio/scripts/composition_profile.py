@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import math
 import subprocess
+from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
 from statistics import median
@@ -267,10 +268,17 @@ def build_composition_profile(pipeline_dir: Path, overwrite: bool = True) -> Dic
         profile["media_path"] = str(item[path_key])
         profiles.append(profile)
 
-    allow_behind = all(profile["allow_behind_person"] for profile in profiles)
+    durations = [_duration_sec(item) for item in arolls]
+    # Preserve decimal duration ties and use one vote per take if any duration is missing.
+    weights = [Decimal(str(duration)) for duration in durations] if all(durations) else [1] * len(arolls)
+    wide_weight = sum(
+        weight for weight, profile in zip(weights, profiles)
+        if profile["allow_behind_person"]
+    )
+    allow_behind = 2 * wide_weight > sum(weights)
     two_long_closeups = len(arolls) == 2 and all(
-        not profile["allow_behind_person"] and _duration_sec(item) >= _LONG_TAKE_SEC
-        for item, profile in zip(arolls, profiles)
+        not profile["allow_behind_person"] and duration >= _LONG_TAKE_SEC
+        for duration, profile in zip(durations, profiles)
     )
     business = not has_cutaways and (len(arolls) == 1 or two_long_closeups)
     result = {
