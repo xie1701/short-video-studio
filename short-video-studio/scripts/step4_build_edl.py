@@ -1833,6 +1833,102 @@ def run_step4(
             multi_sentence_aroll_flags = m_ms
             n_segs = len(cut_points)
 
+    # ── A-roll 跨物理跳剪句界防冻帧/防越界保护 ──
+    # 单源连续口播被 step3 剪去较长换气停顿（source_in - prev.source_out > 0.35s）或跨源文件拼接时，
+    # 若一条 A-roll 镜头跨过这个跳剪断层，_aroll_take 会卡死在前句结尾并产生源窗口短缺冻帧或越界违规。
+    if usable_arolls and not broll_only_mode and len(sentences) >= 2:
+        jump_boundaries: List[Tuple[Dict[str, Any], Dict[str, Any], int, Dict[str, Any]]] = []
+        sent_start_ev_by_id = {
+            str(e.get("sentence_id") or ""): e
+            for e in events
+            if e.get("type") == "sentence_start" and e.get("sentence_id")
+        }
+        for _k in range(1, len(sentences)):
+            _sp, _sc = sentences[_k - 1], sentences[_k]
+            _mp_p = str(_sp.get("source_media") or "")
+            _mp_c = str(_sc.get("source_media") or "")
+            _is_jump = False
+            if _mp_p and _mp_c and _mp_p != _mp_c:
+                _is_jump = True
+            elif (
+                _mp_p == _mp_c
+                and _sc.get("source_in_sec") is not None
+                and _sp.get("source_out_sec") is not None
+                and abs(float(_sc["source_in_sec"]) - float(_sp["source_out_sec"])) > 0.35
+            ):
+                _is_jump = True
+            if not _is_jump:
+                continue
+            _ev_ns = sent_start_ev_by_id.get(str(_sc.get("id") or ""))
+            if _ev_ns is None:
+                _f_ns = sec_to_frames(float(_sc["start_sec"]), fps)
+                _ev_ns = {
+                    "id": f"evt_jump_{_k}",
+                    "type": "sentence_start",
+                    "time_sec": round(float(_sc["start_sec"]), 4),
+                    "frame": _f_ns,
+                    "sentence_id": _sc.get("id"),
+                    "label": "跨停顿句界对齐",
+                }
+            else:
+                _f_ns = int(_ev_ns["frame"])
+            jump_boundaries.append((_sp, _sc, _f_ns, _ev_ns))
+
+        if jump_boundaries:
+            for _pass in range(max(10, len(sentences) * 2)):
+                _changed = False
+                _idx_j = 0
+                while _idx_j < len(cut_points):
+                    if roles[_idx_j] != "a_roll":
+                        _idx_j += 1
+                        continue
+                    _fs = int(cut_points[_idx_j]["raw_frame"])
+                    _fe = int(cut_points[_idx_j + 1]["raw_frame"]) if _idx_j + 1 < len(cut_points) else total_frames
+                    _hit = next(
+                        (
+                            (_sp, _sc, _fns, _evns)
+                            for _sp, _sc, _fns, _evns in jump_boundaries
+                            if _fs < _fns < _fe
+                        ),
+                        None,
+                    )
+                    if _hit is None:
+                        _idx_j += 1
+                        continue
+                    _sp, _sc, _fns, _evns = _hit
+                    # 右侧贴近跳剪界（<10帧）且可把下一切点前移至 _fns
+                    if (_fe - _fns) < 10 and _idx_j + 1 < len(cut_points) and (_fns - _fs) >= 10:
+                        _nxt_fe = int(cut_points[_idx_j + 2]["raw_frame"]) if _idx_j + 2 < len(cut_points) else total_frames
+                        if (_nxt_fe - _fns) >= 10:
+                            cut_points[_idx_j + 1] = {"cut_frame": _fns, "raw_frame": _fns, "event": _evns}
+                            _changed = True
+                            break
+                    # 左侧贴近跳剪界（<10帧）且可把当前切点右移至 _fns（如短序号句左端余 3~6 帧）
+                    if (_fns - _fs) < 10 and _idx_j > 0 and (_fe - _fns) >= 10:
+                        _prv_fs = int(cut_points[_idx_j - 1]["raw_frame"])
+                        if (_fns - _prv_fs) >= 10 and (
+                            roles[_idx_j - 1] != "a_roll"
+                            or frames_to_sec(_fns, fps) <= float(_sp.get("end_sec") or 0.0) + 0.35
+                        ):
+                            cut_points[_idx_j] = {"cut_frame": _fns, "raw_frame": _fns, "event": _evns}
+                            _changed = True
+                            break
+                    # 居中落在内部（两侧 >= 10 帧 ≈ 0.33s）：安全在句界拆分两段独立 A-roll
+                    if (_fns - _fs) >= 10 and (_fe - _fns) >= 10:
+                        cut_points.insert(_idx_j + 1, {"cut_frame": _fns, "raw_frame": _fns, "event": _evns})
+                        roles.insert(_idx_j + 1, "a_roll")
+                        audio_only_flags.insert(_idx_j + 1, audio_only_flags[_idx_j])
+                        source_aroll_valid.insert(_idx_j + 1, source_aroll_valid[_idx_j])
+                        budget_merged_flags.insert(_idx_j + 1, False)
+                        multi_sentence_aroll_flags.insert(_idx_j + 1, False)
+                        n_segs = len(cut_points)
+                        _changed = True
+                        break
+                    _idx_j += 1
+                if not _changed:
+                    break
+            n_segs = len(cut_points)
+
     def _cross_roll_needs_hard_cut(idx: int) -> bool:
         if kinetic_stage_mode:
             return True

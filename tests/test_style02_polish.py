@@ -178,6 +178,63 @@ class Style02PolishRegressionTests(unittest.TestCase):
         self.assertEqual(stats.get("self_correction_dropped", 0), 0)
         self.assertTrue(all(not s.get("is_filler") for s in segs))
 
+    def test_step4_aroll_guards_across_breath_jump_cuts(self):
+        with tempfile.TemporaryDirectory() as td:
+            pdir = Path(td)
+            a_mp = str(pdir / "talk.mp4")
+            sents = [
+                {"id": "s1", "text": "公司破产那年我负债两百多万", "start_sec": 0.0, "end_sec": 2.40, "start_frame": 0, "end_frame": 72, "source_media": a_mp, "source_in_sec": 0.12, "source_out_sec": 2.52, "keywords": ["负债"]},
+                {"id": "s2", "text": "删掉公司名改了几个数字", "start_sec": 2.57, "end_sec": 4.80, "start_frame": 77, "end_frame": 144, "source_media": a_mp, "source_in_sec": 3.40, "source_out_sec": 5.63, "keywords": ["公司"]},
+                {"id": "s3", "text": "第三", "start_sec": 4.97, "end_sec": 5.45, "start_frame": 149, "end_frame": 164, "source_media": a_mp, "source_in_sec": 6.20, "source_out_sec": 6.68, "keywords": []},
+                {"id": "s4", "text": "过了夫妻店那条线规矩只能自己长", "start_sec": 5.62, "end_sec": 8.40, "start_frame": 169, "end_frame": 252, "source_media": a_mp, "source_in_sec": 7.30, "source_out_sec": 10.08, "keywords": ["规矩"]},
+            ]
+            evts = [
+                {"id": f"e{i}", "type": "sentence_start", "time_sec": s["start_sec"], "frame": s["start_frame"], "sentence_id": s["id"]}
+                for i, s in enumerate(sents, 1)
+            ]
+            # 添加一个刚好贴在跳剪前 ~0.13s 的中间重音，过去会跨过 s3/s4 气口造成冻帧
+            evts.append({"id": "e_mid", "type": "stress", "time_sec": 4.84, "frame": 145, "sentence_id": "s2"})
+            evts.sort(key=lambda e: e["time_sec"])
+            write_json(pdir / "01_manifest.json", {"items": [{
+                "id": "a1", "role": "a_roll", "video_grade": "usable",
+                "normalized_mp4": a_mp, "duration_sec": 12.0,
+                "sharpness_score": 450.0, "stability_score": 0.92,
+                "faces": [{"bbox": {"x": 0.3, "y": 0.15, "w": 0.35, "h": 0.35}}],
+            }]})
+            write_json(pdir / "03_audio_events.json", {
+                "locked_duration_sec": 8.5, "locked_duration_frames": 255,
+                "sentences": sents, "events": evts,
+            })
+            edl = s4.run_step4(pdir, track="creator", edit_profile="talking", style_id="style_02")
+            for c in edl["clips"]:
+                shortfall = float(c["duration_sec"]) - (float(c["source_out_sec"]) - float(c["source_in_sec"]))
+                self.assertLessEqual(shortfall, 0.08, f"{c['clip_id']} 跨气口短缺冻帧: {c}")
+                self.assertFalse(c.get("freeze_tail"), c)
+
+    def test_ordinal_separation_no_aspect_split_and_problem_anchor(self):
+        ph1 = kc.split_clean_phrases("删掉公司名改了几个数字", target_min=3, target_max=8)
+        self.assertFalse(any(p.startswith("了") for p in ph1), ph1)
+        ph2 = kc.split_clean_phrases("抄最快抄完还有种我在做事的踏实感", target_min=3, target_max=8)
+        self.assertFalse(any(p.startswith("种") for p in ph2), ph2)
+
+        ae = {
+            "locked_duration_sec": 12.0,
+            "sentences": [
+                self._INTRO,
+                {"id": "s1", "text": "钱从哪一环挣出来", "start_sec": 2.6, "end_sec": 4.4, "start_frame": 78, "end_frame": 132},
+                {"id": "s2", "text": "第二", "start_sec": 4.57, "end_sec": 5.02, "start_frame": 137, "end_frame": 151},
+                {"id": "s3", "text": "看到做法先找他的前提", "start_sec": 5.19, "end_sec": 7.3, "start_frame": 156, "end_frame": 219},
+                {"id": "s4", "text": "包括我自己，不是人的问题，是我们想事情的方式被固化了", "start_sec": 7.5, "end_sec": 11.2, "start_frame": 225, "end_frame": 336},
+                self._cta(11.7),
+            ],
+            "events": [],
+        }
+        plan = kc.plan_kinetic_stage(ae, style_id="style_02")
+        all_texts = [str(it.get("text_or_asset") or "") for it in plan["items"]]
+        self.assertFalse(any("挣出来第二" in t for t in all_texts), all_texts)
+        red_slams = [str(it.get("text_or_asset") or "") for it in plan["items"] if it.get("variant") == "red_slam"]
+        self.assertTrue(red_slams and red_slams[0] in ("不是人的问题", "人的问题"), red_slams)
+
 
 if __name__ == "__main__":
     unittest.main()

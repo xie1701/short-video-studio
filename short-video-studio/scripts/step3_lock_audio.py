@@ -908,7 +908,19 @@ def run_step3(
             pause_end_sec = round(max(new_end_sec, (cursor_samples - eff_xf_next) / float(SR)), 4)
             add_event("pause_end", pause_end_sec, "句间停顿结束", sid)
 
-    tail_samples = int(0.24 * SR)
+    # 片尾收口余量按末尾原声真实可用余韵收敛，避免源片紧贴物理结尾时硬撑 0.24s 导致末尾冻帧
+    tail_sec = 0.24
+    if valid_segments:
+        last_seg = valid_segments[-1]
+        last_sa = str(last_seg.get("source_audio") or transcript.get("primary_audio") or "")
+        if last_sa and last_sa in raw_audio_cache:
+            src_dur_sec = len(raw_audio_cache[last_sa]) / float(SR)
+            src_tail_rem = max(0.0, src_dur_sec - float(last_seg.get("end_sec") or 0.0))
+            if src_tail_rem < 0.06:
+                tail_sec = min(0.24, max(0.034, src_tail_rem))
+            elif src_tail_rem < 0.24:
+                tail_sec = min(0.24, max(0.06, src_tail_rem))
+    tail_samples = min(len(room_tone_bed), max(1, int(round(tail_sec * SR))))
     tail_rt = room_tone_bed[:tail_samples].copy()
     _equal_power_append(voice_chunks, tail_rt, xf_joint)
     locked_voice = np.concatenate(voice_chunks, axis=0)

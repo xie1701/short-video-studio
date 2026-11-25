@@ -448,24 +448,28 @@ def split_clean_phrases(
         return []
 
     raw_chunks: List[str] = []
-    # 先剔除助词“的/嘅/个/种/只”及量词冠词（如「一间」「一个」）被单独孤立在句末
-    _no_hang_tail = set("的嘅了着过个种只在把被从向和跟与同") | {
+    # 先剔除前置助词/介词/冠词（如「的/嘅/在/把/一间」）被单独孤立在行尾；
+    # 严禁把动态助词「了/着/过」和普通「种/个」强推到下一行行首（否则会把「改了几个数字」劈成「改 / 了几个数字」）。
+    _no_hang_tail = set("的嘅只在把被从向和跟与同") | {
         "一间", "一个", "一家", "一套", "一份", "一种",
         "这间", "那间", "呢间", "𠮶间", "这种", "那种", "呢种", "𠮶种", "这个", "那个", "呢个", "𠮶个",
     }
+    _attach_tail_suffix = set("了着过得")
     for cl in clauses:
         if len(cl) <= target_max:
             raw_chunks.append(cl)
             continue
         toks = tokenize_semantic_words(cl, terms=protected_terms)
-        # 进一步保证「的/嘅/个/种」绝不单独悬在上一块末尾：若累加某 token（非黏着短词）会溢出或仅留虚词在尾，则提前换行
+        # 进一步保证「的/嘅/一间」绝不单独悬在上一块末尾，同时「了/着/过」粘附前词不作行首
         cur = ""
         for idx_t, tk in enumerate(toks):
             nxt_tk = toks[idx_t + 1] if idx_t + 1 < len(toks) else ""
             if not cur:
                 cur = tk
+            elif tk in _attach_tail_suffix and len(cur) + len(tk) <= target_max + 1:
+                cur += tk
             elif len(cur) + len(tk) <= target_max:
-                # 防止把“的/嘅/个/种”当块尾虚词（除非整句刚好在这里收尾或下块是完整独立名词太长）
+                # 防止把“的/嘅/在/一间”当块尾虚词（除非整句刚好在这里收尾或下块是完整独立名词太长）
                 if tk in _no_hang_tail and nxt_tk and len(cur) >= 4 and len(tk) + len(nxt_tk) <= target_max:
                     raw_chunks.append(cur)
                     cur = tk
@@ -477,19 +481,25 @@ def split_clean_phrases(
         if cur:
             raw_chunks.append(cur)
 
-    # 合并孤立单字/2字过短残留块（优先并向前或向后较短的一块）
+    # 合并孤立单字/2字过短残留块（不把序数引导词「第一/第二/第三」硬吞进长句里）
     merged: List[str] = []
     for chunk in raw_chunks:
+        prev_is_ord = bool(merged and _ORDINAL_SENT_RE.match(merged[-1]))
+        cur_is_ord = bool(_ORDINAL_SENT_RE.match(chunk))
         if (
             merged
             and len(chunk) < target_min
             and len(merged[-1]) + len(chunk) <= target_max + 2
+            and not (cur_is_ord and len(merged[-1]) >= 4)
+            and not (prev_is_ord and len(chunk) >= 5)
         ):
             merged[-1] += chunk
         elif (
             merged
             and len(merged[-1]) < target_min
             and len(merged[-1]) + len(chunk) <= target_max + 2
+            and not (prev_is_ord and len(chunk) >= 5)
+            and not (cur_is_ord and len(merged[-1]) >= 4)
         ):
             merged[-1] += chunk
         else:
@@ -523,10 +533,11 @@ _NUM_UNIT_RE = re.compile(
     r"|[零〇一二三四五六七八九十百千万亿两廿]{2,}[平平米万千百亿年倍成]+"
     r")"
 )
+_ORDINAL_SENT_RE = re.compile(r"^第[一二三四五六七八九十0-9]+[条点步个]?$")
 _ENGLISH_UNIT_TOKEN_RE = re.compile(r"[A-Za-z0-9]+|[%％\+＋]")
 _EXTRA_COHESIVE = [
     "𠮶种", "这种", "那种", "呢种", "呢个", "𠮶个", "呢间", "𠮶间",
-    "一间", "一个", "一家", "一套", "一份",
+    "一间", "一个", "一家", "一套", "一份", "一种", "有种", "几个", "没这个", "这个", "前提",
     "纯手工", "原汁原味", "四大天王", "叉烧包", "桑拿鸡", "点赞茶楼",
     "评论区", "三分之一", "非常之", "我觉得", "性价比", "实体店", "工厂老板",
     "品质OK", "OK嘅", "好多", "好食", "有啲", "中空", "卡座", "灯笼", "岭南元素",
@@ -720,20 +731,23 @@ def _group_sentences(sentences: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         cur_is_short = (s_dur < 1.25 or len(s_txt) <= 6)
         prev_is_short = (prev_dur < 1.25 or len(prev_txt) <= 6)
         prev_full_len = sum(len(clean_display_text(str(x.get("text") or ""))) for x in cur_sents)
-        # 相邻残句合并；但若累计段已经 >=14 字且上句已完整 (>2.4s)，不再强吞后续独立开头的句子
+        # 相邻残句合并；序数条陈词（第一/第二/第三）绝不吞进前一句结尾，仅允许与其后的正文引导合成新组
         should_merge = (
             gap <= 0.35
             and cur_dur <= 6.2
             and not (prev_full_len >= 14 and prev_dur >= 2.4)
             and (cur_is_short or prev_is_short)
+            and not _ORDINAL_SENT_RE.match(s_txt)
             and not any(k in prev_txt for k in _CTA_CUES)
         )
+        if not should_merge and _ORDINAL_SENT_RE.match(prev_txt) and gap <= 0.35 and cur_dur <= 6.2:
+            should_merge = True
         # 特殊合并：清单紧跟评价句（例如 S12 清单 + S13 紧接好评），形成「弹出→压暗→总结叠前景」闭环
         prev_first = str(cur_sents[0].get("text") or "")
-        if not should_merge and len(cur_sents) == 1 and _extract_parallel_list(prev_first) and s_dur <= 5.0 and cur_dur <= 10.5:
+        if not should_merge and len(cur_sents) == 1 and _extract_parallel_list(prev_first) and s_dur <= 5.0 and cur_dur <= 10.5 and not _ORDINAL_SENT_RE.match(s_txt):
             should_merge = True
-        # 特殊合并：痛点质疑前半句（如“好多人觉得好傻...”）+ 后半句核心数字痛点（“厨房花两百平”）
-        if not should_merge and any(p in prev_txt for p in _PAIN_CUES) and gap <= 0.35 and cur_dur <= 7.2:
+        # 特殊合并：痛点质疑前半句（如“好多人觉得好傻...”）+ 后半句核心数字痛点（“厨房花两百平”），绝不吞掉结尾 CTA 引导句
+        if not should_merge and any(p in prev_txt for p in _PAIN_CUES) and gap <= 0.35 and cur_dur <= 7.2 and not _ORDINAL_SENT_RE.match(s_txt) and not any(k in s_txt for k in _CTA_CUES):
             should_merge = True
 
         if should_merge:
@@ -746,9 +760,10 @@ def _group_sentences(sentences: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _extract_anchor_phrase(clean_txt: str, max_len: int = 6) -> str:
-    """提炼痛点/数字/总结句的短锚点词（绝不截断半个词）。"""
+    """提炼痛点/数字/总结句的短锚点词（绝不截断半个词，也不砸出孤立干瘪的二字「问题」）。"""
     for pat in (
-        r"(?:好傻|难做|问题|陷阱|误区|三分之一[^，。]{0,3}|[0-9一二三四五六七八九十百千万两]+平(?:[的嘅]厨房)?|[0-9一二三四五六七八九十百千万两]+万)",
+        r"(?:好傻|难做|陷阱|误区|三分之一[^，。]{0,3}|[0-9一二三四五六七八九十百千万两]+平(?:[的嘅]厨房)?|[0-9一二三四五六七八九十百千万两]+万)",
+        r"(?:不是|没有)[^，。]{1,3}问题|[^，。]{1,2}[的嘅]?问题|问题",
     ):
         m = re.search(pat, clean_txt)
         if m and 2 <= len(m.group(0)) <= max_len + 2:
@@ -924,7 +939,7 @@ def plan_kinetic_stage(
                 anim_key="in:缩小 II", z_layer="foreground", track_lane=0,
             ))
             # 2) 中下区第一小节先出1条小过桥，紧接着用自抠像把剩下痛点句全部分配到人后滚动弹幕（确保不缺漏台词）
-            phrases = split_clean_phrases(g_split_txt, target_min=3, target_max=7, protected_terms=protected_terms)
+            phrases = split_clean_phrases(g_split_txt, target_min=3, target_max=6, protected_terms=protected_terms)
             mapped = map_chunks_to_times(phrases, tl, gs, ge)
             if mapped:
                 first_txt, f_s, f_e = mapped[0]
@@ -936,8 +951,8 @@ def plan_kinetic_stage(
                 ))
             danmaku_lanes_y = [0.34, 0.20, 0.40, 0.14]
             danmaku_slots = mapped[1:] if len(mapped) > 1 else mapped
-            # 仅合并结尾过碎块（合并后不超过 8 字），避免拼成超长条被人物或画边切半
-            while len(danmaku_slots) > 4 and len(danmaku_slots[-2][0] + danmaku_slots[-1][0]) <= 8:
+            # 仅合并结尾过碎块（合并后不超过 6 字），避免拼成超长条被人物或画边切半
+            while len(danmaku_slots) > 4 and len(danmaku_slots[-2][0] + danmaku_slots[-1][0]) <= 6:
                 t_a, sa, _ = danmaku_slots[-2]
                 t_b, _, eb = danmaku_slots[-1]
                 danmaku_slots[-2:] = [(t_a + t_b, sa, eb)]
@@ -947,9 +962,9 @@ def plan_kinetic_stage(
                 g_items.append(_make_item(
                     item_id=next_id(), group_id=f"grp_{gi:02d}", text=d_txt,
                     start_sec=ds, end_sec=d_end, fps=fps,
-                    variant="danmaku_line", x_norm=(-0.20 if is_left else 0.20),
+                    variant="danmaku_line", x_norm=(-0.24 if is_left else 0.24),
                     y_norm=danmaku_lanes_y[di % len(danmaku_lanes_y)],
-                    font_size_units=14.5, anim_key=("in:向右露出" if is_left else "in:向左露出"),
+                    font_size_units=14.0, anim_key=("in:向右露出" if is_left else "in:向左露出"),
                     z_layer="behind_person", track_lane=3 + (di % 3),
                 ))
 
@@ -1103,6 +1118,8 @@ def plan_kinetic_stage(
                     yn_b = (-0.27, -0.42, -0.57)[bi]
                 elif len(b_txt) >= 6:
                     xn_b = 0.0
+                if len(b_txt) >= 8:
+                    sz_b = min(sz_b, round(152.0 / max(1, len(b_txt)), 1))
                 g_items.append(_make_item(
                     item_id=next_id(), group_id=f"grp_{gi:02d}", text=b_txt,
                     start_sec=bs, end_sec=ge, fps=fps,
@@ -1182,14 +1199,16 @@ def plan_kinetic_stage(
                         split_i = min(boundaries, key=lambda p: (abs(p - len(e_txt) / 2.0), -p))
                     else:
                         split_i = max(2, min(len(e_txt) - 2, len(e_txt) // 2))
+                    sz_lo = round(min(16.0, 128.0 / len(e_txt)), 1) if len(e_txt) >= 8 else 16.0
+                    sz_hi = round(min(22.0, 148.0 / len(e_txt)), 1) if len(e_txt) >= 8 else 22.0
                     g_items.append(_make_item(
                         item_id=next_id(), group_id=f"grp_{gi:02d}", text=e_txt,
                         start_sec=es, end_sec=max(es + 0.25, nxt_s), fps=fps,
-                        variant="inline_rich", x_norm=0.0, y_norm=-0.50, font_size_units=17.0,
+                        variant="inline_rich", x_norm=0.0, y_norm=-0.50, font_size_units=min(17.0, sz_hi),
                         anim_key="in:激光雕刻", track_lane=0,
                         inline_parts=[
-                            {"text": e_txt[:split_i], "color": "#FFFFFF", "size_units": 16.0},
-                            {"text": e_txt[split_i:], "color": "#BCFF00", "size_units": 22.0},
+                            {"text": e_txt[:split_i], "color": "#FFFFFF", "size_units": sz_lo},
+                            {"text": e_txt[split_i:], "color": "#BCFF00", "size_units": sz_hi},
                         ],
                     ))
                 else:
