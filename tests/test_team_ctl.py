@@ -87,9 +87,15 @@ class TeamCtlTests(unittest.TestCase):
             subprocess.run(["git", "add", "."], cwd=wt_dir, check=True)
             subprocess.run(["git", "commit", "-m", "feat: T901"], cwd=wt_dir, check=True, capture_output=True)
 
+            # 模拟并行任务先一步合入 main（main 上存在分支切出后的新改动时，review/merge 仍须只认分支自身 diff）
+            (repo / "src" / "b.py").write_text("VAL = 200\n", encoding="utf-8")
+            subprocess.run(["git", "add", "src/b.py"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-m", "chore: concurrent main update"], cwd=repo, check=True, capture_output=True)
+
             self.assertEqual(team_ctl.cmd_review(repo, "T901"), 0)
             self.assertEqual(team_ctl.cmd_merge(repo, "T901"), 0)
             self.assertIn("VAL = 42", (repo / "src" / "a.py").read_text(encoding="utf-8"))
+            self.assertIn("VAL = 200", (repo / "src" / "b.py").read_text(encoding="utf-8"))
             self.assertEqual(team_ctl.cmd_clean(repo, "T901"), 0)
             self.assertFalse(wt_dir.exists())
 

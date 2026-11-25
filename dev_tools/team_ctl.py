@@ -317,13 +317,13 @@ def cmd_review(repo_root: Path, task_id: str) -> int:
     commits = _git(repo_root, "log", "--oneline", f"main..{branch}").stdout.strip()
     print("[Commits]")
     print(commits or "  (暂无新提交)")
-    diffstat = _git(repo_root, "diff", "--stat", f"main..{branch}").stdout.strip()
-    print("\n[Diffstat vs main]")
+    diffstat = _git(repo_root, "diff", "--stat", f"main...{branch}").stdout.strip()
+    print("\n[Diffstat vs merge-base(main)]")
     print(diffstat or "  (无差异)")
 
     changed = [
         line.strip()
-        for line in _git(repo_root, "diff", "--name-only", f"main..{branch}").stdout.splitlines()
+        for line in _git(repo_root, "diff", "--name-only", f"main...{branch}").stdout.splitlines()
         if line.strip()
     ]
     allowed = {str(p).strip() for p in (meta.get("allowed_files") or []) if str(p).strip()}
@@ -361,7 +361,7 @@ def cmd_merge(repo_root: Path, task_id: str) -> int:
 
     changed = [
         line.strip()
-        for line in _git(repo_root, "diff", "--name-only", f"main..{branch}").stdout.splitlines()
+        for line in _git(repo_root, "diff", "--name-only", f"main...{branch}").stdout.splitlines()
         if line.strip()
     ]
     if not changed:
