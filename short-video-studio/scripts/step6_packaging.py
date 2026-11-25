@@ -510,6 +510,55 @@ def _avoid_faces_for_pkg(bbox: Dict[str, int], faces_px: List[Dict[str, Any]]) -
     return best
 
 
+# ── style_03 / style_17 包装 DNA 接入（T006）────────────────────────────────
+_STYLE03_QUOTE_TOP_MAX = 340
+_STYLE03_QUOTE_BOX_H = 120
+_STYLE03_BAR_BOX_H = 196
+_STYLE17_COMPARE_SEP_RE = re.compile(r"(?i)(?<![a-z])vs\.?(?![a-z])|对比|[｜|/／]")
+_STYLE17_COMPARE_TRIGGER_RE = re.compile(
+    r"(?i)(?<![a-z])vs\.?(?![a-z])|对比|改造前|改造后|升级前|升级后|老店|新店|前与后|[｜|/／]"
+)
+_STYLE17_AFTER_MARKS = ("改造后", "升级后", "新店", "之后", "现在", "后来")
+_STYLE17_BEFORE_MARKS = ("改造前", "升级前", "老店", "之前", "原来")
+
+
+def _style17_short(text: str, limit: int = 8) -> str:
+    clean = re.sub(r"[\s，。！？、；：,.!?;:]+", "", str(text or ""))
+    return clean[:limit]
+
+
+def _style17_split_compare(text: str) -> Tuple[str, str, bool]:
+    """把一句对比话拆成「对比前 / 对比后」两项；没有对比语义返回 (原文, "", False)。"""
+    raw = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not raw or not _STYLE17_COMPARE_TRIGGER_RE.search(raw):
+        return raw, "", False
+    sep = _STYLE17_COMPARE_SEP_RE.search(raw)
+    if sep:
+        left = raw[:sep.start()].strip(" ，,。.;；")
+        right = raw[sep.end():].strip(" ，,。.;；")
+        if left and right:
+            return left, right, True
+    # 「老店改造前…升级后…」这类没有分隔符也能拆，按“后段标记词”落刀
+    after_positions = [raw.find(word) for word in _STYLE17_AFTER_MARKS if raw.find(word) > 0]
+    before_positions = [raw.find(word) for word in _STYLE17_BEFORE_MARKS if raw.find(word) >= 0]
+    if after_positions and before_positions:
+        cut = min(after_positions)
+        if cut > min(before_positions) + 1:
+            left = raw[:cut].strip(" ，,。.;；")
+            right = raw[cut:].strip(" ，,。.;；")
+            if left and right:
+                return left, right, True
+    return raw, "", True
+
+
+def _style03_top_min_y(use_top_bar: bool, suppress_top_dup: bool) -> int:
+    """引语卡顶部锚点下限：顶部常驻条之后，且整张卡必须压在 340px 以上的顶部带。"""
+    base = SAFE_ZONE["y_min"] + 16
+    if use_top_bar and not suppress_top_dup:
+        base = max(base, 162 + 58 + 16)
+    return min(base, _STYLE03_QUOTE_TOP_MAX - _STYLE03_QUOTE_BOX_H)
+
+
 def _measure_pkg_badge_width(text: str, font_path: Optional[str], max_pkg_w: int, target_fs: int = 40, min_w: int = 240) -> int:
     try:
         from PIL import Image, ImageDraw
@@ -1016,6 +1065,16 @@ def run_step6(
         )
         if can_place_opening_giant:
             open_sents = [s for s in audio_events["sentences"] if float(s.get("start_sec") or 0.0) <= 2.6] or [first_sent]
+            style17_open_parts: Optional[Tuple[str, str]] = None
+            if style_id == "style_17":
+                for s_op in open_sents:
+                    cmp_main, cmp_sub, cmp_hit = _style17_split_compare(str(s_op.get("text") or ""))
+                    if cmp_hit:
+                        style17_open_parts = (
+                            _style17_short(cmp_main) or hook_badge_text,
+                            _style17_short(cmp_sub),
+                        )
+                        break
             hook_cand = ""
             # 优先挑含真实数字/实体词（如三百万、六百平、点赞茶楼）的开场钩子，绝不拿「我系牛哥我」当大字主标
             for s_op in open_sents:
@@ -1035,12 +1094,16 @@ def run_step6(
                 hook_label = _trim_giant_phrase(hook_cand, max_chars=giant_max_chars) or hook_cand[:giant_max_chars]
             else:
                 hook_label = hook_cand[:8]
+            if style_id == "style_17" and style17_open_parts and style17_open_parts[0]:
+                hook_label = style17_open_parts[0]
             tier_fs_open = 116 if is_opening_poster_burst else (
                 _pick_giant_tier_px(hook_label, giant_spec, giant_fs) if (is_pure_giant_style or giant_spec.get("size_tiers_px")) else giant_fs
             )
             hook_w = min(SUBTITLE_SYMMETRIC_MAX_W, max(360, _measure_pkg_badge_width(hook_label, pkg_font_path, SUBTITLE_SYMMETRIC_MAX_W, target_fs=min(140, tier_fs_open), min_w=360)))
             hook_x = SUBTITLE_CENTER_X - hook_w // 2
             hook_h = 280 if is_opening_poster_burst else (min(480, max(142, int(round(tier_fs_open * 1.12)))) if is_pure_giant_style else (152 if giant_mode in ("giant_dual_clash", "giant_numeric_trio") else 142))
+            if style_id == "style_17" and style17_open_parts:
+                hook_h = max(hook_h, 200)
             init_giant_y = 780 if style_id == "style_01" else (max(framed_top_y, 224) if use_top_bar else framed_top_y)
             active_faces_0 = []
             for c in edl.get("clips", []):
@@ -1058,6 +1121,8 @@ def run_step6(
                 sec_kw = str((raw_pain_kws[0] if raw_pain_kws else "") or giant_tag or "实景探店")[:8]
             elif not sec_kw and style_id == "style_01":
                 sec_kw = giant_tag if giant_tag and giant_tag != "核心重点" else "门店实拍"
+            if style_id == "style_17" and style17_open_parts:
+                sec_kw = style17_open_parts[1]
             open_elem: Dict[str, Any] = {
                 "id": f"pkg_{len(visual_elements)+1:03d}",
                 "kind": "flower_text" if is_opening_poster_burst else "center_burst_title",
@@ -1089,8 +1154,54 @@ def run_step6(
             if is_opening_poster_burst:
                 open_elem["display_role"] = "flower"
                 open_elem["anim_primitive"] = "三拍砸屏"
+                # style_01：三拍错落斜标节拍从编舞器注入，原有字段一个不动
+                if style_id == "style_01":
+                    from style_01_21_choreographer import plan_style_01_rhythm
+                    rhythm = plan_style_01_rhythm(audio_events.get("sentences") or [], fps=fps)
+                    open_elem["opening_beats"] = list(rhythm.get("opening_beats") or [])
+                    open_elem["tilt_deg"] = -5.0
             elif is_pure_giant_style or (_allow_giant and giant_spec.get("size_tiers_px")):
                 open_elem["display_role"] = "giant_text"
+            if style_id == "style_03":
+                from style_dna_profiles import resolve_style03_bar_layout
+                s03 = resolve_style03_bar_layout(
+                    str(open_elem.get("text_or_asset") or ""), str(open_elem.get("subtext") or ""),
+                    str(open_elem.get("kind") or ""), str(open_elem.get("display_role") or ""),
+                )
+                bar_bb = dict(open_elem["final_bbox"])
+                bar_bb["w"] = min(SUBTITLE_SYMMETRIC_MAX_W, max(360, int(bar_bb["w"])))
+                bar_bb["x"] = SUBTITLE_CENTER_X - bar_bb["w"] // 2
+                bar_bb["y"] = max(SAFE_ZONE["y_min"], min(int(bar_bb["y"]), 1120 - int(bar_bb["h"])))
+                open_elem["bar_mode"] = s03["bar_mode"]
+                open_elem["anchor"] = s03["anchor"]
+                open_elem["bar_width_px"] = int(s03["width_px"])
+                open_elem["bar_bg_hex"] = s03["bg_hex"]
+                open_elem["bbox"] = bar_bb
+                open_elem["final_bbox"] = bar_bb
+                open_elem["safe_zone_ok"] = check_bbox_in_safe_zone(bar_bb)[0]
+            elif style_id == "style_17":
+                from style_dna_profiles import resolve_style17_frame_layout
+                comparing = style17_open_parts is not None
+                s17 = resolve_style17_frame_layout(
+                    str(open_elem.get("text_or_asset") or ""), str(open_elem.get("subtext") or ""),
+                    str(open_elem.get("kind") or ""), compare_mode=comparing,
+                )
+                comparing = s17["layout_mode"] == "dual_gold_hairline_grid"
+                open_elem["compare_mode"] = bool(comparing)
+                open_elem["layout_mode"] = s17["layout_mode"]
+                open_elem["gold_line_hex"] = s17["line_hex"]
+                open_elem["gold_line_width_px"] = int(s17["line_width_px"])
+                if comparing:
+                    open_elem["text_or_asset"] = _style17_short(s17["main_text"]) or str(open_elem.get("text_or_asset") or "")
+                    open_elem["subtext"] = _style17_short(s17["sub_text"])
+                    cmp_bb = dict(open_elem["final_bbox"])
+                    cmp_bb["w"] = min(SUBTITLE_SYMMETRIC_MAX_W, max(360, int(cmp_bb["w"])))
+                    cmp_bb["x"] = SUBTITLE_CENTER_X - cmp_bb["w"] // 2
+                    cmp_bb["h"] = max(200, int(cmp_bb["h"]))
+                    cmp_bb["y"] = max(SAFE_ZONE["y_min"], min(int(cmp_bb["y"]), 1120 - int(cmp_bb["h"])))
+                    open_elem["bbox"] = cmp_bb
+                    open_elem["final_bbox"] = cmp_bb
+                    open_elem["safe_zone_ok"] = check_bbox_in_safe_zone(cmp_bb)[0]
             visual_elements.append(open_elem)
         max_pkg_w = SUBTITLE_SYMMETRIC_MAX_W
 
@@ -1206,21 +1317,56 @@ def run_step6(
 
                 is_end_cta = bool(is_borderless_flower and last_sent and sent.get("id") == last_sent.get("id"))
                 is_quote_item = bool(use_quote_card and not is_end_cta and stamp_seq == 0)
+                elem_kind = (
+                    "end_card_cta" if is_end_cta else
+                    ("quote_citation_card" if is_quote_item else
+                     ("stamp_tag" if is_borderless_flower else "flower_text"))
+                )
+                style03_layout: Optional[Dict[str, Any]] = None
+                style17_layout: Optional[Dict[str, Any]] = None
+                style17_compare = False
+                main_text_out = f"“{kw_label}”" if is_quote_item and not kw_label.startswith("“") else kw_label
+                sub_text_out = f"—— {giant_tag}" if is_quote_item else ""
                 box_max_w = SUBTITLE_SYMMETRIC_MAX_W
                 target_fs = 64 if is_quote_item else (68 if is_borderless_flower else 48)
                 box_w = min(box_max_w, max(320 if is_quote_item else 260, _measure_pkg_badge_width(kw_label, pkg_font_path, box_max_w, target_fs=target_fs, min_w=320 if is_quote_item else 260)))
                 box_x = SUBTITLE_CENTER_X - box_w // 2
                 box_h = 136 if is_end_cta else (132 if is_quote_item else (112 if is_borderless_flower else 96))
                 init_y = 890 if is_end_cta else (820 if is_quote_item else stamp_zone_ys[stamp_seq % len(stamp_zone_ys)])
+                if style_id == "style_03" and not is_end_cta:
+                    from style_dna_profiles import resolve_style03_bar_layout
+                    style03_layout = resolve_style03_bar_layout(main_text_out, sub_text_out, elem_kind, "")
+                    if style03_layout["bar_mode"] == "quote_citation_card":
+                        box_w = min(box_max_w, int(style03_layout["width_px"]))
+                        box_x = SUBTITLE_CENTER_X - box_w // 2
+                        box_h = _STYLE03_QUOTE_BOX_H
+                        init_y = _style03_top_min_y(use_top_bar, suppress_top_dup)
+                    else:
+                        # 通宽底条视觉宽 960（1080 画布居中），碰撞 bbox 收在 640 文本带里过安全区
+                        box_w = min(box_max_w, int(style03_layout["text_width_px"] or box_max_w))
+                        box_x = SUBTITLE_CENTER_X - box_w // 2
+                        bar_h = _STYLE03_BAR_BOX_H if len(main_text_out) > 8 else 98
+                        box_h = max(box_h, bar_h)
+                elif style_id == "style_17" and not is_end_cta:
+                    from style_dna_profiles import resolve_style17_frame_layout
+                    cmp_main, cmp_sub, cmp_hit = _style17_split_compare(str(sent.get("text") or "") or kw_label)
+                    if not cmp_hit:
+                        cmp_main, cmp_sub, cmp_hit = _style17_split_compare(kw_label)
+                    style17_layout = resolve_style17_frame_layout(kw_label, "", elem_kind, compare_mode=cmp_hit)
+                    style17_compare = style17_layout["layout_mode"] == "dual_gold_hairline_grid"
+                    if style17_compare:
+                        main_text_out = _style17_short(cmp_main or style17_layout["main_text"]) or kw_label
+                        sub_text_out = _style17_short(cmp_sub or style17_layout["sub_text"])
+                        box_w = min(box_max_w, 640)
+                        box_x = SUBTITLE_CENTER_X - box_w // 2
+                        box_h = max(200, box_h)
                 final_bbox = _avoid_faces_for_pkg({"x": box_x, "y": init_y, "w": box_w, "h": box_h}, active_faces)
+                if style_id == "style_03" and style03_layout and style03_layout["bar_mode"] == "quote_citation_card":
+                    top_min = _style03_top_min_y(use_top_bar, suppress_top_dup)
+                    final_bbox["y"] = max(top_min, min(int(final_bbox["y"]), _STYLE03_QUOTE_TOP_MAX - box_h))
                 if final_bbox["y"] + final_bbox["h"] > 1120:
                     final_bbox["y"] = max(162, 1120 - final_bbox["h"])
                 ok, _ = check_bbox_in_safe_zone(final_bbox)
-                elem_kind = (
-                    "end_card_cta" if is_end_cta else
-                    ("quote_citation_card" if is_quote_item else
-                     ("stamp_tag" if is_borderless_flower else "flower_text"))
-                )
                 fg_key = "end_card_color" if is_end_cta else ("flank_color" if is_quote_item else "stamp_color")
                 fg_default = "#FFE28A" if (is_end_cta or is_quote_item) else "#FFF589"
                 burst_tags = [str(k)[:5] for k in _display_keywords(sent) if str(k).strip()][:3] if use_multi_tag else []
@@ -1231,8 +1377,8 @@ def run_step6(
                     "fg_hex": _safe_readable_fg(flower_spec.get(fg_key), fg_default),
                     "accent_hex": giant_accent,
                     "stroke_hex": str(flower_spec.get("stroke_color") or "#000000"),
-                    "text_or_asset": f"“{kw_label}”" if is_quote_item and not kw_label.startswith("“") else kw_label,
-                    "subtext": f"—— {giant_tag}" if is_quote_item else "",
+                    "text_or_asset": main_text_out,
+                    "subtext": sub_text_out,
                     "burst_tags": burst_tags,
                     "start_frame": sf,
                     "end_frame": ef,
@@ -1253,6 +1399,17 @@ def run_step6(
                     "policy": spec.get("policy"),
                     "reason": f"花字 {spec.get('trigger')}｜出处「{str(spec.get('evidence_text') or '')[:12]}」",
                 }
+                if style03_layout is not None:
+                    elem_obj["bar_mode"] = style03_layout["bar_mode"]
+                    elem_obj["anchor"] = style03_layout["anchor"]
+                    elem_obj["bar_width_px"] = int(style03_layout["width_px"])
+                    elem_obj["bar_bg_hex"] = style03_layout["bg_hex"]
+                    elem_obj["text_width_px"] = int(style03_layout["text_width_px"])
+                elif style17_layout is not None:
+                    elem_obj["compare_mode"] = bool(style17_compare)
+                    elem_obj["layout_mode"] = style17_layout["layout_mode"]
+                    elem_obj["gold_line_hex"] = style17_layout["line_hex"]
+                    elem_obj["gold_line_width_px"] = int(style17_layout["line_width_px"])
                 if is_end_cta:
                     elem_obj["subtext"] = "评论区聊聊你的看法"
                     has_end_cta = True
