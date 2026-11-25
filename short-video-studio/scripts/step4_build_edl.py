@@ -1918,6 +1918,13 @@ def run_step4(
                                     is_breath_tail = (word_ov < 0.28) or beat_tail
                                 else:
                                     is_breath_tail = ((float(s_curr.get("end_sec", 0.0)) - t_s) <= 0.50) or beat_tail
+                                if is_breath_tail and int(cut_points[idx]["raw_frame"]) < first_3s_cutoff_f:
+                                    _kept_first3 = (
+                                        sum(1 for cp in m_cp[1:] if int(cp["raw_frame"]) < first_3s_cutoff_f)
+                                        + sum(1 for cp in cut_points[idx + 1 :] if int(cp["raw_frame"]) < first_3s_cutoff_f)
+                                    )
+                                    if _kept_first3 < opening_cut_target:
+                                        is_breath_tail = False
                                 if is_breath_tail:
                                     merged_into_prev = True
             if not merged_into_prev:

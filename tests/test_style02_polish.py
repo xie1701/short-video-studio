@@ -256,6 +256,43 @@ class Style02PolishRegressionTests(unittest.TestCase):
         self.assertFalse(any(t.endswith("负") or t.startswith("债") for t in intro_texts), intro_texts)
         self.assertTrue(any("负债" in t for t in intro_texts), intro_texts)
 
+    def test_step4_breath_tail_merge_preserves_first_3s_opening_cuts(self):
+        with tempfile.TemporaryDirectory() as td:
+            pdir = Path(td)
+            a_mp = str(pdir / "talk.mp4")
+            sents = [
+                {
+                    "id": "s1", "text": "大家好我系店主", "start_sec": 0.0, "end_sec": 1.07,
+                    "start_frame": 0, "end_frame": 32, "source_media": a_mp,
+                    "source_in_sec": 0.0, "source_out_sec": 1.07,
+                    "words": [{"text": "大", "start_sec": 0.05, "end_sec": 0.25}, {"text": "家", "start_sec": 0.25, "end_sec": 0.50}],
+                },
+                {
+                    "id": "s2", "text": "今日分享一个实战经验", "start_sec": 1.07, "end_sec": 4.80,
+                    "start_frame": 32, "end_frame": 144, "source_media": a_mp,
+                    "source_in_sec": 1.50, "source_out_sec": 5.23, "keywords": ["实战"],
+                },
+            ]
+            evts = [
+                {"id": "e1", "type": "sentence_start", "time_sec": 0.0, "frame": 0, "sentence_id": "s1"},
+                {"id": "e_s", "type": "stress", "time_sec": 0.63, "frame": 19, "sentence_id": "s1"},
+                {"id": "e2", "type": "sentence_start", "time_sec": 1.07, "frame": 32, "sentence_id": "s2"},
+                {"id": "e_b", "type": "bgm_beat", "time_sec": 3.03, "frame": 91, "sentence_id": "s2"},
+            ]
+            write_json(pdir / "01_manifest.json", {"items": [{
+                "id": "a1", "role": "a_roll", "video_grade": "usable",
+                "normalized_mp4": a_mp, "duration_sec": 8.0,
+                "sharpness_score": 450.0, "stability_score": 0.92,
+                "faces": [{"bbox": {"x": 0.3, "y": 0.15, "w": 0.35, "h": 0.35}}],
+            }]})
+            write_json(pdir / "03_audio_events.json", {
+                "locked_duration_sec": 4.9, "locked_duration_frames": 147,
+                "sentences": sents, "events": evts,
+            })
+            edl = s4.run_step4(pdir, track="creator", edit_profile="talking", style_id="style_02")
+            self.assertGreaterEqual(int(edl.get("first_3s_visual_changes") or 0), 2, edl["clips"][:4])
+            self.assertFalse(any(c.get("freeze_tail") for c in edl["clips"]), edl["clips"])
+
 
 if __name__ == "__main__":
     unittest.main()
