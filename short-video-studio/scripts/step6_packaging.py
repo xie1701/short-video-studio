@@ -1583,6 +1583,8 @@ def run_step6(
         for it in k_items_sorted:
             t_it = round(float(it.get("start_sec") or 0.0), 4)
             role_k = str(it.get("sfx_role") or "swish")
+            if role_k in {"ding", "chime"}:
+                continue
             wav_p = k_sfx_assets.get(role_k) or next(iter(k_sfx_assets.values()), None)
             if wav_p is None or not Path(wav_p).is_file():
                 continue

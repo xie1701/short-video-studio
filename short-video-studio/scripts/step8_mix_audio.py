@@ -47,6 +47,159 @@ AAC_TP_HEADROOM_DB = 1.2
 _MASTER_TP_TARGET = TP_MAX_DBTP  # 真正的封口在 render 封装那次（AAC 首编时挂 alimiter），母带这里只按交付目标卡
 
 
+def suppress_offmic_edge_bleed(
+    voice_arr: np.ndarray,
+    audio_events: Dict[str, Any],
+    sr: int = SR,
+) -> tuple:
+    """
+    抑制句首/句尾及短停顿间隙中的低响度画外杂声（如导演/摄影师轻声提示「走」「好」等）。
+    判据：独立语音岛时长 <= 0.32s、峰值比本句/邻句主讲中位低 >= 10 dB、且与强主讲区被 >=40ms 谷底隔开。
+    使用 15ms 余弦平滑斜坡衰减 42dB，零咔哒爆音且不伤及正常主讲。
+    """
+    if voice_arr.size == 0 or not isinstance(audio_events, dict):
+        return voice_arr, []
+    sentences = [s for s in (audio_events.get("sentences") or []) if isinstance(s, dict)]
+    if not sentences:
+        return voice_arr, []
+
+    arr = voice_arr.astype(np.float32, copy=True)
+    mono = arr.mean(axis=1)
+    n_samples = len(mono)
+    hop = max(1, int(0.010 * sr))
+    win = max(hop, int(0.025 * sr))
+    sq = np.convolve(mono * mono, np.ones(win, dtype=np.float32) / float(win), mode="same")
+    n_frames = n_samples // hop
+    if n_frames < 8:
+        return arr, []
+    frame_db = (10.0 * np.log10(np.maximum(sq[: n_frames * hop].reshape(n_frames, hop).mean(axis=1), 1e-12))).astype(np.float64)
+
+    # 每句的主讲正文参考电平
+    sent_refs: List[tuple] = []
+    for s in sentences:
+        st = max(0.0, float(s.get("start_sec") or 0.0))
+        en = max(st, float(s.get("end_sec") or st))
+        f0 = max(0, int(round(st / 0.010)))
+        f1 = min(n_frames, int(round(en / 0.010)))
+        if f1 - f0 < 10:
+            sent_refs.append((st, en, -99.0))
+            continue
+        seg = frame_db[f0:f1]
+        act = seg[seg > -38.0]
+        ref_db = float(np.median(act)) if len(act) >= 5 else -99.0
+        sent_refs.append((st, en, ref_db))
+
+    suppress_spans: List[tuple] = []
+    hits: List[Dict[str, Any]] = []
+
+    def _scan_window_islands(w0_sec: float, w1_sec: float, ref_db: float, ctx_start_f: int, ctx_end_f: int, kind: str) -> None:
+        if ref_db <= -38.0:
+            return
+        i0 = max(0, int(round(w0_sec / 0.010)))
+        i1 = min(n_frames, int(round(w1_sec / 0.010)))
+        if i1 - i0 < 2:
+            return
+        active_thresh = max(-47.0, ref_db - 24.0)
+        valley_thresh = min(-41.0, ref_db - 17.0)
+        main_thresh = ref_db - 6.5
+
+        idx = i0
+        while idx < i1:
+            if frame_db[idx] <= active_thresh:
+                idx += 1
+                continue
+            j = idx
+            while j < i1 and frame_db[j] > active_thresh:
+                j += 1
+            dur_s = (j - idx) * 0.010
+            peak_db = float(np.max(frame_db[idx:j]))
+            # 确认不是主讲自身轻起手连音：若紧邻两侧存在强主讲帧，则之间必须有 >= 40ms 静音谷底隔离
+            if dur_s <= 0.34 and (-46.5 < peak_db <= ref_db - 10.0):
+                isolated = True
+                # 检查右侧向主讲的连接处是否有 >= 4 帧(40ms)低谷
+                right_main = next((k for k in range(j, min(ctx_end_f, j + 35)) if frame_db[k] >= main_thresh), None)
+                if right_main is not None:
+                    gap_val = frame_db[j:right_main]
+                    if len(gap_val) < 4 or int(np.count_nonzero(gap_val <= valley_thresh)) < 4:
+                        isolated = False
+                # 检查左侧向主讲的连接处是否有 >= 4 帧低谷
+                left_main = next((k for k in range(idx - 1, max(ctx_start_f - 1, idx - 36), -1) if frame_db[k] >= main_thresh), None)
+                if left_main is not None:
+                    gap_val = frame_db[left_main + 1:idx]
+                    if len(gap_val) < 4 or int(np.count_nonzero(gap_val <= valley_thresh)) < 4:
+                        isolated = False
+                if isolated:
+                    s_t = round(idx * 0.010, 3)
+                    e_t = round(j * 0.010, 3)
+                    suppress_spans.append((s_t, e_t))
+                    hits.append({
+                        "start_sec": s_t,
+                        "end_sec": e_t,
+                        "peak_db": round(peak_db, 1),
+                        "ref_speech_db": round(ref_db, 1),
+                        "drop_below_speech_db": round(ref_db - peak_db, 1),
+                        "kind": kind,
+                    })
+            idx = j
+
+    for idx_s, (st, en, ref_db) in enumerate(sent_refs):
+        if ref_db <= -38.0:
+            continue
+        f_ctx0 = max(0, int(round((st - 0.12) / 0.010)))
+        f_ctx1 = min(n_frames, int(round((en + 0.12) / 0.010)))
+        # 1) 句首与句尾边缘 0.42s 内的孤立轻声画外杂音
+        _scan_window_islands(max(0.0, st - 0.08), min(en, st + 0.42), ref_db, f_ctx0, f_ctx1, "sentence_head_bleed")
+        _scan_window_islands(max(st, en - 0.42), en + 0.08, ref_db, f_ctx0, f_ctx1, "sentence_tail_bleed")
+        # 2) 相邻句间短停顿空隙内的孤立画外词
+        if idx_s > 0:
+            prev_st, prev_en, prev_ref = sent_refs[idx_s - 1]
+            gap = st - prev_en
+            if 0.05 <= gap <= 0.70:
+                use_ref = max(ref_db, prev_ref)
+                _scan_window_islands(
+                    prev_en - 0.03,
+                    st + 0.03,
+                    use_ref,
+                    max(0, int(round(prev_st / 0.010))),
+                    f_ctx1,
+                    "inter_sentence_bleed",
+                )
+
+    # 去重合并时间窗并平滑压低 -42 dB（零硬截断爆音）
+    merged: List[List[float]] = []
+    for s0, e0 in sorted(suppress_spans):
+        if merged and s0 <= merged[-1][1] + 0.03:
+            merged[-1][1] = max(merged[-1][1], e0)
+        else:
+            merged.append([s0, e0])
+
+    fade_n = max(1, int(0.015 * sr))
+    floor_gain = 0.008  # -42 dB
+    for s0, e0 in merged:
+        a = max(0, int(round((s0 - 0.025) * sr)))
+        b = min(n_samples, int(round((e0 + 0.025) * sr)))
+        if b - a < fade_n * 2 + 4:
+            continue
+        env_g = np.full(b - a, floor_gain, dtype=np.float32)
+        t_fade = np.linspace(0.0, math.pi, fade_n, dtype=np.float32)
+        fade_down = floor_gain + (1.0 - floor_gain) * 0.5 * (1.0 + np.cos(t_fade))
+        fade_up = floor_gain + (1.0 - floor_gain) * 0.5 * (1.0 - np.cos(t_fade))
+        env_g[:fade_n] = fade_down
+        env_g[-fade_n:] = fade_up
+        arr[a:b] *= env_g[:, None]
+
+    # 去重 hits
+    uniq_hits: List[Dict[str, Any]] = []
+    seen_t: set = set()
+    for h in sorted(hits, key=lambda x: x["start_sec"]):
+        k = round(h["start_sec"], 2)
+        if any(abs(k - sk) <= 0.05 for sk in seen_t):
+            continue
+        seen_t.add(k)
+        uniq_hits.append(h)
+    return arr, uniq_hits
+
+
 def _normalize_bgm_ref_level(
     bgm_arr: np.ndarray,
     target_rms_db: float = -14.5,
@@ -196,6 +349,15 @@ def run_step8(
     ])
 
     voice_arr, _ = load_stereo_wav_np(voice_clean_wav)
+    offmic_bleed_hits: List[Dict[str, Any]] = []
+    if not is_tts:
+        voice_arr, offmic_bleed_hits = suppress_offmic_edge_bleed(voice_arr, audio_events, sr=SR)
+        if offmic_bleed_hits:
+            print(
+                f"[step8] 画外低响度杂声净化：{len(offmic_bleed_hits)} 处 ("
+                + ", ".join(f"{h['start_sec']:.2f}s[{h['peak_db']:.0f}dB]" for h in offmic_bleed_hits[:4])
+                + ")"
+            )
     bgm_arr, _ = load_stereo_wav_np(bgm_in)
     n_samples = len(voice_arr)
 
@@ -513,6 +675,8 @@ def run_step8(
         "bgm_ducking_applied": True,
         "bgm_ref_norm_gain_db": bgm_ref_norm_gain_db,
         "broll_ambient_mixed_count": broll_ambient_mixed_count,
+        "offmic_bleed_suppressed_count": len(offmic_bleed_hits),
+        "offmic_bleed_hits": offmic_bleed_hits,
         "stem_bus_safe_scale": round(bus_safe_scale, 4),
         "duration_sec": round(n_samples / float(SR), 4),
     }

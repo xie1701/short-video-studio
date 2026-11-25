@@ -210,6 +210,25 @@ class ClipBoundaryNgTests(unittest.TestCase):
         self.assertFalse(blocked["passed"])
         self.assertIn("clip_freeze", blocked["measured"])
 
+    def test_5_adjacent_high_contrast_hard_cut_does_not_false_trigger_tail_whip(self):
+        # 0..1.0s 亮图纹理清晰 -> 1.0s 硬切至纯暗色深底：不得把尾边界跨镜跳变误报为 tail_blur_whip
+        joined = self.root / "joined_hard_cut.mp4"
+        _render_video(
+            joined,
+            2.0,
+            lambda t: _clean_frame(t) if t < 1.0 else Image.new("RGB", (FRAME_W, FRAME_H), (22, 26, 30)),
+        )
+        edl = {
+            "fps": FPS,
+            "total_duration_sec": 2.0,
+            "clips": [
+                _clip("c1", 0.0, 1.0, 0.0, 1.0),
+                _clip("c2", 1.0, 2.0, 0.0, 1.0),
+            ],
+        }
+        res = CBA.audit_edl_cut_boundaries(str(joined), edl)
+        self.assertEqual(res["ng_boundary_clips"], [], res)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -6351,9 +6351,36 @@ class ProductionPipelineV48Tests(unittest.TestCase):
         ks_items_by_id = {it["id"]: it for it in pkg_res["kinetic_stage"]["items"]}
         self.assertTrue(pkg_res["sfx_cues"], "真实资产库存在时应产生 0ms 音效")
         for sc in pkg_res["sfx_cues"]:
+            self.assertNotIn(sc.get("sfx_role"), {"ding", "chime"}, f"刺耳电子音效不得出现: {sc}")
             it = ks_items_by_id.get(str(sc.get("event_id") or ""))
             self.assertIsNotNone(it)
             self.assertLessEqual(abs(float(sc["time_sec"]) - float(it["start_sec"])), 1.0 / 30.0 + 1e-4)
+
+        # 验证句首低响度画外杂声净化器：主讲 -20dB 保持不变，间隔 >=40ms 的 -38dB 句首孤立单字杂音被平顺消除
+        from step8_mix_audio import suppress_offmic_edge_bleed
+        sr_t = 48000
+        dur_t = 3.0
+        t_ax = np.arange(int(dur_t * sr_t), dtype=np.float32) / float(sr_t)
+        v_mock = np.zeros((len(t_ax), 2), dtype=np.float32)
+        # 句1主讲 0.20..1.40s (-20dBFS ~ 0.141 peak)
+        m1 = (t_ax >= 0.20) & (t_ax <= 1.40)
+        v_mock[m1, :] = (0.14 * np.sin(2.0 * np.pi * 220.0 * t_ax[m1]))[:, None]
+        # 句2开头 1.56..1.66s 低响度画外杂声「走」(-38dBFS ~ 0.017 peak)，1.66..1.76s 为 100ms 谷底，1.76..2.80s 为主讲
+        m_bleed = (t_ax >= 1.56) & (t_ax <= 1.66)
+        v_mock[m_bleed, :] = (0.017 * np.sin(2.0 * np.pi * 440.0 * t_ax[m_bleed]))[:, None]
+        m2 = (t_ax >= 1.76) & (t_ax <= 2.80)
+        v_mock[m2, :] = (0.14 * np.sin(2.0 * np.pi * 210.0 * t_ax[m2]))[:, None]
+        ae_bleed = {"sentences": [
+            {"id": "s1", "start_sec": 0.20, "end_sec": 1.40},
+            {"id": "s2", "start_sec": 1.58, "end_sec": 2.80},
+        ]}
+        cleaned_v, bleed_hits = suppress_offmic_edge_bleed(v_mock, ae_bleed, sr=sr_t)
+        self.assertTrue(bleed_hits, "应检出句首低响度画外杂声")
+        bleed_rms_db = 20.0 * np.log10(float(np.sqrt(np.mean(cleaned_v[m_bleed] ** 2) + 1e-12)))
+        main_rms_before = float(np.sqrt(np.mean(v_mock[m2] ** 2)))
+        main_rms_after = float(np.sqrt(np.mean(cleaned_v[m2] ** 2)))
+        self.assertLessEqual(bleed_rms_db, -55.0, bleed_hits)
+        self.assertAlmostEqual(main_rms_before, main_rms_after, delta=0.002)
 
         nat_out = export_native_draft(p_pure, out_dir=self.root / "jy_native_ks")
         draft_doc = read_json(Path(nat_out["draft_dir"]) / "draft_content.json")

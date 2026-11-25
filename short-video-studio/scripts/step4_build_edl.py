@@ -1085,6 +1085,51 @@ def run_step4(
                     cut_points.insert(ins_idx, {"cut_frame": snap_f, "raw_frame": snap_f, "event": snap_ev})
                     break
 
+    # ── 换源机位句界硬切原则：只要相邻句子切换了不同视频源（如旧机位说完接新机位），新机位句首必须干脆硬切入 ──
+    if usable_arolls and not broll_only_mode and len(sentences) >= 2 and len(cut_points) >= 1:
+        source_switch_frames: set = set()
+        for idx_s in range(1, len(sentences)):
+            sm_prev = str(sentences[idx_s - 1].get("source_media") or "")
+            sm_curr = str(sentences[idx_s].get("source_media") or "")
+            if not sm_prev or not sm_curr or sm_prev == sm_curr:
+                continue
+            if sm_curr not in usable_aroll_paths:
+                continue
+            sid_c = str(sentences[idx_s].get("id") or "")
+            t_c0 = float(sentences[idx_s].get("start_sec") or 0.0)
+            ev_c = next(
+                (e for e in events if e.get("type") == "sentence_start" and str(e.get("sentence_id") or "") == sid_c),
+                None,
+            ) or next((e for e in events if abs(float(e.get("time_sec") or 0.0) - t_c0) <= 0.05), None)
+            if ev_c is None:
+                continue
+            snap_f = int(ev_c.get("frame", round(t_c0 * fps)))
+            source_switch_frames.add(snap_f)
+            if any(abs(int(cp["raw_frame"]) - snap_f) <= 2 for cp in cut_points):
+                continue
+            # 优先将 1.1s 内的邻近非换源普通切点直接吸附到新机位句首，避免旧机位说完后呆滞拖帧
+            best_k = None
+            best_dist = int(1.1 * fps) + 1
+            for k in range(1, len(cut_points)):
+                rf = int(cut_points[k]["raw_frame"])
+                if any(abs(rf - sf) <= 2 for sf in source_switch_frames if sf != snap_f):
+                    continue
+                d_f = abs(rf - snap_f)
+                if d_f < best_dist:
+                    prev_rf = int(cut_points[k - 1]["raw_frame"])
+                    nxt_rf = int(cut_points[k + 1]["raw_frame"]) if k + 1 < len(cut_points) else total_frames
+                    if snap_f - prev_rf >= 14 and nxt_rf - snap_f >= 14:
+                        best_dist = d_f
+                        best_k = k
+            if best_k is not None:
+                cut_points[best_k] = {"cut_frame": snap_f, "raw_frame": snap_f, "event": ev_c}
+            else:
+                ins_i = next((k for k, cp in enumerate(cut_points) if int(cp["raw_frame"]) > snap_f), len(cut_points))
+                left_rf = int(cut_points[ins_i - 1]["raw_frame"])
+                right_rf = int(cut_points[ins_i]["raw_frame"]) if ins_i < len(cut_points) else total_frames
+                if snap_f - left_rf >= 14 and right_rf - snap_f >= 14:
+                    cut_points.insert(ins_i, {"cut_frame": snap_f, "raw_frame": snap_f, "event": ev_c})
+
     def find_sentence_for_time(
         t_sec: float,
         ev: Dict[str, Any] | None = None,
@@ -1409,17 +1454,32 @@ def run_step4(
                 if source_aroll_valid[idx_k] and not audio_only_flags[idx_k]:
                     roles[idx_k] = "a_roll"
 
-        # 上限控制：动态舞台模式下 B-roll 总覆盖严格收在 [0, 30%]，优胜劣汰保留最高语义贴合镜
-        max_kinetic_b_sec = min(total_dur * 0.30, total_dur * max(0.22, broll_target_ratio + 0.04))
+        # 上限控制：动态舞台模式下 B-roll 总覆盖严格收在 [0, 30%]，各过渡句组均衡保留最高语义贴合实证镜
+        max_kinetic_b_sec = min(total_dur * 0.295, total_dur * max(0.285, broll_target_ratio + 0.07))
         cur_kb_sec = sum(
             frames_to_sec((cut_points[i + 1]["raw_frame"] if i + 1 < n_segs else total_frames) - cut_points[i]["raw_frame"], fps)
             for i in range(n_segs) if roles[i] != "a_roll"
         )
         if cur_kb_sec > max_kinetic_b_sec:
             score_map_k = {i_c: sc_c for sc_c, i_c, _ in _b_cands_by_idx}
+            group_by_seg: Dict[int, str] = {}
+            best_in_group: Dict[str, int] = {}
+            for i_c in range(n_segs):
+                if roles[i_c] != "a_roll":
+                    ts_g = frames_to_sec(cut_points[i_c]["raw_frame"], fps)
+                    s_g = find_sentence_for_time(ts_g, cut_points[i_c]["event"])
+                    g_key = str((kinetic_group_by_sentence.get(s_g.get("id")) or {}).get("group_id") or s_g.get("id") or i_c)
+                    group_by_seg[i_c] = g_key
+                    if g_key not in best_in_group or score_map_k.get(i_c, 0.0) > score_map_k.get(best_in_group[g_key], 0.0):
+                        best_in_group[g_key] = i_c
+            protected_group_anchors = set(best_in_group.values())
             drop_b_order = sorted(
                 (i for i in range(n_segs) if roles[i] != "a_roll" and source_aroll_valid[i] and not audio_only_flags[i]),
-                key=lambda i_c: (score_map_k.get(i_c, 0.0), frames_to_sec((cut_points[i_c + 1]["raw_frame"] if i_c + 1 < n_segs else total_frames) - cut_points[i_c]["raw_frame"], fps)),
+                key=lambda i_c: (
+                    1 if i_c in protected_group_anchors else 0,
+                    score_map_k.get(i_c, 0.0),
+                    frames_to_sec((cut_points[i_c + 1]["raw_frame"] if i_c + 1 < n_segs else total_frames) - cut_points[i_c]["raw_frame"], fps),
+                ),
             )
             for i_db in drop_b_order:
                 if cur_kb_sec <= max_kinetic_b_sec:
@@ -1470,6 +1530,65 @@ def run_step4(
                 budget_merged_flags = new_bm
                 multi_sentence_aroll_flags = new_ms
                 n_segs = len(cut_points)
+
+    # ── 同源 A-roll 句尾气口碎片合并：防止非句界节拍点在句尾静默/轻尾气口切出无语音覆盖的幽灵 A-roll 碎片 ──
+    if n_segs >= 2:
+        m_cp, m_roles, m_ao, m_sv, m_bm, m_ms = [], [], [], [], [], []
+        for idx in range(n_segs):
+            merged_into_prev = False
+            if m_cp and m_roles[-1] == "a_roll" and roles[idx] == "a_roll":
+                ev_type = str((cut_points[idx].get("event") or {}).get("type") or "")
+                if ev_type != "sentence_start":
+                    prev_t0 = frames_to_sec(m_cp[-1]["raw_frame"], fps)
+                    t_s = frames_to_sec(cut_points[idx]["raw_frame"], fps)
+                    t_e = frames_to_sec(cut_points[idx + 1]["raw_frame"] if idx + 1 < n_segs else total_frames, fps)
+                    if (t_e - t_s) <= 0.85 and (t_e - prev_t0) <= 2.35:
+                        s_prev = find_sentence_for_time(prev_t0, m_cp[-1]["event"], t_end=t_s)
+                        s_curr = find_sentence_for_time(t_s, cut_points[idx]["event"], t_end=t_e)
+                        if (
+                            s_prev.get("id")
+                            and s_prev.get("id") == s_curr.get("id")
+                            and str(s_prev.get("source_media") or "") == str(s_curr.get("source_media") or "")
+                        ):
+                            other_ov = max(
+                                (
+                                    min(t_e, float(sx.get("end_sec", 0.0))) - max(t_s, float(sx.get("start_sec", 0.0)))
+                                    for sx in sentences
+                                    if sx.get("id") != s_curr.get("id")
+                                ),
+                                default=0.0,
+                            )
+                            if other_ov < 0.12:
+                                s_words = s_curr.get("words") or []
+                                if s_words:
+                                    word_ov = sum(
+                                        max(
+                                            0.0,
+                                            min(t_e, float(w.get("end", w.get("end_sec", 0.0))))
+                                            - max(t_s, float(w.get("start", w.get("start_sec", 0.0)))),
+                                        )
+                                        for w in s_words
+                                    )
+                                    is_breath_tail = word_ov < 0.28
+                                else:
+                                    is_breath_tail = (float(s_curr.get("end_sec", 0.0)) - t_s) <= 0.50
+                                if is_breath_tail:
+                                    merged_into_prev = True
+            if not merged_into_prev:
+                m_cp.append(cut_points[idx])
+                m_roles.append(roles[idx])
+                m_ao.append(audio_only_flags[idx])
+                m_sv.append(source_aroll_valid[idx])
+                m_bm.append(budget_merged_flags[idx])
+                m_ms.append(multi_sentence_aroll_flags[idx])
+        if len(m_cp) != len(cut_points):
+            cut_points = m_cp
+            roles = m_roles
+            audio_only_flags = m_ao
+            source_aroll_valid = m_sv
+            budget_merged_flags = m_bm
+            multi_sentence_aroll_flags = m_ms
+            n_segs = len(cut_points)
 
     def _cross_roll_needs_hard_cut(idx: int) -> bool:
         if kinetic_stage_mode:
@@ -1796,7 +1915,12 @@ def run_step4(
         path = str(item["normalized_mp4"])
         duration = float(item["duration_sec"])
         first_in = float(sent.get("source_in_sec", 0.0))
-        src_in = first_in + max(0.0, start - float(sent["start_sec"]))
+        raw_offset = start - float(sent["start_sec"])
+        if sent.get("source_media") == path and raw_offset < 0.0:
+            # 切点前移至句前气口接盘上一镜时，回退取同源视频句首前的自然开口准备帧
+            src_in = max(0.0, first_in + raw_offset)
+        else:
+            src_in = first_in + max(0.0, raw_offset)
         limit = duration
         if sent.get("source_media") == path:
             last_out = float(sent.get("source_out_sec", duration))
@@ -1824,11 +1948,49 @@ def run_step4(
             src_in = min(max(0.0, duration - need_sec), src_in)
             first_in = 0.0
 
-        floor = max(0.0, max_out_by_mp.get(path, 0.0), first_in)
+        floor = max(0.0, max_out_by_mp.get(path, 0.0))
+        if raw_offset >= 0.0:
+            floor = max(floor, first_in)
         src_in = max(floor, src_in)
         shortfall = max(0.0, src_in + need_sec - limit)
         src_in = max(floor, src_in - min(shortfall, MAX_AROLL_SHORTFALL_SEC))
         return src_in, min(limit, src_in + need_sec), first_in
+
+    # ── A-roll 源末尾跨气口防冻帧：若本镜源文件已物理耗尽且后镜换新源文件并有前置准备余量，提前将切点吸附到句末 pause_start ──
+    if usable_arolls and not broll_only_mode:
+        aroll_dur_by_mp = {str(a["normalized_mp4"]): float(a.get("duration_sec") or 0.0) for a in usable_arolls}
+        for idx_f in range(n_segs - 1):
+            if roles[idx_f] != "a_roll" or roles[idx_f + 1] != "a_roll" or j_leads[idx_f + 1] != 0:
+                continue
+            f_s = cut_points[idx_f]["cut_frame"]
+            f_e = cut_points[idx_f + 1]["cut_frame"]
+            t_s, t_e = frames_to_sec(f_s, fps), frames_to_sec(f_e, fps)
+            s_cur = find_sentence_for_time(t_s, cut_points[idx_f]["event"], t_end=t_e)
+            s_nxt = find_sentence_for_time(t_e, cut_points[idx_f + 1]["event"], t_end=frames_to_sec(cut_points[idx_f + 2]["cut_frame"] if idx_f + 2 < n_segs else total_frames, fps))
+            sm_c = str(s_cur.get("source_media") or "")
+            sm_n = str(s_nxt.get("source_media") or "")
+            if not sm_c or not sm_n or sm_c == sm_n or sm_c not in aroll_dur_by_mp or sm_n not in aroll_dur_by_mp:
+                continue
+            src_dur_c = aroll_dur_by_mp[sm_c]
+            est_src_in = float(s_cur.get("source_in_sec", 0.0)) + max(0.0, t_s - float(s_cur["start_sec"]))
+            if est_src_in + (t_e - t_s) <= src_dur_c + 0.05:
+                continue
+            ev_p = next(
+                (
+                    e for e in events
+                    if str(e.get("sentence_id") or "") == str(s_cur.get("id") or "")
+                    and e.get("type") in ("pause_start", "sentence_end")
+                    and f_s + 14 <= int(e.get("frame", 0)) < f_e
+                ),
+                None,
+            )
+            if ev_p is None:
+                continue
+            pf = int(ev_p["frame"])
+            pt = frames_to_sec(pf, fps)
+            lead_need = t_e - pt
+            if 0.03 <= lead_need <= 0.35 and float(s_nxt.get("source_in_sec", 0.0)) >= lead_need + 0.04:
+                cut_points[idx_f + 1] = {"cut_frame": pf, "raw_frame": pf, "event": ev_p}
 
     for idx, cp in enumerate(cut_points):
         f_start = cp["cut_frame"]

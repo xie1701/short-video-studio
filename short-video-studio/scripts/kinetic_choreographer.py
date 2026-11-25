@@ -109,8 +109,8 @@ ANIM_SFX_BINDING_TABLE: Dict[str, Dict[str, Any]] = {
         "motion_mode": "slide_in_out",
         "direction": "down",
         "anim_duration_ms": 400,
-        "sfx_role": "ding",
-        "jianying_sfx_name": "叮~",
+        "sfx_role": "pop",
+        "jianying_sfx_name": "气泡弹出",
     },
     "in:向上露出": {
         "jianying_anim_name": "向上露出",
@@ -119,8 +119,8 @@ ANIM_SFX_BINDING_TABLE: Dict[str, Dict[str, Any]] = {
         "motion_mode": "slide_in_out",
         "direction": "up",
         "anim_duration_ms": 400,
-        "sfx_role": "tip",
-        "jianying_sfx_name": "滴，提示音",
+        "sfx_role": "swish",
+        "jianying_sfx_name": "回忆-刷一下",
     },
     "in:向左露出": {
         "jianying_anim_name": "向左露出",
@@ -179,8 +179,8 @@ ANIM_SFX_BINDING_TABLE: Dict[str, Dict[str, Any]] = {
         "motion_mode": "wipe_reveal",
         "direction": "right",
         "anim_duration_ms": 400,
-        "sfx_role": "chime",
-        "jianying_sfx_name": "综艺 悬疑 轻敲",
+        "sfx_role": "paper_shake",
+        "jianying_sfx_name": "纸张抖动声",
     },
     "in:雪光模糊": {
         "jianying_anim_name": "雪光模糊",
@@ -245,6 +245,9 @@ ANIM_SFX_BINDING_TABLE: Dict[str, Dict[str, Any]] = {
 }
 
 
+BANNED_SFX_ROLES = frozenset({"ding", "chime"})
+
+
 def ensure_kinetic_sfx_assets(
     out_dir: Path,
     style_id: str = "style_02",
@@ -269,7 +272,7 @@ def ensure_kinetic_sfx_assets(
         "whoosh_in": root_assets / "sound_vibe" / "sfx" / "style_03_transition.wav",
     }
     for role, src in static_sources.items():
-        if src.is_file():
+        if role not in BANNED_SFX_ROLES and src.is_file():
             result[role] = src.resolve()
 
     # 2. 为其余关键动画角色按音色特征精准合成 WAV（无外网依赖、无版权风险、峰值对齐干净）
@@ -277,8 +280,6 @@ def ensure_kinetic_sfx_assets(
         "pop": ("pop", 19),
         "paper_shake": ("peel", 23),
         "punch": ("impact", 31),
-        "chime": ("chime", 41),
-        "ding": ("chime", 53),
         "whoosh_in": ("whoosh_in", 17),
         "swish": ("swish", 13),
         "boom_hollow": ("impact", 47),
@@ -287,7 +288,7 @@ def ensure_kinetic_sfx_assets(
         "tip": ("pop_low", 29),
     }
     for role, (kind, seed) in synth_specs.items():
-        if role in result:
+        if role in BANNED_SFX_ROLES or role in result:
             continue
         p = sfx_dir / f"{style_id}_{role}.wav"
         if not p.is_file():
@@ -553,6 +554,8 @@ def _make_item(
     font_px = max(28, int(round(float(font_size_units) * 6.0)))
     anim_meta = ANIM_SFX_BINDING_TABLE.get(anim_key or "") if anim_key else None
     sfx_role = sfx_role_override if sfx_role_override is not None else (anim_meta.get("sfx_role") if anim_meta else None)
+    if sfx_role in BANNED_SFX_ROLES:
+        sfx_role = None
 
     fg_hex = "#FFFFFF"
     bg_hex = None
@@ -1159,7 +1162,7 @@ def plan_kinetic_stage(
                         item_id=next_id(), group_id=f"grp_{gi:02d}", text=e_txt,
                         start_sec=es, end_sec=ge, fps=fps,
                         variant="bridge_bar", x_norm=0.0, y_norm=-0.52, font_size_units=16.0,
-                        anim_key=None, sfx_role_override="ding", track_lane=1, trigger="cta",
+                        anim_key=None, sfx_role_override=None, track_lane=1, trigger="cta",
                     ))
                 elif ci_e == len(mapped) - 2 and len(e_txt) >= 4:
                     words_e = tokenize_semantic_words(e_txt, terms=protected_terms)

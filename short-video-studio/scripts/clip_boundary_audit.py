@@ -408,12 +408,19 @@ def _find_edge_ng(
         mid_luma = _median_at(scan, mid_idx, "luma")
         mid_sharp = _median_at(scan, mid_idx, "sharp")
         for edge in ("head", "tail"):
-            lo, hi = (tin, tin + window_sec) if edge == "head" else (tout - window_sec, tout)
+            # 收紧到 [tin+0.05, tout-0.08]，防止 10fps 重采样网格错位把相邻镜头硬切首帧算入本镜
+            if edge == "head":
+                lo, hi = tin + 0.05, min(tout - 0.04, tin + window_sec)
+            else:
+                lo, hi = max(tin + 0.04, tout - window_sec), tout - 0.08
+            if hi < lo:
+                lo, hi = tin + 0.02, tout - 0.04
             edge_idx = np.flatnonzero((times >= lo) & (times <= hi))
             if edge_idx.size == 0:
                 target = (lo + hi) / 2.0
                 nearest = int(np.argmin(np.abs(times - target)))
-                if abs(float(times[nearest]) - target) > max(0.25, window_sec):
+                t_near = float(times[nearest])
+                if t_near < tin + 0.03 or t_near > tout - 0.05 or abs(t_near - target) > max(0.25, window_sec):
                     continue
                 edge_idx = np.asarray([nearest], dtype=np.int64)
             luma = scan["luma"][edge_idx]
@@ -421,8 +428,13 @@ def _find_edge_ng(
             motion = scan["motion"][edge_idx]
             dark_pos = np.flatnonzero((luma < DARK_LUMA_ABS) & (mid_luma > 35.0))
             blur_pos = np.flatnonzero((sharp < mid_sharp * 0.5) & (mid_sharp >= MIN_REF_SHARP))
-            # 入点第一帧的帧间差来自「上一个镜头 -> 本镜」的硬切，不是本镜甩镜，不能算违例
-            motion_scope = motion[1:] if edge == "head" and motion.size > 1 else motion
+            # 入点首帧 / 出点极近切口末帧的帧间差可能源自跨镜硬切，排除该边界点以免误报甩镜
+            if edge == "head" and motion.size > 1:
+                motion_scope = motion[1:]
+            elif edge == "tail" and motion.size > 1 and (tout - float(times[edge_idx[-1]])) <= 0.12:
+                motion_scope = motion[:-1]
+            else:
+                motion_scope = motion
             whip = float(motion_scope.max()) >= MOTION_MAD_MIN if motion_scope.size else False
             if dark_pos.size:
                 hit_at = float(times[edge_idx[int(dark_pos[0])]])
