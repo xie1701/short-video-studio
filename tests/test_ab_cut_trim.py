@@ -1,6 +1,8 @@
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import Mock, patch
@@ -120,16 +122,15 @@ class AbCutTrimTests(unittest.TestCase):
 
     def test_short_aroll_uses_matching_broll_and_preserves_a_full_take(self):
         voice = self._media("voice", "a_roll", 6.0)
+        short_voice = {**voice, "excluded_windows": [{"start_sec": 0.60, "end_sec": 2.0}]}
         broll = self._broll(safe_in_sec=0.8, safe_out_sec=5.2)
-        for name, source_out, role, locked, has_broll in (
-            ("short_take", 0.45, "b_roll", False, True),
-            ("full_take", 1.50, "a_roll", False, True),
-            ("locked_take", 0.45, "a_roll", True, True),
-            ("without_broll", 0.45, "a_roll", False, False),
+        for name, source, source_out, role in (
+            ("short_take", short_voice, 0.45, "b_roll"),
+            ("full_take", voice, 1.50, "a_roll"),
         ):
             with self.subTest(name=name):
-                sentence = self._sent("s1", voice, 0.0, 1.5, source_out_sec=source_out, a_roll_locked=locked)
-                pipe, _ = self._pipeline(name, [sentence], [voice, broll] if has_broll else [voice])
+                sentence = self._sent("s1", source, 0.0, 1.5, source_out_sec=source_out)
+                pipe, _ = self._pipeline(name, [sentence], [source, broll])
                 clip, = run_step4(pipe, style_id="style_01", grammar="dynamic")["clips"]
                 self.assertEqual(clip["track_role"], role, clip)
                 self.assertTrue(clip["underlying_audio_untouched"], clip)
@@ -139,26 +140,57 @@ class AbCutTrimTests(unittest.TestCase):
                 if role == "b_roll":
                     self.assertEqual(clip["media_path"], broll["normalized_mp4"])
                     self.assertIn(clip["sem_match"]["tier"], ("hit", "weak"))
-                elif source_out < 1.50:
-                    self.assertLess(clip["speed"], 1.0, clip)
                 else:
                     self.assertEqual(clip.get("speed", 1.0), 1.0, clip)
 
+    def test_unfilled_aroll_stays_at_original_speed_and_warns(self):
+        voice = self._media("voice", "a_roll", 6.0)
+        short_voice = {**voice, "excluded_windows": [{"start_sec": 0.60, "end_sec": 2.0}]}
+        broll = self._broll(safe_in_sec=0.8, safe_out_sec=5.2)
+        for name, source, locked, items, expected_out in (
+            ("locked_take", short_voice, True, [short_voice, broll], 0.60),
+            ("without_broll", voice, False, [voice], 1.45),
+        ):
+            with self.subTest(name=name):
+                sentence = self._sent("s1", source, 0.0, 1.5, source_out_sec=0.45, a_roll_locked=locked)
+                pipe, _ = self._pipeline(name, [sentence], items)
+                output = StringIO()
+                with redirect_stdout(output):
+                    clip, = run_step4(pipe, style_id="style_01", grammar="dynamic")["clips"]
+                self.assertEqual(clip["track_role"], "a_roll", clip)
+                self.assertTrue(clip["underlying_audio_untouched"], clip)
+                self.assertEqual(clip.get("speed", 1.0), 1.0, clip)
+                self.assertAlmostEqual(clip["source_in_sec"], 0.0)
+                self.assertAlmostEqual(clip["source_out_sec"], expected_out)
+                self.assertTrue(clip["freeze_tail"], clip)
+                self.assertIn(f"[WARN] clip_001 的可用画面仍短 {1.5 - expected_out:.2f}s", output.getvalue())
+
     def test_aroll_uses_natural_tail_without_overlapping_next_sentence(self):
         voice = self._media("voice", "a_roll", 8.0)
-        sentences = [
-            self._sent("s1", voice, 0.0, 1.3, "今天说说我们怎么选座位", source_in_sec=2.0, source_out_sec=3.3),
-            self._sent("s2", voice, 1.5, 3.0, "这里坐下来能看清走道", source_in_sec=3.5, source_out_sec=5.0),
-        ]
-        pipe, audio = self._pipeline("natural_tail", sentences, [voice])
-        edl = run_step4(pipe, style_id="style_02", grammar="dynamic")
-        first, second = edl["clips"]
-        self.assertEqual([first["track_role"], second["track_role"]], ["a_roll", "a_roll"])
-        self.assertAlmostEqual(first["source_out_sec"], 3.5)
-        self.assertGreaterEqual(second["source_in_sec"], first["source_out_sec"])
-        self.assertFalse(first["freeze_tail"], first)
-        self.assertEqual(first.get("speed", 1.0), 1.0)
-        self._assert_cut_event_alignment(edl, audio)
+        for name, speech_end, next_source_in, freeze_tail in (
+            ("short_pause", 1.3, 3.5, False),
+            ("long_pause", 1.0, 3.5, False),
+            ("reserved_source", 1.0, 3.2, True),
+        ):
+            with self.subTest(name=name):
+                sentences = [
+                    self._sent("s1", voice, 0.0, speech_end, "今天说说我们怎么选座位",
+                               source_in_sec=2.0, source_out_sec=2.0 + speech_end),
+                    self._sent("s2", voice, 1.5, 3.0, "这里坐下来能看清走道",
+                               source_in_sec=next_source_in, source_out_sec=next_source_in + 1.5),
+                ]
+                pipe, audio = self._pipeline(name, sentences, [voice])
+                edl = run_step4(pipe, style_id="style_02", grammar="dynamic")
+                first, second = edl["clips"]
+                self.assertEqual([first["track_role"], second["track_role"]], ["a_roll", "a_roll"])
+                self.assertAlmostEqual(first["source_in_sec"], 2.0)
+                self.assertAlmostEqual(first["source_out_sec"], next_source_in)
+                self.assertGreaterEqual(second["source_in_sec"], first["source_out_sec"])
+                self.assertEqual(first["freeze_tail"], freeze_tail, first)
+                self.assertEqual([c.get("speed", 1.0) for c in edl["clips"]], [1.0, 1.0])
+                if not freeze_tail:
+                    self.assertAlmostEqual(first["source_out_sec"] - first["source_in_sec"], first["duration_sec"])
+                self._assert_cut_event_alignment(edl, audio)
 
     def test_style02_switches_onto_and_off_plain_bridge_on_the_event_frame(self):
         voice = self._media("voice", "a_roll", 15.0)

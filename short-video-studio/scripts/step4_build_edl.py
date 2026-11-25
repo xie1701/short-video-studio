@@ -77,6 +77,7 @@ BROLL_SHAKY_STAB_MIN = 0.20
 BROLL_BLURRY_SHARP_MIN = 250.0
 BROLL_QUALITY_FLOOR_PEN = 18.0
 MAX_AROLL_SHORTFALL_SEC = 0.25
+MAX_AROLL_TAIL_EXTENSION_SEC = 1.0
 SOURCE_EPSILON_SEC = 0.0001
 # 推镜预算：整片挂推镜的镜头占比上限，主轨另有更紧的上限（真值里主轨机位基本不动）
 PUSH_SHOT_RATIO = 0.35
@@ -1813,7 +1814,8 @@ def run_step4(
                  if s.get("source_media") == path and float(s.get("source_in_sec", -1.0)) > first_in),
                 default=duration,
             )
-            limit = min(duration, last_out + MAX_AROLL_SHORTFALL_SEC, max(last_out, next_source_in))
+            # 句尾气口原速顺延，出点受后句入点、素材末尾和标废窗约束。
+            limit = min(duration, last_out + MAX_AROLL_TAIL_EXTENSION_SEC, max(last_out, next_source_in))
             for excluded_in, excluded_out in _excluded_source_spans(item.get("excluded_windows") or []):
                 if excluded_in < limit and excluded_out > last_out:
                     limit = min(limit, max(last_out, excluded_in))
@@ -2826,16 +2828,17 @@ def run_step4(
         dur = float(c_obj["duration_sec"])
         source_span = max(0.0, c_obj["source_out_sec"] - c_obj["source_in_sec"])
         speed = clamp_speed(c_obj.get("speed"))
-        if role != "code_broll" and source_span > 0.0 and dur - source_span / speed > MAX_AROLL_SHORTFALL_SEC + SOURCE_EPSILON_SEC:
-            # 没有足够长的连续源窗或替代画面时，让已有画面继续运动，避免长时间钉住末帧。
+        if (role == "b_roll" and source_span > 0.0
+                and dur - source_span / speed > MAX_AROLL_SHORTFALL_SEC + SOURCE_EPSILON_SEC):
+            # 补镜的安全区间放不满时可以放慢画面。
             speed = clamp_speed(source_span / dur)
             c_obj["speed"] = speed
             c_obj["speed_reason"] = "可用画面比镜头短，画面放慢顺播，原声保持不动"
-            if role == "b_roll":
-                c_obj.update(keep_broll_ambient=False, ambient_audio_path=None, ambient_gain_db=None)
+            c_obj.update(keep_broll_ambient=False, ambient_audio_path=None, ambient_gain_db=None)
         shortfall = dur - source_span / speed
         c_obj["freeze_tail"] = shortfall > 1.0 / fps + SOURCE_EPSILON_SEC
-        if shortfall > MAX_AROLL_SHORTFALL_SEC + SOURCE_EPSILON_SEC:
+        warn_threshold = 1.0 / fps if role == "a_roll" else MAX_AROLL_SHORTFALL_SEC
+        if shortfall > warn_threshold + SOURCE_EPSILON_SEC:
             print(f"[step4] [WARN] {c_obj['clip_id']} 的可用画面仍短 {shortfall:.2f}s，请补充可用素材")
 
     # 转场 / 叠加层 / 画面特效：step4 不铺它们（铺在套用端），但要把「这一片一处都没套」和为什么记下来，
