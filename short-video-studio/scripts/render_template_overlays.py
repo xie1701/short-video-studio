@@ -987,14 +987,25 @@ def render_template_packaging_png(
         w = layout["width_px"]
         text_w = min(w - 64, layout["text_width_px"])
         main_fs = layout["giant_font_size_px"] if elem_kind == "center_burst_title" else layout["font_size_px"]
+        sh = layout["shadow"]
         rows = []
         for line, size, color in (
             (l1, 42 if quote else main_fs, layout["main_hex"]),
             (l2, 28 if quote else layout["font_size_px"], layout["sub_hex"]),
         ):
+            if sh["shadow_rgba"][3] > 0:
+                s_ratio = min(1.0, max(0.22, float(size) / max(1.0, float(layout["giant_font_size_px"]))))
+                sh_kwargs = {
+                    "shadow_rgba": (*sh["shadow_rgba"][:3], min(sh["shadow_rgba"][3], 150 if not quote else 135)),
+                    "shadow_dx": min(4 if not quote else 2, max(1, round(int(sh["shadow_dx"]) * s_ratio * 0.45))),
+                    "shadow_dy": min(5 if not quote else 3, max(2, round(int(sh["shadow_dy"]) * s_ratio * 0.50))),
+                    "shadow_blur": max(float(sh["shadow_blur"]), 3.0 if not quote else 2.2),
+                }
+            else:
+                sh_kwargs = dict(sh)
             sprite = _draw_kinetic_line_sprite(
                 " ".join(line.splitlines()), render_font, size, hex_to_rgba(color), max_w=text_w,
-                stroke_w=layout["stroke_px"], **layout["shadow"],
+                stroke_w=layout["stroke_px"], **sh_kwargs,
             )
             if sprite is not None:
                 if sprite.width > text_w:
