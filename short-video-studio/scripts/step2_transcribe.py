@@ -989,17 +989,20 @@ def split_segments_at_pauses(
 
 # 明确的自纠错信号：说错了马上重来。前一句必须丢，cue 自己也不该留在片子里。
 SELF_CORRECTION_CUES = (
-    "不对", "不是", "说错", "重来", "再来一遍", "再说一遍", "我重说", "重新说",
-    "等一下", "等等", "卡了", "忘词", "重新来", "刚才那句", "刚才那句不算",
+    "说错", "讲错", "重来", "再来一遍", "再说一遍", "我重说", "重新说", "重新来",
+    "等一下", "等等", "卡了", "卡壳", "忘词", "刚才那句", "刚才那句不算",
+    "重录", "再来一条", "不对不对", "不是不是",
 )
 
 
 def is_self_correction_cue(text: str) -> bool:
-    """短句且以自纠错词开头，才算 cue（"不对吗" 这种问句不算）。"""
+    """短句且明确为自纠错重拍指令才算 cue，不误伤「不是被骗」「不对劲」等正常否定修辞。"""
     cleaned = _clean_zh_text(text)
     if not cleaned or len(cleaned) > 10:
         return False
-    return any(cleaned.startswith(cue) or (len(cleaned) <= 5 and cue in cleaned) for cue in SELF_CORRECTION_CUES)
+    if cleaned == "不对":
+        return True
+    return any(cleaned.startswith(cue) or (len(cleaned) <= 6 and cue in cleaned) for cue in SELF_CORRECTION_CUES)
 
 
 def collect_ng_report(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

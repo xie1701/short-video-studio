@@ -160,6 +160,24 @@ class Style02PolishRegressionTests(unittest.TestCase):
         self.assertFalse(s4._is_deictic_pointing_stub("鱼池到时就有好多新鲜海鲜", 1.0))
         self.assertFalse(s4._is_deictic_pointing_stub("就系我哋嘅", 1.5))
 
+    def test_step2_rhetorical_negation_not_dropped_as_self_correction(self):
+        import step2_transcribe as S2
+
+        self.assertFalse(S2.is_self_correction_cue("不是被骗"))
+        self.assertFalse(S2.is_self_correction_cue("不是人的问题"))
+        self.assertFalse(S2.is_self_correction_cue("不对劲"))
+        self.assertTrue(S2.is_self_correction_cue("不对，重来"))
+        self.assertTrue(S2.is_self_correction_cue("不对"))
+
+        segs = [
+            {"id": "s1", "text": "公司破产那年我负债200多万", "start_sec": 0.12, "end_sec": 3.0},
+            {"id": "s2", "text": "不是被骗", "start_sec": 3.48, "end_sec": 4.32},
+            {"id": "s3", "text": "也不是行情差", "start_sec": 4.5, "end_sec": 5.7},
+        ]
+        stats = S2.filter_offcamera_and_retakes(segs)
+        self.assertEqual(stats.get("self_correction_dropped", 0), 0)
+        self.assertTrue(all(not s.get("is_filler") for s in segs))
+
 
 if __name__ == "__main__":
     unittest.main()
