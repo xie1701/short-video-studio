@@ -6195,12 +6195,16 @@ class ProductionPipelineV48Tests(unittest.TestCase):
             for i, s in enumerate(sents_multi, 1)
         ]
         write_json(pdir_pkg / "03_audio_events.json", {"locked_duration_sec": 16.5, "sentences": sents_multi, "events": evts_multi})
-        for sid_test in ("style_02", "style_03"):
-            write_json(pdir_pkg / "04_edl.json", {"style_id": sid_test, "clips": clips_multi})
-            res_p = run_step6(pdir_pkg, style_id=sid_test)
-            kinds_p = [str(e.get("kind")) for e in res_p["visual_elements"]]
-            self.assertNotIn("persistent_top_bar", kinds_p)
-            self.assertGreaterEqual(len(kinds_p), 2, (sid_test, kinds_p))
+        write_json(pdir_pkg / "04_edl.json", {"style_id": "style_02", "clips": clips_multi})
+        res_p02 = run_step6(pdir_pkg, style_id="style_02")
+        self.assertTrue((res_p02.get("kinetic_stage") or {}).get("enabled"))
+        self.assertGreaterEqual(len((res_p02.get("kinetic_stage") or {}).get("items") or []), 5)
+        self.assertEqual(res_p02["visual_elements"], [], "style_02 动态舞台开启时不再叠加传统静态顶部横幅")
+        write_json(pdir_pkg / "04_edl.json", {"style_id": "style_03", "clips": clips_multi})
+        res_p = run_step6(pdir_pkg, style_id="style_03")
+        kinds_p = [str(e.get("kind")) for e in res_p["visual_elements"]]
+        self.assertNotIn("persistent_top_bar", kinds_p)
+        self.assertGreaterEqual(len(kinds_p), 2, ("style_03", kinds_p))
         write_json(pdir_pkg / "04_edl.json", {"style_id": "style_17", "clips": clips_multi})
         res_17 = run_step6(pdir_pkg, style_id="style_17")
         for ve in res_17["visual_elements"]:
@@ -6232,11 +6236,132 @@ class ProductionPipelineV48Tests(unittest.TestCase):
         ]
         evts_edl = [{"id": f"ev{k}", "type": "sentence_start", "time_sec": s["start_sec"], "frame": s["start_frame"], "sentence_id": s["id"]} for k, s in enumerate(sents_edl, 1)]
         write_json(pdir_edl / "03_audio_events.json", {"locked_duration_sec": 9.6, "locked_duration_frames": 288, "sentences": sents_edl, "events": evts_edl})
-        for sid_e in ("style_02", "style_03"):
-            edl_out = run_step4(pdir_edl, track="creator", edit_profile="talking", style_id=sid_e)
-            self.assertTrue((edl_out.get("layered_model") or {}).get("enabled"), (sid_e, edl_out.get("cutout_gate"), edl_out.get("layered_model")))
-            tail_arolls = [c for c in edl_out["clips"] if c.get("track_role") == "a_roll" and float(c["timeline_out_sec"]) >= 4.0]
-            self.assertTrue(tail_arolls, (sid_e, edl_out["clips"]))
+        edl_02 = run_step4(pdir_edl, track="creator", edit_profile="talking", style_id="style_02")
+        self.assertTrue(edl_02.get("kinetic_stage_enabled"))
+        self.assertFalse((edl_02.get("layered_model") or {}).get("enabled"), "style_02 不再做异源抠像换B-roll")
+        self.assertLessEqual(float(edl_02.get("broll_ratio_actual") or 0.0), 0.30)
+        tail_arolls_02 = [c for c in edl_02["clips"] if c.get("track_role") == "a_roll" and float(c["timeline_out_sec"]) >= 4.0]
+        self.assertTrue(tail_arolls_02, ("style_02", edl_02["clips"]))
+
+        edl_out = run_step4(pdir_edl, track="creator", edit_profile="talking", style_id="style_03")
+        self.assertTrue((edl_out.get("layered_model") or {}).get("enabled"), ("style_03", edl_out.get("cutout_gate"), edl_out.get("layered_model")))
+        tail_arolls = [c for c in edl_out["clips"] if c.get("track_role") == "a_roll" and float(c["timeline_out_sec"]) >= 4.0]
+        self.assertTrue(tail_arolls, ("style_03", edl_out["clips"]))
+
+    def test_v50_style02_kinetic_stage_and_broll_policy(self):
+        """v5.0 纵深验证：style_02 动态花字舞台、通用词级切分、0ms 音效咬合、多轨剪映导出、零豆腐块与 B-roll 证据策略。"""
+        import numpy as np
+        from kinetic_choreographer import plan_kinetic_stage, split_clean_phrases
+        from render_template_overlays import render_kinetic_stage_item_png
+        from step4_build_edl import run_step4
+        from step5_subtitles import run_step5
+        from step6_packaging import run_step6
+        from export_jianying_native import export_native_draft
+        import style_lock
+
+        # 1. 通用干货口播验证（非特定行业词）与完整多原语覆盖
+        gen_sents = [
+            {"id": "g1", "text": "二零二五年做实体生意必须搞懂三件事", "start_sec": 0.0, "end_sec": 3.2, "start_frame": 0, "end_frame": 96},
+            {"id": "g2", "text": "很多人觉得拍短视频太难太贵赚不到钱", "start_sec": 3.4, "end_sec": 7.6, "start_frame": 102, "end_frame": 228},
+            {"id": "g3", "text": "核心方法有三个1.选题库 2.脚本模板 3.批量矩阵", "start_sec": 7.8, "end_sec": 12.2, "start_frame": 234, "end_frame": 366},
+            {"id": "g4", "text": "这样每天效率就能直接翻三倍", "start_sec": 12.2, "end_sec": 15.0, "start_frame": 366, "end_frame": 450},
+            {"id": "g5", "text": "这里是我们线下的真实展示大厅", "start_sec": 15.2, "end_sec": 18.0, "start_frame": 456, "end_frame": 540},
+            {"id": "g6", "text": "想知道具体怎么落地评论区留言联系我", "start_sec": 18.2, "end_sec": 21.4, "start_frame": 546, "end_frame": 642},
+        ]
+        ae_gen = {"locked_duration_sec": 21.4, "sentences": gen_sents, "events": []}
+        plan_gen = plan_kinetic_stage(ae_gen, style_id="style_02")
+        patterns_seen = [g["pattern"] for g in plan_gen["groups"]]
+        self.assertIn("staged_3tier_build", patterns_seen)
+        self.assertIn("hero_anchor_plus_danmaku", patterns_seen)
+        self.assertIn("list_build_gather_dim_overlay", patterns_seen)
+        self.assertIn("inline_emphasis_cta", patterns_seen)
+        self.assertTrue(any(it.get("z_layer") == "behind_person" for it in plan_gen["items"]))
+        self.assertTrue(any(it.get("dim_after_sec") is not None for it in plan_gen["items"]))
+        # 验证指示代词不跨块切断 & 尾句双色强调不把词汇劈成两半
+        ph_yue = split_clean_phrases("所以食嘅就系鸡𠮶种原汁原味")
+        self.assertFalse(any(p.endswith("𠮶") for p in ph_yue[:-1]), ph_yue)
+        plan_cta = plan_kinetic_stage({
+            "locked_duration_sec": 6.0,
+            "sentences": [
+                {"id": "c0", "text": "大家好今天介绍这家店", "start_sec": 0.0, "end_sec": 2.8, "start_frame": 0, "end_frame": 84},
+                {"id": "c1", "text": "唔知道大家中意食乜嘢可以喺评论区讲下", "start_sec": 3.0, "end_sec": 6.0, "start_frame": 90, "end_frame": 180},
+            ],
+            "events": [],
+        }, style_id="style_02")
+        inlines = [it for it in plan_cta["items"] if it.get("variant") == "inline_rich"]
+        self.assertTrue(inlines, plan_cta["items"])
+        parts_cta = inlines[0]["inline_parts"]
+        self.assertFalse(parts_cta[0]["text"].endswith("大") and parts_cta[1]["text"].startswith("家"), parts_cta)
+
+        # 2. 7 种舞台变体渲染（含粤语生僻字）零豆腐块验证
+        for var_n, sample_txt in (
+            ("hero_white", "花咗三百万喺"),
+            ("hero_lime", "金湾开咗点赞茶楼"),
+            ("red_pill", "六百平嘅厨房"),
+            ("red_slam", "好傻"),
+            ("bridge_bar", "𠮶种原汁原味"),
+            ("danmaku_line", "你要花三分之一"),
+        ):
+            im = render_kinetic_stage_item_png({"variant": var_n, "text_or_asset": sample_txt, "font_size_px": 100})
+            self.assertIsNotNone(im, var_n)
+            self.assertGreater(im.width, 40)
+        im_in = render_kinetic_stage_item_png({
+            "variant": "inline_rich",
+            "text_or_asset": "想知道如何落地",
+            "inline_parts": [
+                {"text": "想知道", "color": "#FFFFFF", "size_units": 16},
+                {"text": "如何落地", "color": "#BCFF00", "size_units": 22},
+            ],
+        })
+        im_hai = render_kinetic_stage_item_png({"variant": "hero_white", "text_or_asset": "喺", "font_size_px": 100})
+        im_tofu = render_kinetic_stage_item_png({"variant": "hero_white", "text_or_asset": "\uffff", "font_size_px": 100})
+        self.assertIsNotNone(im_in)
+        self.assertFalse(np.array_equal(np.array(im_hai), np.array(im_tofu)))
+
+        # 3. 无 B-roll 源时退化 0% B-roll + 完整 step5/step6/剪映导出 0ms 音效咬合
+        p_pure = self.root / "ks_pure_edl"
+        p_pure.mkdir()
+        a_mp = str(p_pure / "aroll.mp4")
+        sents_e = [
+            {**s, "source_media": a_mp, "source_in_sec": s["start_sec"], "source_out_sec": s["end_sec"], "keywords": ["生意"]}
+            for s in gen_sents
+        ]
+        evts_e = [{"id": f"ev{i}", "type": "sentence_start", "time_sec": s["start_sec"], "frame": s["start_frame"], "sentence_id": s["id"]} for i, s in enumerate(sents_e, 1)]
+        evts_e.append({"id": "ev_g2_mid", "type": "stress", "time_sec": 5.4, "frame": 162, "sentence_id": "g2"})
+        evts_e.sort(key=lambda e: e["time_sec"])
+        write_json(p_pure / "01_manifest.json", {"items": [{"id": "a1", "role": "a_roll", "video_grade": "usable", "normalized_mp4": a_mp, "duration_sec": 30.0, "sharpness_score": 450.0, "stability_score": 0.92, "faces": [{"bbox": {"x": 0.3, "y": 0.15, "w": 0.35, "h": 0.35}}]}]})
+        write_json(p_pure / "03_audio_events.json", {"locked_duration_sec": 21.4, "locked_duration_frames": 642, "sentences": sents_e, "events": evts_e})
+        edl_pure = run_step4(p_pure, track="creator", edit_profile="talking", style_id="style_02")
+        self.assertEqual(edl_pure["broll_ratio_actual"], 0.0)
+        self.assertTrue(any((c.get("pip_layout") or {}).get("mode") == "self_matting_behind_text" for c in edl_pure["clips"]))
+
+        subs_res = run_step5(p_pure, template_id="style_02")
+        self.assertTrue(subs_res.get("kinetic_stage_suppressed"))
+        self.assertEqual(subs_res["suppressed_count"], subs_res["count"])
+
+        # 准备音频产物验证剪映多轨导出
+        import wave
+        wav_p = p_pure / "03_locked_voice.wav"
+        with wave.open(str(wav_p), "wb") as wf:
+            wf.setnchannels(2)
+            wf.setsampwidth(2)
+            wf.setframerate(48000)
+            wf.writeframes(b"\x00\x00" * (48000 * 2 * 2))
+        pkg_res = run_step6(p_pure, style_id="style_02")
+        ks_items_by_id = {it["id"]: it for it in pkg_res["kinetic_stage"]["items"]}
+        self.assertTrue(pkg_res["sfx_cues"], "真实资产库存在时应产生 0ms 音效")
+        for sc in pkg_res["sfx_cues"]:
+            it = ks_items_by_id.get(str(sc.get("event_id") or ""))
+            self.assertIsNotNone(it)
+            self.assertLessEqual(abs(float(sc["time_sec"]) - float(it["start_sec"])), 1.0 / 30.0 + 1e-4)
+
+        nat_out = export_native_draft(p_pure, out_dir=self.root / "jy_native_ks")
+        draft_doc = read_json(Path(nat_out["draft_dir"]) / "draft_content.json")
+        k_tracks = [t for t in draft_doc["tracks"] if t["type"] == "text" and str(t.get("name", "")).startswith("kinetic_")]
+        self.assertGreaterEqual(len(k_tracks), 3, "动态花字舞台应导出多条可编辑真文字轨")
+        self.assertGreater(int((nat_out.get("counts") or {}).get("kinetic_stage_segments") or 0), 0, nat_out)
+        # 风格资产锁自洽检查
+        self.assertTrue(style_lock.audit_assets("style_02")["ok"])
 
 
 if __name__ == "__main__":

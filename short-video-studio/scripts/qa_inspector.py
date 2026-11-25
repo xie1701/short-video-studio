@@ -338,6 +338,40 @@ def inspect_video(
             "≤ 1.5 帧且 0 越出锁定句时间窗",
         ))
 
+        # 5b. 动态花字舞台检验（当风格由 kinetic_stage 接管口播表达时）
+        ks_block = pkg.get("kinetic_stage") or {}
+        if ks_block.get("enabled"):
+            ks_items = list(ks_block.get("items") or [])
+            ks_by_id = {str(it.get("id")): it for it in ks_items if it.get("id")}
+            sfx_errs_ms = []
+            for c_s in (pkg.get("sfx_cues") or []):
+                eid = str(c_s.get("event_id") or "")
+                if eid in ks_by_id:
+                    sfx_errs_ms.append(abs(float(c_s.get("time_sec") or 0.0) - float(ks_by_id[eid].get("start_sec") or 0.0)) * 1000.0)
+            max_ks_sfx_ms = max(sfx_errs_ms) if sfx_errs_ms else 0.0
+            # 计算动态花字对全片口播时段的覆盖率
+            ks_intervals = sorted((float(it.get("start_sec") or 0.0), float(it.get("end_sec") or 0.0)) for it in ks_items if float(it.get("end_sec") or 0.0) > float(it.get("start_sec") or 0.0))
+            merged_iv: List[Tuple[float, float]] = []
+            for a_k, b_k in ks_intervals:
+                if merged_iv and a_k <= merged_iv[-1][1] + 0.05:
+                    merged_iv[-1] = (merged_iv[-1][0], max(merged_iv[-1][1], b_k))
+                else:
+                    merged_iv.append((a_k, b_k))
+            speech_cov_sec = 0.0
+            speech_total_sec = sum(max(0.0, float(s["end_sec"]) - float(s["start_sec"])) for s in sents_all)
+            for s in sents_all:
+                ss_k, se_k = float(s["start_sec"]), float(s["end_sec"])
+                speech_cov_sec += sum(max(0.0, min(se_k, b_k) - max(ss_k, a_k)) for a_k, b_k in merged_iv)
+            ks_cov_ratio = speech_cov_sec / max(0.1, speech_total_sec)
+            ks_ok = bool(ks_items) and ks_cov_ratio >= 0.80 and max_ks_sfx_ms <= (frame_dur * 1000.0 + 1.0)
+            checks.append(_mk_check(
+                "kinetic_stage_sync",
+                "动态花字舞台口播覆盖与 0ms 音效咬合",
+                "PASS" if ks_ok else "FAIL",
+                f"舞台={len(ks_items)} 项, 口播覆盖={ks_cov_ratio*100:.1f}%, 音效最大误差={max_ks_sfx_ms:.1f}ms ({len(sfx_errs_ms)} 条)",
+                "覆盖≥80%, 音效偏差≤1帧",
+            ))
+
         # 6. 切点对齐音频事件 (含 J-cut)
         events_by_id = {e["id"]: e for e in audio_events.get("events", [])}
         max_cut_err_frames = 0

@@ -1758,6 +1758,7 @@ _AI_MATTING_MODES = {
     "vision_portrait_cutout_pip",
     "data_news_cutout_pip",
     "layered_cutout_over_broll",
+    "self_matting_behind_text",
 }
 
 
@@ -1850,6 +1851,51 @@ def _render_ai_person_matting_segment(
                 "-i", str(matte_mp4),
                 "-loop", "1", "-framerate", str(fps), "-i", str(giant_png),
                 "-an", "-filter_complex", fc, "-map", "[vout]",
+                "-frames:v", str(clip_frames), "-c:v", "libx264", "-preset", "medium", "-crf", "15",
+                "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS, str(out_mp4),
+            ])
+            return out_mp4.is_file()
+
+        if mode == "self_matting_behind_text":
+            back_ovs = [b for b in (pip_cfg.get("back_overlays") or []) if b.get("path") and Path(str(b["path"])).is_file()]
+            if not back_ovs:
+                return False
+            cmd_inputs_s: List[str] = ["-i", str(fg_clean), "-i", str(matte_mp4)]
+            fc_s: List[str] = [
+                f"[0:v]split=2[bg0][fg_src]",
+                f"[fg_src]format=rgba[fg_raw]",
+                f"[1:v]format=gray[mm]",
+                f"[fg_raw][mm]alphamerge[fg_cut]",
+            ]
+            bg_lbl_s = "[bg0]"
+            for bi, bov in enumerate(back_ovs):
+                bpath = str(bov["path"])
+                bx, by = int(bov.get("x") or 0), int(bov.get("y") or 0)
+                rs = max(0.0, float(bov.get("rel_start") or 0.0))
+                re_t = max(rs + 0.04, float(bov.get("rel_end") or clip_dur))
+                ov_ss = max(0.0, float(bov.get("ov_offset") or 0.0))
+                in_i = len([x for x in cmd_inputs_s if x == "-i"])
+                if bpath.lower().endswith(".png"):
+                    cmd_inputs_s.extend(["-loop", "1", "-t", f"{clip_dur + 0.2:.4f}", "-i", bpath])
+                    b_stream = f"[{in_i}:v]"
+                else:
+                    if ov_ss > 0.01:
+                        cmd_inputs_s.extend(["-ss", f"{ov_ss:.4f}", "-i", bpath])
+                    else:
+                        cmd_inputs_s.extend(["-i", bpath])
+                    prep_lbl_s = f"[bvp_{bi}]"
+                    fc_s.append(f"[{in_i}:v]format=rgba,setpts=PTS-STARTPTS+{rs:.4f}/TB{prep_lbl_s}")
+                    b_stream = prep_lbl_s
+                nxt_lbl_s = f"[bg_sbt_{bi}]"
+                fc_s.append(
+                    f"{bg_lbl_s}{b_stream}overlay=x={bx}:y={by}:enable='between(t,{rs:.3f},{re_t:.3f})':shortest=0:eof_action=pass{nxt_lbl_s}"
+                )
+                bg_lbl_s = nxt_lbl_s
+            fc_s.append(f"{bg_lbl_s}[fg_cut]overlay=x=0:y=0:shortest=1,{tail_str}[vout]")
+            run_cmd([
+                ffmpeg_bin, "-y",
+                *cmd_inputs_s,
+                "-an", "-filter_complex", ";".join(fc_s), "-map", "[vout]",
                 "-frames:v", str(clip_frames), "-c:v", "libx264", "-preset", "medium", "-crf", "15",
                 "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS, str(out_mp4),
             ])
@@ -2578,7 +2624,14 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
 
     work_dir = pipeline_dir / "_render_final"
     work_dir.mkdir(parents=True, exist_ok=True)
-    for stale in list(work_dir.glob("pkg_*.png")) + list(work_dir.glob("pkg_*.mov")) + list(work_dir.glob("sub_*.png")):
+    for stale in (
+        list(work_dir.glob("pkg_*.png"))
+        + list(work_dir.glob("pkg_*.mov"))
+        + list(work_dir.glob("ks_*.png"))
+        + list(work_dir.glob("ks_*.mov"))
+        + list(work_dir.glob("_batch_*.mp4"))
+        + list(work_dir.glob("sub_*.png"))
+    ):
         stale.unlink(missing_ok=True)
 
     fps = int(edl.get("fps") or DEFAULT_FPS)
@@ -2697,29 +2750,80 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
         fade_in = bool((not preview) and (not is_video_ov) and int(elem.get("start_frame", 0)) > 0)
         prepared_pkg_ovs.append((idx, elem, ov_path, px, py, s_t, e_t, blur_rect, fade_in, is_video_ov))
 
-    # 4 层纵深路由：当全屏/放大抠像镜与 center_burst_title 时段重叠时，把巨字放入抠像人物背后，避免字糊在主讲人脸上
+    # 动态花字舞台图层（style_02 等启用 kinetic_stage 时，一并接入舞台动画、压暗留底与人后弹幕夹层）
+    ks_block = pkg_data.get("kinetic_stage") or {}
+    if ks_block.get("enabled"):
+        from render_template_overlays import render_kinetic_stage_item_png, render_animated_overlay_mov
+        ks_items = list(ks_block.get("items") or [])
+        ks_base_idx = len(prepared_pkg_ovs) + 1000
+        for k_i, k_elem in enumerate(ks_items):
+            s_t = max(0.0, float(k_elem.get("start_sec") or 0.0))
+            e_t = min(exact_dur, float(k_elem.get("end_sec") or (s_t + 0.5)))
+            if e_t <= s_t:
+                continue
+            ov_path_k: Optional[Path] = None
+            is_vid_k = False
+            needs_mov_k = bool((not preview) and (str(k_elem.get("motion_mode") or "").strip() or k_elem.get("dim_after_sec") is not None))
+            static_im = render_kinetic_stage_item_png(k_elem, font_candidates=tpl.get("font_candidates"))
+            if static_im is None:
+                continue
+            pw, ph = static_im.size
+            if needs_mov_k:
+                mov_kp = work_dir / f"ks_{k_i:03d}.mov"
+                anim_kr = render_animated_overlay_mov(
+                    elem=k_elem,
+                    out_mov=mov_kp,
+                    style_id=style_id,
+                    duration_sec=max(0.35, e_t - s_t),
+                    fps=fps,
+                    font_candidates=tpl.get("font_candidates"),
+                    fallback_static_img=static_im,
+                )
+                if anim_kr is not None and anim_kr[0].is_file():
+                    ov_path_k, pw, ph = anim_kr
+                    is_vid_k = True
+            if ov_path_k is None:
+                png_kp = work_dir / f"ks_{k_i:03d}.png"
+                static_im.save(png_kp)
+                ov_path_k = _scale_png_for_preview(png_kp, f"ks{k_i}")
+            c_xy = k_elem.get("center_px") or [CANVAS_WIDTH // 2, 1400]
+            px_k = max(12, min(CANVAS_WIDTH - pw - 12, int(c_xy[0]) - pw // 2))
+            py_k = max(120, min(CANVAS_HEIGHT - ph - 120, int(c_xy[1]) - ph // 2))
+            prepared_pkg_ovs.append((ks_base_idx + k_i, k_elem, ov_path_k, px_k, py_k, s_t, e_t, None, False, is_vid_k))
+
+    # 4 层纵深路由：
+    # 1) 全屏/放大抠像镜（layered_cutout_over_broll）重叠大字/巨字，压入人物背后；
+    # 2) 自抠像人后文字夹层（self_matting_behind_text），将 z_layer="behind_person" 弹幕压到人物背后、原背景之上。
     edl_for_base = dict(edl)
     clips_base = [dict(c) for c in (edl.get("clips") or [])]
     skip_foreground_idxs: set = set()
+    fallback_lower_idxs: set = set()
     if (not preview) and prepared_pkg_ovs:
         for p_idx, p_elem, ov_p, bx, by, s_t, e_t, _br, _fi, _iv in prepared_pkg_ovs:
-            if str(p_elem.get("kind") or "") != "center_burst_title":
+            z_layer_p = str(p_elem.get("z_layer") or "")
+            is_behind_person = (z_layer_p == "behind_person")
+            is_center_burst = (str(p_elem.get("kind") or "") == "center_burst_title")
+            if not (is_behind_person or is_center_burst):
                 continue
             cut_overlap = 0.0
             matched_clips: List[Tuple[int, float, float]] = []
             for ci, c_it in enumerate(clips_base):
                 lay = c_it.get("pip_layout") or {}
-                if str(lay.get("mode") or "") != "layered_cutout_over_broll":
-                    continue
-                if float(lay.get("fg_scale") or 1.2) < 0.98:
-                    continue
+                l_mode = str(lay.get("mode") or "")
+                if is_behind_person:
+                    if l_mode not in ("self_matting_behind_text", "layered_cutout_over_broll"):
+                        continue
+                else:
+                    if l_mode != "layered_cutout_over_broll" or float(lay.get("fg_scale") or 1.2) < 0.98:
+                        continue
                 c_s = float(c_it.get("timeline_in_sec") or 0.0)
                 c_e = float(c_it.get("timeline_out_sec") or 0.0)
                 ov_l = min(c_e, e_t) - max(c_s, s_t)
-                if ov_l >= 0.20:
+                if ov_l >= (0.12 if is_behind_person else 0.20):
                     cut_overlap += ov_l
                     matched_clips.append((ci, max(c_s, s_t) - c_s, min(c_e, e_t) - c_s))
-            if matched_clips and cut_overlap >= min(0.25, (e_t - s_t) * 0.45):
+            min_need = 0.15 if is_behind_person else min(0.25, (e_t - s_t) * 0.45)
+            if matched_clips and cut_overlap >= min_need:
                 skip_foreground_idxs.add(p_idx)
                 for ci, rs_c, re_c in matched_clips:
                     c_s = float(clips_base[ci].get("timeline_in_sec") or 0.0)
@@ -2735,6 +2839,8 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
                     })
                     lay_new["back_overlays"] = b_list
                     clips_base[ci]["pip_layout"] = lay_new
+            elif is_behind_person:
+                fallback_lower_idxs.add(p_idx)
     edl_for_base["clips"] = clips_base
     base_mp4 = build_base_video_track(pipeline_dir, edl_for_base, color_plan, master_wav, manifest=manifest, preview=preview)
 
@@ -2769,6 +2875,8 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
     for p_idx, _elem, ov_path, px, py, s_t, e_t, blur_rect, fade_in, is_video_ov in prepared_pkg_ovs:
         if p_idx in skip_foreground_idxs:
             continue
+        if p_idx in fallback_lower_idxs:
+            py = max(int(py), int(CANVAS_HEIGHT * 0.72))
         overlays.append((
             ov_path,
             int(round(px * scale_k)),
@@ -2928,6 +3036,21 @@ def _composite_layers(
     out_path = Path(out_path)
     if not overlays:
         raise ValueError("_composite_layers 需要至少一个图层")
+    batch_limit = 18
+    if len(overlays) > batch_limit:
+        cur_vid = Path(video_in)
+        chunks = [overlays[k : k + batch_limit] for k in range(0, len(overlays), batch_limit)]
+        for bi, chunk in enumerate(chunks):
+            is_last_b = (bi == len(chunks) - 1)
+            dst_b = out_path if is_last_b else (work_dir / f"_batch_{tag}_{bi}.mp4")
+            _composite_layers(
+                ffmpeg_bin, cur_vid, chunk, dst_b, work_dir,
+                fps=fps, preview=preview,
+                audio_in=(audio_in if is_last_b else None),
+                dur=dur, tag=f"{tag}b{bi}",
+            )
+            cur_vid = dst_b
+        return out_path
     base_idx = 2 if audio_in else 1
     cmd = [ffmpeg_bin, "-y", "-i", str(video_in)]
     if audio_in:

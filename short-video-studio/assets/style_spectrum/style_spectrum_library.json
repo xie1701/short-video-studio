@@ -583,7 +583,7 @@
     {
       "style_id": "style_02",
       "index": 2,
-      "style_name_cn": "极速跳剪避坑 · 暗灰方角底框荧光绿风",
+      "style_name_cn": "动态花字舞台 · 词级卡点荧光绿人后弹幕风",
       "archetype_id": "arch_04_punch_talking_head",
       "recommended_track": "creator",
       "domain_tags": [
@@ -592,7 +592,7 @@
         "工厂老板账号",
         "知识变现"
       ],
-      "plain_cn_pitch": "一秒一镜快节奏跳剪，下半屏通宽半透明暗灰底条配白字与荧光黄绿双行斜体，适合三十秒干货避坑。",
+      "plain_cn_pitch": "没有底部固定通栏字幕，口播按词句节拍弹出动画花字并伴随呼吸过渡条，每拍严丝合缝搭配专属音效；仅情绪共鸣段落开启人物抠像人后弹幕，实拍空镜只作实证点缀控制在三成以内。",
       "source_filename": "style_02_preset",
       "commercial_safe_font": "SourceHanSerifCN-Bold.otf",
       "source_jianying_font": "思源宋体-Bold",
@@ -617,7 +617,7 @@
         "giant_impact_count": 0,
         "capsule_bg_subtitle": false,
         "black_polaroid_frame": false,
-        "pure_kinetic_flower_flow": false,
+        "pure_kinetic_flower_flow": true,
         "pip_mode": "geometry_pip_window",
         "giant_mode": "giant_dual_clash",
         "capsule_bg_ratio": 0.67,
@@ -894,7 +894,7 @@
       },
       "is_default_store_style": false,
       "is_default_creator_style": false,
-      "broll_overlay_ratio_target": 0.112,
+      "broll_overlay_ratio_target": 0.22,
       "broll_ambient_sound_policy": {
         "enabled": false,
         "gain_db": -10.0,
@@ -1064,7 +1064,7 @@
       "broll_target_hard": false,
       "broll_target_band_pct": [
         0.0,
-        26.2
+        30.0
       ],
       "flower_text_spec": {
         "font_size_1080p_px": 64,

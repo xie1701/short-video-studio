@@ -202,6 +202,8 @@ def _eval_check(check: Dict[str, Any], ctx: Dict[str, Any]) -> Tuple[bool, Any]:
         return hit is None, hit or ""
 
     if key == "secondary_distinct":
+        if ctx.get("self_matting"):
+            return True, "自抠像人后文字夹层(无异源换底)"
         main_m = str(ctx.get("main_media") or "")
         sec_m = str(ctx.get("secondary_media_path") or "")
         if not sec_m:
@@ -524,6 +526,7 @@ def apply_cutout_policy(clips: List[Dict[str, Any]], style_entry: Optional[Dict[
             "face_anchor": lay.get("face_anchor"),
             "main_media": str(clip.get("media_path") or ""),
             "secondary_media_path": str(lay.get("secondary_media_path") or ""),
+            "self_matting": bool(lay.get("self_matting") or str(lay.get("mode") or "") == "self_matting_behind_text"),
         }
         allowed, reason, _sc = allow_cutout(ctx, rules)
         if allowed and min_gap > 0 and tin - state["last_t"] < min_gap:

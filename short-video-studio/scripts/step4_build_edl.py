@@ -38,6 +38,7 @@ import os
 
 import broll_match
 import element_rules
+import kinetic_choreographer
 import pip_policy
 import scene_budget
 import treatment_policy
@@ -682,6 +683,29 @@ def run_step4(
     # 镜头预算先算出来：挑切点时要用（目标刀数 / 单镜时长带 / 快切配额 / 开场刀数）
     shot_budget: Optional[Dict[str, Any]] = plan_shot_budget(total_dur, gram) if gram is not None else None
     grammar_notes: List[str] = []
+    kinetic_stage_mode = bool(style_id and kinetic_choreographer.is_kinetic_stage_style(style_id))
+    kinetic_stage_plan: Dict[str, Any] = (
+        kinetic_choreographer.plan_kinetic_stage(
+            audio_events, style_id=style_id, pipeline_dir=pipeline_dir, fps=fps,
+        )
+        if kinetic_stage_mode
+        else {"enabled": False, "groups": [], "items": [], "matting_windows": [], "stats": {}}
+    )
+    kinetic_locked_spans: List[Tuple[float, float]] = [
+        (float(g["start_sec"]), float(g["end_sec"]))
+        for g in (kinetic_stage_plan.get("groups") or [])
+        if g.get("a_roll_locked")
+    ]
+
+    def _overlaps_kinetic_locked(t_s: float, t_e: float) -> bool:
+        return any(min(t_e, g_e) - max(t_s, g_s) >= 0.12 for g_s, g_e in kinetic_locked_spans)
+
+    def _overlaps_matting_window(t_s: float, t_e: float) -> bool:
+        return any(
+            min(t_e, float(w["end_sec"])) - max(t_s, float(w["start_sec"])) >= 0.18
+            for w in (kinetic_stage_plan.get("matting_windows") or [])
+        )
+
     broll_prior_ratio = float((style_entry or {}).get("broll_overlay_ratio_target", 0.53))
     # 风格里的 B-roll 占比只是先验：实际配比按素材能力动态调整（用户明确要求，不可刻板执行模版比例）
     broll_target_hard = bool((style_entry or {}).get("broll_target_hard", False))
@@ -690,6 +714,17 @@ def run_step4(
         min(100.0, (broll_prior_ratio + 0.15) * 100),
     ]
     broll_band = (max(0.0, float(band_raw[0]) / 100.0), min(1.0, float(band_raw[1]) / 100.0))
+    if kinetic_stage_mode:
+        _kdna = kinetic_choreographer.get_style_dna(style_id) or {}
+        _kbp = _kdna.get("broll_policy") or {}
+        if brolls_raw:
+            broll_prior_ratio = float(_kbp.get("target_ratio", 0.22))
+            _kband = _kbp.get("band") or (0.0, 0.30)
+            broll_band = (max(0.0, float(_kband[0])), min(0.30, float(_kband[1])))
+        else:
+            broll_prior_ratio = 0.0
+            broll_band = (0.0, 0.0)
+        broll_target_hard = False
     broll_policy_note = ""
     ambient_policy = (style_entry or {}).get("broll_ambient_sound_policy") or {}
     ambient_enabled = bool(ambient_policy.get("enabled", True))
@@ -705,7 +740,10 @@ def run_step4(
     aroll_capacity = min(1.0, sum(float(m.get("duration_sec") or 0) for m in usable_arolls) / max(total_dur, 0.1))
     broll_capacity = min(1.0, sum(float(m.get("duration_sec") or 0) for m in broll_pool) / max(total_dur, 0.1))
     broll_target_ratio = broll_prior_ratio
-    if usable_arolls and aroll_capacity < (1.0 - broll_prior_ratio) - 0.02:
+    if kinetic_stage_mode and not brolls_raw:
+        broll_target_ratio = 0.0
+        broll_policy_note = f"{style_id} 动态花字舞台模式无外插实拍素材，保持纯口播 0% B-roll"
+    elif usable_arolls and aroll_capacity < (1.0 - broll_prior_ratio) - 0.02:
         broll_target_ratio = min(1.0, 1.0 - aroll_capacity)
         broll_policy_note = f"A-roll 可用时长只够 {aroll_capacity*100:.0f}%，B-roll 上调到 {broll_target_ratio*100:.0f}%"
     elif broll_pool and broll_capacity < broll_prior_ratio - 0.02:
@@ -1302,6 +1340,101 @@ def run_step4(
                 broll_policy_note += (f"；镜头数收敛后 B 覆盖低于动态带下沿（{broll_band[0]*100:.0f}%），"
                                       f"素材侧没有可换的 B-roll，保持现状")
 
+    if kinetic_stage_mode and usable_arolls:
+        # 动态花字舞台锁死规则：
+        # 1) 所有落入强动态花字意群的镜头强制锁死 A-roll 口播，绝不切去 B-roll 破坏舞台；
+        # 2) 仅允许在呼吸过渡实体窗口内保留有强语义命中(hit/weak)的实拍 B-roll，总量 <= 30%（无实体则 0%）。
+        live_b_only = [m for m in broll_pool if m.get("role") == "b_roll"]
+        _b_cands_by_idx: List[Tuple[float, int, float]] = []
+        for idx_k in range(n_segs):
+            t_sk = frames_to_sec(cut_points[idx_k]["raw_frame"], fps)
+            t_ek = frames_to_sec(cut_points[idx_k + 1]["raw_frame"] if idx_k + 1 < n_segs else total_frames, fps)
+            dur_k = max(0.0, t_ek - t_sk)
+            if _overlaps_kinetic_locked(t_sk, t_ek) or not live_b_only or t_sk < 3.0:
+                if source_aroll_valid[idx_k] and not audio_only_flags[idx_k]:
+                    roles[idx_k] = "a_roll"
+                continue
+            s_obj_k = find_broll_topic_sentence(t_sk, t_ek, find_sentence_for_time(t_sk, cut_points[idx_k]["event"]))
+            s_txt_k = str(s_obj_k.get("text") or "")
+            s_kws_k = [str(x) for x in (s_obj_k.get("keywords") or [])]
+            best_sc_k = 0.0
+            best_v_k = "none"
+            for bm in live_b_only:
+                sc_res = broll_match.score_clip(s_txt_k, bm, used_count=0, need_sec=dur_k, keywords=s_kws_k)
+                if float(sc_res.get("score") or 0.0) > best_sc_k:
+                    best_sc_k = float(sc_res.get("score") or 0.0)
+                    best_v_k = str(sc_res.get("verdict") or "none")
+            if best_v_k in ("hit", "weak") and best_sc_k >= 0.30:
+                # 若本镜当前被判为 a_roll 但其实处于可证据锚定的实体过渡窗内且语义贴合，可作为高光实拍候选
+                _b_cands_by_idx.append((best_sc_k, idx_k, dur_k))
+                if _can_be_safe_aroll(idx_k) or True:
+                    roles[idx_k] = "b_roll"
+            else:
+                if source_aroll_valid[idx_k] and not audio_only_flags[idx_k]:
+                    roles[idx_k] = "a_roll"
+
+        # 上限控制：动态舞台模式下 B-roll 总覆盖严格收在 [0, 30%]，优胜劣汰保留最高语义贴合镜
+        max_kinetic_b_sec = min(total_dur * 0.30, total_dur * max(0.22, broll_target_ratio + 0.04))
+        cur_kb_sec = sum(
+            frames_to_sec((cut_points[i + 1]["raw_frame"] if i + 1 < n_segs else total_frames) - cut_points[i]["raw_frame"], fps)
+            for i in range(n_segs) if roles[i] != "a_roll"
+        )
+        if cur_kb_sec > max_kinetic_b_sec:
+            score_map_k = {i_c: sc_c for sc_c, i_c, _ in _b_cands_by_idx}
+            drop_b_order = sorted(
+                (i for i in range(n_segs) if roles[i] != "a_roll" and source_aroll_valid[i] and not audio_only_flags[i]),
+                key=lambda i_c: (score_map_k.get(i_c, 0.0), frames_to_sec((cut_points[i_c + 1]["raw_frame"] if i_c + 1 < n_segs else total_frames) - cut_points[i_c]["raw_frame"], fps)),
+            )
+            for i_db in drop_b_order:
+                if cur_kb_sec <= max_kinetic_b_sec:
+                    break
+                d_db = frames_to_sec((cut_points[i_db + 1]["raw_frame"] if i_db + 1 < n_segs else total_frames) - cut_points[i_db]["raw_frame"], fps)
+                roles[i_db] = "a_roll"
+                cur_kb_sec -= d_db
+        broll_policy_note = (
+            f"动态花字舞台模式：锁死 {sum(1 for g in (kinetic_stage_plan.get('groups') or []) if g.get('a_roll_locked'))} 组花字窗口为 A-roll，"
+            f"仅在实体过渡窗按语义证据切入 B-roll（实际 {cur_kb_sec/max(0.1,total_dur)*100:.1f}% ≤ 30%）"
+        )
+
+        # 确保自抠像人后弹幕窗内的 A-roll 单镜不超过 2.35s（贴合跳剪节奏并合规过 treatment_policy 2.5s 上限）
+        if kinetic_stage_plan.get("matting_windows"):
+            new_cp, new_roles, new_ao, new_sv, new_bm, new_ms = [], [], [], [], [], []
+            for idx_m in range(n_segs):
+                f_s_m = cut_points[idx_m]["raw_frame"]
+                f_e_m = cut_points[idx_m + 1]["raw_frame"] if idx_m + 1 < n_segs else total_frames
+                t_s_m, t_e_m = frames_to_sec(f_s_m, fps), frames_to_sec(f_e_m, fps)
+                new_cp.append(cut_points[idx_m])
+                new_roles.append(roles[idx_m])
+                new_ao.append(audio_only_flags[idx_m])
+                new_sv.append(source_aroll_valid[idx_m])
+                new_bm.append(budget_merged_flags[idx_m])
+                new_ms.append(multi_sentence_aroll_flags[idx_m])
+                if roles[idx_m] == "a_roll" and (t_e_m - t_s_m) > 2.35 and _overlaps_matting_window(t_s_m, t_e_m):
+                    mid_ev_cands = [
+                        e for e in events
+                        if t_s_m + 0.70 <= float(e["time_sec"]) <= t_e_m - 0.65
+                        and int(e["frame"]) - f_s_m >= 18 and f_e_m - int(e["frame"]) >= 18
+                        and e["type"] in ("sentence_start", "keyword_accent", "stress", "pause_start", "bgm_downbeat", "bgm_beat")
+                    ]
+                    if mid_ev_cands:
+                        target_mid = (t_s_m + t_e_m) * 0.5
+                        best_mev = min(mid_ev_cands, key=lambda e: abs(float(e["time_sec"]) - target_mid))
+                        mf = int(best_mev["frame"])
+                        new_cp.append({"cut_frame": mf, "raw_frame": mf, "event": best_mev})
+                        new_roles.append("a_roll")
+                        new_ao.append(audio_only_flags[idx_m])
+                        new_sv.append(source_aroll_valid[idx_m])
+                        new_bm.append(False)
+                        new_ms.append(False)
+            if len(new_cp) != len(cut_points):
+                cut_points = new_cp
+                roles = new_roles
+                audio_only_flags = new_ao
+                source_aroll_valid = new_sv
+                budget_merged_flags = new_bm
+                multi_sentence_aroll_flags = new_ms
+                n_segs = len(cut_points)
+
     # 真·J-cut (正帧移：声先画后) 与 真·L-cut (负帧移：高语义物证画面先入)
     first_3s_cutoff_f = 3 * fps
     j_leads = [0] * n_segs
@@ -1850,7 +1983,8 @@ def run_step4(
         and int(element_rules.get_limit(style_id, "cutout", "max_runs", default=0) or 0) >= 1
     )
     has_person_over_broll = bool(
-        cut_elem_rule and cut_elem_rule.get("present") and v_cut_rule.get("enabled")
+        (not kinetic_stage_mode)
+        and cut_elem_rule and cut_elem_rule.get("present") and v_cut_rule.get("enabled")
         and ab_pattern not in ("depth_hook_then_framed_broll", "dual_window_broll_switcher", "container_internal_switch")
         and (
             _is_full_frame_cutout
@@ -2207,7 +2341,7 @@ def run_step4(
         "cutout_broll_alternating", "depth_hook_then_framed_broll", "dual_window_broll_switcher",
     }
     pattern_handled = ab_pattern in known_patterns
-    if pattern_handled and pip_mode and clips:
+    if pattern_handled and pip_mode and clips and not kinetic_stage_mode:
         live_b = [m for m in broll_pool if m.get("role") == "b_roll"] or list(broll_pool)
         rot = {"n": 0}
 
@@ -2292,7 +2426,7 @@ def run_step4(
                 c_obj["pip_layout"] = cfg
                 pip_applied_count += 1
 
-    if pip_mode and clips and not pattern_handled:
+    if pip_mode and clips and not pattern_handled and not kinetic_stage_mode:
         live_brolls = [m for m in broll_pool if m.get("role") == "b_roll"] or list(broll_pool)
         # 单源画框/景深类：只需当前主镜即可渲染（无需第二路副镜）
         single_source_frame_modes = {
@@ -2415,13 +2549,47 @@ def run_step4(
             }
             pip_applied_count += 1
 
+    if kinetic_stage_mode and clips and usable_arolls:
+        # 挂载「自抠像人后弹幕」切片（style_02 核心特性：仅对真正存在 behind_person 弹幕的痛点时段开启同源 1:1 自抠像）
+        danmaku_spans = [
+            (float(it["start_sec"]), float(it["end_sec"]))
+            for it in (kinetic_stage_plan.get("items") or [])
+            if str(it.get("z_layer") or "") == "behind_person"
+        ]
+        max_self_matte_sec = min(8.5, max(2.0, total_dur * 0.18))
+        used_self_matte = 0.0
+        for c_obj in clips:
+            if c_obj.get("track_role") != "a_roll":
+                continue
+            cs, ce = float(c_obj.get("timeline_in_sec") or 0.0), float(c_obj.get("timeline_out_sec") or 0.0)
+            cd = max(0.0, ce - cs)
+            if cd > 2.48 or not _overlaps_matting_window(cs, ce):
+                continue
+            if danmaku_spans and not any(min(ce, de) - max(cs, ds) >= 0.18 for ds, de in danmaku_spans):
+                continue
+            if used_self_matte + cd > max_self_matte_sec:
+                continue
+            c_obj["pip_layout"] = {
+                "mode": "self_matting_behind_text",
+                "cutout": True,
+                "self_matting": True,
+                "single_source": True,
+                "fg_scale": 1.0,
+                "x": 0.0,
+                "y": 0.0,
+                "outline_px": 0,
+                "secondary_media_path": str(c_obj.get("media_path") or ""),
+            }
+            used_self_matte += cd
+            pip_applied_count += 1
+
     # 会裁切的构图（小窗/缩窗/推近/相框/圆窗）先在剪辑表里定好人脸锚点：
     # 剪辑表自己就能交代"这个窗口是按脸取的还是素材里根本没脸"，渲染与导出共用同一份依据
     CUT_MODES = {
         "geometry_pip_window", "geometry_pip_main_shrunk", "geometry_pip_main_punch_in",
         "blur_bg_center_card_pip", "smooth_orbit_pip", "black_polaroid_frame_pip",
         "person_behind_giant_text_pip", "vision_portrait_cutout_pip", "data_news_cutout_pip",
-        "layered_cutout_over_broll",
+        "layered_cutout_over_broll", "self_matting_behind_text",
     }
     try:
         import face_framing
@@ -2569,6 +2737,8 @@ def run_step4(
         "keyframe_moves_applied": kf_applied,
         "pip_applied_count": pip_applied_count,
         "layered_model": layered_model_info,
+        "kinetic_stage_enabled": bool(kinetic_stage_mode),
+        "kinetic_stage_stats": kinetic_stage_plan.get("stats") if kinetic_stage_mode else None,
         "cutout_gate": cutout_gate,
         "explainer_broll_windows": explainer_windows,
         "explainer_applied_count": explainer_applied_count,

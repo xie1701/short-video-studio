@@ -102,6 +102,11 @@ def build_text_material(
     fill_hex: Optional[str] = None,
     stroke_hex: Optional[str] = None,
     stroke_units: Optional[float] = None,
+    x_norm: float = 0.0,
+    y_norm: Optional[float] = None,
+    bg_alpha_override: Optional[float] = None,
+    bg_color_override: Optional[str] = None,
+    inline_parts: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """返回 (text 素材, text segment)。文字是真文字，剪映里可直接编辑。"""
     mat_id, seg_id = _uid(), _uid()
@@ -109,29 +114,56 @@ def build_text_material(
     size = float(size_units if size_units is not None else sub.get("font_size_jianying_units") or 15.0)
     fill = str(fill_hex or sub.get("primary_color") or "#FFFFFF")
     kw = str(sub.get("keyword_color") or fill)
-    stroke_c = str(stroke_hex or sub.get("stroke_color") or "#000000")
+    stroke_c = str(stroke_hex if stroke_hex is not None else (sub.get("stroke_color") or "#000000"))
     stroke_w = float(stroke_units if stroke_units is not None else (sub.get("stroke_width") or 0) / 4.0)
     bg_ratio = float(sub.get("bg_ratio_measured") or 0.0)
     bg_alpha = float(sub.get("bg_box_alpha") or 0.0)
     radius = float(sub.get("bg_radius") or 0.0)
 
-    styles = [{
-        "fill": {"content": {"solid": {"color": _hex_to_rgb01(fill)}}},
-        "font": {"path": "", "id": ""},
-        "size": size,
-        "useLetterColor": True,
-        "range": [0, len(text)],
-    }]
-    if kw and kw.lower() != fill.lower():
-        styles[0]["useLetterColor"] = False
+    if isinstance(inline_parts, list) and inline_parts:
+        styles = []
+        pos_c = 0
+        for pt in inline_parts:
+            p_txt = str(pt.get("text") or "")
+            if not p_txt:
+                continue
+            p_col = str(pt.get("color") or fill)
+            p_sz = float(pt.get("size_units") or size)
+            styles.append({
+                "fill": {"content": {"solid": {"color": _hex_to_rgb01(p_col)}}},
+                "font": {"path": "", "id": ""},
+                "size": p_sz,
+                "useLetterColor": True,
+                "range": [pos_c, pos_c + len(p_txt)],
+            })
+            pos_c += len(p_txt)
+        if not styles:
+            styles = [{"fill": {"content": {"solid": {"color": _hex_to_rgb01(fill)}}}, "font": {"path": "", "id": ""}, "size": size, "useLetterColor": True, "range": [0, len(text)]}]
+    else:
+        styles = [{
+            "fill": {"content": {"solid": {"color": _hex_to_rgb01(fill)}}},
+            "font": {"path": "", "id": ""},
+            "size": size,
+            "useLetterColor": True,
+            "range": [0, len(text)],
+        }]
+        if kw and kw.lower() != fill.lower():
+            styles[0]["useLetterColor"] = False
     content = json.dumps({"text": text, "styles": styles}, ensure_ascii=False)
-    need_bg = (bg_ratio > 0.01 or bg_alpha > 0.01) and not is_flower
+    if bg_alpha_override is not None:
+        need_bg = float(bg_alpha_override) > 0.01
+        eff_bg_alpha = round(float(bg_alpha_override), 2)
+        eff_bg_color = str(bg_color_override or "#000000")[:7]
+    else:
+        need_bg = (bg_ratio > 0.01 or bg_alpha > 0.01) and not is_flower
+        eff_bg_alpha = 1.0 if need_bg else 0.0
+        eff_bg_color = str(sub.get("bg_box_color") or "#000000")[:7] if need_bg else ""
 
     mat: Dict[str, Any] = {
         "add_type": 0,
         "alignment": 1,
-        "background_alpha": 1.0 if need_bg else 0.0,
-        "background_color": str(sub.get("bg_box_color") or "#000000")[:7] if need_bg else "",
+        "background_alpha": eff_bg_alpha if need_bg else 0.0,
+        "background_color": eff_bg_color if need_bg else "",
         "background_height": 0.14 if need_bg else 0.0,
         "background_horizontal_offset": 0.0,
         "background_round_radius": round(radius * 4 / max(1.0, 1920.0), 4) if radius else 0.0,
@@ -141,9 +173,9 @@ def build_text_material(
         "base_content": "",
         "beats": [],
         "bold": True,
-        "border_alpha": 1.0 if stroke_w > 0 else 0.0,
-        "border_color": stroke_c,
-        "border_width": round(min(0.2, stroke_w / 30.0), 4) if stroke_w > 0 else 0.0,
+        "border_alpha": 1.0 if stroke_w > 0 and stroke_c else 0.0,
+        "border_color": stroke_c if stroke_c else "#000000",
+        "border_width": round(min(0.2, stroke_w / 30.0), 4) if (stroke_w > 0 and stroke_c) else 0.0,
         "caption_template_info": {"path": "", "resource_id": ""},
         "check_flag": 39,
         "combo_info": {},
@@ -215,6 +247,7 @@ def build_text_material(
         "words": {},
     }
     y_ratio = float(sub.get("safe_y_ratio") or 0.76)
+    jy_y = float(y_norm) if y_norm is not None else round((0.5 - y_ratio) * 2.0, 4)
     seg: Dict[str, Any] = {
         "caption_info": None,
         "cartoon": False,
@@ -223,7 +256,7 @@ def build_text_material(
             "flip": {},
             "rotation": 0.0,
             "scale": {"x": 1.0, "y": 1.0},
-            "transform": {"x": 0.0, "y": round((y_ratio - 0.5) * 2.0, 4)},
+            "transform": {"x": round(float(x_norm), 4), "y": round(jy_y, 4)},
         },
         "common_keyframes": [],
         "enable_adjust": False,
@@ -454,19 +487,46 @@ def export_native_draft(pipeline_dir: Path, out_dir: Optional[Path] = None) -> D
             )
         )
 
-    # 字幕轨（真文字，可编辑）
+    # 字幕轨 / 动态花字舞台多轨（真文字，可编辑）
     texts: List[Dict[str, Any]] = []
     sub_segs: List[Dict[str, Any]] = []
-    for row in subs.get("entries") or []:
-        text = str(row.get("text") or "").strip()
-        if not text:
-            continue
-        st, en = float(row.get("start_sec") or 0.0), float(row.get("end_sec") or 0.0)
-        if en <= st:
-            continue
-        mat, seg = build_text_material(text, sub_spec, start_sec=st, end_sec=en)
-        texts.append(mat)
-        sub_segs.append(seg)
+    ks_lanes_segs: Dict[int, List[Dict[str, Any]]] = {}
+    ks_block = pkg.get("kinetic_stage") or {}
+    if ks_block.get("enabled") and ks_block.get("items"):
+        for kit in ks_block.get("items") or []:
+            ktxt = str(kit.get("text_or_asset") or "").strip()
+            kst, ken = float(kit.get("start_sec") or 0.0), float(kit.get("end_sec") or 0.0)
+            if not ktxt or ken <= kst:
+                continue
+            lane = int(kit.get("track_lane") or 0)
+            mat, seg = build_text_material(
+                ktxt, sub_spec, start_sec=kst, end_sec=ken,
+                size_units=float(kit.get("font_size_units") or 16.0),
+                is_flower=(str(kit.get("variant")) != "bridge_bar"),
+                fill_hex=str(kit.get("fg_hex") or "#FFFFFF"),
+                stroke_hex=str(kit.get("stroke_hex") or ""),
+                stroke_units=(2.0 if kit.get("stroke_hex") else 0.0),
+                x_norm=float(kit.get("x_norm") or 0.0),
+                y_norm=float(kit.get("y_norm") or -0.45),
+                bg_alpha_override=float(kit.get("bg_alpha") or 0.0),
+                bg_color_override=str(kit.get("bg_hex") or "#000000"),
+                inline_parts=kit.get("inline_parts"),
+            )
+            texts.append(mat)
+            ks_lanes_segs.setdefault(lane, []).append(seg)
+    else:
+        for row in subs.get("entries") or []:
+            if row.get("suppressed"):
+                continue
+            text = str(row.get("text") or "").strip()
+            if not text:
+                continue
+            st, en = float(row.get("start_sec") or 0.0), float(row.get("end_sec") or 0.0)
+            if en <= st:
+                continue
+            mat, seg = build_text_material(text, sub_spec, start_sec=st, end_sec=en)
+            texts.append(mat)
+            sub_segs.append(seg)
 
     # 花字轨（同样保留为文字素材）
     flower_texts: List[Dict[str, Any]] = []
@@ -526,6 +586,10 @@ def export_native_draft(pipeline_dir: Path, out_dir: Optional[Path] = None) -> D
     for segs in (sub_segs, flower_segs):
         if segs:
             tracks.append({"attribute": 0, "flag": 0, "id": _uid(), "is_default_name": True, "name": "", "segments": segs, "type": "text"})
+    for lane in sorted(ks_lanes_segs.keys()):
+        segs_l = ks_lanes_segs[lane]
+        if segs_l:
+            tracks.append({"attribute": 0, "flag": 0, "id": _uid(), "is_default_name": True, "name": f"kinetic_T{lane}", "segments": segs_l, "type": "text"})
     for segs in audio_tracks:
         tracks.append({"attribute": 0, "flag": 0, "id": _uid(), "is_default_name": True, "name": "", "segments": segs, "type": "audio"})
 
@@ -674,6 +738,12 @@ def export_native_draft(pipeline_dir: Path, out_dir: Optional[Path] = None) -> D
     ]) + "\n"
     (draft_dir / "README_原生草稿使用说明.txt").write_text(readme, encoding="utf-8")
 
+    ks_count = sum(len(v) for v in ks_lanes_segs.values())
+    if ks_count > 0:
+        export_msg = f"原生剪映草稿导出成功：{len(video_segs)} 段画面 / {ks_count} 条动态花字（{len(ks_lanes_segs)} 轨可编辑），文字可编辑。"
+    else:
+        export_msg = f"原生剪映草稿导出成功：{len(video_segs)} 段画面 / {len(sub_segs)} 条字幕 / {len(flower_segs)} 条花字，文字可编辑。"
+
     status = {
         "status": "success",
         "export_kind": "jianying_native_draft",
@@ -686,10 +756,12 @@ def export_native_draft(pipeline_dir: Path, out_dir: Optional[Path] = None) -> D
             "video_segments": len(video_segs),
             "subtitle_segments": len(sub_segs),
             "flower_segments": len(flower_segs),
+            "kinetic_stage_segments": ks_count,
+            "kinetic_stage_tracks": len(ks_lanes_segs),
             "audio_tracks": len(audios),
         },
         "source_font_family": sub_spec.get("source_font_family") or sub_spec.get("font_family"),
-        "message": f"原生剪映草稿导出成功：{len(video_segs)} 段画面 / {len(sub_segs)} 条字幕 / {len(flower_segs)} 条花字，文字可编辑。",
+        "message": export_msg,
     }
     write_json(pipeline_dir / "jianying_native_status.json", status)
     print(f"[jianying-native] {status['message']} -> {draft_dir}")

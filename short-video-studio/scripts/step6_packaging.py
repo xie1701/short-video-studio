@@ -774,6 +774,16 @@ def run_step6(
                    "text": str(s.get("text") or "")} for s in sentences_all]
 
     import element_rules
+    import kinetic_choreographer
+
+    kinetic_stage_mode = kinetic_choreographer.is_kinetic_stage_style(style_id)
+    kinetic_stage_plan: Optional[Dict[str, Any]] = (
+        kinetic_choreographer.plan_kinetic_stage(
+            audio_events, style_id=style_id, pipeline_dir=pipeline_dir, fps=fps,
+        )
+        if (kinetic_stage_mode and not no_flower_text)
+        else None
+    )
 
     _allow_flower = element_rules.is_present(style_id, "flower", default=True)
     _allow_giant = element_rules.is_present(style_id, "giant_text", default=True)
@@ -928,6 +938,9 @@ def run_step6(
     hook_ef = min(max(int(math.ceil(1.4 * fps)), int(2.2 * fps)) if total_dur >= 1.5 else total_frames, total_frames)
 
     if no_flower_text:
+        visual_elements = []
+    elif kinetic_stage_mode and kinetic_stage_plan is not None:
+        # 动态花字舞台已接管全片胸口/中区花字表现，关闭旧版顶部瞎贴与双行静态贴片
         visual_elements = []
     elif keep_manual_texts and prev_visuals:
         # --keep-edl 换风格时：完整保留已有花字文案与起止帧，只按新风格更新配色与视觉参数
@@ -1379,9 +1392,9 @@ def run_step6(
     except Exception as exc:
         ending = {"verdict": "unknown", "reason": f"收尾诊断不可用：{type(exc).__name__}: {exc}"}
 
-    # ③ 同框指示贴纸 & 出场退场动画（仅当因果规则明确 present=True，绝不在禁贴纸/禁出场的风格乱塞）
+    # ③ 同框指示贴纸 & 出场退场动画（仅当因果规则明确 present=True；动态花字舞台模式在末句 CTA 自行统筹，不插旧式双挂卡片）
     _st_rule = element_rules.get_element_rule(style_id, "sticker")
-    if _st_rule and _st_rule.get("present") and not no_flower_text:
+    if _st_rule and _st_rule.get("present") and not no_flower_text and not kinetic_stage_mode:
         min_st_frames = int(math.ceil(1.36 * fps))
         text_anchors = [
             v for v in visual_elements
@@ -1553,88 +1566,150 @@ def run_step6(
         sfx_res["n_accepted"] = len(sfx_res["accepted"])
 
     sfx_cues: List[Dict[str, Any]] = []
-    last_sfx_name: Optional[str] = None
-    recent_sfx_usage: Dict[str, List[float]] = {}
-    # 多个情绪/角色别名（twist=accent, detail=info, persona=cut）指向相同底层音效文件，
-    # 按真实唯一文件路径去重统计池规模，避免 60s 滑窗额度被虚高分母折半而在片尾 48-61s 误杀整段音效；
-    # 同时结合片段时长限制单文件最低约 11.5s 才允许重复一次（短片 <=16s 仍严控 <=2 次）。
-    _unique_sfx_paths = {str(p.resolve()) for v in sfx_files.values() for p in (v or [])}
-    _total_pool_files = max(1, len(_unique_sfx_paths))
-    _budget_per_file = int(math.ceil(max(1, max_sfx_budget) / float(_total_pool_files)))
-    _interval_per_file = max(2, int(math.ceil(max(1.0, total_dur) / 11.5)))
-    max_per_file_60s = max(2, min(8, min(_budget_per_file, _interval_per_file)))
-    _REASON_TRIM = {"cut": 0.5, "flower": 1.0, "line": -1.2, "beat": -1.6, "free": -1.6}
-    for acc in sfx_res["accepted"]:
-        t_cue = round(float(acc["time_sec"]), 4)
-        reason_s = str(acc.get("reason") or "")
-        origin_s = str(acc.get("origin") or "")
-        role_pick = str(acc.get("role") or "misc")
-        if origin_s in ("giant_text", "flower", "number", "center_burst_title") or reason_s == "flower":
-            role_order = ["accent", "hook", "info", "cut"]
-        elif origin_s in ("flower_exit", "end_card", "end_card_cta"):
-            role_order = ["info", "hook", "accent", "cut"]
-        elif reason_s == "cut":
-            role_order = ["cut", "accent", "info", "hook"]
-        elif reason_s == "line":
-            role_order = ["info", "accent", "hook", "cut"]
-        else:
-            role_order = [role_pick, "cut", "accent", "info", "hook"]
-        if role_pick in sfx_files and role_pick not in role_order:
-            role_order = [role_pick] + role_order
-        elif role_pick in sfx_files and role_order[0] != role_pick and reason_s not in ("flower", "cut"):
-            role_order = [role_pick] + [r for r in role_order if r != role_pick]
-        elif reason_s == "cut" and role_pick in sfx_files and sfx_files.get(role_pick):
-            role_order = [role_pick] + [r for r in role_order if r != role_pick]
-
-        sf: Optional[Path] = None
-        picked_role = role_pick
-        tried_paths: set = set()
-        for cand_role in role_order:
-            c_list = [p for p in (sfx_files.get(cand_role) or []) if str(p) not in tried_paths]
-            if not c_list:
+    has_style_sfx_truth = bool(sfx_pool) or (ASSETS_DIR / "sound_vibe" / "sfx" / f"{style_id}_accent.wav").is_file()
+    if kinetic_stage_mode and kinetic_stage_plan is not None and has_style_sfx_truth:
+        # ── 动态花字舞台 0ms 音效咬合通道：每个花字动效按角色直配真实专属音色，呼吸过渡句严格 0 音效 ──
+        k_sfx_assets = kinetic_choreographer.ensure_kinetic_sfx_assets(
+            pipeline_dir / "06_kinetic_sfx", style_id=style_id, assets_dir=ASSETS_DIR,
+        )
+        k_items_sorted = sorted(
+            [it for it in (kinetic_stage_plan.get("items") or []) if it.get("sfx_role")],
+            key=lambda it: (float(it.get("start_sec") or 0.0), int(it.get("track_lane") or 0)),
+        )
+        # 遵守 style_02 因果规则：min_gap_sec >= 0.60s，总数 <= max_sfx_budget
+        last_k_sfx_t = -9.9
+        k_rows: List[Dict[str, Any]] = []
+        k_dropped: List[Dict[str, Any]] = []
+        for it in k_items_sorted:
+            t_it = round(float(it.get("start_sec") or 0.0), 4)
+            role_k = str(it.get("sfx_role") or "swish")
+            wav_p = k_sfx_assets.get(role_k) or next(iter(k_sfx_assets.values()), None)
+            if wav_p is None or not Path(wav_p).is_file():
                 continue
-            sf_try = rotate_sfx(
-                c_list, last_sfx_name,
-                recent_usage=recent_sfx_usage, cur_time_sec=t_cue, max_same_per_60s=max_per_file_60s,
-            )
-            if sf_try is not None:
-                sf = sf_try
-                picked_role = cand_role
-                break
-            tried_paths.update(str(p) for p in c_list)
-        if sf is None:
-            fallback_cands = [p for _r in _SFX_ROLES for p in sfx_pool.get(_r, []) if str(p) not in tried_paths]
-            sf = rotate_sfx(
-                fallback_cands, last_sfx_name,
-                recent_usage=recent_sfx_usage, cur_time_sec=t_cue, max_same_per_60s=max_per_file_60s,
-            )
-        if sf is None:
-            sfx_res["dropped"].append({
-                "time_sec": t_cue, "reason": acc.get("reason"),
-                "anchor_time": acc.get("anchor_time"), "dropped_because": "same_sfx_60s_cap",
-                "detail": f"60s 滑窗内本风格可用音效均已达到单文件上限 {max_per_file_60s} 次",
+            if t_it - last_k_sfx_t < 0.58:
+                k_dropped.append({"time_sec": t_it, "reason": "kinetic_min_gap", "dropped_because": "min_gap_0.58s", "detail": f"与前音间距<{0.58:.2f}s"})
+                k_rows.append({"time_sec": t_it, "decision": "drop", "trigger": "kinetic_stage_item", "anchor_time": t_it, "offset_sec": 0.0, "why": f"{role_k}｜间距<0.58s跳过"})
+                continue
+            if len(sfx_cues) >= max_sfx_budget:
+                k_dropped.append({"time_sec": t_it, "reason": "budget_cap", "dropped_because": "budget_cap", "detail": f"达风格音效预算上限 {max_sfx_budget}"})
+                k_rows.append({"time_sec": t_it, "decision": "drop", "trigger": "kinetic_stage_item", "anchor_time": t_it, "offset_sec": 0.0, "why": f"{role_k}｜预算上限跳过"})
+                continue
+            frame_c = int(round(t_it * fps))
+            cue_t = round(frame_c / float(fps), 4)
+            gain_k = -4.2 if role_k in ("boom_heavy", "punch", "boom_hollow", "cash_register") else -4.8
+            sfx_cues.append({
+                "id": "",
+                "file": str(Path(wav_p).resolve()),
+                "sfx_name": Path(wav_p).name,
+                "sfx_role": role_k,
+                "time_sec": cue_t,
+                "frame": frame_c,
+                "gain_db": gain_k,
+                "event_id": it.get("id"),
+                "role": role_k,
+                "reason": "kinetic_stage_item",
+                "anchor": {"kind": "kinetic_stage_item", "time_sec": t_it, "offset_sec": round(cue_t - t_it, 4), "origin": str(it.get("jianying_anim_name") or it.get("variant") or "kinetic")},
+                "anchor_time": t_it,
+                "policy": f"{style_id} 花字动效↔音效 0ms 咬合 ({it.get('jianying_anim_name') or role_k} ↔ {role_k})",
             })
-            sfx_res["n_dropped"] = len(sfx_res["dropped"])
-            continue
-        recent_sfx_usage.setdefault(sf.name, []).append(t_cue)
-        last_sfx_name = sf.name
-        frame_c = int(round(t_cue * fps))
-        cue_gain = round(max(-14.0, min(-3.5, base_gain_db + _REASON_TRIM.get(reason_s, 0.0))), 1)
-        sfx_cues.append({
-            "id": "",
-            "file": str(sf.resolve()),
-            "sfx_name": sf.name,
-            "time_sec": round(frame_c / float(fps), 4),
-            "frame": frame_c,
-            "gain_db": cue_gain,
-            "event_id": acc.get("event_id"),
-            "role": picked_role if role_pick == "misc" else role_pick,
-            "reason": acc.get("reason"),
-            "anchor": {"kind": acc.get("reason"), "time_sec": acc.get("anchor_time"),
-                       "offset_sec": acc.get("offset_sec"), "origin": acc.get("origin")},
-            "anchor_time": acc.get("anchor_time"),
-            "policy": acc.get("policy"),
-        })
+            k_rows.append({"time_sec": cue_t, "decision": "keep", "trigger": "kinetic_stage_item", "anchor_time": t_it, "offset_sec": round(cue_t - t_it, 4), "why": f"{role_k}｜{it.get('jianying_anim_name') or '动效'}咬合"})
+            last_k_sfx_t = t_it
+        sfx_res = {
+            "style_id": style_id,
+            "rules_used": f"kinetic_stage:{style_id}",
+            "n_candidates": len(k_items_sorted),
+            "n_accepted": len(sfx_cues),
+            "n_dropped": len(k_dropped),
+            "accepted": sfx_cues,
+            "dropped": k_dropped,
+            "rows": k_rows,
+        }
+        sfx_disabled_reason = None
+    else:
+        if not sfx_pool:
+            sfx_res["accepted"] = []
+        last_sfx_name: Optional[str] = None
+        recent_sfx_usage: Dict[str, List[float]] = {}
+        # 多个情绪/角色别名（twist=accent, detail=info, persona=cut）指向相同底层音效文件，
+        # 按真实唯一文件路径去重统计池规模，避免 60s 滑窗额度被虚高分母折半而在片尾 48-61s 误杀整段音效；
+        # 同时结合片段时长限制单文件最低约 11.5s 才允许重复一次（短片 <=16s 仍严控 <=2 次）。
+        _unique_sfx_paths = {str(p.resolve()) for v in sfx_files.values() for p in (v or [])}
+        _total_pool_files = max(1, len(_unique_sfx_paths))
+        _budget_per_file = int(math.ceil(max(1, max_sfx_budget) / float(_total_pool_files)))
+        _interval_per_file = max(2, int(math.ceil(max(1.0, total_dur) / 11.5)))
+        max_per_file_60s = max(2, min(8, min(_budget_per_file, _interval_per_file)))
+        _REASON_TRIM = {"cut": 0.5, "flower": 1.0, "line": -1.2, "beat": -1.6, "free": -1.6}
+        for acc in sfx_res["accepted"]:
+            t_cue = round(float(acc["time_sec"]), 4)
+            reason_s = str(acc.get("reason") or "")
+            origin_s = str(acc.get("origin") or "")
+            role_pick = str(acc.get("role") or "misc")
+            if origin_s in ("giant_text", "flower", "number", "center_burst_title") or reason_s == "flower":
+                role_order = ["accent", "hook", "info", "cut"]
+            elif origin_s in ("flower_exit", "end_card", "end_card_cta"):
+                role_order = ["info", "hook", "accent", "cut"]
+            elif reason_s == "cut":
+                role_order = ["cut", "accent", "info", "hook"]
+            elif reason_s == "line":
+                role_order = ["info", "accent", "hook", "cut"]
+            else:
+                role_order = [role_pick, "cut", "accent", "info", "hook"]
+            if role_pick in sfx_files and role_pick not in role_order:
+                role_order = [role_pick] + role_order
+            elif role_pick in sfx_files and role_order[0] != role_pick and reason_s not in ("flower", "cut"):
+                role_order = [role_pick] + [r for r in role_order if r != role_pick]
+            elif reason_s == "cut" and role_pick in sfx_files and sfx_files.get(role_pick):
+                role_order = [role_pick] + [r for r in role_order if r != role_pick]
+
+            sf: Optional[Path] = None
+            picked_role = role_pick
+            tried_paths: set = set()
+            for cand_role in role_order:
+                c_list = [p for p in (sfx_files.get(cand_role) or []) if str(p) not in tried_paths]
+                if not c_list:
+                    continue
+                sf_try = rotate_sfx(
+                    c_list, last_sfx_name,
+                    recent_usage=recent_sfx_usage, cur_time_sec=t_cue, max_same_per_60s=max_per_file_60s,
+                )
+                if sf_try is not None:
+                    sf = sf_try
+                    picked_role = cand_role
+                    break
+                tried_paths.update(str(p) for p in c_list)
+            if sf is None:
+                fallback_cands = [p for _r in _SFX_ROLES for p in sfx_pool.get(_r, []) if str(p) not in tried_paths]
+                sf = rotate_sfx(
+                    fallback_cands, last_sfx_name,
+                    recent_usage=recent_sfx_usage, cur_time_sec=t_cue, max_same_per_60s=max_per_file_60s,
+                )
+            if sf is None:
+                sfx_res["dropped"].append({
+                    "time_sec": t_cue, "reason": acc.get("reason"),
+                    "anchor_time": acc.get("anchor_time"), "dropped_because": "same_sfx_60s_cap",
+                    "detail": f"60s 滑窗内本风格可用音效均已达到单文件上限 {max_per_file_60s} 次",
+                })
+                sfx_res["n_dropped"] = len(sfx_res["dropped"])
+                continue
+            recent_sfx_usage.setdefault(sf.name, []).append(t_cue)
+            last_sfx_name = sf.name
+            frame_c = int(round(t_cue * fps))
+            cue_gain = round(max(-14.0, min(-3.5, base_gain_db + _REASON_TRIM.get(reason_s, 0.0))), 1)
+            sfx_cues.append({
+                "id": "",
+                "file": str(sf.resolve()),
+                "sfx_name": sf.name,
+                "time_sec": round(frame_c / float(fps), 4),
+                "frame": frame_c,
+                "gain_db": cue_gain,
+                "event_id": acc.get("event_id"),
+                "role": picked_role if role_pick == "misc" else role_pick,
+                "reason": acc.get("reason"),
+                "anchor": {"kind": acc.get("reason"), "time_sec": acc.get("anchor_time"),
+                           "offset_sec": acc.get("offset_sec"), "origin": acc.get("origin")},
+                "anchor_time": acc.get("anchor_time"),
+                "policy": acc.get("policy"),
+            })
 
     sfx_cues.sort(key=lambda x: x["frame"])
     for idx_cue, cue in enumerate(sfx_cues, start=1):
@@ -1712,11 +1787,12 @@ def run_step6(
             "rows": flower_res.get("rows"),
         },
         "visual_elements": visual_elements,
+        "kinetic_stage": kinetic_stage_plan,
         "ending_plan": ending,
     }
     write_json(pipeline_dir / "06_packaging.json", packaging)
     # 依据清单：每条音效/花字出或不出、凭什么、参照哪个锚点，全部打印出来备查
-    if not sfx_pool:
+    if (not sfx_pool) and (not sfx_cues):
         print(f"[step6] 音效关闭：{sfx_disabled_reason}")
     elif sfx_cues:
         print(format_sfx_table(sfx_res, limit=400))

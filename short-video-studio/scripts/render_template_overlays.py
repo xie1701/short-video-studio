@@ -722,6 +722,190 @@ def _render_end_card_slate_png(
     return img
 
 
+def _draw_kinetic_line_sprite(
+    text: str,
+    font_path: Optional[str],
+    font_size: int,
+    fill_rgba: Tuple[int, int, int, int],
+    stroke_rgba: Optional[Tuple[int, int, int, int]] = None,
+    stroke_w: int = 0,
+    shadow_rgba: Optional[Tuple[int, int, int, int]] = None,
+    shadow_dx: int = 3,
+    shadow_dy: int = 4,
+    shadow_blur: float = 2.0,
+    max_w: int = 920,
+    min_fs: int = 28,
+) -> Optional[Image.Image]:
+    """不受全局 _PAINT 限制的高精单行字幕/花字精灵（全量支持粤语字逐字回退，基线严格对齐）。"""
+    t = str(text or "").strip()
+    if not t:
+        return None
+    probe = Image.new("RGBA", (8, 8), (0, 0, 0, 0))
+    pd = ImageDraw.Draw(probe)
+    fs = max(min_fs, int(font_size))
+    sw = max(0, int(stroke_w))
+    limit = max(60, int(max_w) - sw * 2 - 16)
+    while fs > min_fs and sum(pd.textlength(ch, font=glyph_font_for(ch, font_path, fs)) for ch in t) > limit:
+        fs -= 2
+    char_fonts = [glyph_font_for(ch, font_path, fs) for ch in t]
+    widths = [pd.textlength(ch, font=cf) for ch, cf in zip(t, char_fonts)]
+    total_w = sum(widths)
+    metrics = [cf.getmetrics() for cf in char_fonts]
+    ascent = max(m[0] for m in metrics)
+    descent = max(m[1] for m in metrics)
+    pad = sw + max(10, int(math.ceil(shadow_blur * 2 + max(abs(shadow_dx), abs(shadow_dy)) + 2)))
+    w = int(math.ceil(total_w)) + pad * 2 + 4
+    h = ascent + descent + pad * 2 + 4
+
+    ink = Image.new("RGBA", (max(8, w), max(8, h)), (0, 0, 0, 0))
+    d = ImageDraw.Draw(ink)
+    x = float(pad)
+    base_y = pad + ascent
+    s_fill = stroke_rgba if (sw > 0 and stroke_rgba) else None
+    for ch, cw_px, cf in zip(t, widths, char_fonts):
+        d.text((x, base_y), ch, font=cf, fill=fill_rgba, anchor="ls", stroke_width=sw, stroke_fill=s_fill)
+        x += cw_px
+
+    if shadow_rgba is not None and shadow_rgba[3] > 0:
+        alpha = ink.split()[3].point(lambda v: int(v * shadow_rgba[3] / 255.0))
+        shade = Image.new("RGBA", ink.size, (shadow_rgba[0], shadow_rgba[1], shadow_rgba[2], 255))
+        shadow = Image.new("RGBA", ink.size, (0, 0, 0, 0))
+        shadow.paste(shade, (0, 0), alpha)
+        if shadow_blur > 0.2:
+            shadow = shadow.filter(ImageFilter.GaussianBlur(radius=shadow_blur))
+        out = Image.new("RGBA", ink.size, (0, 0, 0, 0))
+        out.alpha_composite(shadow, dest=(max(0, int(shadow_dx)), max(0, int(shadow_dy))))
+        out.alpha_composite(ink)
+        ink = out
+    box = ink.getbbox()
+    return ink.crop(box) if box else None
+
+
+def render_kinetic_stage_item_png(
+    elem: Dict[str, Any],
+    font_candidates: Optional[List[str]] = None,
+) -> Optional[Image.Image]:
+    """
+    渲染 `style_02` 动态花字舞台组件（严格还原原版 7 类视觉质感）：
+    - hero_white: 纯白粗字 + 轻微暗影描边（如 `2024年` / `全面解放老板`）
+    - hero_lime: 荧光黄绿 #BCFF00 + 轻微暗影描边（如 `实体工厂老板` / `6000+`）
+    - red_pill: 白色圆角微底条 + 暗红 #B71C1C 粗字（如 `要把短视频做起来` / `都在下场`）
+    - red_slam: 暗红 #B71C1C 巨字 + 清晰白描边外加浓阴影（如 `IP难做` / `好傻`）
+    - bridge_bar: 半透明黑底 rgba(0,0,0,0.70) + 紧凑圆角 + 白字（呼吸过渡短句）
+    - inline_rich: 单行内双色双字号混排强调（如 `想知道`白 + `如何落地`荧光绿）
+    - danmaku_line: 无底框清爽白字 + 精细描边（人后滚动弹幕）
+    """
+    text = str(elem.get("text_or_asset") or elem.get("text") or "").strip()
+    if not text:
+        return None
+    variant = str(elem.get("variant") or "hero_white")
+    font_px = max(30, int(elem.get("font_size_px") or 88))
+    cands = font_candidates or ["SourceHanSerifCN-Bold.otf", "AlimamaShuHeiTi-Bold.otf", "SourceHanSansCN-Bold.otf"]
+    serif_f = find_commercial_font(cands)
+    sans_f = find_commercial_font(["SourceHanSansCN-Bold.otf", "AlimamaShuHeiTi-Bold.otf"]) or serif_f
+
+    if variant == "inline_rich" and isinstance(elem.get("inline_parts"), list) and elem["inline_parts"]:
+        parts_imgs: List[Image.Image] = []
+        for part in elem["inline_parts"]:
+            pt = str(part.get("text") or "").strip()
+            if not pt:
+                continue
+            p_rgb = _hex_rgb(part.get("color") or "#FFFFFF")
+            p_fs = max(36, int(round(float(part.get("size_units") or 16.0) * 5.4)))
+            sp = _draw_kinetic_line_sprite(
+                pt, serif_f, p_fs, (*p_rgb, 255),
+                stroke_rgba=(0, 0, 0, 235), stroke_w=3,
+                shadow_rgba=(0, 0, 0, 175), shadow_dx=3, shadow_dy=4, shadow_blur=2.0,
+                max_w=540,
+            )
+            if sp is not None:
+                parts_imgs.append(sp)
+        if not parts_imgs:
+            return None
+        gap = 8
+        tw = sum(im.width for im in parts_imgs) + gap * max(0, len(parts_imgs) - 1)
+        th = max(im.height for im in parts_imgs)
+        if tw > 940:
+            sc = 940.0 / float(tw)
+            parts_imgs = [
+                im.resize((max(4, int(im.width * sc)), max(4, int(im.height * sc))), Image.Resampling.LANCZOS)
+                for im in parts_imgs
+            ]
+            tw = sum(im.width for im in parts_imgs) + gap * max(0, len(parts_imgs) - 1)
+            th = max(im.height for im in parts_imgs)
+        cv = Image.new("RGBA", (tw + 4, th + 4), (0, 0, 0, 0))
+        x_cur = 2
+        for im in parts_imgs:
+            cv.alpha_composite(im, dest=(x_cur, th - im.height + 2))
+            x_cur += im.width + gap
+        box = cv.getbbox()
+        return cv.crop(box) if box else cv
+
+    if variant == "red_pill":
+        sp = _draw_kinetic_line_sprite(
+            text, serif_f, min(72, max(44, int(font_px * 0.72))),
+            (183, 28, 28, 255),
+            stroke_rgba=None, stroke_w=0, shadow_rgba=None,
+            max_w=820,
+        )
+        if sp is None:
+            return None
+        px_pad, py_pad = 24, 12
+        pw, ph = sp.width + px_pad * 2, sp.height + py_pad * 2
+        card = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
+        d = ImageDraw.Draw(card)
+        d.rounded_rectangle([(0, 0), (pw - 1, ph - 1)], radius=10, fill=(255, 255, 255, 248))
+        card.alpha_composite(sp, dest=(px_pad, py_pad))
+        return card
+
+    if variant == "bridge_bar":
+        sp = _draw_kinetic_line_sprite(
+            text, serif_f, min(68, max(42, int(font_px * 0.64))),
+            (255, 255, 255, 255),
+            stroke_rgba=(0, 0, 0, 180), stroke_w=1,
+            shadow_rgba=(0, 0, 0, 110), shadow_dx=2, shadow_dy=2, shadow_blur=1.0,
+            max_w=800,
+        )
+        if sp is None:
+            return None
+        px_pad, py_pad = 22, 11
+        pw, ph = sp.width + px_pad * 2, sp.height + py_pad * 2
+        card = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
+        d = ImageDraw.Draw(card)
+        d.rounded_rectangle([(0, 0), (pw - 1, ph - 1)], radius=8, fill=(0, 0, 0, 178))
+        card.alpha_composite(sp, dest=(px_pad, py_pad))
+        return card
+
+    if variant == "red_slam":
+        return _draw_kinetic_line_sprite(
+            text, serif_f, min(144, max(82, int(font_px * 0.90))),
+            (196, 26, 26, 255),
+            stroke_rgba=(255, 255, 255, 245), stroke_w=6,
+            shadow_rgba=(0, 0, 0, 210), shadow_dx=4, shadow_dy=6, shadow_blur=3.0,
+            max_w=880,
+        )
+
+    if variant == "danmaku_line":
+        return _draw_kinetic_line_sprite(
+            text, sans_f, min(72, max(46, int(font_px * 0.66))),
+            (255, 255, 255, 250),
+            stroke_rgba=(0, 0, 0, 240), stroke_w=3,
+            shadow_rgba=(0, 0, 0, 180), shadow_dx=2, shadow_dy=3, shadow_blur=1.5,
+            max_w=780,
+        )
+
+    # hero_white / hero_lime
+    fg_rgb = _hex_rgb(elem.get("fg_hex") or ("#BCFF00" if variant == "hero_lime" else "#FFFFFF"))
+    eff_fs = min(140, max(54, int(font_px * 0.86)))
+    return _draw_kinetic_line_sprite(
+        text, serif_f, eff_fs,
+        (*fg_rgb, 255),
+        stroke_rgba=(0, 0, 0, 235), stroke_w=4,
+        shadow_rgba=(0, 0, 0, 195), shadow_dx=4, shadow_dy=5, shadow_blur=2.4,
+        max_w=880,
+    )
+
+
 def render_template_packaging_png(
     elem: Dict[str, Any],
     style_id: str = "style_01",
@@ -736,6 +920,8 @@ def render_template_packaging_png(
         return _render_indicator_sticker_png(elem)
     if elem_kind == "end_card_cta":
         return _render_end_card_slate_png(elem, style_id=style_id, font_candidates=font_candidates)
+    if elem_kind == "kinetic_stage_item":
+        return render_kinetic_stage_item_png(elem, font_candidates=font_candidates)
     flower_paint(style_id)  # 先按该风格实测值设定本次花字的描边/阴影画法
     bp = get_style_blueprint(style_id)
     family = str(bp.get("template_family") or "")
@@ -1476,7 +1662,8 @@ def render_animated_overlay_mov(
         settled_bytes = settled.tobytes()
 
         # 6 类新增入场原语 + 缩小/放大细分子型（见 overlay_motion）
-        motion_fn = make_motion_frame_fn(anim_mode, base_img, cw, ch, ox, oy, fps, dur) if anim_mode in MOTION_MODES else None
+        motion_dir = str(elem.get("direction") or "").strip() or None
+        motion_fn = make_motion_frame_fn(anim_mode, base_img, cw, ch, ox, oy, fps, dur, direction=motion_dir) if anim_mode in MOTION_MODES else None
         if motion_fn is not None:
             frame_fn = motion_fn
 
@@ -1607,6 +1794,29 @@ def render_animated_overlay_mov(
                 fr.alpha_composite(im, dest=(ox, py))
                 return fr.tobytes()
             frame_fn = _render_float_up
+
+    dim_after = elem.get("dim_after_sec")
+    dim_alpha = float(elem.get("dim_alpha") if elem.get("dim_alpha") is not None else 1.0)
+    if dim_after is not None and 0.0 < dim_alpha < 0.99:
+        try:
+            dim_start_t = float(dim_after)
+            orig_pre_dim = frame_fn
+
+            def _with_dim_alpha(fi: int) -> bytes:
+                raw = orig_pre_dim(fi)
+                t_cur = fi / float(fps)
+                if t_cur < dim_start_t:
+                    return raw
+                ramp = min(1.0, (t_cur - dim_start_t) / 0.18)
+                cur_mul = 1.0 - (1.0 - dim_alpha) * ramp
+                im = Image.frombytes("RGBA", (cw, ch), raw)
+                r, g, b, a = im.split()
+                a = a.point(lambda px: int(px * cur_mul))
+                return Image.merge("RGBA", (r, g, b, a)).tobytes()
+
+            frame_fn = _with_dim_alpha
+        except (TypeError, ValueError):
+            pass
 
     out_anim = str(elem.get("out_anim") or "").strip().lower()
     if out_anim in ("fade_out", "渐隐", "slide_down", "向下滑动") and n_frames >= 14:

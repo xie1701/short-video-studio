@@ -233,6 +233,30 @@ def measure(pipeline_dir: Path) -> Dict[str, Any]:
         m["in_anim"] = {"count": in_cnt, "total_elems": len(elems)}
         if out_cnt > 0 or len(elems) >= 2:
             m["out_anim"] = {"count": out_cnt, "total_elems": len(elems)}
+    elif (pkg.get("kinetic_stage") or {}).get("enabled"):
+        ks_items = (pkg.get("kinetic_stage") or {}).get("items") or []
+        ks_flowers = [it for it in ks_items if str(it.get("variant") or "") != "bridge_bar"]
+        ks_giants = [it for it in ks_items if float(it.get("font_size_units") or 0.0) >= 22.0]
+        if ks_flowers:
+            m["flower"] = {
+                "count": len(ks_flowers),
+                "per_min": round(len(ks_flowers) / (dur / 60.0), 2) if dur else None,
+                "hold_median": round(statistics.median([float(it.get("read_hold_sec") or 1.2) for it in ks_flowers]), 2),
+                "hold_max": round(max(float(it.get("read_hold_sec") or 1.2) for it in ks_flowers), 2),
+                "gap_min": 0.0,
+                "chars_max": max((len(str(it.get("text_or_asset") or "")) for it in ks_flowers), default=None),
+                "subtitle_band_overlap": 0,
+                "opening_present": any(int(it.get("start_frame") or 0) <= 15 for it in ks_flowers),
+            }
+        if ks_giants:
+            m["giant_text"] = {
+                "count": len(ks_giants),
+                "per_min": round(len(ks_giants) / (dur / 60.0), 2) if dur else None,
+                "font_sizes": [it.get("font_size_px") for it in ks_giants if it.get("font_size_px")],
+                "chars_max": max((len(str(it.get("text_or_asset") or "")) for it in ks_giants), default=None),
+            }
+        in_ks = sum(1 for it in ks_items if str(it.get("jianying_anim_name") or "").strip())
+        m["in_anim"] = {"count": in_ks, "total_elems": len(ks_items)}
     ae_bgm = (ae.get("bgm") or {}) if isinstance(ae, dict) else {}
     db_info = (ae_bgm.get("dual_bgm_switch") or {}) if isinstance(ae_bgm, dict) else {}
     pkg_bgm = (pkg.get("bgm") or {}) if isinstance(pkg, dict) else {}
@@ -288,6 +312,7 @@ def measure(pipeline_dir: Path) -> Dict[str, Any]:
                 if str(lay.get("mode") or "") in (
                     "cutout", "layered_cutout_over_broll", "vision_portrait_cutout_pip",
                     "data_news_cutout_pip", "person_behind_giant_text_pip",
+                    "self_matting_behind_text",
                 ):
                     return True
             return bool(c.get("cutout"))

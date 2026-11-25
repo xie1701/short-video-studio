@@ -1587,6 +1587,13 @@ def run_step5(
         except Exception:
             script_lines_punct = []
 
+    _kinetic_stage_suppressed = False
+    try:
+        from kinetic_choreographer import is_kinetic_stage_style
+        _kinetic_stage_suppressed = bool(is_kinetic_stage_style(template_id))
+    except Exception:
+        _kinetic_stage_suppressed = False
+
     for sent in merged_sentences:
         sent_eff = dict(sent)
         if script_lines_punct:
@@ -1638,13 +1645,20 @@ def run_step5(
 
             suppressed = False
             suppressed_by = None
+            suppress_reason = None
             for cs, ce, cid in code_ranges:
                 ov = max(0.0, min(en_sec, ce) - max(st_sec, cs))
                 if ov / sub_dur >= 0.60:
                     suppressed = True
                     suppressed_by = cid
+                    suppress_reason = "B9_code_broll_dual_channel_dedup"
                     suppressed_count += 1
                     break
+            if _kinetic_stage_suppressed and not suppressed:
+                suppressed = True
+                suppressed_by = "kinetic_typography_stage"
+                suppress_reason = "kinetic_typography_stage"
+                suppressed_count += 1
 
             entry_obj: Dict[str, Any] = {
                 "id": f"sub_{idx:03d}",
@@ -1669,7 +1683,7 @@ def run_step5(
                 entry_obj["merged_sentence_ids"] = list(sent["merged_sentence_ids"])
             if suppressed:
                 entry_obj["suppressed_by"] = suppressed_by
-                entry_obj["suppress_reason"] = "B9_code_broll_dual_channel_dedup"
+                entry_obj["suppress_reason"] = suppress_reason or "B9_code_broll_dual_channel_dedup"
 
             entries.append(entry_obj)
             idx += 1
@@ -1773,6 +1787,7 @@ def run_step5(
         "template_config": tpl,
         "count": len(entries),
         "suppressed_count": suppressed_count,
+        "kinetic_stage_suppressed": _kinetic_stage_suppressed,
         "srt_path": str((pipeline_dir / "05_subtitles.srt").resolve()),
         "check_report_path": str((pipeline_dir / "05_subtitle_check.txt").resolve()),
         "broken_protected_terms": broken_terms,
