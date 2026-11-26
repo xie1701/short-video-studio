@@ -746,6 +746,41 @@ class V7AudioFirstAndSubtitlesTests(unittest.TestCase):
         self.assertTrue(stage_03["enabled"])
         self.assertTrue(all(it.get("style_id") == "style_03" for it in stage_03["items"]))
 
+    def test_drop_sfx_originated_clicks_uses_sfx_master_and_keeps_voice_splice(self) -> None:
+        import struct
+        import wave
+        import independent_verifier
+
+        def _write_wav_step(path: Path, t_sec: float, amp: float, dur_sec: float = 3.2) -> None:
+            sr = 48000
+            n = int(dur_sec * sr)
+            idx = int(t_sec * sr)
+            samples = [0] * n
+            val = int(max(-32760, min(32760, round(amp * 32767))))
+            for k in range(idx, min(n, idx + 240)):
+                samples[k] = val
+            with wave.open(str(path), "wb") as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(sr)
+                wf.writeframes(struct.pack(f"<{n}h", *samples))
+
+        with tempfile.TemporaryDirectory() as td:
+            pdir = Path(td)
+            raw_sfx = pdir / "06_sfx_track.wav"
+            master_sfx = pdir / "08_sfx_master.wav"
+            _write_wav_step(raw_sfx, 1.0, 0.20)
+            _write_wav_step(master_sfx, 1.0, 0.50)
+            (pdir / "06_packaging.json").write_text(
+                json.dumps({"sfx_track_wav": str(raw_sfx)}), encoding="utf-8",
+            )
+            clicks = [
+                {"time_sec": 1.000, "jump": 0.38},
+                {"time_sec": 2.500, "jump": 0.42},
+            ]
+            kept = independent_verifier._drop_sfx_originated_clicks(clicks, pdir)
+            self.assertEqual([round(c["time_sec"], 3) for c in kept], [2.5])
+
 
 if __name__ == "__main__":
     unittest.main()

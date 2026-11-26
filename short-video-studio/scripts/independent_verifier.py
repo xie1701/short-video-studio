@@ -193,23 +193,28 @@ def _drop_sfx_originated_clicks(clicks: List[Dict[str, Any]], pipeline_dir: Opti
                                 tol_sec: float = 0.010) -> List[Dict[str, Any]]:
     """把「本来就是音效自己发出来的」跳变从爆音里剔除，只留真剪接爆音。
 
-    判据不是「离音效起音多近」，而是**这一下跳变在音效轨里也存在**：
-    铃/翻页/发条这类瞬态音效天生就是「安静里猛地一下」，跟剪接爆音同一个特征，
-    但音效轨同一点上也有同样大的跳变，说明声音是它发的，不是我们剪坏的。
+    判据不是「离音效起音多近」，而是**这一下跳变在进入混音母带的音效轨里也存在**：
+    优先比对真正进入终混母带的 `08_sfx_master.wav`（缺省时回退 `06_sfx_track.wav`），
+    以免母带正常推高增益（如 +3.5dB）后生坯 0.21 的键盘/铃音瞬态被误抓成剪接爆音。
     人声/底噪的接缝在音效轨上是平的，照样会被抓出来。
     """
     if not clicks or pipeline_dir is None:
         return clicks
+    master_stem = Path(pipeline_dir) / "08_sfx_master.wav"
     pkg_p = Path(pipeline_dir) / "06_packaging.json"
-    if not pkg_p.is_file():
+    stem: Optional[str] = str(master_stem) if master_stem.is_file() else None
+    if stem is None and pkg_p.is_file():
+        try:
+            cand = read_json(pkg_p).get("sfx_track_wav")
+            if cand and Path(cand).is_file():
+                stem = str(cand)
+        except Exception:
+            stem = None
+    if not stem:
         return clicks
     try:
-        pkg = read_json(pkg_p)
-        stem = pkg.get("sfx_track_wav")
-        if not stem or not Path(stem).is_file():
-            return clicks
         import subprocess
-        raw = subprocess.run(["ffmpeg", "-v", "error", "-i", str(stem), "-ac", "1", "-ar", "48000",
+        raw = subprocess.run(["ffmpeg", "-v", "error", "-i", stem, "-ac", "1", "-ar", "48000",
                               "-f", "f32le", "-"], capture_output=True).stdout
         arr = np.frombuffer(raw, dtype=np.float32)
         if arr.size < 32:
@@ -224,15 +229,6 @@ def _drop_sfx_originated_clicks(clicks: List[Dict[str, Any]], pipeline_dir: Opti
         lo, hi = max(0, idx - half), min(len(jump), idx + half + 1)
         if hi > lo and float(jump[lo:hi].max()) >= 0.30:
             continue  # 音效轨同一时刻也有台阶 → 声音是音效发的
-        kept.append(c)
-    return kept
-    if not onsets:
-        return clicks
-    kept: List[Dict[str, Any]] = []
-    for c in clicks:
-        t = float(c.get("time_sec") or 0.0)
-        if any(abs(t - o) <= tol_sec for o in onsets):
-            continue
         kept.append(c)
     return kept
 
