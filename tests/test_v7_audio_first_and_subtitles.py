@@ -593,6 +593,24 @@ class V7AudioFirstAndSubtitlesTests(unittest.TestCase):
         on_state = render_template_overlays._element_frame_state(num_layout, 1.3)
         self.assertTrue(any(v["alpha"] > 0.5 for v in on_state["layers"].values()))
 
+        # 验证 >3.0s 的动效传递 --dur 与 window.DUR 且 3.0s 后节点真实渲染（不再在 3.0s 冻住）
+        long_diag = dict(diag, start_sec=0.0, end_sec=4.6, beat_offsets={"card": 0.0, "nodes": [0.4], "outs": [3.5, 3.8]})
+        with tempfile.TemporaryDirectory() as td_l:
+            mov_l = Path(td_l) / "long_diag.mov"
+            built = render_template_overlays.render_animated_overlay_mov(long_diag, mov_l, duration_sec=4.6, fps=24)
+            self.assertIsNotNone(built)
+            self.assertTrue(mov_l.is_file())
+            png_late = Path(td_l) / "late.png"
+            subprocess.run(
+                [shutil.which("ffmpeg") or "ffmpeg", "-y", "-ss", "4.0", "-i", str(mov_l), "-frames:v", "1", str(png_late), "-loglevel", "error"],
+                check=True,
+            )
+            im_late = Image.open(png_late).convert("RGBA")
+            w_late, h_late = im_late.size
+            bot_crop = im_late.crop((0, int(h_late * 0.52), w_late, int(h_late * 0.90)))
+            bright_px = sum(1 for r, g, b, a in bot_crop.getdata() if a > 120 and max(r, g, b) > 238)
+            self.assertGreater(bright_px, 80, msg="超过3.0秒触发的语义图卡底行必须在4.0s正常渲染出来")
+
         # 验证剪映原生导出草稿支持 semantic_diagram_card
         with tempfile.TemporaryDirectory() as td:
             pdir = Path(td)

@@ -1887,11 +1887,13 @@ def _capture_spring_alpha(
     (temporary / "index.html").write_text(html, encoding="utf-8")
     env = {**os.environ, "FFMPEG_BIN": ffmpeg_bin, "SVS_CHROME_PATH": renderer["chrome_bin"],
            "SVS_PLAYWRIGHT_DIR": str(Path(renderer["playwright_core"]).parent.parent)}
+    dur_sec = max(0.1, float(n_frames) / max(1, int(fps)))
     try:
         result = subprocess.run(
             [renderer["node_bin"], renderer["bridge_script"], str(temporary), "--alpha",
-             "--out", str(out_mov), "--size", f"{cw}x{ch}", "--fps", str(fps), "--frames", str(n_frames)],
-            env=env, capture_output=True, timeout=min(45, max(10, 5 + n_frames / 7)),
+             "--out", str(out_mov), "--size", f"{cw}x{ch}", "--fps", str(fps),
+             "--dur", f"{dur_sec:.4f}", "--frames", str(n_frames)],
+            env=env, capture_output=True, timeout=min(60, max(12, 8 + n_frames / 5)),
         )
         return result.returncode == 0 and out_mov.is_file() and out_mov.stat().st_size > 0
     except (OSError, subprocess.TimeoutExpired):
@@ -1923,6 +1925,7 @@ def _render_spring_overlay(
  width="{base.width}" height="{base.height}" href="data:image/png;base64,{encoded}"/>
 </svg>
 <script>
+window.DUR = {max(0.1, float(n_frames) / max(1, int(fps))):.4f};
 const sprite = document.getElementById("sprite");
 const frames = {json.dumps(transforms, separators=(",", ":"))};
 window.seek = function(t) {{
@@ -2235,30 +2238,30 @@ def _semantic_diagram_layout(
     marker = _hex_rgb(paint["marker_hex"])
     node_imgs: List[Image.Image] = []
     for nd in nodes:
-        sp = _draw_kinetic_line_sprite(nd, font, 32, (*accent, 255), max_w=170, min_fs=20)
+        sp = _draw_kinetic_line_sprite(nd, font, 38, (*accent, 255), max_w=205, min_fs=24)
         if sp is None:
             continue
-        pw, ph = sp.width + 26, sp.height + 14
+        pw, ph = sp.width + 30, sp.height + 16
         pill = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
         ImageDraw.Draw(pill).rounded_rectangle(
             (0, 0, pw - 1, ph - 1), radius=10,
             fill=(24, 29, 40, 235), outline=(*accent, 200), width=1,
         )
-        pill.alpha_composite(sp, dest=(13, 7))
+        pill.alpha_composite(sp, dest=(15, 8))
         node_imgs.append(pill)
 
     out_imgs: List[Image.Image] = []
     for rw in rows:
-        sp = _kinetic_marked_row(rw, font, 35 if node_imgs else 38, fg, 260 if node_imgs else 420, marker, accent)
+        sp = _kinetic_marked_row(rw, font, 42 if node_imgs else 46, fg, 310 if node_imgs else 490, marker, accent)
         if sp is None:
             continue
         if not node_imgs:
-            # 对仗金句条目左侧配 4px 黑金杂志竖线
-            bw = sp.width + 18
-            bh = max(sp.height + 6, 36)
+            # 对仗金句条目左侧配 5px 黑金杂志竖线
+            bw = sp.width + 20
+            bh = max(sp.height + 8, 42)
             bar_im = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
             ImageDraw.Draw(bar_im).rounded_rectangle((0, 4, 5, bh - 5), radius=2, fill=(*accent, 245))
-            bar_im.alpha_composite(sp, dest=(14, (bh - sp.height) // 2))
+            bar_im.alpha_composite(sp, dest=(15, (bh - sp.height) // 2))
             out_imgs.append(bar_im)
         else:
             out_imgs.append(sp)
@@ -2266,8 +2269,8 @@ def _semantic_diagram_layout(
     if not node_imgs and not out_imgs:
         return None
 
-    pad_x, pad_y = 22, 14
-    node_gap, out_gap, sec_gap = 18, 24, 14
+    pad_x, pad_y = 26, 16
+    node_gap, out_gap, sec_gap = 20, 28, 16
     top_w = sum(im.width for im in node_imgs) + node_gap * max(0, len(node_imgs) - 1)
     top_h = max((im.height for im in node_imgs), default=0)
     if node_imgs and len(out_imgs) == 2:
@@ -2505,6 +2508,7 @@ def _element_html(layout: Dict[str, Any], frames: List[Dict[str, Any]], fps: int
                 f'height="0" fill="{stroke}"/>'
             )
     parts.append("</svg><script>")
+    parts.append(f"window.DUR={max(0.1, len(frames) / max(1, int(fps))):.4f};")
     parts.append(f"const FPS={fps};")
     parts.append(f"const FRAMES={json.dumps(frames, separators=(',', ':'))};")
     parts.append(
