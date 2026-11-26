@@ -14,7 +14,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 import render_template_overlays as overlays
 from common import detect_browser_renderer, find_bin
-from kinetic_choreographer import plan_kinetic_stage
+from kinetic_choreographer import _ticker_box as overlays_box, plan_kinetic_stage
 
 FPS = 30
 BROWSER = detect_browser_renderer()
@@ -104,12 +104,13 @@ class V65ElementMotionTests(NoBrowserMixin, unittest.TestCase):
     def test_strike_slash_matches_the_browser_svg_beat_table(self):
         with tempfile.TemporaryDirectory() as directory:
             mov = Path(directory) / "strike_web.mov"
-            self.assertIsNotNone(render(STRIKE, mov, 1.0))
+            self.assertIsNotNone(render({**STRIKE, "out_anim": "fade_out"}, mov, 1.6))
             self.assertTrue(list(Path(directory).glob(".web-element-*.mov")))
             self.assertEqual(probe_video(mov)["pix_fmt"], "argb")
             frames = rgba_frames(mov)
             self.assertEqual(red_pixels(frames[1]), 0)
-            self.assertGreater(red_pixels(frames[10]), 200)
+            self.assertGreater(red_pixels(frames[20]), 200)
+            self.assertEqual(int(frames[-1][..., 3].sum()), 0)
 
     def test_stagger_card_reveals_title_then_negation_then_positive(self):
         with tempfile.TemporaryDirectory() as directory, self.no_browser():
@@ -148,7 +149,7 @@ class V65ElementMotionTests(NoBrowserMixin, unittest.TestCase):
             self.assertLess(int(boxes[0].max()), int(boxes[1].max()))
             layout = overlays._number_roll_layout(
                 NUMBER, overlays.find_commercial_font(["SourceHanSansCN-Bold.otf", "AlimamaShuHeiTi-Bold.otf"]),
-                overlays.kinetic_item_paint(NUMBER),
+                overlays.kinetic_item_paint(NUMBER), 1.0,
             )
             self.assertIsNotNone(layout)
             self.assertEqual(layout["roll_values"], [30, 90, 144, 182, 200])
@@ -166,11 +167,35 @@ class V65ElementMotionTests(NoBrowserMixin, unittest.TestCase):
             self.assertEqual((pixels[0, 0, 3], pixels[-1, -1, 3]), (0, 0))
             bottom = pixels[-4:]
             gold = (np.abs(bottom[..., :3].astype(int) - np.array([234, 179, 8])) < 26).all(axis=2)
+            # 胶囊与进度格之间留 4px 干净间隙，进度格本身 4px 厚。
+            self.assertEqual(int(pixels[-8:-4, :, 3].max()), 0)
             return float((gold & (bottom[..., 3] > 200)).sum())
 
         first, last = gold_ratio(1, 3), gold_ratio(3, 3)
         self.assertGreater(first, 0)
         self.assertGreater(last, first * 2)
+
+    def test_element_choreo_fades_every_layer_and_vector_on_the_last_frame(self):
+        for elem in (STRIKE, CARD, NUMBER):
+            with self.subTest(choreo=elem["element_choreo"]), \
+                    tempfile.TemporaryDirectory() as directory, self.no_browser():
+                mov = Path(directory) / "fade.mov"
+                self.assertIsNotNone(render({**elem, "out_anim": "fade_out"}, mov, 1.6))
+                frames = rgba_frames(mov)
+                self.assertGreater(int(frames[20][..., 3].sum()), 0)
+                self.assertEqual(int(frames[-1][..., 3].sum()), 0)
+
+        with tempfile.TemporaryDirectory() as directory, self.no_browser():
+            mov = Path(directory) / "fade_strike.mov"
+            self.assertIsNotNone(render({**STRIKE, "out_anim": "fade_out"}, mov, 1.6))
+            frames = rgba_frames(mov)
+            self.assertGreater(red_pixels(frames[20]), 200)
+            self.assertEqual(red_pixels(frames[-1]), 0)
+
+        with tempfile.TemporaryDirectory() as directory, self.no_browser():
+            mov = Path(directory) / "no_fade.mov"
+            self.assertIsNotNone(render(STRIKE, mov, 1.6))
+            self.assertGreater(int(rgba_frames(mov)[-1][..., 3].sum()), 0)
 
     def test_editorial_ticker_only_lands_on_safe_long_quiet_windows(self):
         image = overlays.render_kinetic_stage_item_png(TICKER)
@@ -190,7 +215,7 @@ class V65ElementMotionTests(NoBrowserMixin, unittest.TestCase):
         sentences = [
             {"id": "s0", "text": "公司倒闭那年我负债两百多万", "start_sec": 0.0, "end_sec": 4.0},
             {"id": "s1", "text": "第一点先问生意前提", "start_sec": 4.2, "end_sec": 8.0},
-            {"id": "s2", "text": "百度文库上有完整的行业报告可以查", "start_sec": 9.0, "end_sec": 14.0},
+            {"id": "s2", "text": "行业报告都在百度文库", "start_sec": 9.6, "end_sec": 14.0},
             {"id": "s3", "text": "我们把每一笔现金流都记在共享表格里", "start_sec": 15.0, "end_sec": 20.0},
             {"id": "s4", "text": "这样月底复盘的时候一眼就能看明白", "start_sec": 21.0, "end_sec": 26.0},
             {"id": "s5", "text": "第二点核对现金流", "start_sec": 27.0, "end_sec": 31.0},
@@ -228,16 +253,27 @@ class V65ElementMotionTests(NoBrowserMixin, unittest.TestCase):
         self.assertIsNone(ticker["sfx_role"])
         self.assertEqual(ticker["element_choreo"], "ticker_fade")
         self.assertFalse(any(cue.get("event_id") == ticker["id"] for cue in safe["items"] if cue.get("sfx_role")))
-        for value in (-0.62, 0.62):
-            self.assertGreater(ticker["y_norm"], -0.62)
-        self.assertIn(ticker["x_norm"], (-0.62, 0.62, -0.72, 0.72))
+        self.assertIn(ticker["y_norm"], (-0.22, -0.05))
+        self.assertIn(ticker["x_norm"], (-0.62, 0.62, -0.66, 0.66))
+        box = overlays_box(ticker["text_or_asset"], ticker["x_norm"], ticker["y_norm"])
+        self.assertGreaterEqual(box[1], 380)
+        self.assertGreaterEqual(box[0], 48)
+        self.assertLessEqual(box[2], 1080 - 48)
+        self.assertLess(box[3], (0.5 + 0.31) * 1920)
 
-        low_ceiling = plan_kinetic_stage(audio, director_plan=plan, composition_profile={"headroom_ratio": 0.08})
-        self.assertFalse(low_ceiling["stats"]["ticker"])
+        # 侧胸安全带落在脸上就放弃
         face_blocked = plan_kinetic_stage(audio, director_plan=plan, composition_profile={
-            "headroom_ratio": 0.30, "face_bbox": {"x": 0.02, "y": 0.04, "w": 0.96, "h": 0.5},
+            "face_bbox": {"x": 0.05, "y": 0.45, "w": 0.9, "h": 0.45},
         })
         self.assertFalse(face_blocked["stats"]["ticker"])
+        # 只有泛指词时宁缺毋滥
+        generic = dict(audio)
+        generic["sentences"] = [
+            {**row, "text": "大家都有自己的东西"} if row["id"] == "s2" else row for row in sentences
+        ]
+        self.assertFalse(plan_kinetic_stage(
+            generic, director_plan=plan, composition_profile={"allow_behind_person": False},
+        )["stats"]["ticker"])
 
         tight = {
             "sentences": sentences[:3],

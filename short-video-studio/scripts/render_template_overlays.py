@@ -829,23 +829,28 @@ def _pillar_progress(elem: Dict[str, Any]) -> Optional[tuple[int, int]]:
     return max(1, min(total, index)), total
 
 
+_PILLAR_BAR_GAP_PX = 4
+_PILLAR_BAR_THICK_PX = 4
+
+
 def _pillar_progress_layer(
-    width: int, body_h: int, index: int, total: int, accent: Tuple[int, int, int],
+    width: int, index: int, total: int, accent: Tuple[int, int, int],
 ) -> Image.Image:
-    """在胶囊紧下方铺 total 个细格：已走完的格用赛道主色，其余用 28% 白。"""
-    gap, inset, bar_h = 3, 6, 3
-    area_h = bar_h + 4
-    layer = Image.new("RGBA", (width, area_h), (0, 0, 0, 0))
+    """在胶囊下方留 4px 间隙，再铺 total 个 4px 细格：已走完的格用赛道主色。"""
+    inset, gap = 6, 3
+    bar_h = _PILLAR_BAR_THICK_PX
+    layer = Image.new("RGBA", (width, _PILLAR_BAR_GAP_PX + bar_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(layer)
     usable = max(6.0, float(width - inset * 2))
     cell_w = max(2.0, (usable - gap * (total - 1)) / float(total))
+    top = _PILLAR_BAR_GAP_PX
     for cell in range(total):
         x0 = inset + cell * (cell_w + gap)
         x1 = min(float(width - inset), x0 + cell_w)
         if x1 <= x0:
             continue
         fill = (*accent, 255) if cell < index else (255, 255, 255, 72)
-        draw.rounded_rectangle((x0, 0, x1, bar_h), radius=1, fill=fill)
+        draw.rounded_rectangle((x0, top, x1, top + bar_h), radius=1, fill=fill)
     return layer
 
 
@@ -920,7 +925,7 @@ def _render_v6_kinetic_sprite(
 
     pad_x, pad_y, gap_y = (15, 10, 10) if is_card else ((12, 6, 4) if is_ticker else (16, 8, 5))
     progress = _pillar_progress(elem)
-    bar_area = 7 if progress else 0
+    bar_area = (_PILLAR_BAR_GAP_PX + _PILLAR_BAR_THICK_PX) if progress else 0
     detail_gap = 22
     preceding = rendered[:1] if heading else []
     details = rendered[len(preceding):]
@@ -959,7 +964,7 @@ def _render_v6_kinetic_sprite(
             y += sprite.height + gap_y
     if progress is not None:
         index, total = progress
-        card.alpha_composite(_pillar_progress_layer(width, body_height, index, total, accent),
+        card.alpha_composite(_pillar_progress_layer(width, index, total, accent),
                              dest=(0, body_height))
     return card
 
@@ -1925,6 +1930,18 @@ window.READY = true;
 
 ELEMENT_CHOREO_MODES = frozenset({"strike_slash", "stagger_card", "number_roll", "ticker_fade"})
 _ROLL_STEPS = (0.15, 0.45, 0.72, 0.91, 1.0)
+_ELEMENT_OUT_MAX_SEC = 0.22
+_ELEMENT_OUT_RATIO = 0.25
+
+
+def _element_out_span(elem: Dict[str, Any], duration: float) -> Optional[Tuple[float, float]]:
+    """元素级动效的尾帧淡出窗口：只有显式声明 out_anim 的元素才淡出。"""
+    if not str(elem.get("out_anim") or "").strip():
+        return None
+    out_sec = min(_ELEMENT_OUT_MAX_SEC, duration * _ELEMENT_OUT_RATIO)
+    if out_sec <= 0.0:
+        return None
+    return (max(0.0, duration - out_sec), duration)
 
 
 def _element_beats(choreo: str, duration: float) -> Dict[str, Tuple[float, float]]:
@@ -1971,7 +1988,9 @@ def _capsule_image(
     return capsule
 
 
-def _strike_slash_layout(elem: Dict[str, Any], font: Optional[str], paint: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _strike_slash_layout(
+    elem: Dict[str, Any], font: Optional[str], paint: Dict[str, Any], duration: float,
+) -> Optional[Dict[str, Any]]:
     label = str(elem.get("text_or_asset") or "").strip()
     words = label[1:].strip() if label[:1] in {"✕", "✓"} else label
     size = min(max(30, int(elem.get("font_size_px") or 69)), 54)
@@ -1990,6 +2009,7 @@ def _strike_slash_layout(elem: Dict[str, Any], font: Optional[str], paint: Dict[
                                             (height - word_sprite.height) // 2))
     center_y = height // 2
     pen = max(3, round(mark * 0.17))
+    slash_pen = max(4, round(size * 0.085))
     marker = _hex_rgb(paint["marker_hex"])
     left = pad_x + 2
     right = pad_x + mark - 2
@@ -2006,13 +2026,16 @@ def _strike_slash_layout(elem: Dict[str, Any], font: Optional[str], paint: Dict[
              "p2": (ox + right, oy + center_y - mark // 3), "width": pen, "rgba": (*marker, 255)},
             {"kind": "line", "key": "slash", "p1": (ox + word_x0, oy + center_y),
              "p2": (ox + word_x0 + word_sprite.width, oy + center_y),
-             "width": max(2, round(size * 0.05)), "rgba": (*marker, 217)},
+             "width": slash_pen, "rgba": (*marker, 235)},
         ],
-        "beats": _element_beats("strike_slash", 1.0),
+        "beats": _element_beats("strike_slash", duration),
+        "out": _element_out_span(elem, duration),
     }
 
 
-def _stagger_card_layout(elem: Dict[str, Any], font: Optional[str], paint: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _stagger_card_layout(
+    elem: Dict[str, Any], font: Optional[str], paint: Dict[str, Any], duration: float,
+) -> Optional[Dict[str, Any]]:
     card_lines = [str(line).strip() for line in elem.get("card_lines") or [] if str(line).strip()]
     if not card_lines:
         return None
@@ -2056,12 +2079,15 @@ def _stagger_card_layout(elem: Dict[str, Any], font: Optional[str], paint: Dict[
         "canvas": (cw, ch),
         "layers": layers,
         "vectors": [{"kind": "vline", "key": "divider", "x": ox + divider[0], "y0": oy + divider[1],
-                     "height": body_h, "width": 1, "rgba": (255, 255, 255, 48)}],
-        "beats": _element_beats("stagger_card", 1.0),
+                     "height": body_h, "width": 1, "rgba": (255, 255, 255, 96)}],
+        "beats": _element_beats("stagger_card", duration),
+        "out": _element_out_span(elem, duration),
     }
 
 
-def _number_roll_layout(elem: Dict[str, Any], font: Optional[str], paint: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _number_roll_layout(
+    elem: Dict[str, Any], font: Optional[str], paint: Dict[str, Any], duration: float,
+) -> Optional[Dict[str, Any]]:
     text = str(elem.get("text_or_asset") or "").strip()
     match = re.search(r"(\d{2,})", text)
     if not match:
@@ -2093,7 +2119,8 @@ def _number_roll_layout(elem: Dict[str, Any], font: Optional[str], paint: Dict[s
         "layers": layers,
         "vectors": [],
         "roll_values": shown_values,
-        "beats": _element_beats("number_roll", 1.0),
+        "beats": _element_beats("number_roll", duration),
+        "out": _element_out_span(elem, duration),
     }
 
 
@@ -2117,6 +2144,7 @@ def _ticker_layout(elem: Dict[str, Any], font: Optional[str], paint: Dict[str, A
         "vectors": [],
         "beats": _element_beats("ticker_fade", max(0.4, duration)),
         "duration": max(0.4, duration),
+        "out": _element_out_span(elem, max(0.4, duration)),
     }
 
 
@@ -2130,9 +2158,9 @@ def _element_layout(
         font_candidates or ["SourceHanSansCN-Bold.otf", "AlimamaShuHeiTi-Bold.otf"],
     ) or find_commercial_font()
     builders = {
-        "strike_slash": lambda: _strike_slash_layout(elem, font, paint),
-        "stagger_card": lambda: _stagger_card_layout(elem, font, paint),
-        "number_roll": lambda: _number_roll_layout(elem, font, paint),
+        "strike_slash": lambda: _strike_slash_layout(elem, font, paint, duration),
+        "stagger_card": lambda: _stagger_card_layout(elem, font, paint, duration),
+        "number_roll": lambda: _number_roll_layout(elem, font, paint, duration),
         "ticker_fade": lambda: _ticker_layout(elem, font, paint, duration),
     }
     return builders[choreo]()
@@ -2176,23 +2204,34 @@ def _element_frame_state(layout: Dict[str, Any], t: float) -> Dict[str, Any]:
         state["ticker"].update(alpha=_smooth_step(_beat_progress(t, beats["in"])))
         if t > beats["out"][0]:
             state["ticker"]["alpha"] *= 1.0 - _smooth_step(_beat_progress(t, beats["out"]))
-    return {"layers": state, "vectors": vectors}
+
+    # 尾帧统一淡出：图层 alpha 与矢量（红叉/红线/竖分割线）不透明度同步归零。
+    vector_alpha = 1.0
+    out_span = layout.get("out")
+    if out_span:
+        vector_alpha = 1.0 - _smooth_step(_beat_progress(t, out_span))
+        if vector_alpha < 0.999:
+            for name in names:
+                state[name]["alpha"] *= vector_alpha
+    return {"layers": state, "vectors": vectors, "vector_alpha": vector_alpha}
 
 
 def _element_frames(layout: Dict[str, Any], fps: int, n_frames: int) -> List[Dict[str, Any]]:
     return [_element_frame_state(layout, frame / float(fps)) for frame in range(n_frames)]
 
 
-def _draw_vector(draw: Any, vector: Dict[str, Any], progress: float) -> None:
-    if progress <= 0.001:
+def _draw_vector(draw: Any, vector: Dict[str, Any], progress: float, alpha_mul: float = 1.0) -> None:
+    if progress <= 0.001 or alpha_mul <= 0.004:
         return
+    rgba = vector["rgba"]
+    fill = (*rgba[:3], int(round(rgba[3] * alpha_mul)))
     if vector["kind"] == "line":
         (x0, y0), (x1, y1) = vector["p1"], vector["p2"]
         draw.line(((x0, y0), (x0 + (x1 - x0) * progress, y0 + (y1 - y0) * progress)),
-                  fill=vector["rgba"], width=vector["width"])
+                  fill=fill, width=vector["width"])
     else:
         draw.rectangle((vector["x"], vector["y0"], vector["x"] + vector["width"],
-                        vector["y0"] + max(1.0, vector["height"] * progress)), fill=vector["rgba"])
+                        vector["y0"] + max(1.0, vector["height"] * progress)), fill=fill)
 
 
 def _element_frame_bytes(layout: Dict[str, Any], state: Dict[str, Any]) -> bytes:
@@ -2216,8 +2255,9 @@ def _element_frame_bytes(layout: Dict[str, Any], state: Dict[str, Any]) -> bytes
         frame.alpha_composite(img.crop((box[0] - x, box[1] - y, box[2] - x, box[3] - y)),
                               dest=(box[0], box[1]))
     draw = ImageDraw.Draw(frame)
+    vector_alpha = float(state.get("vector_alpha", 1.0))
     for vector in layout["vectors"]:
-        _draw_vector(draw, vector, float(state["vectors"].get(vector["key"], 0.0)))
+        _draw_vector(draw, vector, float(state["vectors"].get(vector["key"], 0.0)), vector_alpha)
     return frame.tobytes()
 
 
@@ -2284,7 +2324,8 @@ window.seek = function(t) {
     const el = document.getElementById("V" + idx);
     if (!el) return;
     const progress = (state.vectors[key] === undefined) ? 0 : state.vectors[key];
-    el.style.opacity = progress > 0.001 ? 1 : 0;
+    const vectorAlpha = (state.vector_alpha === undefined) ? 1 : state.vector_alpha;
+    el.style.opacity = progress > 0.001 ? vectorAlpha : 0;
     if (VEC[idx].kind === "line") {
       const len = el.getTotalLength();
       el.setAttribute("stroke-dasharray", len);
@@ -2307,6 +2348,10 @@ def _render_element_choreo(
     layout = _element_layout(elem, choreo, font_candidates, duration)
     if layout is None:
         return None
+    if layout.get("out"):
+        # 尾帧淡出终止在最后一帧的采样时刻，保证 mov 末帧确实全透明。
+        start, _ = layout["out"]
+        layout["out"] = (start, max(start + 1.0 / fps, (n_frames - 1) / float(fps)))
     cw, ch = layout["canvas"]
     frames = _element_frames(layout, fps, n_frames)
     out_mov = Path(out_mov)

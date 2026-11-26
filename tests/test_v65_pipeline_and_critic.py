@@ -1,4 +1,5 @@
 """V6.5 一键 V6 闭环、审片精修与短句底字幕避重的可测量回归。"""
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -10,7 +11,7 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "short-video-studio" / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import run_pipeline as rp
-from aesthetic_critic import CRITIC_DIMENSIONS, REVIEW_RESULT_FILE, REVIEW_TASKS_FILE
+from aesthetic_critic import CRITIC_DIMENSIONS, REVIEW_RESULT_FILE, REVIEW_TASKS_FILE, score_aesthetic_review
 from common import read_json, write_json
 from director_plan import (
     PLAN_FILENAME,
@@ -19,6 +20,9 @@ from director_plan import (
     validate_director_plan,
 )
 from kinetic_choreographer import business_caption_items
+from step4_build_edl import run_step4
+from step5_subtitles import run_step5
+from step6_packaging import run_step6
 
 FPS = 30
 DURATION = 24.0
@@ -355,6 +359,231 @@ class V65PipelineAndCriticTests(unittest.TestCase):
         thin = [dict(highlights[0], start_sec=5.0, end_sec=6.07)]
         capped = business_caption_items(audio, subtitles, FPS, highlight_items=thin)
         self.assertEqual([item["text_or_asset"] for item in capped], ["不是被骗", "看到做法先找他的前提"])
+
+    def test_store_breath_skips_the_opening_reveal_and_lands_mid_film(self):
+        rows = (
+            ("今日同大家来探店", 0.0, 1.0),
+            ("呢间茶楼有六百平", 1.1, 3.4),
+            ("沿住大厅行过去就见到后厨", 3.8, 7.0),
+            ("师傅每日现包三十笼点心", 10.4, 14.0),
+            ("仲有桑拿鸡同埋老火汤", 14.5, 18.0),
+            ("街坊早上过来饮一壶热茶", 18.5, 22.0),
+            ("下次评论区见", 22.5, 26.0),
+        )
+        sentences = [
+            {"id": f"sent_{index:03d}", "text": text, "start_sec": start, "end_sec": end}
+            for index, (text, start, end) in enumerate(rows, 1)
+        ]
+        audio = {"sentences": sentences, "locked_duration_sec": 26.0}
+        profile = {"theme_hint": "store_vibrant", "allow_behind_person": True}
+        plan = generate_deterministic_director_plan(audio, composition_profile=profile)
+        self.assertEqual(plan["theme_profile"], "store_vibrant")
+        reveal_acts = [
+            act for act in plan["acts"]
+            if act["primitive"] in ("num_anchor_dim_overlay", "list_build_gather_dim_overlay")
+        ]
+        self.assertTrue(reveal_acts)
+        opening = min(
+            (act for act in reveal_acts if act["sentence_ids"] == ["sent_002"]),
+            key=lambda act: act["act_id"], default=None,
+        )
+        self.assertIsNotNone(opening, "开场 1s 的数字揭晓应仍在总谱里")
+        drops = [cue for cue in plan["music_cues"] if cue["type"] == "silence_drop"]
+        self.assertEqual(len(drops), 1)
+        drop = drops[0]
+        self.assertGreaterEqual(drop["start_sec"], 4.0)
+        self.assertAlmostEqual(drop["end_sec"] - drop["start_sec"], 0.35)
+        later = [
+            act for act in reveal_acts
+            if min(
+                row["start_sec"] for row in sentences if row["id"] in act["sentence_ids"]
+            ) >= 4.0
+        ]
+        self.assertTrue(later, "中段必须还有揭晓幕")
+        reveal_start = min(
+            row["start_sec"] for row in sentences if row["id"] in later[0]["sentence_ids"]
+        )
+        self.assertAlmostEqual(drop["start_sec"], reveal_start - 0.08, delta=0.02)
+        self.assertTrue(validate_director_plan(plan, audio, profile)["ok"])
+
+    def test_negation_rows_cover_the_short_caption_after_a_leading_conjunction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pipeline = Path(directory)
+            source = pipeline / "voice.mp4"
+            rows = (
+                ("公司倒闭那年我负债两百多万", 0.0, 3.2),
+                ("不是被骗", 3.3, 4.6),
+                ("也不是行情差", 4.7, 7.0),
+                ("我后来反复复盘", 7.2, 10.0),
+                ("第一点先问生意前提", 10.2, 14.0),
+                ("讲完这些再看过去", 14.2, 17.0),
+            )
+            sentences = [
+                {"id": f"s{index}", "text": text, "start_sec": start, "end_sec": end,
+                 "source_media": str(source), "source_in_sec": start, "source_out_sec": end,
+                 "start_frame": round(start * FPS), "end_frame": round(end * FPS), "keywords": []}
+                for index, (text, start, end) in enumerate(rows)
+            ]
+            # 真片词级时间戳从「也」后的「不」开始，大字原本会晚出一截。
+            for index in (1, 2):
+                sentences[index]["words"] = [{
+                    "text": sentences[index]["text"],
+                    "start_sec": sentences[index]["start_sec"],
+                    "end_sec": sentences[index]["end_sec"],
+                }]
+            audio = {
+                "sentences": sentences, "locked_duration_sec": 17.0,
+                "locked_duration_frames": round(17.0 * FPS),
+                "events": [{"id": f"e{index}", "time_sec": row["start_sec"],
+                            "frame": row["start_frame"], "type": "sentence_start",
+                            "sentence_id": row["id"]} for index, row in enumerate(sentences)],
+            }
+            write_json(pipeline / "03_audio_events.json", audio)
+            write_json(pipeline / "01_manifest.json", {"items": [{
+                "id": "a", "role": "a_roll", "normalized_mp4": str(source), "duration_sec": 30.0,
+                "sharpness_score": 460, "stability_score": 0.93,
+                "faces": [{"bbox": {"x": 0.29, "y": 0.22, "w": 0.42, "h": 0.26}}],
+            }]})
+            profile = {
+                "primary_stage_mode": "closeup_chest_stage", "allow_behind_person": False,
+                "aroll_profiles": [{
+                    "media_path": str(source), "allow_behind_person": False,
+                    "face_area_ratio": 0.11, "safe_fg_y_norm": -0.46, "safe_center_shift_x": 0.07,
+                }],
+            }
+            write_json(pipeline / "01b_composition_profile.json", profile)
+            acts = [
+                {"act_id": "act_01", "sentence_ids": ["s0", "s1", "s2"],
+                 "primitive": "negation_strike",
+                 "visual_copy": {"headline": "负债200万+",
+                                 "items": ["✕ 不是被骗", "✕ 不是行情差"],
+                                 "accent_token": "", "footnote": ""},
+                 "camera_intent": "slow_push_115", "broll_policy": "lock_aroll", "sfx_budget": 2,
+                 "dramatic_role": "hook", "emotion_intensity": 0.92},
+                {"act_id": "act_02", "sentence_ids": ["s3"], "primitive": "clean_breath",
+                 "visual_copy": {"headline": "", "items": [], "accent_token": "", "footnote": ""},
+                 "camera_intent": "slow_push_115", "broll_policy": "lock_aroll", "sfx_budget": 0,
+                 "dramatic_role": "setup", "emotion_intensity": 0.18},
+                {"act_id": "act_03", "sentence_ids": ["s4"], "primitive": "framework_pillar",
+                 "visual_copy": {"headline": "问生意前提", "items": [], "accent_token": "01",
+                                 "footnote": ""},
+                 "camera_intent": "slow_push_115", "broll_policy": "lock_aroll", "sfx_budget": 1,
+                 "dramatic_role": "framework", "emotion_intensity": 0.73},
+                {"act_id": "act_04", "sentence_ids": ["s5"], "primitive": "plain_bridge",
+                 "visual_copy": {"headline": "", "items": [], "accent_token": "", "footnote": ""},
+                 "camera_intent": "steady_hold", "broll_policy": "lock_aroll", "sfx_budget": 0,
+                 "dramatic_role": "setup", "emotion_intensity": 0.31},
+            ]
+            checked = validate_director_plan(
+                {"source": "agent", "theme_profile": "business_editorial", "acts": acts,
+                 "music_cues": []}, audio, profile)
+            self.assertTrue(checked["ok"], checked["errors"])
+            write_json(pipeline / PLAN_FILENAME, checked["sanitized_plan"])
+
+            run_step4(pipeline, track="creator", style_id="style_02")
+            run_step5(pipeline, template_id="style_02")
+            package = run_step6(pipeline, style_id="style_02")
+            stage = package["kinetic_stage"]
+            negations = [item for item in stage["items"] if item["variant"] == "negation_line"]
+            aligned = next(item for item in negations if "行情差" in item["text_or_asset"])
+            self.assertEqual(aligned["start_sec"], 4.7)
+            captions = [item["text_or_asset"] for item in stage["items"] if item.get("base_caption")]
+            self.assertNotIn("也不是行情差", captions)
+            self.assertIn("我后来反复复盘", captions)
+            self.assertEqual(stage["stats"]["suppressed_duplicate_captions"], 2)
+
+    def test_review_file_is_only_accepted_by_the_apply_action(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pipeline = Path(directory)
+            write_project(pipeline)
+            review = pipeline / "review.json"
+            write_json(review, {"patch_suggestions": []})
+            process = subprocess.run(
+                [sys.executable, "-B", str(SCRIPTS / "aesthetic_critic.py"), "package",
+                 "--pipeline-dir", str(pipeline), "--review-file", str(review)],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(process.returncode, 2)
+            self.assertIn("--review-file 只支持 apply", process.stderr)
+
+    def test_store_theme_is_not_punished_for_missing_commercial_choreo(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pipeline = Path(directory)
+            sentences = [
+                {"id": "s0", "text": "今日同大家来探店", "start_sec": 0.0, "end_sec": 3.0},
+                {"id": "s1", "text": "呢间茶楼有六百平", "start_sec": 3.2, "end_sec": 6.0},
+                {"id": "s2", "text": "招牌就系桑拿鸡", "start_sec": 6.4, "end_sec": 12.0},
+            ]
+            write_json(pipeline / "03_audio_events.json",
+                       {"sentences": sentences, "locked_duration_sec": 12.0})
+            write_json(pipeline / "01b_composition_profile.json", {"allow_behind_person": True})
+            write_json(pipeline / PLAN_FILENAME, {
+                "source": "agent", "theme_profile": "store_vibrant",
+                "music_cues": [{"type": "delay_entry", "start_sec": 0.0, "end_sec": 1.2,
+                                "depth_db": -28.0, "fade_ms": 80}],
+                "acts": [
+                    {"act_id": "act_01", "sentence_ids": ["s0"], "primitive": "hero_intro_pop",
+                     "visual_copy": {"headline": "探店", "items": [], "accent_token": "",
+                                     "footnote": ""}, "camera_intent": "steady_hold",
+                     "broll_policy": "lock_aroll", "sfx_budget": 1, "dramatic_role": "hook",
+                     "emotion_intensity": 0.9},
+                    {"act_id": "act_02", "sentence_ids": ["s1"], "primitive": "clean_breath",
+                     "visual_copy": {"headline": "", "items": [], "accent_token": "",
+                                     "footnote": ""}, "camera_intent": "steady_hold",
+                     "broll_policy": "lock_aroll", "sfx_budget": 0, "dramatic_role": "setup",
+                     "emotion_intensity": 0.15},
+                    {"act_id": "act_03", "sentence_ids": ["s2"], "primitive": "plain_bridge",
+                     "visual_copy": {"headline": "", "items": [], "accent_token": "",
+                                     "footnote": ""}, "camera_intent": "steady_hold",
+                     "broll_policy": "lock_aroll", "sfx_budget": 0, "dramatic_role": "setup",
+                     "emotion_intensity": 0.3},
+                ],
+            })
+            write_json(pipeline / "06_packaging.json", {
+                "sfx_cues": [{"time_sec": value, "sfx_role": "pop"}
+                             for value in (0.4, 2.0, 4.0, 6.0, 8.0, 10.0)],
+                "kinetic_stage": {"items": [{
+                    "variant": "hero_lime", "text_or_asset": "六百平", "start_sec": 3.2,
+                    "end_sec": 6.0, "theme_profile": "store_vibrant",
+                    "motion_mode": "slide_in_out", "render_backend": "web_spring",
+                    "z_layer": "foreground",
+                }]},
+            })
+            write_json(pipeline / "08_mix_metrics.json", {
+                "measured_lufs": -14.0,
+                "music_cue_metrics": {"applied_cues": [{"type": "delay_entry"}]},
+            })
+            write_json(pipeline / "10_qa_report.json", {"fail_count": 0})
+            review = score_aesthetic_review(pipeline)
+            self.assertEqual(review["metrics"]["element_choreo_ratio"], 0.0)
+            self.assertAlmostEqual(review["scores"]["motion_craft"], 9.4, places=2)
+
+    def test_render_only_and_critic_revision_respect_no_v6_director(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pipeline = Path(directory)
+            write_project(pipeline)
+            write_json(pipeline / "04_edl.json",
+                       {"clips": [], "fps": FPS, "style_id": "style_02", "total_duration_sec": DURATION})
+            write_json(pipeline / "06_packaging.json", {"kinetic_stage": {"enabled": True, "items": []}})
+            write_json(pipeline / PLAN_FILENAME, overfull_plan())
+            studio = FakeStudio()
+            with fake_pipeline(studio):
+                result = rp._render_and_verify_only(
+                    pipeline_dir=pipeline, track="creator", benchmark=None, simulate_jy_fail=False,
+                    simulate_hf_fail=False, dialect="mandarin", store_anchor=None, require_lock=False,
+                    strict_asr=False, hook_variants=1, ws=None, style_id="style_02",
+                    v6_director=True, v6_disabled=True,
+                )
+            self.assertNotIn("jianying_native", result)
+            self.assertNotIn("aesthetic_review", result)
+
+        with tempfile.TemporaryDirectory() as directory:
+            pipeline = Path(directory)
+            write_project(pipeline)
+            studio = FakeStudio()
+            result = run_delivery(pipeline, studio, no_v6_director=True, auto_critic_revise=True)
+            self.assertNotIn("critic_revision", result)
+            self.assertEqual(studio.step4_runs, 1)
 
     def test_store_plan_breathes_once_and_contrast_gets_a_headline(self):
         sentences = [

@@ -990,6 +990,8 @@ def _choose_highlights(candidates: List[_Candidate], total: float) -> set[int]:
 
 _STORE_BREATH_MIN_TOTAL = 20.0
 _STORE_REVEAL_PRIMITIVES = ("num_anchor_dim_overlay", "list_build_gather_dim_overlay")
+_STORE_REVEAL_MIN_OPENING_SEC = 4.0
+_STORE_REVEAL_MIN_TOTAL_RATIO = 0.15
 
 
 def _store_breath_cues(
@@ -997,11 +999,22 @@ def _store_breath_cues(
 ) -> List[Dict[str, Any]]:
     """探店长片：只在核心揭晓幕前留一次克制呼吸，可选补一条温和推升，绝不与呼吸重叠。"""
     picked = sorted(highlights) if highlights is not None else list(range(len(candidates)))
-    reveal = next(
-        (i for i in picked
-         if 0 < i < len(candidates) and candidates[i][1] in _STORE_REVEAL_PRIMITIVES),
-        None,
-    )
+    # 开场前 4 秒（且不早于全片 15%）是钩子区，绝不在这里抽掉配乐。
+    floor = max(_STORE_REVEAL_MIN_OPENING_SEC, total * _STORE_REVEAL_MIN_TOTAL_RATIO)
+    scored: List[tuple] = []
+    for index in picked:
+        if index <= 0 or index >= len(candidates):
+            continue
+        primitive = candidates[index][1]
+        if primitive not in _STORE_REVEAL_PRIMITIVES:
+            continue
+        act_start, _ = _span(candidates[index][0])
+        if act_start < floor:
+            continue
+        # 招牌菜清单最能撑住揭晓重音；同类里再挑最靠近全片中段的那一幕。
+        priority = 0 if primitive == "list_build_gather_dim_overlay" else 1
+        scored.append((priority, abs(act_start - total * 0.5), index))
+    reveal = min(scored)[2] if scored else None
     if reveal is None:
         return []
     act_start, _ = _span(candidates[reveal][0])

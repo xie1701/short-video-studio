@@ -350,6 +350,14 @@ def clean_display_text(text: str) -> str:
 _FILLER_CHARS = set("啊呀哦呃诶嘛呢吧咧啦哇呵嗯")
 
 
+def _has_word_timing(sent: Dict[str, Any]) -> bool:
+    """该句是否带可用的词级时间戳（决定能否把句首连词并进大字起点）。"""
+    return any(
+        clean_display_text(str(w.get("text") or w.get("word") or ""))
+        for w in sent.get("words") or [] if isinstance(w, dict)
+    )
+
+
 def _extract_char_timeline(sent: Dict[str, Any]) -> List[Tuple[str, float, float]]:
     """
     从句子的 `words` 字段提取每个字的精准时间段；缺失时按字符均分兜底。
@@ -1398,13 +1406,21 @@ def _retarget_legacy_composition(
     stage["matting_windows"] = [w for w in stage["matting_windows"] if w["group_id"] in behind_groups]
 
 
+# 句首单字连词：词级时间戳从「也不是行情差」的「不」开始时，要把起点前移对齐这个连词，
+# 否则大字比同句底字幕晚出，底字幕就会被判成“没被完整覆盖”而复读一屏。
+_SENTENCE_LEAD_CONJUNCTIONS = "也都并又还"
+
+
 def _director_rows(
     texts: List[str], timeline: List[Tuple[str, float, float]], start: float, end: float, fps: int,
+    sentence_starts: Optional[set] = None, word_backed: Optional[set] = None,
 ) -> List[Tuple[float, float]]:
     # Later rows get at least one frame even when ASR places a word close to the act boundary.
     count = min(len(texts), max(1, int(round((end - start) * fps))))
     labels = [clean_display_text(text.lstrip("✕✓ ")) for text in texts[:count]]
     timeline = [(ch, st, en) for ch, st, en in timeline if not ch.isspace()]
+    lead_starts = sentence_starts or frozenset()
+    timed_chars = word_backed or frozenset()
     spoken = "".join(ch for ch, _, _ in timeline)
     estimates = map_chunks_to_times(labels, timeline, start, end)
     starts: List[float] = []
@@ -1413,7 +1429,12 @@ def _director_rows(
         phrase = "".join(label.split())
         match = spoken.find(phrase, cursor)
         if match >= 0:
-            at = timeline[match][1]
+            lead = match - 1
+            if (lead >= 0 and lead in lead_starts and lead in timed_chars
+                    and spoken[lead] in _SENTENCE_LEAD_CONJUNCTIONS):
+                at = timeline[lead][1]
+            else:
+                at = timeline[match][1]
             cursor = match + len(phrase)
         else:
             at = estimate
@@ -1451,7 +1472,16 @@ def _director_items(
     if _display_length(headline) > 7:
         headline = ""
     start, end = act["start_sec"], act["end_sec"]
-    timeline = [entry for sentence in sentences for entry in _extract_char_timeline(sentence)]
+    timeline: List[Tuple[str, float, float]] = []
+    sentence_starts: set = set()
+    word_backed: set = set()
+    for sentence in sentences:
+        chars = [entry for entry in _extract_char_timeline(sentence) if not entry[0].isspace()]
+        start_idx = len(timeline)
+        sentence_starts.add(start_idx)
+        timeline.extend(chars)
+        if _has_word_timing(sentence):
+            word_backed.update(range(start_idx, start_idx + len(chars)))
     y = max(-0.43, min(-0.32, _stage_y(composition)))
     items: List[Dict[str, Any]] = []
 
@@ -1482,7 +1512,8 @@ def _director_items(
 
     if primitive == "negation_strike":
         add(headline, "hero_lime", start, end, 0.0, y + 0.10, 19.0, "in:缩小 II", 1)
-        for line, (st, en) in zip(lines, _director_rows(lines, timeline, start, end, fps)):
+        for line, (st, en) in zip(lines, _director_rows(
+            lines, timeline, start, end, fps, sentence_starts, word_backed)):
             label = line if line.startswith("✕") else f"✕ {line}"
             # Use a separate row so a headline and the current negation can be read together.
             add(label, "negation_line", st, en, 0.0, y, 11.5, "in:向右露出", 2, "punch")
@@ -1490,7 +1521,9 @@ def _director_items(
         rows = _pillar_rows(visual)
         # 结构进度需要全片总格数：总格由 plan_kinetic_stage 提前数好，这里只按顺序领号。
         pillar_total = int((pillar_state or {}).get("total", 0))
-        row_spans = _director_rows([label or number for number, label in rows], timeline, start, end, fps)
+        row_spans = _director_rows(
+            [label or number for number, label in rows], timeline, start, end, fps,
+            sentence_starts, word_backed)
         for idx, ((number, label), (st, en)) in enumerate(zip(rows, row_spans)):
             if idx == 0:
                 st = start
@@ -1506,10 +1539,8 @@ def _director_items(
                              11.5, "in:缩小 II", 1, "pop")
             if badge_item is not None:
                 badge_item.update(progress)
-            label_item = add(label, "hero_white", st, en, 0.08 if number else 0.0, y,
-                             12.5, "in:渐显", 2, None if number else "pop")
-            if progress and label_item is not None:
-                label_item.update(progress)
+            add(label, "hero_white", st, en, 0.08 if number else 0.0, y,
+                12.5, "in:渐显", 2, None if number else "pop")
     elif primitive == "concept_split_card":
         card_lines = list(dict.fromkeys([*([headline] if headline else []), *lines]))
         shift = act["side_shift_x"] if act["camera_intent"] == "side_shift_card" else 0.0
@@ -1523,7 +1554,8 @@ def _director_items(
         rows = [line for line in lines if line != headline]
         title_y = y + 0.10 if rows and not behind else y
         add(headline, variant, start, end, 0.0, title_y, 17.0, "in:缩小 II", 1)
-        for idx, (line, (st, en)) in enumerate(zip(rows, _director_rows(rows, timeline, start, end, fps))):
+        for idx, (line, (st, en)) in enumerate(zip(rows, _director_rows(
+                rows, timeline, start, end, fps, sentence_starts, word_backed))):
             add(line, "danmaku_line" if behind else "hero_white", st, en,
                 0.0, 0.28 if behind else y, 11.5, "in:向右露出",
                 3 if behind else 2, layer="behind_person" if behind else "foreground")
@@ -1616,10 +1648,16 @@ _TICKER_MIN_WINDOW_SEC = 10.0
 _TICKER_OPENING_GUARD_SEC = 3.0
 _TICKER_HIGHLIGHT_GUARD_SEC = 1.5
 _TICKER_FONT_UNITS = 5.2
-_TICKER_BELTS = ((-0.62, 0.70), (0.62, 0.70), (-0.72, -0.05), (0.72, -0.05))
+# 顶部 20% 是平台 UI 与标题区，微锚点只走侧胸安全带。
+_TICKER_BELTS = ((-0.62, -0.22), (0.62, -0.22), (-0.66, -0.05), (0.66, -0.05))
 _TICKER_CAPTION_TOP_NORM = -0.62
-_TICKER_MIN_HEADROOM = 0.18
+_TICKER_TOP_UI_SAFE_PX = 380.0
+_TICKER_SIDE_MARGIN_PX = 48.0
 _TICKER_MAX_ITEMS = 2
+_TICKER_GENERIC_TOKENS = (
+    "的人", "自己", "别人", "別人", "大家", "我们", "我們", "他们", "他們", "她们", "她們",
+    "东西", "東西", "时候", "時候", "那张", "那張", "这个", "這個", "那个", "那個", "什么", "什麼",
+)
 
 
 def _ticker_box(text: str, x_norm: float, y_norm: float) -> Tuple[float, float, float, float]:
@@ -1653,14 +1691,16 @@ def _face_box_px(composition: Dict[str, Any]) -> Optional[Tuple[float, float, fl
 def _safe_ticker_anchor(
     composition: Dict[str, Any], text: str,
 ) -> Optional[Tuple[float, float]]:
-    """只在顶栏左下/左上/右上或侧边安全带落位；碰脸、碰底部字幕区一律放弃。"""
+    """只在侧胸安全带落位：避开顶部 20% 平台 UI、左右边距与底部字幕区，碰脸一律放弃。"""
     face = _face_box_px(composition)
-    if face is None and float(composition.get("headroom_ratio") or 0.0) < _TICKER_MIN_HEADROOM:
-        return None
     caption_y = (0.5 - _TICKER_CAPTION_TOP_NORM / 2.0) * CANVAS_HEIGHT
     for x_norm, y_norm in _TICKER_BELTS:
         box = _ticker_box(text, x_norm, y_norm)
-        if box[1] < 60 or box[2] > CANVAS_WIDTH - 40 or box[3] >= caption_y:
+        if box[1] < _TICKER_TOP_UI_SAFE_PX:
+            continue
+        if box[0] < _TICKER_SIDE_MARGIN_PX or box[2] > CANVAS_WIDTH - _TICKER_SIDE_MARGIN_PX:
+            continue
+        if box[3] >= caption_y:
             continue
         if face is not None and _box_iou(box, face) > 0.0:
             continue
@@ -1672,6 +1712,11 @@ def _ticker_copy(sentence: Dict[str, Any]) -> str:
     phrase = _short_conclusion(str(sentence.get("text") or ""), [sentence], limit=5)
     # 结尾挂着方位/助词（共享表格里）不是真词，宁可换一句也不上屏。
     if not (2 <= _display_length(phrase) <= 5) or phrase[-1:] in "里中上下的地得是了在":
+        return ""
+    # 口语泛指词（大家/自己/时候…）与句首虚词开头的半截话（就能看明白）都没有信息量，宁可不出。
+    if any(token in phrase for token in _TICKER_GENERIC_TOKENS):
+        return ""
+    if phrase[0] in _DUPLICATE_SOFT_LEADS:
         return ""
     errors: List[str] = []
     _validate_copy({"headline": phrase}, "editorial_ticker", [sentence], errors)

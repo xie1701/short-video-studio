@@ -1346,7 +1346,7 @@ def run_visual_to_delivery(
         )
 
     result = _render_and_verify()
-    if not (auto_critic_revise and style_id == "style_02"):
+    if not (auto_critic_revise and style_id == "style_02" and not no_v6_director):
         return result
     return _revise_once_with_critic(pipeline_dir, result, _rebuild_visuals, _render_and_verify)
 
@@ -1736,6 +1736,7 @@ def main() -> None:
             sync_window=args.sync_window,
             style_id=active_style_id,
             v6_director=bool(active_style_id == "style_02" and not args.no_v6_director),
+            v6_disabled=args.no_v6_director,
         )
     elif args.mode == "knowledge-animation":
         anim_dir = project_dir / "animation"

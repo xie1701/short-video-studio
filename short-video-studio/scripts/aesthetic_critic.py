@@ -307,8 +307,10 @@ def score_aesthetic_review(pipeline_dir: Path) -> Dict[str, Any]:
     motion_items = sum(item.get("render_backend") == "web_spring" or bool(item.get("motion_mode")) for item in highlights)
     coverage_gap = (max(0, 0.35 - coverage, coverage - 0.55) if coverage is not None else 0.28)
     sfx_gap = max(0, 6 - len(cues), len(cues) - 14)
-    # 底字幕复读大字是信息减法与节奏呼吸的共同扣分项；元素级编舞则把动效质感拉开档位。
+    # 底字幕复读大字是信息减法与节奏呼吸的共同扣分项；元素级编舞只给商业赛道加分，
+    # 探店风没有商业卡片编舞是设计使然，不能因此扣分。
     duplicate_penalty = min(1.5, 0.35 * len(duplicates))
+    choreo_weight = (0.70 + 0.30 * choreo_ratio) if theme == "business_editorial" else 1.0
     if duplicates:
         patches.append({"type": "suppress_duplicate_captions", "count": len(duplicates)})
     scores = {
@@ -316,7 +318,7 @@ def score_aesthetic_review(pipeline_dir: Path) -> Dict[str, Any]:
         "rhythm_breathing": 9.4 - 13.0 * coverage_gap - duplicate_penalty,
         "spatial_avoidance": (9.5 if profile else 8.2) - min(6.0, 1.7 * (stage_violation + len(bad_acts))),
         "audio_tension": 9.5 - (0 if has_breathing else 2.4) - 0.36 * sfx_gap - min(2.5, 0.30 * crowded_sfx + banned_sfx),
-        "motion_craft": (8.2 + 1.2 * motion_items / len(highlights) * (0.70 + 0.30 * choreo_ratio))
+        "motion_craft": (8.2 + 1.2 * motion_items / len(highlights) * choreo_weight)
         if highlights else 6.5,
         "theme_fit": 7.0 + 2.4 * matching_theme / len(highlights)
         if theme in {"business_editorial", "store_vibrant"} and highlights else 7.0,
@@ -481,6 +483,8 @@ def main() -> None:
     actions = {"package": build_aesthetic_review_package, "heuristics": evaluate_review_heuristics,
                "apply": apply_critic_patches_to_director_plan}
     if args.review_file is not None:
+        if args.action != "apply":
+            parser.error("--review-file 只支持 apply 动作（把外部审片结论回写总谱）")
         result = apply_review_file(args.pipeline_dir, args.review_file)
     else:
         result = actions[args.action](args.pipeline_dir)
