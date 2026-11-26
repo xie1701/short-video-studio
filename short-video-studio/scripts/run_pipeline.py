@@ -1045,6 +1045,83 @@ def _enforce_style_lock(pipeline_dir: Path, allow_deviation: bool = False) -> No
     sys.exit(3)
 
 
+def _v6_director_enabled(pipeline_dir: Path, v6_director: bool, style_id: Optional[str] = None) -> bool:
+    """V6 是否接管画面：显式开启、已落盘导演总谱，或 style_02 的动态舞台已开启。"""
+    if v6_director or (pipeline_dir / "03b_director_plan.json").is_file():
+        return True
+    if style_id is not None and style_id != "style_02":
+        return False
+    pkg_path = pipeline_dir / "06_packaging.json"
+    if not pkg_path.is_file():
+        return False
+    try:
+        return bool((read_json(pkg_path).get("kinetic_stage") or {}).get("enabled"))
+    except (OSError, ValueError):
+        return False
+
+
+def _prepare_v6_director(
+    pipeline_dir: Path,
+    style_id: Optional[str],
+    director_plan_path: Optional[str],
+    director_review_pause: bool,
+    keep_edl: bool,
+) -> Optional[Dict[str, Any]]:
+    """V6 前置：构图画像 → 导演任务包 → 外部总谱校验或离线总谱。暂停时返回停止载荷。"""
+    import composition_profile
+    import director_plan
+
+    pipeline_dir = Path(pipeline_dir)
+    if (pipeline_dir / "01_manifest.json").is_file():
+        composition_profile.build_composition_profile(pipeline_dir, overwrite=False)
+    director_plan.build_director_tasks(pipeline_dir, style_id=style_id or "style_02")
+    tasks_path = pipeline_dir / director_plan.TASKS_FILENAME
+    plan_path = pipeline_dir / director_plan.PLAN_FILENAME
+    audio = read_json(pipeline_dir / "03_audio_events.json")
+    profile_path = pipeline_dir / composition_profile.PROFILE_FILENAME
+    profile = read_json(profile_path) if profile_path.is_file() else None
+
+    if director_plan_path:
+        try:
+            raw = read_json(Path(director_plan_path))
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(f"外部导演总谱 {director_plan_path} 读取失败：{exc}") from exc
+        checked = director_plan.validate_director_plan(raw, audio, profile)
+        if not checked["ok"]:
+            raise RuntimeError(
+                f"外部导演总谱 {director_plan_path} 校验失败，已停止出片：" + "；".join(checked["errors"])
+            )
+        write_json(plan_path, checked["sanitized_plan"])
+        for warning in checked["warnings"]:
+            print(f"[pipeline] [WARN] {warning}")
+        print(f"[pipeline] 已校验并落盘外部导演总谱 -> {plan_path}")
+        return {"source": checked["sanitized_plan"].get("source"), "plan_path": str(plan_path)}
+
+    if director_review_pause:
+        print(f"[pipeline] V6 导演审稿暂停：构图与任务包已生成，请编写总谱后重跑 -> {tasks_path}")
+        return {"paused_for_director": True, "tasks_path": str(tasks_path)}
+
+    valid = director_plan.load_or_build_director_plan(
+        pipeline_dir, style_id or "style_02", generate_fallback=False,
+    )
+    if valid is not None:
+        print(f"[pipeline] 复用已有导演总谱 -> {plan_path}")
+        return {"source": valid.get("source"), "plan_path": str(plan_path)}
+    if keep_edl and plan_path.is_file():
+        print(f"[pipeline] [WARN] --keep-edl 下保留已有 {plan_path.name}，不推翻重构")
+        return {"source": None, "plan_path": str(plan_path)}
+
+    generated = director_plan.generate_deterministic_director_plan(
+        audio, style_id or "style_02", None, profile,
+    )
+    checked = director_plan.validate_director_plan(generated, audio, profile)
+    if not checked["ok"]:
+        raise RuntimeError("离线导演总谱校验失败：" + "；".join(checked["errors"]))
+    write_json(plan_path, checked["sanitized_plan"])
+    print(f"[pipeline] 已生成离线导演总谱 -> {plan_path}")
+    return {"source": checked["sanitized_plan"].get("source"), "plan_path": str(plan_path)}
+
+
 def _render_and_verify_only(
     pipeline_dir: Path,
     track: str,
@@ -1059,6 +1136,9 @@ def _render_and_verify_only(
     ws: Optional[Dict[str, Any]],
     export_mode: str = "auto",
     sync_window: Optional[List[float]] = None,
+    style_id: Optional[str] = None,
+    v6_director: bool = False,
+    v6_disabled: bool = False,
 ) -> Dict[str, Any]:
     if require_lock:
         code, msg, _ = verify_lock(pipeline_dir)
@@ -1095,7 +1175,7 @@ def _render_and_verify_only(
     write_review_player_html(pipeline_dir)
     delivery_md = write_delivery_summary(pipeline_dir, ws or {}, track, qa_report)
 
-    return {
+    result: Dict[str, Any] = {
         "final_mp4": str(final_mp4),
         "jianying": jy_status,
         "hyperframes": hf_status,
@@ -1103,6 +1183,29 @@ def _render_and_verify_only(
         "decisions_made_md": str(decisions_md),
         "delivery_summary_md": str(delivery_md),
     }
+
+    # V6：原生剪映草稿与审美审片都在成片之后补跑，失败只记状态，绝不污染主交付。
+    v6_on = False if v6_disabled else _v6_director_enabled(pipeline_dir, v6_director, style_id)
+    if v6_on and "jianying" in targets:
+        try:
+            from export_jianying_native import export_native_draft
+
+            result["jianying_native"] = export_native_draft(pipeline_dir)
+        except Exception as exc:  # noqa: BLE001 - 原生草稿失败不得阻断出片
+            print(f"[pipeline] [WARN] 剪映原生草稿导出失败（{exc}）")
+            result["jianying_native"] = {"status": "failed", "error": str(exc)}
+
+    has_edit_docs = (pipeline_dir / "03b_director_plan.json").is_file() or (pipeline_dir / "06_packaging.json").is_file()
+    if v6_on and has_edit_docs:
+        try:
+            import aesthetic_critic
+
+            aesthetic_critic.build_aesthetic_review_package(pipeline_dir)
+            result["aesthetic_review"] = aesthetic_critic.evaluate_review_heuristics(pipeline_dir)
+        except Exception as exc:  # noqa: BLE001 - 审片失败不得阻断出片
+            print(f"[pipeline] [WARN] 审美审片未完成（{exc}）")
+            result["aesthetic_review"] = {"status": "failed", "error": str(exc)}
+    return result
 
 
 def run_visual_to_delivery(
@@ -1133,6 +1236,10 @@ def run_visual_to_delivery(
     agent: Optional[str] = None,
     allow_style_deviation: bool = False,
     allow_broll_mismatch: bool = False,
+    no_v6_director: bool = False,
+    director_plan: Optional[str] = None,
+    director_review_pause: bool = False,
+    auto_critic_revise: bool = False,
 ) -> Dict[str, Any]:
     # 口播干净度：锁定人声再转写一遍，看还有多少秒对不上成稿（别人的话/废话）。
     # 用户实测过「16-19 秒、35-39 秒还有导演/摄影师的声音」——离线指标全绿也拦不住，
@@ -1153,67 +1260,139 @@ def run_visual_to_delivery(
         print(f"[pipeline] [WARN] 口播干净度复核未执行（{_ce}）")
 
     edl_p = pipeline_dir / "04_edl.json"
-    if keep_edl and edl_p.is_file():
-        edl_existing = read_json(edl_p)
-        if style_id:
-            edl_existing["style_id"] = style_id
-            st_e = load_style_spectrum_entry(style_id) or {}
-            pip_sp = st_e.get("pip_composition_spec") or {"mode": "none"}
-            pm = str(pip_sp.get("mode") or "none")
-            edl_existing["pip_mode"] = pm
-            for c_item in edl_existing.get("clips") or []:
-                if pm in ("", "none"):
-                    c_item.pop("pip_layout", None)
-                elif pip_sp.get("single_source"):
-                    c_item["pip_layout"] = {**pip_sp, "mode": pm, "single_source": True}
-            write_json(edl_p, edl_existing)
-        print("[pipeline] --keep-edl 已启用：保留已有分镜选镜，仅刷新字幕/花字/调色/封面视觉层。")
-    else:
-        run_step4(
-            pipeline_dir,
-            track=track,
-            j_cut_frames=j_cut_frames,
-            prefer_broll_only=prefer_broll_only,
-            style_id=style_id,
-            account_profile=account_profile,
-            edit_profile=edit_profile,
-            # 选片必须真按台词语义核过：命中率不够就停，不许静默出片
-            enforce_broll_gate=True,
-            allow_broll_mismatch=allow_broll_mismatch,
+    v6_ready = False
+    if style_id == "style_02" and not no_v6_director and (pipeline_dir / "03_audio_events.json").is_file():
+        v6_info = _prepare_v6_director(
+            pipeline_dir, style_id, director_plan, director_review_pause, keep_edl,
         )
-    _record_cli_style_choices(pipeline_dir, style_id, subtitle_template, lut_name)
-    run_step5(pipeline_dir, track=track, template_id=subtitle_template)
-    run_step6(pipeline_dir, style_id=style_id, no_flower_text=no_flower_text, keep_manual_texts=keep_edl)
-    write_source_review(pipeline_dir)
-    run_step7(pipeline_dir, track=track, lut_name=lut_name, style_id=style_id)
-    _enforce_style_lock(pipeline_dir, allow_deviation=allow_style_deviation)
-    run_step8(
-        pipeline_dir,
-        licenses_path=licenses_path,
-        out_dir=(ws or {}).get("out_dir"),
-    )
-    run_step9(pipeline_dir, track=track, style_id=style_id, agent=agent)
+        if v6_info and v6_info.get("paused_for_director"):
+            return v6_info
+        v6_ready = True
+    elif director_plan:
+        raise RuntimeError(
+            "--director-plan 需要 style_02 且 03_audio_events.json 已锁定，并且没有加 --no-v6-director"
+        )
+
+    def _rebuild_visuals(keep_existing_edl: bool) -> None:
+        if keep_existing_edl and edl_p.is_file():
+            edl_existing = read_json(edl_p)
+            if style_id:
+                edl_existing["style_id"] = style_id
+                st_e = load_style_spectrum_entry(style_id) or {}
+                pip_sp = st_e.get("pip_composition_spec") or {"mode": "none"}
+                pm = str(pip_sp.get("mode") or "none")
+                edl_existing["pip_mode"] = pm
+                for c_item in edl_existing.get("clips") or []:
+                    if pm in ("", "none"):
+                        c_item.pop("pip_layout", None)
+                    elif pip_sp.get("single_source"):
+                        c_item["pip_layout"] = {**pip_sp, "mode": pm, "single_source": True}
+                write_json(edl_p, edl_existing)
+            print("[pipeline] --keep-edl 已启用：保留已有分镜选镜，仅刷新字幕/花字/调色/封面视觉层。")
+        else:
+            run_step4(
+                pipeline_dir,
+                track=track,
+                j_cut_frames=j_cut_frames,
+                prefer_broll_only=prefer_broll_only,
+                style_id=style_id,
+                account_profile=account_profile,
+                edit_profile=edit_profile,
+                # 选片必须真按台词语义核过：命中率不够就停，不许静默出片
+                enforce_broll_gate=True,
+                allow_broll_mismatch=allow_broll_mismatch,
+            )
+        _record_cli_style_choices(pipeline_dir, style_id, subtitle_template, lut_name)
+        run_step5(pipeline_dir, track=track, template_id=subtitle_template)
+        run_step6(
+            pipeline_dir, style_id=style_id, no_flower_text=no_flower_text,
+            keep_manual_texts=keep_existing_edl and keep_edl, no_v6_director=no_v6_director,
+        )
+        write_source_review(pipeline_dir)
+        run_step7(pipeline_dir, track=track, lut_name=lut_name, style_id=style_id)
+        _enforce_style_lock(pipeline_dir, allow_deviation=allow_style_deviation)
+        run_step8(
+            pipeline_dir,
+            licenses_path=licenses_path,
+            out_dir=(ws or {}).get("out_dir"),
+        )
+        run_step9(pipeline_dir, track=track, style_id=style_id, agent=agent)
+
+    _rebuild_visuals(keep_edl)
 
     if preview_only:
         preview_mp4 = render_mp4(pipeline_dir, preview=True)
         return {"preview_mp4": str(preview_mp4)}
 
-    return _render_and_verify_only(
-        pipeline_dir=pipeline_dir,
-        track=track,
-        benchmark=benchmark,
-        simulate_jy_fail=simulate_jy_fail,
-        simulate_hf_fail=simulate_hf_fail,
-        dialect=dialect,
-        store_anchor=store_anchor,
-        require_lock=require_lock,
-        strict_asr=strict_asr,
-        export_mode=export_mode,
-        hook_variants=hook_variants,
-        ws=ws,
-        sync_window=sync_window,
-        # 风格锁已在上方 _enforce_style_lock() 一次性强制执行，这里不再重复传参
-    )
+    def _render_and_verify() -> Dict[str, Any]:
+        return _render_and_verify_only(
+            pipeline_dir=pipeline_dir,
+            track=track,
+            benchmark=benchmark,
+            simulate_jy_fail=simulate_jy_fail,
+            simulate_hf_fail=simulate_hf_fail,
+            dialect=dialect,
+            store_anchor=store_anchor,
+            require_lock=require_lock,
+            strict_asr=strict_asr,
+            export_mode=export_mode,
+            hook_variants=hook_variants,
+            ws=ws,
+            sync_window=sync_window,
+            style_id=style_id,
+            v6_director=v6_ready,
+            v6_disabled=no_v6_director,
+            # 风格锁已在上方 _enforce_style_lock() 一次性强制执行，这里不再重复传参
+        )
+
+    result = _render_and_verify()
+    if not (auto_critic_revise and style_id == "style_02" and not no_v6_director):
+        return result
+    return _revise_once_with_critic(pipeline_dir, result, _rebuild_visuals, _render_and_verify)
+
+
+def _revise_once_with_critic(
+    pipeline_dir: Path,
+    first: Dict[str, Any],
+    rebuild: Any,
+    render_and_verify: Any,
+) -> Dict[str, Any]:
+    """审片不过就把建议回写总谱，从 step4 起完整重剪 1 轮；critic_revised 保证只修一次。"""
+    import aesthetic_critic
+
+    review_path = pipeline_dir / aesthetic_critic.REVIEW_RESULT_FILE
+    plan_path = pipeline_dir / "03b_director_plan.json"
+    if not review_path.is_file() or not plan_path.is_file():
+        first["critic_revision"] = {"applied": False, "reason": "missing_review_or_plan"}
+        return first
+    review = read_json(review_path)
+    plan = read_json(plan_path)
+    if plan.get("critic_revised") is True:
+        first["critic_revision"] = {"applied": False, "reason": "already_revised", "critic_revised": True}
+        return first
+    if review.get("passed") and not review.get("patch_suggestions"):
+        first["critic_revision"] = {"applied": False, "reason": "review_already_passed"}
+        return first
+
+    before = review.get("mean_score")
+    applied = aesthetic_critic.apply_critic_patches_to_director_plan(pipeline_dir, review)
+    if not applied.get("applied"):
+        first["critic_revision"] = {"applied": False, "reason": applied.get("reason"), "before_score": before}
+        return first
+
+    print(f"[pipeline] 审片未达标（{before}），已回写总谱并从 step4 重剪 1 轮。")
+    rebuild(False)
+    revised = render_and_verify()
+    after_review = revised.get("aesthetic_review") or {}
+    after = after_review.get("mean_score")
+    delta = None
+    if isinstance(after, (int, float)) and isinstance(before, (int, float)):
+        delta = round(float(after) - float(before), 2)
+    revised["critic_revision"] = {
+        "applied": True, "before_score": before, "after_score": after, "score_delta": delta,
+        "passed": after_review.get("passed"), "critic_revised": True,
+    }
+    return revised
 
 
 def main() -> None:
@@ -1278,6 +1457,21 @@ def main() -> None:
     g_visual.add_argument("--licenses-json", help="可选：外部资产商用授权清单 licenses.json 路径")
     g_visual.add_argument("--exports", choices=EXPORT_CHOICES, help="auto 尝试两种工程并允许 MP4 降级，显式选择的工程进入必检")
     g_visual.add_argument("--agent", help="可选：显式指定当前运行智能体标识（如 cola 自动联动内置封面技能）")
+    g_visual.add_argument(
+        "--no-v6-director", action="store_true",
+        help="显式关闭 V6 构图/导演阶段，强制退回 V5 既有规则路径（仅影响 style_02）",
+    )
+    g_visual.add_argument(
+        "--director-plan", help="可选：外部 Agent 编写的 03b_director_plan.json 路径，校验通过后落盘复用",
+    )
+    g_visual.add_argument(
+        "--director-review-pause", action="store_true",
+        help="生成构图画像与导演任务包后停下，留给大模型编写高级总谱，改完重跑续剪",
+    )
+    g_visual.add_argument(
+        "--auto-critic-revise", action="store_true",
+        help="初版出片审片后若需要修订，自动回写总谱并从 step4 重剪 1 轮（幂等，只修一次）",
+    )
     g_visual.add_argument(
         "--no-vision-package", action="store_true",
         help="不自动准备「抽密帧 + 大模型判定拼版图」（跳过会让配镜没有画面依据）",
@@ -1540,6 +1734,9 @@ def main() -> None:
             hook_variants=args.hook_variants,
             ws=ws,
             sync_window=args.sync_window,
+            style_id=active_style_id,
+            v6_director=bool(active_style_id == "style_02" and not args.no_v6_director),
+            v6_disabled=args.no_v6_director,
         )
     elif args.mode == "knowledge-animation":
         anim_dir = project_dir / "animation"
@@ -1759,6 +1956,10 @@ def main() -> None:
             keep_edl=args.keep_edl,
             no_flower_text=args.no_flower_text,
             agent=args.agent,
+            no_v6_director=args.no_v6_director,
+            director_plan=args.director_plan,
+            director_review_pause=args.director_review_pause,
+            auto_critic_revise=args.auto_critic_revise,
         )
     elif args.mode == "plan-only":
         eff_raw = _ensure_effective_raw_dir()
@@ -1834,6 +2035,10 @@ def main() -> None:
             keep_edl=args.keep_edl,
             no_flower_text=args.no_flower_text,
             agent=args.agent,
+            no_v6_director=args.no_v6_director,
+            director_plan=args.director_plan,
+            director_review_pause=args.director_review_pause,
+            auto_critic_revise=args.auto_critic_revise,
         )
     else:
         if args.mode in ("full", "lock-preview"):
@@ -1943,6 +2148,10 @@ def main() -> None:
             keep_edl=args.keep_edl,
             no_flower_text=args.no_flower_text,
             agent=args.agent,
+            no_v6_director=args.no_v6_director,
+            director_plan=args.director_plan,
+            director_review_pause=args.director_review_pause,
+            auto_critic_revise=args.auto_critic_revise,
         )
 
     if lock_files:

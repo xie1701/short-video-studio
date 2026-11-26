@@ -649,6 +649,7 @@ def run_step6(
     style_id: str | None = None,
     no_flower_text: bool = False,
     keep_manual_texts: bool = False,
+    no_v6_director: bool = False,
 ) -> Dict[str, Any]:
     audio_events = read_json(pipeline_dir / "03_audio_events.json")
     edl = read_json(pipeline_dir / "04_edl.json")
@@ -829,6 +830,8 @@ def run_step6(
     kinetic_stage_plan: Optional[Dict[str, Any]] = (
         kinetic_choreographer.plan_kinetic_stage(
             audio_events, style_id=style_id, pipeline_dir=pipeline_dir, fps=fps,
+            # --no-v6-director 时塞入空总谱，plan_kinetic_stage 自动退回 V5 既有规则路径
+            director_plan={} if no_v6_director else None,
         )
         if (kinetic_stage_mode and not no_flower_text)
         else None
@@ -841,10 +844,15 @@ def run_step6(
     if business_stage:
         subtitle_file = pipeline_dir / "05_subtitles.json"
         subtitles = read_json(subtitle_file).get("entries", []) if subtitle_file.is_file() else []
-        captions = kinetic_choreographer.business_caption_items(audio_events, subtitles, fps)
+        caption_stats: Dict[str, Any] = {}
+        captions = kinetic_choreographer.business_caption_items(
+            audio_events, subtitles, fps,
+            highlight_items=kinetic_stage_plan["items"], out_stats=caption_stats,
+        )
         kinetic_stage_plan["items"] = captions + kinetic_stage_plan["items"]
         kinetic_stage_plan["stats"].update(
             caption_items=len(captions), total_items=len(kinetic_stage_plan["items"]),
+            suppressed_duplicate_captions=int(caption_stats.get("suppressed_duplicate_captions", 0)),
         )
 
     _allow_flower = element_rules.is_present(style_id, "flower", default=True)

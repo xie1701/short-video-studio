@@ -41,6 +41,8 @@ from director_plan import (
     _coverage,
     _display_length,
     _media_name,
+    _short_conclusion,
+    _validate_copy,
     generate_deterministic_director_plan,
     load_or_build_director_plan,
 )
@@ -346,6 +348,14 @@ def clean_display_text(text: str) -> str:
 
 
 _FILLER_CHARS = set("啊呀哦呃诶嘛呢吧咧啦哇呵嗯")
+
+
+def _has_word_timing(sent: Dict[str, Any]) -> bool:
+    """该句是否带可用的词级时间戳（决定能否把句首连词并进大字起点）。"""
+    return any(
+        clean_display_text(str(w.get("text") or w.get("word") or ""))
+        for w in sent.get("words") or [] if isinstance(w, dict)
+    )
 
 
 def _extract_char_timeline(sent: Dict[str, Any]) -> List[Tuple[str, float, float]]:
@@ -1396,13 +1406,21 @@ def _retarget_legacy_composition(
     stage["matting_windows"] = [w for w in stage["matting_windows"] if w["group_id"] in behind_groups]
 
 
+# 句首单字连词：词级时间戳从「也不是行情差」的「不」开始时，要把起点前移对齐这个连词，
+# 否则大字比同句底字幕晚出，底字幕就会被判成“没被完整覆盖”而复读一屏。
+_SENTENCE_LEAD_CONJUNCTIONS = "也都并又还"
+
+
 def _director_rows(
     texts: List[str], timeline: List[Tuple[str, float, float]], start: float, end: float, fps: int,
+    sentence_starts: Optional[set] = None, word_backed: Optional[set] = None,
 ) -> List[Tuple[float, float]]:
     # Later rows get at least one frame even when ASR places a word close to the act boundary.
     count = min(len(texts), max(1, int(round((end - start) * fps))))
     labels = [clean_display_text(text.lstrip("✕✓ ")) for text in texts[:count]]
     timeline = [(ch, st, en) for ch, st, en in timeline if not ch.isspace()]
+    lead_starts = sentence_starts or frozenset()
+    timed_chars = word_backed or frozenset()
     spoken = "".join(ch for ch, _, _ in timeline)
     estimates = map_chunks_to_times(labels, timeline, start, end)
     starts: List[float] = []
@@ -1411,7 +1429,12 @@ def _director_rows(
         phrase = "".join(label.split())
         match = spoken.find(phrase, cursor)
         if match >= 0:
-            at = timeline[match][1]
+            lead = match - 1
+            if (lead >= 0 and lead in lead_starts and lead in timed_chars
+                    and spoken[lead] in _SENTENCE_LEAD_CONJUNCTIONS):
+                at = timeline[lead][1]
+            else:
+                at = timeline[match][1]
             cursor = match + len(phrase)
         else:
             at = estimate
@@ -1420,9 +1443,24 @@ def _director_rows(
     return list(zip(starts, [*starts[1:], end]))
 
 
+def _pillar_rows(visual: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """一条结构幕里的全部条陈：(序号, 短结论)。序号为空表示没有编号。"""
+    badge = str(visual.get("accent_token") or "")
+    headline = str(visual.get("headline") or "").strip()
+    rows: List[Tuple[str, str]] = [(badge if badge.isdecimal() else "", headline)]
+    for raw in visual.get("items", []) or []:
+        line = str(raw).strip()
+        if not line or _display_length(line) > 7:
+            continue
+        number = re.fullmatch(r"(\d+)(?:[\s·.:：]+(.+))?", line)
+        rows.append((number[1], number[2] or "") if number else ("", line))
+    return [(number, label) for number, label in rows if number or label]
+
+
 def _director_items(
     act: Dict[str, Any], sentences: List[Dict[str, Any]], composition: Dict[str, Any],
     ordinal: int, theme: str, fps: int,
+    pillar_state: Optional[Dict[str, int]] = None,
 ) -> List[Dict[str, Any]]:
     primitive = act["primitive"]
     if primitive in _QUIET_STAGE_PRIMITIVES:
@@ -1434,16 +1472,25 @@ def _director_items(
     if _display_length(headline) > 7:
         headline = ""
     start, end = act["start_sec"], act["end_sec"]
-    timeline = [entry for sentence in sentences for entry in _extract_char_timeline(sentence)]
+    timeline: List[Tuple[str, float, float]] = []
+    sentence_starts: set = set()
+    word_backed: set = set()
+    for sentence in sentences:
+        chars = [entry for entry in _extract_char_timeline(sentence) if not entry[0].isspace()]
+        start_idx = len(timeline)
+        sentence_starts.add(start_idx)
+        timeline.extend(chars)
+        if _has_word_timing(sentence):
+            word_backed.update(range(start_idx, start_idx + len(chars)))
     y = max(-0.43, min(-0.32, _stage_y(composition)))
     items: List[Dict[str, Any]] = []
 
     def add(
         text: str, variant: str, st: float, en: float, x: float, yn: float, size: float,
         anim: str, lane: int, sfx: Optional[str] = None, layer: str = "foreground",
-    ) -> None:
+    ) -> Optional[Dict[str, Any]]:
         if not text or en <= st:
-            return
+            return None
         item = _make_item(
             item_id=f"ks_v6_{ordinal:02d}_{len(items) + 1:02d}", group_id=act["group_id"],
             text=text, start_sec=st, end_sec=en, fps=fps, variant=variant,
@@ -1454,27 +1501,44 @@ def _director_items(
             act_id=act["act_id"], anim_style_v6=primitive, theme_profile=theme,
             render_backend="web_spring", out_anim="fade_out",
         )
+        if variant == "negation_line":
+            item["element_choreo"] = "strike_slash"
+        elif variant == "concept_card":
+            item["element_choreo"] = "stagger_card"
+        elif variant == "hero_lime" and _NUMBER_RUN.search(text):
+            item["element_choreo"] = "number_roll"
         items.append(item)
+        return item
 
     if primitive == "negation_strike":
         add(headline, "hero_lime", start, end, 0.0, y + 0.10, 19.0, "in:缩小 II", 1)
-        for line, (st, en) in zip(lines, _director_rows(lines, timeline, start, end, fps)):
+        for line, (st, en) in zip(lines, _director_rows(
+            lines, timeline, start, end, fps, sentence_starts, word_backed)):
             label = line if line.startswith("✕") else f"✕ {line}"
             # Use a separate row so a headline and the current negation can be read together.
             add(label, "negation_line", st, en, 0.0, y, 11.5, "in:向右露出", 2, "punch")
     elif primitive == "framework_pillar":
-        badge = str(visual.get("accent_token") or "")
-        rows = [(badge if badge.isdecimal() else "", headline)]
-        for line in lines:
-            number = re.fullmatch(r"(\d+)(?:[\s·.:：]+(.+))?", line)
-            rows.append((number[1], number[2] or "") if number else ("", line))
-        rows = [(number, label) for number, label in rows if number or label]
-        row_spans = _director_rows([label or number for number, label in rows], timeline, start, end, fps)
+        rows = _pillar_rows(visual)
+        # 结构进度需要全片总格数：总格由 plan_kinetic_stage 提前数好，这里只按顺序领号。
+        pillar_total = int((pillar_state or {}).get("total", 0))
+        row_spans = _director_rows(
+            [label or number for number, label in rows], timeline, start, end, fps,
+            sentence_starts, word_backed)
         for idx, ((number, label), (st, en)) in enumerate(zip(rows, row_spans)):
             if idx == 0:
                 st = start
-            add(number.zfill(2) if number else "", "pillar_badge", st, en, -0.55 if label else 0.0, y,
-                11.5, "in:缩小 II", 1, "pop")
+            progress: Dict[str, Any] = {}
+            if number and pillar_total >= 2 and pillar_state is not None:
+                pillar_state["index"] = int(pillar_state.get("index", 0)) + 1
+                progress = {
+                    "element_choreo": "pillar_progress",
+                    "pillar_index": pillar_state["index"],
+                    "pillar_total": pillar_total,
+                }
+            badge_item = add(number.zfill(2) if number else "", "pillar_badge", st, en, -0.55 if label else 0.0, y,
+                             11.5, "in:缩小 II", 1, "pop")
+            if badge_item is not None:
+                badge_item.update(progress)
             add(label, "hero_white", st, en, 0.08 if number else 0.0, y,
                 12.5, "in:渐显", 2, None if number else "pop")
     elif primitive == "concept_split_card":
@@ -1490,7 +1554,8 @@ def _director_items(
         rows = [line for line in lines if line != headline]
         title_y = y + 0.10 if rows and not behind else y
         add(headline, variant, start, end, 0.0, title_y, 17.0, "in:缩小 II", 1)
-        for idx, (line, (st, en)) in enumerate(zip(rows, _director_rows(rows, timeline, start, end, fps))):
+        for idx, (line, (st, en)) in enumerate(zip(rows, _director_rows(
+                rows, timeline, start, end, fps, sentence_starts, word_backed))):
             add(line, "danmaku_line" if behind else "hero_white", st, en,
                 0.0, 0.28 if behind else y, 11.5, "in:向右露出",
                 3 if behind else 2, layer="behind_person" if behind else "foreground")
@@ -1569,13 +1634,225 @@ def _director_sfx(
     return limit
 
 
+_DUPLICATE_CAPTION_MAX = 7
+_NUMBER_RUN = re.compile(r"\d{2,}")
+_DUPLICATE_CAPTION_OVERLAP = 0.50
+_DUPLICATE_TEXT_RATIO = 0.85
+_DUPLICATE_COVER_TOLERANCE = 0.02
+_DUPLICATE_DECOR = "✕✓≠→:：·"
+_DUPLICATE_SOFT_LEADS = "也都就还并而又但可"
+_DUPLICATE_EXCLUDED_VARIANTS = frozenset({"bridge_bar", "pillar_badge", "editorial_ticker"})
+
+
+_TICKER_MIN_WINDOW_SEC = 10.0
+_TICKER_OPENING_GUARD_SEC = 3.0
+_TICKER_HIGHLIGHT_GUARD_SEC = 1.5
+_TICKER_FONT_UNITS = 5.2
+# 顶部 20% 是平台 UI 与标题区，微锚点只走侧胸安全带。
+_TICKER_BELTS = ((-0.62, -0.22), (0.62, -0.22), (-0.66, -0.05), (0.66, -0.05))
+_TICKER_CAPTION_TOP_NORM = -0.62
+_TICKER_TOP_UI_SAFE_PX = 380.0
+_TICKER_SIDE_MARGIN_PX = 48.0
+_TICKER_MAX_ITEMS = 2
+_TICKER_GENERIC_TOKENS = (
+    "的人", "自己", "别人", "別人", "大家", "我们", "我們", "他们", "他們", "她们", "她們",
+    "东西", "東西", "时候", "時候", "那张", "那張", "这个", "這個", "那个", "那個", "什么", "什麼",
+)
+
+
+def _ticker_box(text: str, x_norm: float, y_norm: float) -> Tuple[float, float, float, float]:
+    """小号胶囊的实际像素框：按字数估宽，高度按 30px 字号估算。"""
+    cx, cy = norm_to_canvas_px(x_norm, y_norm)
+    width = min(360.0, max(140.0, 34.0 * max(2, len(text)) + 28.0))
+    height = 30.0 * 1.5 + 12.0
+    return (cx - width / 2.0, cy - height / 2.0, cx + width / 2.0, cy + height / 2.0)
+
+
+def _box_iou(a: Tuple[float, float, float, float], b: Tuple[float, float, float, float]) -> float:
+    inter = max(0.0, min(a[2], b[2]) - max(a[0], b[0])) * max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    if inter <= 0.0:
+        return 0.0
+    area = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / area if area > 0 else 0.0
+
+
+def _face_box_px(composition: Dict[str, Any]) -> Optional[Tuple[float, float, float, float]]:
+    bbox = composition.get("face_bbox")
+    if not isinstance(bbox, dict):
+        return None
+    try:
+        x, y = float(bbox["x"]), float(bbox["y"])
+        w, h = float(bbox["w"]), float(bbox["h"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return (x * CANVAS_WIDTH, y * CANVAS_HEIGHT, (x + w) * CANVAS_WIDTH, (y + h) * CANVAS_HEIGHT)
+
+
+def _safe_ticker_anchor(
+    composition: Dict[str, Any], text: str,
+) -> Optional[Tuple[float, float]]:
+    """只在侧胸安全带落位：避开顶部 20% 平台 UI、左右边距与底部字幕区，碰脸一律放弃。"""
+    face = _face_box_px(composition)
+    caption_y = (0.5 - _TICKER_CAPTION_TOP_NORM / 2.0) * CANVAS_HEIGHT
+    for x_norm, y_norm in _TICKER_BELTS:
+        box = _ticker_box(text, x_norm, y_norm)
+        if box[1] < _TICKER_TOP_UI_SAFE_PX:
+            continue
+        if box[0] < _TICKER_SIDE_MARGIN_PX or box[2] > CANVAS_WIDTH - _TICKER_SIDE_MARGIN_PX:
+            continue
+        if box[3] >= caption_y:
+            continue
+        if face is not None and _box_iou(box, face) > 0.0:
+            continue
+        return x_norm, y_norm
+    return None
+
+
+def _ticker_copy(sentence: Dict[str, Any]) -> str:
+    phrase = _short_conclusion(str(sentence.get("text") or ""), [sentence], limit=5)
+    # 结尾挂着方位/助词（共享表格里）不是真词，宁可换一句也不上屏。
+    if not (2 <= _display_length(phrase) <= 5) or phrase[-1:] in "里中上下的地得是了在":
+        return ""
+    # 口语泛指词（大家/自己/时候…）与句首虚词开头的半截话（就能看明白）都没有信息量，宁可不出。
+    if any(token in phrase for token in _TICKER_GENERIC_TOKENS):
+        return ""
+    if phrase[0] in _DUPLICATE_SOFT_LEADS:
+        return ""
+    errors: List[str] = []
+    _validate_copy({"headline": phrase}, "editorial_ticker", [sentence], errors)
+    return "" if errors else phrase
+
+
+def _long_quiet_window(start: float, end: float) -> bool:
+    return end - start >= _TICKER_MIN_WINDOW_SEC
+
+
+def _editorial_ticker_items(
+    acts: List[Dict[str, Any]], sentences: List[Dict[str, Any]], profile: Dict[str, Any],
+    fps: int, theme: str,
+) -> List[Dict[str, Any]]:
+    """商业长叙述里最多补 2 个极克制的小胶囊锚点；宁可不出，也不压人声或挡脸。"""
+    if theme != "business_editorial" or not sentences:
+        return []
+    active = sorted(
+        (act for act in acts if act.get("primitive") not in _QUIET_STAGE_PRIMITIVES),
+        key=lambda act: act["start_sec"],
+    )
+    quiet = [act for act in acts if act.get("primitive") == "plain_bridge"]
+    items: List[Dict[str, Any]] = []
+    for left, right in zip(active, active[1:]):
+        if len(items) >= _TICKER_MAX_ITEMS:
+            break
+        window_start = max(left["end_sec"] + _TICKER_HIGHLIGHT_GUARD_SEC, _TICKER_OPENING_GUARD_SEC)
+        window_end = right["start_sec"]
+        if window_end - window_start < _TICKER_MIN_WINDOW_SEC:
+            continue
+        in_window = [
+            act for act in quiet
+            if act["start_sec"] >= window_start and act["end_sec"] <= window_end
+        ]
+        middle = (window_start + window_end) / 2.0
+        for act in sorted(in_window, key=lambda row: abs((row["start_sec"] + row["end_sec"]) / 2.0 - middle)):
+            spoken = {str(sid) for sid in act.get("sentence_ids") or []}
+            picked = next(
+                (
+                    (sentence, text, anchor)
+                    for sentence in sentences if str(sentence.get("id")) in spoken
+                    for text in (_ticker_copy(sentence),) if text
+                    for anchor in (_safe_ticker_anchor(composition_for_sentence(profile, sentence), text),)
+                    if anchor is not None
+                ),
+                None,
+            )
+            if picked is None:
+                continue
+            sentence, text, (x_norm, y_norm) = picked
+            item = _make_item(
+                item_id=f"ks_ticker_{len(items) + 1:03d}", group_id=act["group_id"], text=text,
+                start_sec=sentence["start_sec"], end_sec=sentence["end_sec"], fps=fps,
+                variant="editorial_ticker", x_norm=x_norm, y_norm=y_norm,
+                font_size_units=_TICKER_FONT_UNITS, anim_key="in:渐显",
+                track_lane=4, sfx_role_override=None, z_layer="foreground",
+            )
+            item.update(
+                theme_profile="business_editorial", element_choreo="ticker_fade",
+                sfx_role=None, act_id=act.get("act_id"), editorial_ticker=True,
+            )
+            items.append(item)
+            break
+    return items
+def _caption_key(text: str) -> str:
+    """底字幕去重比对用的实词串：去掉装饰符号、标点、空白与句首虚词。"""
+    plain = "".join(ch for ch in str(text or "") if ch not in _DUPLICATE_DECOR and not ch.isspace())
+    plain = re.sub(r"[，。！？、；：,.!?;:·]+", "", plain)
+    return plain.lstrip(_DUPLICATE_SOFT_LEADS)
+
+
+def _caption_overlap_ratio(short_key: str, long_key: str) -> float:
+    """短串能覆盖主串的字符比例：短串只是主串的一部分时不算复读。"""
+    if not short_key or not long_key:
+        return 0.0
+    return sum(1 for ch in set(short_key) if ch in long_key) / float(len(set(long_key)))
+
+
+def is_duplicate_short_caption(
+    caption: Dict[str, Any], highlights: List[Dict[str, Any]],
+) -> bool:
+    """短底字幕只是同段前景大字的复读、且大字完整罩住它的时段时返回 True。
+
+    安全保底：超过 7 字的长句底字幕一律保留；大字没有完整覆盖底字幕窗口（头尾会留空）
+    时也一律保留，宁可多一行底字幕，也不让口播出现没有文字的空档。
+    """
+    text = str(caption.get("text_or_asset") or "")
+    if _display_length(text) > _DUPLICATE_CAPTION_MAX:
+        return False
+    key = _caption_key(text)
+    if len(key) < 2:
+        return False
+    start, end = float(caption.get("start_sec") or 0.0), float(caption.get("end_sec") or 0.0)
+    span = end - start
+    if span <= 0:
+        return False
+    for item in highlights:
+        if item.get("base_caption") or item.get("variant") in _DUPLICATE_EXCLUDED_VARIANTS:
+            continue
+        if not (str(item.get("motion_mode") or "").strip() or item.get("element_choreo")):
+            continue
+        h_start = float(item.get("start_sec") or 0.0)
+        h_end = float(item.get("end_sec") or 0.0)
+        if h_start > start + _DUPLICATE_COVER_TOLERANCE or h_end < end - _DUPLICATE_COVER_TOLERANCE:
+            continue
+        if (min(end, h_end) - max(start, h_start)) / span < _DUPLICATE_CAPTION_OVERLAP:
+            continue
+        main_key = _caption_key(item.get("text_or_asset") or "")
+        if not main_key:
+            continue
+        short_key, long_key = sorted((key, main_key), key=len)
+        if short_key == long_key or _caption_overlap_ratio(short_key, long_key) >= _DUPLICATE_TEXT_RATIO:
+            return True
+    return False
+
+
+def duplicate_short_captions(stage_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """商业模式下仍然和前景大字重复的多余底字幕（供审片扣分与建议使用）。"""
+    highlights = [item for item in stage_items if not item.get("base_caption")]
+    return [
+        item for item in stage_items
+        if item.get("base_caption") and is_duplicate_short_caption(item, highlights)
+    ]
+
+
 def business_caption_items(
     audio_events: Dict[str, Any], subtitles: List[Dict[str, Any]], fps: int,
+    highlight_items: Optional[List[Dict[str, Any]]] = None,
+    out_stats: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Use the ordinary subtitle text in the stage that owns style_02's on-screen text."""
     if not subtitles:
         subtitles = [line for sentence in audio_events["sentences"] for line in split_sentence_into_chunks(sentence)]
+    highlights = list(highlight_items or [])
     items = []
+    suppressed = 0
     for idx, line in enumerate(subtitles, 1):
         if line.get("suppressed") and line.get("suppress_reason") != "kinetic_typography_stage":
             continue
@@ -1588,7 +1865,12 @@ def business_caption_items(
             x_norm=0.0, y_norm=-0.51, font_size_units=8.5, track_lane=0, trigger="subtitle",
         )
         item.update(theme_profile="business_editorial", base_caption=True)
+        if highlights and is_duplicate_short_caption(item, highlights):
+            suppressed += 1
+            continue
         items.append(item)
+    if out_stats is not None:
+        out_stats["suppressed_duplicate_captions"] = suppressed
     return items
 
 
@@ -1636,6 +1918,16 @@ def plan_kinetic_stage(
         return stage
 
     by_id = {s["id"]: s for s in audio_events["sentences"]}
+    # 结构进度格要跨幕连续：先数清全片 framework_pillar 的条陈总数，再逐幕领号。
+    pillar_state: Dict[str, int] = {
+        "index": 0,
+        "total": sum(
+            sum(1 for number, _label in _pillar_rows(raw.get("visual_copy") or {}) if number)
+            for raw in plan.get("acts", [])
+            if raw.get("primitive") == "framework_pillar"
+            and any(str(sid) in by_id for sid in raw.get("sentence_ids") or [])
+        ),
+    }
     legacy_highlights = [item for item in stage["items"] if item["variant"] != "bridge_bar"]
     acts: List[Dict[str, Any]] = []
     for idx, raw in enumerate(plan.get("acts", []), 1):
@@ -1662,7 +1954,7 @@ def plan_kinetic_stage(
         ):
             # The existing multi-layer store stage owns this beat. Keep all of its visual layers.
             continue
-        new_items = _director_items(act, sentences, composition, idx, theme, fps)
+        new_items = _director_items(act, sentences, composition, idx, theme, fps, pillar_state)
         stage["items"].extend(new_items)
         self_matting = any(item["z_layer"] == "behind_person" for item in new_items)
         if self_matting:
@@ -1678,6 +1970,8 @@ def plan_kinetic_stage(
             })
 
     duration = float(audio_events.get("locked_duration_sec") or max((a["end_sec"] for a in acts), default=0.0))
+    ticker_items = _editorial_ticker_items(acts, audio_events["sentences"], profile, fps, theme)
+    stage["items"].extend(ticker_items)
     limit = _director_sfx(stage["items"], acts, duration, fps, theme=theme)
     groups = stage["groups"]
     quiet = sum(g["pattern"] in _QUIET_STAGE_PRIMITIVES for g in groups)
@@ -1688,6 +1982,7 @@ def plan_kinetic_stage(
         total_groups=len(groups), kinetic_groups=len(groups) - quiet, bridge_groups=quiet,
         a_roll_locked_ratio=round(locked_ratio, 3), broll_evidence_budget_ratio=round(1.0 - locked_ratio, 3),
         total_items=len(stage["items"]), sfx_trigger_items=sum(bool(it["sfx_role"]) for it in stage["items"]),
+        ticker=bool(ticker_items), ticker_items=len(ticker_items),
     )
     stage.update(
         director_source=plan.get("source", "agent"), director_acts=acts, sfx_budget=limit,

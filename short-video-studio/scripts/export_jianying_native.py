@@ -495,7 +495,7 @@ def export_native_draft(pipeline_dir: Path, out_dir: Optional[Path] = None) -> D
     if ks_block.get("enabled") and ks_block.get("items"):
         from render_template_overlays import kinetic_item_paint
 
-        default_lanes = {"negation_line": 2, "pillar_badge": 1, "concept_card": 1}
+        default_lanes = {"negation_line": 2, "pillar_badge": 1, "concept_card": 1, "editorial_ticker": 4}
         for kit in ks_block.get("items") or []:
             variant = kit.get("variant")
             ktxt = str(kit.get("text_or_asset") or "").strip()
@@ -532,8 +532,12 @@ def export_native_draft(pipeline_dir: Path, out_dir: Optional[Path] = None) -> D
                 bg_alpha_override=bg_alpha, bg_color_override=bg, inline_parts=parts,
             )
             if paint:
-                mat["background_width"] = {"pillar_badge": 0.19, "concept_card": 0.46}.get(variant, 0.62)
-                mat["background_height"] = {"pillar_badge": 0.05, "concept_card": 0.14}.get(variant, 0.075)
+                mat["background_width"] = {
+                    "pillar_badge": 0.19, "concept_card": 0.46, "editorial_ticker": 0.22,
+                }.get(variant, 0.62)
+                mat["background_height"] = {
+                    "pillar_badge": 0.05, "concept_card": 0.14, "editorial_ticker": 0.035,
+                }.get(variant, 0.075)
             texts.append(mat)
             ks_lanes_segs.setdefault(lane, []).append(seg)
     else:
