@@ -1076,14 +1076,16 @@ def _plan_legacy_stage(
                 first_item_hits = all_list_hits
 
             numbered_items = [f"{k+1}.{it}" for k, it in enumerate(l_items)]
-            gather_t = min(ge - 0.55, max(list_end - 0.15, (first_item_hits[-1][1] + 0.45) if first_item_hits else list_end))
-            sum_start = max(gather_t + 0.35, sum_s)
+            # 清单阶段 2 最迟在 list_end（或总结前景大字出现前 0.04s）必须干脆退场，绝不能跨到下一句砸字幕
+            list_hard_end = min(ge, list_end)
+            gather_t = min(list_hard_end - 0.35, max(gs + 0.65, (first_item_hits[-1][1] + 0.30) if first_item_hits else (list_hard_end - 0.55)))
+            sum_start = max(gather_t + 0.32, min(ge - 0.55, sum_s))
             if sum_start >= ge - 0.3:
                 sum_start = max(gs + gd * 0.65, ge - 1.0)
-                gather_t = max(gs + gd * 0.48, sum_start - 0.45)
+                gather_t = min(list_hard_end - 0.35, max(gs + gd * 0.42, sum_start - 0.45))
 
-            scatter_pos = [(-0.26, -0.28), (0.26, -0.28), (-0.26, -0.45), (0.26, -0.45)]
-            gather_ys = [-0.26, -0.39, -0.52, -0.65]
+            scatter_pos = [(-0.34, -0.25), (0.34, -0.25), (-0.34, -0.47), (0.34, -0.47)]
+            gather_ys = [-0.25, -0.38, -0.51, -0.64]
             item_anims = ["in:向右集合", "in:随机上升", "in:渐显", "in:向下露出"]
 
             for ki, ((_raw_it, ks, _ke), num_txt) in enumerate(zip(first_item_hits, numbered_items)):
@@ -1093,22 +1095,25 @@ def _plan_legacy_stage(
                     g_items.append(_make_item(
                         item_id=next_id(), group_id=f"grp_{gi:02d}", text=num_txt,
                         start_sec=ks, end_sec=gather_t, fps=fps,
-                        variant="hero_lime", x_norm=xn, y_norm=yn, font_size_units=16.5,
+                        variant="hero_lime", x_norm=xn, y_norm=yn, font_size_units=15.0,
                         anim_key=item_anims[ki % len(item_anims)], track_lane=1 + ki,
                     ))
                     g_end_s = gather_t
                 else:
                     g_end_s = ks
-                # 阶段 2：全部收拢居中竖排；在 sum_start 前急速压暗并在 sum_start 砸出终句时干脆退场，不再与前景大字叠压成团
-                phase2_end = min(ge, sum_start + 0.08)
-                dim_rel = max(0.05, min(phase2_end - g_end_s - 0.05, (sum_start - 0.14) - g_end_s))
-                g_items.append(_make_item(
-                    item_id=next_id(), group_id=f"grp_{gi:02d}", text=num_txt,
-                    start_sec=g_end_s, end_sec=phase2_end, fps=fps,
-                    variant="hero_lime", x_norm=0.0, y_norm=gather_ys[ki % len(gather_ys)],
-                    font_size_units=16.5, anim_key=None, track_lane=1 + ki,
-                    dim_after_sec=dim_rel, dim_alpha=0.14,
-                ))
+                # 阶段 2：全部收拢居中竖排；严格在 sum_start 前清场退场（带 fade_out），彻底消灭跨幕叠字
+                phase2_end = min(ge, list_hard_end, max(g_end_s + 0.12, sum_start - 0.04))
+                if phase2_end > g_end_s + 0.04:
+                    dim_rel = max(0.04, (phase2_end - g_end_s) * 0.45)
+                    it_p2 = _make_item(
+                        item_id=next_id(), group_id=f"grp_{gi:02d}", text=num_txt,
+                        start_sec=g_end_s, end_sec=phase2_end, fps=fps,
+                        variant="hero_lime", x_norm=0.0, y_norm=gather_ys[ki % len(gather_ys)],
+                        font_size_units=15.0, anim_key=None, track_lane=1 + ki,
+                        dim_after_sec=dim_rel, dim_alpha=0.14,
+                    )
+                    it_p2["out_anim"] = "fade_out"
+                    g_items.append(it_p2)
 
             # 阶段 3：若有前置小句（如“招牌特色炒面”）在居中上方过桥展示，随后压暗并砸出前景大字
             for pi_s, (p_stxt, p_ss, _p_se) in enumerate(sum_pre_chunks):

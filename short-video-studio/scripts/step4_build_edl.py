@@ -2353,6 +2353,15 @@ def run_step4(
     broll_takes: Dict[str, BrollTake] = {}
     sentence_pos = {s["id"]: i for i, s in enumerate(sentences)}
 
+    _short_trans_re = re.compile(
+        r"^(?:呢边|𠮶边|那边|这里|呢度|然后|接着|接下来|下面|还有|再来看|你看)?"
+        r"(?:就[是系係]|系|是)?(?:我[们哋]?[的嘅]?|一个|呢个|𠮶个|这个|那个)?$"
+    )
+
+    def _is_short_transition_clause(cur_sent: Dict[str, Any], seg_len: float) -> bool:
+        txt = re.sub(r"[，。！？、；：,.!?;:\s]+", "", str(cur_sent.get("text") or ""))
+        return bool(txt and seg_len < 1.05 and len(txt) <= 6 and _short_trans_re.match(txt))
+
     def _aroll_take(
         item: Dict[str, Any], sent: Dict[str, Any], start: float, end: float, need_sec: float,
     ) -> Tuple[float, float, float]:
@@ -2455,7 +2464,28 @@ def run_step4(
         broll_pick = None
         prev_mp = str(clips[-1]["media_path"]) if clips else ""
         prev_so = float(clips[-1]["source_out_sec"]) if clips else 0.0
-        if kinetic_stage_mode and not use_aroll and source_aroll_valid[idx] and not audio_only_flags[idx]:
+        if not use_aroll and _is_short_transition_clause(broll_sent, seg_dur):
+            next_idx_s = sentence_pos.get(broll_sent.get("id", ""), -1) + 1
+            next_pick = None
+            next_cand_sent = None
+            if 0 <= next_idx_s < len(sentences):
+                cand_s = sentences[next_idx_s]
+                if (not _is_short_transition_clause(cand_s, float(cand_s["end_sec"]) - float(cand_s["start_sec"]))
+                        and abs(float(cand_s["start_sec"]) - t_end) <= 0.45):
+                    trial_pick = pick_best_broll(
+                        cand_s, seg_dur, last_group, t_start, prev_mp, prev_so,
+                        prev_motion=last_motion, prev_shot_size=last_shot_size, matching_live_only=True,
+                    )
+                    if trial_pick is not None and sem_of_choice(trial_pick[0], cand_s, need_sec=seg_dur).get("tier") == "hit":
+                        next_pick = trial_pick
+                        next_cand_sent = cand_s
+            if next_pick is not None and next_cand_sent is not None:
+                broll_pick = next_pick
+                broll_sent = next_cand_sent
+            elif source_aroll_valid[idx] and not audio_only_flags[idx] and usable_arolls and not broll_only_mode:
+                use_aroll = True
+                roles[idx] = "a_roll"
+        if kinetic_stage_mode and not use_aroll and broll_pick is None and source_aroll_valid[idx] and not audio_only_flags[idx]:
             broll_pick = pick_best_broll(
                 broll_sent, seg_dur, last_group, t_start, prev_mp, prev_so,
                 prev_motion=last_motion, prev_shot_size=last_shot_size, matching_live_only=True,
@@ -2464,7 +2494,7 @@ def run_step4(
                 use_aroll = True
                 roles[idx] = "a_roll"
                 cur_kb_sec -= seg_dur
-        if choreography_broll and not use_aroll:
+        if choreography_broll and not use_aroll and broll_pick is None:
             window_locked = _choreography_aroll_locked(t_start, t_end)
             if not window_locked:
                 broll_pick = pick_best_broll(

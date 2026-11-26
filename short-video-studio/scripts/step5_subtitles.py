@@ -51,7 +51,7 @@ import glyph_fallback as glyph_gate
 _NON_CORE_PUNCT_RE = re.compile(r"(?<!\d)[.:：](?!\d)|(?<!\d)[.:：](?=\d)|(?<=\d)[.:：](?!\d)|[，。、；！？,!?;“”‘’\"'（）()]+")
 
 _DP_NO_LEAD_CHARS = set("的了呢吗吧啊着过么嘛上里中下后前嘅咗喺啲哋咧啰")
-_DP_NO_TAIL_CHARS = set("的把被从跟比在对向给让和与及是将用为喺")
+_DP_NO_TAIL_CHARS = set("的嘅把被从跟比在对向给让和与及是将用为喺")
 _DP_UNIT_AFTER_NUM = set("倍度年多万亿%％岁个次米元块斤克天月时分秒件家店条步项位层种平张台间人只杯碗盘之")
 _DP_HARD_SPLIT_RE = re.compile(r"([。！？!?]+)")
 _DP_SOFT_PUNCT = set("，、；：,;: ")
@@ -75,12 +75,33 @@ _COMMON_TWO_CHAR_WORDS = {
     "牛哥", "金湾", "餐饮", "特色", "炒面", "招牌", "桑拿鸡", "桑拿", "叉烧包", "排骨",
     "凤爪", "虾饺", "点赞", "环境", "位置", "大概", "其实", "平时", "夜晚", "晚上",
     "早上", "朝早", "手工", "本地", "传统", "广式",
+    # V7 新增：商战口播/粤语高频专名、动补结构与易腰斩固定搭配
+    "百度文库", "管理制度", "装修公司", "海底捞", "师徒制", "小老板", "公司名",
+    "第一反应", "哪一环", "两个人", "其他人", "别人", "私信我", "还有种", "踏实感",
+    "发给", "打印出来", "下载了", "搬不过来", "答不上来", "分到钱", "挣出来",
+    "一雇人", "三样", "三样全碎", "分工计酬", "计酬监督", "分工计酬监督", "去别人",
+    "喺𠮶度", "俾大家", "我哋嘅", "食过嘅话", "新鲜嘅海鲜",
+    "好多新鲜嘅", "一间六百平", "六百平嘅店", "一间六百平嘅店", "嘅店", "唔会", "好抵食",
+    "两百多万", "两百万", "红灯笼", "广式点心", "古风灯笼", "手工制作", "长在", "前提上", "答清楚",
 }
 _SPOKEN_CANTONESE_COHESIVE = {
     "我哋", "佢哋", "你哋", "就系", "唔系", "唔知", "唔好", "唔同", "依家", "点解", "跟住",
     "非常之", "饮茶", "早茶", "茶楼", "厨房", "氛围", "好傻", "好食", "好多", "好似",
     "纯手工", "三分之一", "四大天王", "原汁原味", "评论区", "牛哥", "桑拿鸡", "叉烧包",
+    "喺𠮶度", "俾大家", "我哋嘅", "食过嘅话", "好抵食", "一间六百平", "六百平嘅店", "一间六百平嘅店", "嘅店", "新鲜嘅海鲜",
 }
+_COHESIVE_PROTECT_PHRASES = (
+    "百度文库", "管理制度", "装修公司", "海底捞", "师徒制", "小老板", "公司名",
+    "第一反应", "哪一环", "两个人", "其他人", "别人", "去别人", "私信我", "还有种", "踏实感",
+    "发给", "打印出来", "下载了", "搬不过来", "答不上来", "分到钱", "挣出来",
+    "一雇人", "三样全碎", "分工计酬", "计酬监督", "分工计酬监督",
+    "喺𠮶度", "俾大家", "我哋嘅", "食过嘅话", "好抵食", "新鲜嘅海鲜",
+    "一间六百平", "六百平嘅店", "一间六百平嘅店", "两百多万", "两百万", "红灯笼", "广式点心", "手工制作",
+)
+_CLAUSE_START_PROTECT_RE = re.compile(
+    r"^(?:第[一二三四五六七八九十两\d]+|首先|其次|再次|最后|总结|"
+    r"不是|但是|可是|不过|然而|其实|所以|因此|因为|如果|只要|一旦|或者|另外|还有|我好傻|真系好)"
+)
 _STOP_KEYWORDS = {
     "一个", "一些", "呢个", "𠮶个", "这种", "那个", "这个", "什么", "所以",
     "因为", "觉得", "如果", "但是", "现在", "时候", "跟住", "大家",
@@ -153,23 +174,54 @@ def _merge_numeral_units(toks: List[str]) -> List[str]:
     return out
 
 
+def _merge_cohesive_phrases(toks: List[str], prot_set: set[str]) -> List[str]:
+    """合并被分词器拆开的专名、动补搭子与粤语粘连块，避免「百度|文库」「发|给」「喺𠮶|度」。"""
+    if len(toks) < 2:
+        return toks
+    cohesive = set(_COHESIVE_PROTECT_PHRASES) | _SPOKEN_CANTONESE_COHESIVE | prot_set
+    out = list(toks)
+    changed = True
+    while changed and len(out) >= 2:
+        changed = False
+        nxt: List[str] = []
+        i = 0
+        while i < len(out):
+            merged_hit = None
+            for span in (3, 2):
+                if i + span <= len(out):
+                    cand = "".join(out[i : i + span])
+                    if cand in cohesive:
+                        merged_hit = (cand, span)
+                        break
+            if merged_hit:
+                nxt.append(merged_hit[0])
+                i += merged_hit[1]
+                changed = True
+            else:
+                nxt.append(out[i])
+                i += 1
+        out = nxt
+    return out
+
+
 def tokenize_semantic_words(sentence: str, terms: Optional[List[str]] = None) -> List[str]:
     """
-    词边界切分器：优先调用 jieba（若已安装），否则使用零依赖中文语义边界与保护词/数字量词合并分词器。
+    词边界切分器：优先调用 jieba（启用 HMM 并注入保护词），否则使用零依赖中文语义边界与保护词/数字量词合并分词器。
     严格保护 terms 中的专有名词、成语与“数字+单位”不被切碎。
     """
     s = str(sentence or "")
     if not s:
         return []
     prot = sorted([t for t in (terms or []) if t], key=len, reverse=True)
+    prot_set = set(prot)
     raw_toks: List[str] = []
 
     try:
         import jieba  # type: ignore
         jieba.setLogLevel(60)
-        for tm in sorted(set(prot) | _COMMON_TWO_CHAR_WORDS, key=len, reverse=True):
+        for tm in sorted(prot_set | _COMMON_TWO_CHAR_WORDS | set(_COHESIVE_PROTECT_PHRASES), key=len, reverse=True):
             jieba.add_word(tm, freq=2_000_000)
-        raw_toks = _merge_numeral_units([t for t in jieba.cut(s, HMM=False) if t])
+        raw_toks = _merge_numeral_units([t for t in jieba.cut(s, HMM=True) if t])
     except Exception:
         # 零依赖高质量分词兜底：先整块匹配保护词/数字+单位/英文词，再按虚词与常见词切分
         i, n = 0, len(s)
@@ -237,7 +289,7 @@ def tokenize_semantic_words(sentence: str, terms: Optional[List[str]] = None) ->
             merged[-1] += tok
         else:
             merged.append(tok)
-    return merged
+    return _merge_cohesive_phrases(merged, prot_set)
 
 
 def split_semantic_two_lines(
@@ -329,9 +381,10 @@ def dp_segment_short_lines(
     terms: Optional[List[str]] = None,
     max_chars: int = 12,
     strip_punct: bool = True,
+    word_gaps: Optional[Dict[int, float]] = None,
 ) -> List[Tuple[int, int, str]]:
     """
-    词边界动态规划（DP）最优短句切分：
+    词边界 + 声学气口动态规划（DP）最优短句切分：
     返回 [(start_char_idx, end_char_idx, display_text), ...]。
     """
     raw = str(sentence or "")
@@ -354,9 +407,9 @@ def dp_segment_short_lines(
             sub = re.sub(r"\s+", " ", sub).strip()
         return sub
 
-    # 预计算保护词区间，并自动保护粤语粘连高频词、分数词与“中文连续数字+量词”（如 三分之一 / 两百平 / 二十五张），防止断句切词
+    # 预计算保护词区间，并自动保护粤语粘连高频词、商业高危短语、分数词与“中文连续数字+量词”
     prot_spans: List[Tuple[int, int]] = []
-    for tm in set(prot) | _SPOKEN_CANTONESE_COHESIVE:
+    for tm in set(prot) | _SPOKEN_CANTONESE_COHESIVE | set(_COHESIVE_PROTECT_PHRASES):
         if len(tm) < 2:
             continue
         for m in re.finditer(re.escape(tm), raw):
@@ -369,13 +422,25 @@ def dp_segment_short_lines(
         if m.end() - m.start() >= 2:
             prot_spans.append((m.start(), m.end()))
 
+    gaps_map = word_gaps or {}
+    if gaps_map:
+        bound_set = set(bounds)
+        for gpos, gsec in gaps_map.items():
+            if gsec >= 0.12 and 0 < gpos < len(raw) and not any(ps < gpos < pe for ps, pe in prot_spans):
+                bound_set.add(gpos)
+        if len(bound_set) > len(bounds):
+            bounds = sorted(bound_set)
+            nb = len(bounds)
+
     def _break_cost(pos: int) -> float:
         if pos <= 0 or pos >= len(raw):
             return 0.0
+        in_prot = any(ps < pos < pe for ps, pe in prot_spans)
         left = raw[:pos]
         right = raw[pos:]
-        # 句末标点与软标点一样是天然断点：此前只认软标点，导致「贵。其」跨句拼进同一行
-        if left and (left[-1] in _DP_SOFT_PUNCT or left[-1] in "。！？!?"):
+        # 句末标点与软标点一样是天然断点；但若被护词包含仍重罚
+        left_punct = bool(left and (left[-1] in _DP_SOFT_PUNCT or left[-1] in "。！？!?"))
+        if left_punct and not in_prot:
             return 0.0
         cost = 4.0
         r_trim = right.lstrip("，、；：,;: 。！？!?")
@@ -388,9 +453,19 @@ def dp_segment_short_lines(
             cost += 15.0
         if r0.isdigit():
             cost += 25.0
-        for ps, pe in prot_spans:
-            if ps < pos < pe:
-                cost += 1000.0
+        if in_prot:
+            cost += 1000.0
+        elif gaps_map:
+            gap_v = gaps_map.get(pos)
+            if gap_v is None and left and left[-1] in "，、；：,;:":
+                gap_v = gaps_map.get(pos - 1)
+            if gap_v is not None:
+                if gap_v >= 0.22:
+                    cost -= 16.0
+                elif gap_v >= 0.10:
+                    cost -= 8.0
+                elif gap_v < 0.04 and not left_punct:
+                    cost += 10.0
         return cost
 
     inf = float("inf")
@@ -413,10 +488,17 @@ def dp_segment_short_lines(
             pw, _ = _measure_text_px(txt, font_path, font_size)
             if pw > max_width_px or compact_len > max_len_hard:
                 continue
+            # 若本段内部跨越 >=0.16s 的明显声学气口且气口两侧均 >=4 字，加罚以促成在气口自然换行
+            mid_gap_pen = 0.0
+            if gaps_map and compact_len >= 8:
+                for gpos, gsec in gaps_map.items():
+                    if bounds[i] + 3 <= gpos <= bounds[j] - 3 and gsec >= 0.16:
+                        if not any(ps < gpos < pe for ps, pe in prot_spans):
+                            mid_gap_pen += 14.0
             short_pen = max(0, 5 - compact_len) * 2.5 if j < nb - 1 or i > 0 else 0.0
             if compact_len <= 3 and (i > 0 or j < nb - 1):
                 short_pen += 12.0
-            cand = best[i] + _break_cost(bounds[j]) + short_pen + 1.0
+            cand = best[i] + _break_cost(bounds[j]) + short_pen + mid_gap_pen + 1.0
             # 一屏之内不允许跨句：span 中段（非末尾）夹着句末标点 = 先把两句话粘成一行，重罚
             mid = raw[bounds[i]:bounds[j]]
             if _DP_HARD_SPLIT_RE.search(mid.rstrip("。！？!? ")):
@@ -1237,18 +1319,23 @@ def split_sentence_into_chunks(
     cur_grp: List[Dict[str, Any]] = [words[0]]
     for prev_w, cur_w in zip(words, words[1:]):
         gap = float(cur_w["start_sec"]) - float(prev_w["end_sec"])
-        # 句末强制断组：一屏之内不跨句
+        # 句末强制断组：一屏之内不跨句；仅当真实大停顿 (>=0.38s) 时直接拆呼吸组，
+        # 中小微停顿 (0.10..0.38s) 交由 DP 结合 word_gaps 与词边界做全局最优断句。
         if prev_w.get("_sent_end"):
             breath_groups.append(cur_grp)
             cur_grp = [cur_w]
             continue
-        if gap >= 0.30 and len(cur_grp) >= 4:
+        if gap >= 0.38 and len(cur_grp) >= 4:
             breath_groups.append(cur_grp)
             cur_grp = [cur_w]
         else:
             cur_grp.append(cur_w)
     if cur_grp:
-        if breath_groups and len(cur_grp) <= 3:
+        last_gap = (
+            float(cur_grp[0]["start_sec"]) - float(breath_groups[-1][-1]["end_sec"])
+            if breath_groups else 0.0
+        )
+        if breath_groups and len(cur_grp) <= 3 and not breath_groups[-1][-1].get("_sent_end") and last_gap < 0.35:
             breath_groups[-1].extend(cur_grp)
         else:
             breath_groups.append(cur_grp)
@@ -1257,7 +1344,12 @@ def split_sentence_into_chunks(
     for grp in breath_groups:
         txt = "".join(str(x["word"]) for x in grp)
         px_w, _ = _measure_text_px(txt, font_path, font_size)
-        if len(txt) <= max_chars + 1 and px_w <= max_safe_px:
+        has_clear_gap = any(
+            (float(b["start_sec"]) - float(a["end_sec"]) >= 0.18)
+            and min(i + 1, len(grp) - i - 1) >= 4
+            for i, (a, b) in enumerate(zip(grp, grp[1:]))
+        )
+        if len(txt) <= max_chars and px_w <= max_safe_px and not has_clear_gap:
             chunks.append({
                 "text": txt,
                 "start_sec": grp[0]["start_sec"],
@@ -1268,7 +1360,7 @@ def split_sentence_into_chunks(
             continue
 
         # 按「先保留标点成稿分词 DP，后剥标点回填逐字时间轴」流程：从成稿把软标点（，、；：。！？）回贴至 grp，
-        # 让 dp_segment_short_lines 在逗号断点零代价断开，之后通过字符位置映射回对应 word token 区间。
+        # 同时把 words 之间真实声学气口映射为字符级 word_gaps 喂给 DP，让断点主动落在真实换气处。
         dp_input = _restore_script_punctuation(txt, [raw_sent_text]) if (strip_punct and raw_sent_text) else txt
         char_to_wi: List[int] = []
         for wi, w_item in enumerate(grp):
@@ -1282,6 +1374,15 @@ def split_sentence_into_chunks(
             else:
                 dp_to_norm.append(norm_i if norm_i < len(char_to_wi) else None)
                 norm_i += 1
+        word_gaps: Dict[int, float] = {}
+        for pos in range(1, len(dp_input)):
+            p_norm = next((dp_to_norm[k] for k in range(pos - 1, -1, -1) if dp_to_norm[k] is not None), None)
+            n_norm = next((dp_to_norm[k] for k in range(pos, len(dp_to_norm)) if dp_to_norm[k] is not None), None)
+            if p_norm is None or n_norm is None:
+                continue
+            p_wi, n_wi = char_to_wi[p_norm], char_to_wi[n_norm]
+            if p_wi != n_wi:
+                word_gaps[pos] = max(0.0, float(grp[n_wi]["start_sec"]) - float(grp[p_wi]["end_sec"]))
 
         dp_segs = dp_segment_short_lines(
             dp_input,
@@ -1291,6 +1392,7 @@ def split_sentence_into_chunks(
             terms=eff_terms,
             max_chars=max_chars,
             strip_punct=strip_punct,
+            word_gaps=word_gaps,
         )
         used_end_wi = 0
         for s_ch, e_ch, _ in dp_segs:
@@ -1521,27 +1623,35 @@ def run_step5(
     # 于是「金湾」「点赞茶楼」「卡座」「中空」全被切碎，字幕在词中间断行。
     prot_terms = load_protected_terms(_terms_file_for(pipeline_dir), extra_terms=list(raw_pain_kws))
 
+    _kinetic_stage_suppressed = False
+    try:
+        from kinetic_choreographer import is_kinetic_stage_style
+        _kinetic_stage_suppressed = bool(is_kinetic_stage_style(template_id))
+    except Exception:
+        _kinetic_stage_suppressed = False
+
     idx = 1
     suppressed_count = 0
     # 每套风格的字数上限来自源草稿实测（7–96 字），不再统一压到 14 字
     tpl_char_cap = max(6, int(tpl.get("max_chars_hard", 96)))
     base_fs = int(tpl.get("font_size", 62))
-    # 每行字数必须由**字号**反推，而不是先让渲染器把字号砍小：
-    # 原版 style_21 一行最多 8 字、行宽约 516px；字号 75px 时 8 字 = 600px 正好落在 640 安全带内。
-    # 以前这里直接吃库里写死的 10，字号一修到真值就会被 render_subtitle_png 的溢出兜底
-    # 默默砍回 60 左右（用户看到的「字还是小」），这里把源头卡住，字号才能保住。
     _line_px = SUBTITLE_SYMMETRIC_MAX_W - 8
     _chars_by_font = max(4, int(SUBTITLE_SYMMETRIC_MAX_W // max(1, base_fs)))
     tpl_max_chars = max(4, min(tpl_char_cap, int(tpl.get("max_chars_per_line", 10)), _chars_by_font))
     kw_scale_f = float(tpl.get("keyword_scale", 1.133))
-    # _measure_text_px 自带描边/字距余量（实测 624px vs 实际成图 594–616px），用 base_fs 量宽即可精确覆盖关键词放大余量
     eff_measure_fs = base_fs
     dual_banner = bool(tpl.get("dual_line_banner"))
-    chunk_fs = min(84, max(62, eff_measure_fs)) if dual_banner else eff_measure_fs
-    chunk_px = int(_line_px * 1.85) if dual_banner else _line_px
-    chunk_max_chars = max(tpl_max_chars, min(tpl_char_cap, max(8, int(tpl.get("max_chars_per_line", 10))))) if dual_banner else tpl_max_chars
+    if _kinetic_stage_suppressed:
+        # style_02 等动态舞台商业底字幕实际渲染字号约 51–53px（8.5 units），安全区 640px 可稳放 9–10 字，不再被标称 100px 巨字卡死在 6 字。
+        chunk_fs = min(eff_measure_fs, 54)
+        chunk_px = _line_px
+        chunk_max_chars = min(tpl_char_cap, max(9, min(10, tpl_char_cap)))
+    else:
+        chunk_fs = min(84, max(62, eff_measure_fs)) if dual_banner else eff_measure_fs
+        chunk_px = int(_line_px * 1.85) if dual_banner else _line_px
+        chunk_max_chars = max(tpl_max_chars, min(tpl_char_cap, max(8, int(tpl.get("max_chars_per_line", 10))))) if dual_banner else tpl_max_chars
 
-    # 实测痛点 #12 根治：合并相邻极短无强标点碎句（<0.85s 且间隔 <0.35s），避免“大约有二十”+“五张左右”被强行硬拆
+    # 合并相邻极短无强标点碎句（<0.85s 且间隔 <0.16s），但严禁跨越序数/转折起句界或较大换气停顿
     merged_sentences: List[Dict[str, Any]] = []
     for raw_s in audio_events["sentences"]:
         s_copy = dict(raw_s)
@@ -1550,6 +1660,7 @@ def run_step5(
             prev_s = merged_sentences[-1]
             p_txt = str(prev_s.get("text") or "").strip()
             c_txt = str(s_copy.get("text") or "").strip()
+            c_plain = strip_display_punctuation(c_txt).replace(" ", "")
             p_dur = float(prev_s.get("end_sec", 0.0)) - float(prev_s.get("start_sec", 0.0))
             c_dur = float(s_copy.get("end_sec", 0.0)) - float(s_copy.get("start_sec", 0.0))
             gap = float(s_copy.get("start_sec", 0.0)) - float(prev_s.get("end_sec", 0.0))
@@ -1557,8 +1668,10 @@ def run_step5(
             if (
                 same_source
                 and (p_dur < 0.85 or c_dur < 0.85)
-                and -0.08 <= gap <= 0.35
+                and -0.08 <= gap < 0.16
                 and p_txt
+                and c_plain
+                and not _CLAUSE_START_PROTECT_RE.match(c_plain)
                 and not p_txt.endswith(("。", "？", "！", "?", "!"))
                 and len(p_txt) + len(c_txt) <= tpl_max_chars * 2 + 4
             ):
@@ -1586,13 +1699,6 @@ def run_step5(
             ]
         except Exception:
             script_lines_punct = []
-
-    _kinetic_stage_suppressed = False
-    try:
-        from kinetic_choreographer import is_kinetic_stage_style
-        _kinetic_stage_suppressed = bool(is_kinetic_stage_style(template_id))
-    except Exception:
-        _kinetic_stage_suppressed = False
 
     for sent in merged_sentences:
         sent_eff = dict(sent)

@@ -210,7 +210,12 @@ def analyze_aroll_item(item: Dict[str, Any], ffmpeg_bin: str = "ffmpeg") -> Dict
 
     samples = [_measure_frame(frame, bbox) for frame in frames] or [_measure_frame(None, bbox)]
     metrics = {key: median(sample[key] for sample in samples) for key in samples[0]}
-    return {"media_path": media_path, "sampled_frames": len(frames), **_with_stage(metrics)}
+    out = {"media_path": media_path, "sampled_frames": len(frames), **_with_stage(metrics)}
+    if bbox is not None:
+        out["face_bbox"] = {k: round(float(bbox[k]), 4) for k in ("x", "y", "w", "h")}
+    else:
+        out["face_bbox"] = None
+    return out
 
 
 def _merge_inventory(item: Dict[str, Any], clip: Dict[str, Any]) -> Dict[str, Any]:

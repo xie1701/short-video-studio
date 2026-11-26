@@ -835,6 +835,74 @@ def inspect_video(
                 f"片尾检查没跑通：{exc}", "末句收住或已挂收尾卡",
             ))
 
+        # 11f. 花字跨幕打架叠字检查（如清单第2阶段残留砸在下句前景/大字上）
+        ks_items_all = list((ks_block.get("items") or []) if isinstance(ks_block, dict) else [])
+        fg_highlights = [
+            it for it in ks_items_all
+            if not it.get("base_caption")
+            and it.get("variant") not in {"bridge_bar", "editorial_ticker", "pillar_badge"}
+            and it.get("z_layer", "foreground") == "foreground"
+            and str(it.get("text_or_asset") or "").strip()
+        ]
+        cross_overlaps: List[str] = []
+        for idx_a, ia in enumerate(fg_highlights):
+            ga = str(ia.get("group_id") or ia.get("act_id") or "")
+            sa, ea = float(ia.get("start_sec") or 0.0), float(ia.get("end_sec") or 0.0)
+            ya = float(ia.get("y_norm") or 0.0)
+            if not ga or ea <= sa:
+                continue
+            for ib in fg_highlights[idx_a + 1 :]:
+                gb = str(ib.get("group_id") or ib.get("act_id") or "")
+                if not gb or gb == ga:
+                    continue
+                sb, eb = float(ib.get("start_sec") or 0.0), float(ib.get("end_sec") or 0.0)
+                ov_sec = min(ea, eb) - max(sa, sb)
+                yb = float(ib.get("y_norm") or 0.0)
+                if ov_sec > 0.15 and abs(ya - yb) < 0.14:
+                    cross_overlaps.append(
+                        f"{ia.get('id')}「{ia.get('text_or_asset')}」与{ib.get('id')}「{ib.get('text_or_asset')}」"
+                        f"在 {max(sa, sb):.2f}s 重叠 {ov_sec:.2f}s"
+                    )
+        checks.append(_mk_check(
+            "overlay_cross_act_overlap",
+            "花字不跨幕打架叠字",
+            "PASS" if not cross_overlaps else "FAIL",
+            "0 处跨幕前景花字叠压" if not cross_overlaps else f"{len(cross_overlaps)} 处：" + "；".join(cross_overlaps[:2]),
+            "不同幕的前景花字重叠 ≤ 0.15s 或纵向错开",
+        ))
+
+        # 11g. 字幕分词自然度检查（严防跨句序数吞并、专名/动补/粤语固定搭配跨行腰斩）
+        _sub_ordinal_tail_re = re.compile(r"(第[一二三四五六七八九十两\d]+)$")
+        _sub_protect_pairs = (
+            "百度文库", "管理制度", "装修公司", "海底捞", "师徒制",
+            "第一反应", "哪一环", "发给", "别人", "喺𠮶度", "俾大家", "我哋嘅",
+        )
+        sub_seg_issues: List[str] = []
+        sub_check_rows = [
+            e for e in (subs.get("entries") or [])
+            if str(e.get("text") or "").strip() and (not e.get("suppressed") or e.get("suppress_reason") == "kinetic_typography_stage")
+        ]
+        for idx_e, cur_e in enumerate(sub_check_rows):
+            plain_cur = re.sub(r"\s+", "", str(cur_e.get("text") or ""))
+            if len(plain_cur) >= 6 and _sub_ordinal_tail_re.search(plain_cur):
+                sub_seg_issues.append(f"{cur_e.get('id')} 末尾跨句粘连序数：「{plain_cur}」")
+            if idx_e + 1 < len(sub_check_rows):
+                plain_nxt = re.sub(r"\s+", "", str(sub_check_rows[idx_e + 1].get("text") or ""))
+                if plain_cur and plain_nxt:
+                    joint_s = plain_cur[-4:] + plain_nxt[:4]
+                    cut_k = len(plain_cur[-4:])
+                    for term_p in _sub_protect_pairs:
+                        for m_p in re.finditer(re.escape(term_p), joint_s):
+                            if m_p.start() < cut_k < m_p.end():
+                                sub_seg_issues.append(f"{cur_e.get('id')}/{sub_check_rows[idx_e + 1].get('id')} 腰斩「{term_p}」")
+        checks.append(_mk_check(
+            "subtitle_segmentation_clean",
+            "字幕分词自然不破词",
+            "PASS" if not sub_seg_issues else "FAIL",
+            "0 处跨句序数吞并与核心破词" if not sub_seg_issues else f"{len(sub_seg_issues)} 处：" + "；".join(sub_seg_issues[:3]),
+            "0 处跨句序数粘连、0 处核心专名/固定词组跨行腰斩",
+        ))
+
         # 12–22. 独立黑盒外部验收（复用 audio_ctx，严格 Fail-Closed 三态）
         dialect = _effective_dialect(pipeline_dir, dialect)
         bb_res = run_blackbox_verification(
@@ -992,6 +1060,8 @@ def inspect_video(
         "style_lock_intact": "画面样式严格按你选的那套来，没被偷偷改",
         "element_causality_fit": "花字、抠像、大字、结尾卡与音效密度按所选风格习惯控制",
         "ending_complete": "片尾收住了，观众知道下一步做什么",
+        "overlay_cross_act_overlap": "花字不跨幕打架叠字",
+        "subtitle_segmentation_clean": "字幕分词自然不破词",
         "bb_audio_master": "成品声音饱满清晰、无爆音无穿帮",
         "bb_ocr_av_loop": "成片字幕实测正中对齐、字句准确",
         "bb_pixel_readability": "字幕不挡脸且对比清晰好认",
