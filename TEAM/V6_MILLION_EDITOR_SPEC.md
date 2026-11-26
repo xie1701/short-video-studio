@@ -64,7 +64,7 @@
   ]
 }
 ```
-- **核心裁决规则**：当 `face_area_ratio >= 0.12` 或 `headroom_ratio < 0.22` 或 `(bg_complexity >= 0.42 and headroom_ratio < 0.28)` 时，`allow_behind_person = false`，`recommended_stage_mode = "closeup_chest_stage"`，由前端暗区（胸口位置 `y_norm` 约 `-0.52 ~ -0.30`）承载舞台大字，严禁在头顶/杂乱背景后塞入半遮挡弹幕；宽中景纯净/低遮挡头顶则保持 `wide_behind_person` 与人后弹幕。
+- **核心裁决规则**（阈值经 Wave 1 双标杆实测校准：单人大头商业片实测 `face_area_ratio = 0.0864`）：当 `face_area_ratio >= 0.085` 或 `headroom_ratio < 0.22` 或 `(bg_complexity >= 0.42 and headroom_ratio < 0.28)` 时，`allow_behind_person = false`，`recommended_stage_mode = "closeup_chest_stage"`，由前端暗区（胸口位置 `y_norm` 约 `-0.52 ~ -0.30`）承载舞台大字，严禁在头顶/杂乱背景后塞入半遮挡弹幕；宽中景纯净/低遮挡头顶则保持 `wide_behind_person` 与人后弹幕。
 
 ### 2. AI 导演总谱：`03b_director_plan.json`（T007 定义与校验，T008/T010 消费）
 ```json
