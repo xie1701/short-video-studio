@@ -33,7 +33,7 @@
 | :---: | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Wave 1** | [T007](tasks/T007_v6_director_plan.md) | **Codex** (`codex`) | `agent/codex/T007` (已合入并清理) | `short-video-studio/scripts/director_plan.py`<br>`tests/test_director_plan.py` | `MERGED`（两轮返工后终审通过，已合入 `main`） | 无前置（与 T009 文件零交集） |
 | **Wave 1** | [T009](tasks/T009_v6_composition_profile.md) | **Codex B** (`codex-b`) | `agent/codex-b/T009` (已合入并清理) | `short-video-studio/scripts/composition_profile.py`<br>`tests/test_composition_profile.py` | `MERGED`（一轮返工后终审通过，已合入 `main`） | 无前置（与 T007 文件零交集） |
-| **Wave 2~4** | [T012](tasks/T012_v6_wave2to4_bundle.md)<br>（合并 [T008](tasks/T008_v6_stage_and_camera.md) + [T010](tasks/T010_v6_motion_and_audio.md) + [T011](tasks/T011_v6_aesthetic_critic.md)） | **Codex** (`codex`) | `agent/codex/T012`<br>`.wt-shortVideo-CCstudio/codex` | T008、T010、T011 三份白名单的并集（共 12 个文件，见任务单） | `IN_PROGRESS`（已建 Worktree 派单） | 依赖 T007 + T009 已合入 `main` |
+| **Wave 2~4** | [T012](tasks/T012_v6_wave2to4_bundle.md)<br>（合并 [T008](tasks/T008_v6_stage_and_camera.md) + [T010](tasks/T010_v6_motion_and_audio.md) + [T011](tasks/T011_v6_aesthetic_critic.md)） | **Codex** (`codex`) | `agent/codex/T012` (已合入并清理) | T008、T010、T011 三份白名单的并集（共 12 个文件，见任务单） | `MERGED`（一轮返工后终审通过，已合入 `main` 并通过全量 552 项回归） | 依赖 T007 + T009 已合入 `main` |
 
 ## 状态机约定
 `READY` → `IN_PROGRESS`（已派发）→ `IN_REVIEW`（Worker 过 `gate` 并交回执）→ `MERGED`（总控合入 `main` + 端到端出片验收完成）
