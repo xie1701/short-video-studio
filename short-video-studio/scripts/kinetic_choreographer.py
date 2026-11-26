@@ -1328,6 +1328,12 @@ def _plan_legacy_stage(
                 num_str = m_num.group(0)
                 pre_str = clean_display_text(g_txt[: m_num.start()])
                 post_str = clean_display_text(g_txt[m_num.end() :])
+                if post_str and post_str[0] in "的地得之了着过嘅":
+                    if len(post_str) >= 3:
+                        post_str = post_str[1:].strip()
+                    else:
+                        num_str = f"{num_str}{post_str[0]}"
+                        post_str = post_str[1:].strip()
                 pre_chunks = split_clean_phrases(pre_str, target_min=2, target_max=8, protected_terms=protected_terms) if pre_str else []
                 post_chunks = split_clean_phrases(post_str, target_min=2, target_max=8, protected_terms=protected_terms) if post_str else []
                 sub_parts = [*pre_chunks, num_str, *post_chunks]
@@ -1993,13 +1999,21 @@ def _unified_style02_items(
         row_items = lines or ([headline] if headline else [])
         has_top_lead = bool(headline and lines and headline not in lines)
         max_rows = min(len(row_items), 4)
-        compact_4 = max_rows >= 4
-        row_u = 12.5 if compact_4 else _UNIFIED_L2_U
-        step_y = 0.078 if compact_4 else 0.098
-        top_yn = -0.15 if compact_4 else (y_base + 0.14)
-        first_row_yn = -0.235 if compact_4 else (y_base + (0.04 if has_top_lead else 0.10))
+        total_lines = max_rows + int(has_top_lead)
+        if total_lines >= 5:
+            head_u, row_u, step_y = 12.0, 10.8, 0.084
+            top_yn = -0.115
+            first_row_yn = -0.205 if has_top_lead else -0.115
+        elif total_lines == 4:
+            head_u, row_u, step_y = 13.5, 12.5, 0.102
+            top_yn = -0.15
+            first_row_yn = -0.252 if has_top_lead else -0.15
+        else:
+            head_u, row_u, step_y = 16.0, 15.0, 0.115
+            top_yn = -0.22
+            first_row_yn = -0.335 if has_top_lead else -0.22
         if has_top_lead:
-            add(headline, "hero_lime", start, end, 0.0, top_yn, 13.5 if compact_4 else _UNIFIED_L2_U, "in:向上露出", 1, "pop", tier="L2")
+            add(headline, "hero_lime", start, end, 0.0, top_yn, head_u, "in:向上露出", 1, "pop", tier="L2")
         spans = timed_spans(row_items)
         # 若首行列表延迟 >=1.25s（如先说「先答清楚」「过了夫妻店那条线」），在首行空档插入 track_lane=1 纯前景过渡行，Row 1 入场时淡出
         if has_top_lead and spans and (spans[0][0] - start) >= 1.25:

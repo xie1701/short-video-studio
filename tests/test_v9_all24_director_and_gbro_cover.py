@@ -335,6 +335,89 @@ class V9All24DirectorAndQualityTests(unittest.TestCase):
             self.assertIsNotNone(im)
             self.assertLessEqual(im.width, 640, f"{sid}/{variant} 宽度 {im.width}px 超出 640px")
 
+    def test_unified_list_gather_depth_separates_4_and_5_rows_without_vertical_overlap(self) -> None:
+        audio = {
+            "sentences": [
+                {"id": "s0", "text": "第三分工计酬监督一雇人三样全碎", "start_sec": 0.0, "end_sec": 6.0},
+                {"id": "s1", "text": "四大天王虾饺排骨凤爪叉烧包", "start_sec": 6.5, "end_sec": 12.5},
+            ],
+            "locked_duration_sec": 13.0,
+        }
+        plan = {
+            "step": "03b_director_plan",
+            "source": "agent",
+            "style_id": "style_02",
+            "theme_profile": "style_02_unified",
+            "acts": [
+                {
+                    "act_id": "act_01",
+                    "sentence_ids": ["s0"],
+                    "dramatic_role": "explain",
+                    "emotion_intensity": 0.7,
+                    "primitive": "list_build_gather_dim_overlay",
+                    "visual_copy": {"headline": "第三", "items": ["只能自己长", "分工计酬监督", "一雇人三样全碎"], "accent_token": "", "footnote": ""},
+                    "camera_intent": "steady_hold",
+                    "broll_policy": "lock_aroll",
+                    "sfx_budget": 1,
+                },
+                {
+                    "act_id": "act_02",
+                    "sentence_ids": ["s1"],
+                    "dramatic_role": "proof",
+                    "emotion_intensity": 0.8,
+                    "primitive": "list_build_gather_dim_overlay",
+                    "visual_copy": {"headline": "四大天王", "items": ["虾饺", "排骨", "凤爪", "叉烧包"], "accent_token": "", "footnote": ""},
+                    "camera_intent": "steady_hold",
+                    "broll_policy": "lock_aroll",
+                    "sfx_budget": 1,
+                },
+            ],
+            "music_cues": [],
+        }
+        stage = kinetic_choreographer.plan_kinetic_stage(audio, style_id="style_02", director_plan=plan)
+        act1_rows = sorted(
+            [
+                it for it in stage["items"]
+                if it.get("act_id") == "act_01"
+                and it.get("variant") != "bridge_bar"
+                and it.get("text_or_asset") in {"第三", "只能自己长", "分工计酬监督", "一雇人三样全碎"}
+            ],
+            key=lambda x: -float(x["y_norm"]),
+        )
+        self.assertEqual(len(act1_rows), 4)
+        for a, b in zip(act1_rows, act1_rows[1:]):
+            self.assertGreaterEqual(float(a["y_norm"]) - float(b["y_norm"]), 0.10, (a, b))
+        self.assertGreaterEqual(float(act1_rows[-1]["y_norm"]), -0.468)
+
+        act2_rows = sorted(
+            [
+                it for it in stage["items"]
+                if it.get("act_id") == "act_02"
+                and it.get("variant") != "bridge_bar"
+                and it.get("text_or_asset") in {"四大天王", "虾饺", "排骨", "凤爪", "叉烧包"}
+            ],
+            key=lambda x: -float(x["y_norm"]),
+        )
+        self.assertEqual(len(act2_rows), 5)
+        for a, b in zip(act2_rows, act2_rows[1:]):
+            self.assertGreaterEqual(float(a["y_norm"]) - float(b["y_norm"]), 0.08, (a, b))
+        self.assertGreaterEqual(float(act2_rows[-1]["y_norm"]), -0.468)
+
+    def test_legacy_num_anchor_strips_leading_auxiliary_from_post_phrase(self) -> None:
+        audio = {
+            "sentences": [
+                {"id": "s0", "text": "今日带大家参观新店环境", "start_sec": 0.0, "end_sec": 2.6},
+                {"id": "s1", "text": "两百平嘅厨房", "start_sec": 3.0, "end_sec": 5.5},
+                {"id": "s2", "text": "欢迎大家评论区留言", "start_sec": 6.0, "end_sec": 8.5},
+            ],
+            "locked_duration_sec": 8.8,
+        }
+        stage = kinetic_choreographer._plan_legacy_stage(audio, style_id="style_01", fps=30)
+        texts = [str(it.get("text_or_asset") or "") for it in stage["items"]]
+        self.assertIn("两百平", texts)
+        self.assertIn("厨房", texts)
+        self.assertFalse(any(t.startswith(("的", "地", "得", "了", "着", "过", "嘅", "之")) for t in texts), texts)
+
 
 if __name__ == "__main__":
     unittest.main()
