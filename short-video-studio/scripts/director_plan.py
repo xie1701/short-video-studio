@@ -988,7 +988,48 @@ def _choose_highlights(candidates: List[_Candidate], total: float) -> set[int]:
     return set(min(choices.values(), key=rank)[4])
 
 
-def _music_cues(candidates: List[_Candidate], total: float, store: bool) -> List[Dict[str, Any]]:
+_STORE_BREATH_MIN_TOTAL = 20.0
+_STORE_REVEAL_PRIMITIVES = ("num_anchor_dim_overlay", "list_build_gather_dim_overlay")
+
+
+def _store_breath_cues(
+    candidates: List[_Candidate], total: float, highlights: Optional[set[int]],
+) -> List[Dict[str, Any]]:
+    """探店长片：只在核心揭晓幕前留一次克制呼吸，可选补一条温和推升，绝不与呼吸重叠。"""
+    picked = sorted(highlights) if highlights is not None else list(range(len(candidates)))
+    reveal = next(
+        (i for i in picked
+         if 0 < i < len(candidates) and candidates[i][1] in _STORE_REVEAL_PRIMITIVES),
+        None,
+    )
+    if reveal is None:
+        return []
+    act_start, _ = _span(candidates[reveal][0])
+    start = round(max(1.0, min(act_start - 0.08, total - 0.40)), 4)
+    drop_end = round(min(total, start + 0.35), 4)
+    cues: List[Dict[str, Any]] = [{
+        "type": "silence_drop", "start_sec": start, "end_sec": drop_end,
+        "depth_db": -20.0, "fade_ms": 65, "reason": "核心揭晓前留一口气",
+    }]
+    for index in (i for i in picked if i > reveal):
+        span_start, span_end = _span(candidates[index][0])
+        if span_end - span_start < 1.5:
+            continue
+        swell_start = round(max(drop_end + 0.05, min(span_start - 0.08, total - 0.50)), 4)
+        swell_end = round(min(total, swell_start + 3.5), 4)
+        if swell_end - swell_start < 0.5:
+            continue
+        cues.append({
+            "type": "section_swell", "start_sec": swell_start, "end_sec": swell_end,
+            "depth_db": 2.2, "fade_ms": 180, "reason": "主体展开段配乐托一把",
+        })
+        break
+    return cues
+
+
+def _music_cues(
+    candidates: List[_Candidate], total: float, store: bool, highlights: Optional[set[int]] = None,
+) -> List[Dict[str, Any]]:
     cues: List[Dict[str, Any]] = []
     occupied_until = 0.0
     if candidates and total >= 25.0 and not store:
@@ -1011,6 +1052,8 @@ def _music_cues(candidates: List[_Candidate], total: float, store: bool) -> List
             "depth_db": -28.0, "fade_ms": 80, "reason": "反转句前压低配乐",
         })
         occupied_until = end
+    if store and total >= _STORE_BREATH_MIN_TOTAL and not any(cue["type"] == "silence_drop" for cue in cues):
+        cues.extend(_store_breath_cues(candidates, total, highlights))
     return cues
 
 
@@ -1084,7 +1127,7 @@ def generate_deterministic_director_plan(
     result = validate_director_plan({
         "step": "03b_director_plan", "source": "fallback_deterministic", "style_id": style_id,
         "theme_profile": "store_vibrant" if store else "business_editorial",
-        "acts": acts, "music_cues": _music_cues(candidates, total, store),
+        "acts": acts, "music_cues": _music_cues(candidates, total, store, highlights),
     }, audio_events, composition_profile)
     if not result["ok"]:
         raise ValueError("；".join(result["errors"]))

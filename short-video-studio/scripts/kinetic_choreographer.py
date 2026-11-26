@@ -41,6 +41,8 @@ from director_plan import (
     _coverage,
     _display_length,
     _media_name,
+    _short_conclusion,
+    _validate_copy,
     generate_deterministic_director_plan,
     load_or_build_director_plan,
 )
@@ -1610,6 +1612,130 @@ _DUPLICATE_SOFT_LEADS = "也都就还并而又但可"
 _DUPLICATE_EXCLUDED_VARIANTS = frozenset({"bridge_bar", "pillar_badge", "editorial_ticker"})
 
 
+_TICKER_MIN_WINDOW_SEC = 10.0
+_TICKER_OPENING_GUARD_SEC = 3.0
+_TICKER_HIGHLIGHT_GUARD_SEC = 1.5
+_TICKER_FONT_UNITS = 5.2
+_TICKER_BELTS = ((-0.62, 0.70), (0.62, 0.70), (-0.72, -0.05), (0.72, -0.05))
+_TICKER_CAPTION_TOP_NORM = -0.62
+_TICKER_MIN_HEADROOM = 0.18
+_TICKER_MAX_ITEMS = 2
+
+
+def _ticker_box(text: str, x_norm: float, y_norm: float) -> Tuple[float, float, float, float]:
+    """小号胶囊的实际像素框：按字数估宽，高度按 30px 字号估算。"""
+    cx, cy = norm_to_canvas_px(x_norm, y_norm)
+    width = min(360.0, max(140.0, 34.0 * max(2, len(text)) + 28.0))
+    height = 30.0 * 1.5 + 12.0
+    return (cx - width / 2.0, cy - height / 2.0, cx + width / 2.0, cy + height / 2.0)
+
+
+def _box_iou(a: Tuple[float, float, float, float], b: Tuple[float, float, float, float]) -> float:
+    inter = max(0.0, min(a[2], b[2]) - max(a[0], b[0])) * max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    if inter <= 0.0:
+        return 0.0
+    area = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / area if area > 0 else 0.0
+
+
+def _face_box_px(composition: Dict[str, Any]) -> Optional[Tuple[float, float, float, float]]:
+    bbox = composition.get("face_bbox")
+    if not isinstance(bbox, dict):
+        return None
+    try:
+        x, y = float(bbox["x"]), float(bbox["y"])
+        w, h = float(bbox["w"]), float(bbox["h"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return (x * CANVAS_WIDTH, y * CANVAS_HEIGHT, (x + w) * CANVAS_WIDTH, (y + h) * CANVAS_HEIGHT)
+
+
+def _safe_ticker_anchor(
+    composition: Dict[str, Any], text: str,
+) -> Optional[Tuple[float, float]]:
+    """只在顶栏左下/左上/右上或侧边安全带落位；碰脸、碰底部字幕区一律放弃。"""
+    face = _face_box_px(composition)
+    if face is None and float(composition.get("headroom_ratio") or 0.0) < _TICKER_MIN_HEADROOM:
+        return None
+    caption_y = (0.5 - _TICKER_CAPTION_TOP_NORM / 2.0) * CANVAS_HEIGHT
+    for x_norm, y_norm in _TICKER_BELTS:
+        box = _ticker_box(text, x_norm, y_norm)
+        if box[1] < 60 or box[2] > CANVAS_WIDTH - 40 or box[3] >= caption_y:
+            continue
+        if face is not None and _box_iou(box, face) > 0.0:
+            continue
+        return x_norm, y_norm
+    return None
+
+
+def _ticker_copy(sentence: Dict[str, Any]) -> str:
+    phrase = _short_conclusion(str(sentence.get("text") or ""), [sentence], limit=5)
+    # 结尾挂着方位/助词（共享表格里）不是真词，宁可换一句也不上屏。
+    if not (2 <= _display_length(phrase) <= 5) or phrase[-1:] in "里中上下的地得是了在":
+        return ""
+    errors: List[str] = []
+    _validate_copy({"headline": phrase}, "editorial_ticker", [sentence], errors)
+    return "" if errors else phrase
+
+
+def _long_quiet_window(start: float, end: float) -> bool:
+    return end - start >= _TICKER_MIN_WINDOW_SEC
+
+
+def _editorial_ticker_items(
+    acts: List[Dict[str, Any]], sentences: List[Dict[str, Any]], profile: Dict[str, Any],
+    fps: int, theme: str,
+) -> List[Dict[str, Any]]:
+    """商业长叙述里最多补 2 个极克制的小胶囊锚点；宁可不出，也不压人声或挡脸。"""
+    if theme != "business_editorial" or not sentences:
+        return []
+    active = sorted(
+        (act for act in acts if act.get("primitive") not in _QUIET_STAGE_PRIMITIVES),
+        key=lambda act: act["start_sec"],
+    )
+    quiet = [act for act in acts if act.get("primitive") == "plain_bridge"]
+    items: List[Dict[str, Any]] = []
+    for left, right in zip(active, active[1:]):
+        if len(items) >= _TICKER_MAX_ITEMS:
+            break
+        window_start = max(left["end_sec"] + _TICKER_HIGHLIGHT_GUARD_SEC, _TICKER_OPENING_GUARD_SEC)
+        window_end = right["start_sec"]
+        if window_end - window_start < _TICKER_MIN_WINDOW_SEC:
+            continue
+        in_window = [
+            act for act in quiet
+            if act["start_sec"] >= window_start and act["end_sec"] <= window_end
+        ]
+        middle = (window_start + window_end) / 2.0
+        for act in sorted(in_window, key=lambda row: abs((row["start_sec"] + row["end_sec"]) / 2.0 - middle)):
+            spoken = {str(sid) for sid in act.get("sentence_ids") or []}
+            picked = next(
+                (
+                    (sentence, text, anchor)
+                    for sentence in sentences if str(sentence.get("id")) in spoken
+                    for text in (_ticker_copy(sentence),) if text
+                    for anchor in (_safe_ticker_anchor(composition_for_sentence(profile, sentence), text),)
+                    if anchor is not None
+                ),
+                None,
+            )
+            if picked is None:
+                continue
+            sentence, text, (x_norm, y_norm) = picked
+            item = _make_item(
+                item_id=f"ks_ticker_{len(items) + 1:03d}", group_id=act["group_id"], text=text,
+                start_sec=sentence["start_sec"], end_sec=sentence["end_sec"], fps=fps,
+                variant="editorial_ticker", x_norm=x_norm, y_norm=y_norm,
+                font_size_units=_TICKER_FONT_UNITS, anim_key="in:渐显",
+                track_lane=4, sfx_role_override=None, z_layer="foreground",
+            )
+            item.update(
+                theme_profile="business_editorial", element_choreo="ticker_fade",
+                sfx_role=None, act_id=act.get("act_id"), editorial_ticker=True,
+            )
+            items.append(item)
+            break
+    return items
 def _caption_key(text: str) -> str:
     """底字幕去重比对用的实词串：去掉装饰符号、标点、空白与句首虚词。"""
     plain = "".join(ch for ch in str(text or "") if ch not in _DUPLICATE_DECOR and not ch.isspace())
@@ -1799,6 +1925,8 @@ def plan_kinetic_stage(
             })
 
     duration = float(audio_events.get("locked_duration_sec") or max((a["end_sec"] for a in acts), default=0.0))
+    ticker_items = _editorial_ticker_items(acts, audio_events["sentences"], profile, fps, theme)
+    stage["items"].extend(ticker_items)
     limit = _director_sfx(stage["items"], acts, duration, fps, theme=theme)
     groups = stage["groups"]
     quiet = sum(g["pattern"] in _QUIET_STAGE_PRIMITIVES for g in groups)
@@ -1809,6 +1937,7 @@ def plan_kinetic_stage(
         total_groups=len(groups), kinetic_groups=len(groups) - quiet, bridge_groups=quiet,
         a_roll_locked_ratio=round(locked_ratio, 3), broll_evidence_budget_ratio=round(1.0 - locked_ratio, 3),
         total_items=len(stage["items"]), sfx_trigger_items=sum(bool(it["sfx_role"]) for it in stage["items"]),
+        ticker=bool(ticker_items), ticker_items=len(ticker_items),
     )
     stage.update(
         director_source=plan.get("source", "agent"), director_acts=acts, sfx_budget=limit,
