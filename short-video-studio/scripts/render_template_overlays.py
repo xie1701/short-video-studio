@@ -1019,6 +1019,12 @@ def render_kinetic_stage_item_png(
         return None
     variant = str(elem.get("variant") or "hero_white")
     is_unified = elem.get("theme_profile") == "style_02_unified"
+    cx_elem = int((elem.get("center_px") or [540, 1400])[0])
+    x_norm_elem = float(elem.get("x_norm") or 0.0)
+    safe_max_w = (
+        (640 if abs(x_norm_elem) < 0.05 else max(240, min(640, int(min(cx_elem - 65, 875 - cx_elem) * 2))))
+        if is_unified else 920
+    )
     font_px = max(30, int(elem.get("font_size_px") or 88))
     sans_pref = ["SourceHanSansCN-Bold.otf", "NotoSansSC-Bold.ttf", "AlimamaShuHeiTi-Bold.otf"]
     cands = font_candidates or (sans_pref if is_unified else ["SourceHanSerifCN-Bold.otf", "AlimamaShuHeiTi-Bold.otf", "SourceHanSansCN-Bold.otf"])
@@ -1040,7 +1046,7 @@ def render_kinetic_stage_item_png(
                 pt, base_f, p_fs, (*p_rgb, 255),
                 stroke_rgba=(0, 0, 0, 235), stroke_w=3,
                 shadow_rgba=(0, 0, 0, 175), shadow_dx=3, shadow_dy=4, shadow_blur=2.0,
-                max_w=880,
+                max_w=min(880, safe_max_w),
             )
             if sp is not None:
                 parts_imgs.append(sp)
@@ -1049,8 +1055,9 @@ def render_kinetic_stage_item_png(
         gap = 10
         tw = sum(im.width for im in parts_imgs) + gap * max(0, len(parts_imgs) - 1)
         th = max(im.height for im in parts_imgs)
-        if tw > 940:
-            sc = 940.0 / float(tw)
+        max_inline_w = safe_max_w if is_unified else 940
+        if tw > max_inline_w:
+            sc = float(max_inline_w) / float(tw)
             parts_imgs = [
                 im.resize((max(4, int(im.width * sc)), max(4, int(im.height * sc))), Image.Resampling.LANCZOS)
                 for im in parts_imgs
@@ -1069,15 +1076,15 @@ def render_kinetic_stage_item_png(
 
     if variant == "red_pill":
         pill_fs = min(108, max(54, int(font_px))) if is_unified else min(72, max(44, int(font_px * 0.72)))
+        px_pad, py_pad = (28, 14) if is_unified else (24, 12)
         sp = _draw_kinetic_line_sprite(
             text, base_f, pill_fs,
             (183, 28, 28, 255),
             stroke_rgba=None, stroke_w=0, shadow_rgba=None,
-            max_w=900,
+            max_w=(safe_max_w - px_pad * 2) if is_unified else 900,
         )
         if sp is None:
             return None
-        px_pad, py_pad = (28, 14) if is_unified else (24, 12)
         pw, ph = sp.width + px_pad * 2, sp.height + py_pad * 2
         card = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
         d = ImageDraw.Draw(card)
@@ -1094,7 +1101,7 @@ def render_kinetic_stage_item_png(
                 (255, 255, 255, 255),
                 stroke_rgba=(0, 0, 0, 248), stroke_w=3,
                 shadow_rgba=(0, 0, 0, 205), shadow_dx=3, shadow_dy=4, shadow_blur=2.2,
-                max_w=920,
+                max_w=safe_max_w,
             )
         sp = _draw_kinetic_line_sprite(
             text, base_f, bridge_fs,
@@ -1120,7 +1127,7 @@ def render_kinetic_stage_item_png(
             (183, 28, 28, 255) if is_unified else (196, 26, 26, 255),
             stroke_rgba=(255, 255, 255, 245), stroke_w=6,
             shadow_rgba=(0, 0, 0, 210), shadow_dx=4, shadow_dy=6, shadow_blur=3.0,
-            max_w=920,
+            max_w=safe_max_w,
         )
 
     if variant == "danmaku_line":
@@ -1141,7 +1148,7 @@ def render_kinetic_stage_item_png(
         (*fg_rgb, 255),
         stroke_rgba=(0, 0, 0, 235), stroke_w=4,
         shadow_rgba=(0, 0, 0, 195), shadow_dx=4, shadow_dy=5, shadow_blur=2.4,
-        max_w=920,
+        max_w=safe_max_w,
     )
 
 

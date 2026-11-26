@@ -1431,8 +1431,8 @@ def run_step9(
     agent_info = detect_active_agent(agent)
     gbro_handoff: Optional[Dict[str, Any]] = build_gbro_cover_handoff(
         pipeline_dir,
-        title_main=cover_main,
-        title_sub=fit_sub,
+        title_main=cover_main_l1,
+        title_sub=cover_main_l2,
         hook_text=hook_clean,
         track=track,
         agent_info=agent_info,

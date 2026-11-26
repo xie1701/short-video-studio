@@ -573,6 +573,7 @@ def verify_visual_and_subtitle_blackbox(
                         sent_speech_spans.append((float(s["start_sec"]), float(s["end_sec"])))
             except Exception:
                 pass
+        ks_stage_items: List[Dict[str, Any]] = []
         pkg_p2 = pipeline_dir / "06_packaging.json"
         if pkg_p2.is_file():
             try:
@@ -586,6 +587,10 @@ def verify_visual_and_subtitle_blackbox(
                     e_p = float(el.get("end_frame", 0)) / float(edl_fps)
                     pkg_spans.append((s_p, e_p))
                     pkg_elements.append({**el, "_s": s_p, "_e": e_p})
+                for el in ((pkg_obj.get("kinetic_stage") or {}).get("items") or []):
+                    s_k = float(el.get("start_sec") if el.get("start_sec") is not None else float(el.get("start_frame", 0)) / float(edl_fps))
+                    e_k = float(el.get("end_sec") if el.get("end_sec") is not None else float(el.get("end_frame", 0)) / float(edl_fps))
+                    ks_stage_items.append({**el, "_s": s_k, "_e": e_k})
             except Exception:
                 pass
         sub_p = pipeline_dir / "05_subtitles.json"
@@ -611,9 +616,13 @@ def verify_visual_and_subtitle_blackbox(
             except Exception:
                 pass
         # 当 05_subtitles 让位由 kinetic_stage 单层渲染时，接管所有前景文字进黑盒 OCR 与对比度实检，彻底消除 SKIPPED_UNAVAILABLE 盲区
-        if not live_sub_entries and pkg_elements:
+        if not live_sub_entries and (pkg_elements or ks_stage_items):
+            try:
+                from render_template_overlays import render_kinetic_stage_item_png as _render_ks_png
+            except Exception:
+                _render_ks_png = None
             ks_stage_only = []
-            for el in pkg_elements:
+            for el in (pkg_elements + ks_stage_items):
                 if str(el.get("z_layer") or "") == "behind_person":
                     continue
                 if str(el.get("kind") or "") != "kinetic_stage_item" and not el.get("theme_profile"):
@@ -624,20 +633,34 @@ def verify_visual_and_subtitle_blackbox(
                     continue
                 st_k = float(el.get("start_sec") if el.get("start_sec") is not None else el.get("_s", 0.0))
                 en_k = float(el.get("end_sec") if el.get("end_sec") is not None else el.get("_e", st_k + 0.5))
-                cpx = el.get("center_px") or [int(CANVAS_WIDTH * 0.5 + float(el.get("x_norm") or 0.0) * CANVAS_WIDTH * 0.5), 1420]
+                if en_k <= st_k + 0.08:
+                    continue
+                cpx = el.get("center_px") or [int(CANVAS_WIDTH * 0.5 + float(el.get("x_norm") or 0.0) * CANVAS_WIDTH * 0.5), 1400]
                 cx, cy = int(cpx[0]), int(cpx[1])
-                fpx = max(44, min(145, int(el.get("font_size_px") or 72)))
-                est_w = min(920, max(180, int(len(txt_k) * fpx * 1.08 + 48)))
-                est_h = max(72, int(fpx * 1.45 + 32))
-                bx0 = max(60, min(CANVAS_WIDTH - 120, cx - est_w // 2))
-                by0 = max(140, min(CANVAS_HEIGHT - est_h - 80, cy - est_h // 2))
-                bw0 = min(est_w, CANVAS_WIDTH - 80 - bx0)
+                pw_k = ph_k = 0
+                if _render_ks_png is not None:
+                    try:
+                        im_k = _render_ks_png(el, font_candidates=el.get("font_candidates"))
+                        if im_k is not None:
+                            pw_k, ph_k = im_k.size
+                    except Exception:
+                        pw_k = ph_k = 0
+                if pw_k <= 0 or ph_k <= 0:
+                    fpx = max(44, min(144, int(el.get("font_size_px") or 72)))
+                    pw_k = min(640, max(120, int(len(txt_k) * fpx * 0.98 + 20)))
+                    ph_k = max(56, int(fpx * 1.18 + 16))
+                bx0 = max(12, min(CANVAS_WIDTH - pw_k - 12, cx - pw_k // 2))
+                by0 = max(120, min(CANVAS_HEIGHT - ph_k - 120, cy - ph_k // 2))
+                anim_lag = min(0.32, float(el.get("anim_duration_ms") or 0) / 1000.0) if (en_k - st_k) >= 0.90 else 0.0
+                eff_st = min(en_k - 0.15, st_k + anim_lag)
+                dim_sec = el.get("dim_after_sec")
+                eff_en = min(en_k, max(eff_st + 0.35, st_k + float(dim_sec))) if dim_sec is not None else en_k
                 ks_stage_only.append({
                     "id": str(el.get("id") or f"ks_{len(ks_stage_only):03d}"),
                     "text": txt_k,
-                    "start_sec": st_k,
-                    "end_sec": en_k,
-                    "box": {"x": bx0, "y": by0, "w": bw0, "h": est_h},
+                    "start_sec": round(eff_st, 4),
+                    "end_sec": round(eff_en, 4),
+                    "box": {"x": int(bx0), "y": int(by0), "w": int(pw_k), "h": int(ph_k)},
                     "allow_offset": abs(float(el.get("x_norm") or 0.0)) >= 0.05,
                 })
             if ks_stage_only:

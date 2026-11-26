@@ -1857,6 +1857,48 @@ def run_step5(
             entries.append(entry_obj)
             idx += 1
 
+    # 跨句连贯助词护栏：消除句末切分留下的下一句首个「的/地/得/了/着/过/嘅」孤字开头（如「嘅店厨房」）
+    k_cross = 0
+    while k_cross < len(entries) - 1:
+        cur_e = entries[k_cross]
+        nxt_e = entries[k_cross + 1]
+        if not cur_e.get("suppressed") and not nxt_e.get("suppressed"):
+            t0 = str(cur_e.get("text") or "")
+            t1 = str(nxt_e.get("text") or "")
+            if (
+                t0 and t1 and t1[0] in _BAD_SUB_HEAD_AUX
+                and float(nxt_e["start_sec"]) - float(cur_e["end_sec"]) <= 0.35
+                and len(t0) <= 15
+            ):
+                ch_mv = t1[0]
+                cur_e["text"] = t0 + ch_mv
+                nxt_e["text"] = t1[1:]
+                cw = list(cur_e.get("words") or [])
+                nw = list(nxt_e.get("words") or [])
+                if nw and str(nw[0].get("word") or "")[:1] == ch_mv:
+                    mv_w = nw.pop(0)
+                    cw.append(mv_w)
+                    cur_e["words"] = cw
+                    nxt_e["words"] = nw
+                    if mv_w.get("end_sec") is not None:
+                        cur_e["end_sec"] = round(float(mv_w["end_sec"]), 4)
+                    if nw and nw[0].get("start_sec") is not None:
+                        nxt_e["start_sec"] = round(float(nw[0]["start_sec"]), 4)
+                bb0, dy0 = _compute_authoritative_subtitle_bbox(cur_e["text"], tpl, font_path, [], keywords=cur_e.get("keywords"), terms=prot_terms)
+                cur_e["bbox"] = cur_e["final_bbox"] = bb0
+                cur_e["face_avoid_dy"] = int(dy0)
+                cur_e["safe_zone_ok"], cur_e["safe_msg"] = check_bbox_in_safe_zone(bb0)
+                if not nxt_e["text"].strip():
+                    cur_e["end_sec"] = max(float(cur_e["end_sec"]), float(nxt_e["end_sec"]))
+                    entries.pop(k_cross + 1)
+                    continue
+                bb1, dy1 = _compute_authoritative_subtitle_bbox(nxt_e["text"], tpl, font_path, [], keywords=nxt_e.get("keywords"), terms=prot_terms)
+                nxt_e["bbox"] = nxt_e["final_bbox"] = bb1
+                nxt_e["face_avoid_dy"] = int(dy1)
+                nxt_e["safe_zone_ok"], nxt_e["safe_msg"] = check_bbox_in_safe_zone(bb1)
+                continue
+        k_cross += 1
+
     if not dual_banner:
         tail_hl_target = _subtitle_tail_highlight_target(template_id)
         if tail_hl_target > 0.0:

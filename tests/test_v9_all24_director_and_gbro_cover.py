@@ -168,6 +168,88 @@ class V9All24DirectorAndQualityTests(unittest.TestCase):
         self.assertIn("在别人", texts)
         self.assertTrue(any(it.get("variant") == "bridge_bar" for it in stage["items"]))
 
+        # 单层绝对零重叠 + 前景全部落入安全纵坐标带
+        fg = [it for it in stage["items"] if it.get("z_layer", "foreground") == "foreground" and it.get("variant") != "bridge_bar"]
+        bb = [it for it in stage["items"] if it.get("variant") == "bridge_bar"]
+        for it in fg + bb:
+            self.assertGreaterEqual(float(it["y_norm"]), -0.47, it)
+        for b in bb:
+            for f in fg:
+                ov = min(float(b["end_sec"]), float(f["end_sec"])) - max(float(b["start_sec"]), float(f["start_sec"]))
+                self.assertLessEqual(ov, 0.02, f"发现双层叠字重叠 {b} vs {f}")
+
+    def test_extract_char_timeline_falls_back_evenly_when_words_lack_timestamps(self) -> None:
+        sent = {
+            "id": "s_none",
+            "text": "两个人干分工计酬监督天然就有",
+            "start_sec": 64.0,
+            "end_sec": 70.0,
+            "words": [{"word": ch, "start": None, "end": None} for ch in "两个人干分工计酬监督天然就有"],
+        }
+        spans = kinetic_choreographer._extract_char_timeline(sent)
+        self.assertEqual(len(spans), len("两个人干分工计酬监督天然就有"))
+        self.assertGreater(spans[-1][1], 68.5)
+
+    def test_blackbox_takes_over_kinetic_stage_items_even_when_visual_elements_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            pdir = Path(td)
+            pkg = {
+                "step": "06_packaging",
+                "visual_elements": [],
+                "kinetic_stage": {
+                    "enabled": True,
+                    "theme_profile": "style_02_unified",
+                    "items": [
+                        {
+                            "id": "ks_u2_01_01",
+                            "kind": "kinetic_stage_item",
+                            "theme_profile": "style_02_unified",
+                            "variant": "bridge_bar",
+                            "z_layer": "foreground",
+                            "text_or_asset": "小老板第一反应",
+                            "start_sec": 0.2,
+                            "end_sec": 2.4,
+                            "center_px": [540, 1392],
+                            "font_size_px": 69,
+                            "x_norm": 0.0,
+                        }
+                    ],
+                },
+            }
+            sub = {"entries": [{"id": "sub_001", "text": "小老板第一反应", "start_sec": 0.2, "end_sec": 2.4, "suppressed": True}]}
+            (pdir / "06_packaging.json").write_text(json.dumps(pkg), encoding="utf-8")
+            (pdir / "05_subtitles.json").write_text(json.dumps(sub), encoding="utf-8")
+            (pdir / "04_edl.json").write_text(json.dumps({"fps": 30, "edit_profile": "talking", "clips": []}), encoding="utf-8")
+
+            from PIL import Image, ImageDraw
+            frame = pdir / "f.jpg"
+            im = Image.new("RGB", (1080, 1920), (20, 20, 20))
+            ImageDraw.Draw(im).text((320, 1370), "ABC DEF", fill=(250, 250, 250))
+            ImageDraw.Draw(im).rectangle([(320, 1365), (760, 1410)], fill=(250, 250, 250))
+            ImageDraw.Draw(im).rectangle([(330, 1372), (750, 1402)], fill=(20, 20, 20))
+            im.save(frame)
+            with (
+                mock.patch.object(independent_verifier, "_extract_sample_frames", return_value=([frame], [1.0])),
+                mock.patch.object(
+                    independent_verifier,
+                    "inspect_images",
+                    side_effect=lambda paths: {
+                        str(p): {
+                            "backend": "apple_vision",
+                            "faces": [],
+                            "texts": [{"text": "小老板第一反应", "conf": 0.99, "x": 0.1, "y": 0.1, "w": 0.8, "h": 0.8}],
+                        }
+                        for p in paths
+                    },
+                ),
+            ):
+                sub_res, read_res, _col, _fr, leak_res = independent_verifier.verify_visual_and_subtitle_blackbox(
+                    frame, pdir, [(0.2, 2.4)], pipeline_dir=pdir,
+                )
+            self.assertEqual(sub_res["status"], "PASS", sub_res)
+            self.assertEqual(read_res["status"], "PASS", read_res)
+            self.assertEqual(leak_res["status"], "PASS", leak_res)
+
 
 if __name__ == "__main__":
     unittest.main()

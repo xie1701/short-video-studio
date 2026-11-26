@@ -474,18 +474,25 @@ def _extract_char_timeline(sent: Dict[str, Any]) -> List[Tuple[str, float, float
     en = float(sent.get("end_sec") or st + 0.4)
     words = sent.get("words") or []
     spans: List[Tuple[str, float, float]] = []
-    for w in words:
-        wt = clean_display_text(str(w.get("text") or w.get("word") or ""))
-        if not wt:
-            continue
-        ws = float(w.get("start_sec", st))
-        we = max(ws + 0.04, float(w.get("end_sec", ws + 0.08)))
-        if len(wt) == 1:
-            spans.append((wt, ws, we))
-        else:
-            dt = (we - ws) / len(wt)
-            for idx_c, ch in enumerate(wt):
-                spans.append((ch, ws + idx_c * dt, ws + (idx_c + 1) * dt))
+    all_words_timed = bool(words) and all(
+        (w.get("start_sec") is not None or w.get("start") is not None)
+        and (w.get("end_sec") is not None or w.get("end") is not None)
+        for w in words
+        if clean_display_text(str(w.get("text") or w.get("word") or ""))
+    )
+    if all_words_timed:
+        for w in words:
+            wt = clean_display_text(str(w.get("text") or w.get("word") or ""))
+            if not wt:
+                continue
+            ws = float(w.get("start_sec") if w.get("start_sec") is not None else w["start"])
+            we = max(ws + 0.04, float(w.get("end_sec") if w.get("end_sec") is not None else w["end"]))
+            if len(wt) == 1:
+                spans.append((wt, ws, we))
+            else:
+                dt = (we - ws) / len(wt)
+                for idx_c, ch in enumerate(wt):
+                    spans.append((ch, ws + idx_c * dt, ws + (idx_c + 1) * dt))
     if not spans:
         txt = clean_display_text(str(sent.get("text") or ""))
         n = max(1, len(txt))
@@ -1721,6 +1728,8 @@ def _unified_style02_items(
         clean_t = _strip_tofu_symbols(text)
         if not clean_t or en <= st:
             return None
+        if layer == "foreground":
+            yn = round(max(-0.47, min(0.55, float(yn))), 4)
         item = _make_item(
             item_id=f"ks_u2_{ordinal:02d}_{len(items) + 1:02d}",
             group_id=act["group_id"],
@@ -1754,6 +1763,64 @@ def _unified_style02_items(
         items.append(item)
         return item
 
+    def _sync_timing(it: Dict[str, Any], new_st: Optional[float] = None, new_en: Optional[float] = None) -> None:
+        if new_st is not None:
+            it["start_sec"] = round(float(new_st), 4)
+            it["start_frame"] = int(round(float(new_st) * fps))
+            it["aligned_sfx_or_accent_frame"] = int(round(float(new_st) * fps))
+        if new_en is not None:
+            it["end_sec"] = round(float(new_en), 4)
+            it["end_frame"] = int(round(float(new_en) * fps))
+        it["read_hold_sec"] = round(max(0.1, float(it["end_sec"]) - float(it["start_sec"])), 3)
+
+    def _build_act_speech_chunks(target_min: int = 4, target_max: int = 9) -> List[Tuple[str, float, float]]:
+        # 按 <=0.25s 静音停顿把连续短句并段后再切短语，防止「嘅店厨房」跨句助词开行首或复传全幕时间戳
+        if not sentences:
+            return []
+        segments: List[List[Dict[str, Any]]] = [[sentences[0]]]
+        for s_cur in sentences[1:]:
+            if float(s_cur["start_sec"]) - float(segments[-1][-1]["end_sec"]) <= 0.25:
+                segments[-1].append(s_cur)
+            else:
+                segments.append([s_cur])
+        all_chunks: List[Tuple[str, float, float]] = []
+        prev_end = start
+        for seg in segments:
+            seg_s = max(prev_end, float(seg[0]["start_sec"]))
+            seg_e = max(seg_s + 0.25, float(seg[-1]["end_sec"]))
+            seg_txt = "".join(str(s.get("text") or "").strip() for s in seg)
+            if not seg_txt:
+                continue
+            seg_tl: List[Tuple[str, float, float]] = []
+            for s in seg:
+                seg_tl.extend(c for c in _extract_char_timeline(s) if c[0].strip())
+            chunks = split_clean_phrases(seg_txt, target_min=target_min, target_max=target_max) or [clean_display_text(seg_txt)]
+            mapped = map_chunks_to_times(chunks, seg_tl, seg_s, seg_e)
+            for ci, (c_txt, cs, _ce) in enumerate(mapped):
+                nxt_s = mapped[ci + 1][1] if ci + 1 < len(mapped) else seg_e
+                cs_ok = max(prev_end, min(seg_e - 0.25, float(cs)))
+                ce_ok = max(cs_ok + 0.25, min(seg_e, float(nxt_s)))
+                if all_chunks and cs_ok < all_chunks[-1][2]:
+                    all_chunks[-1] = (all_chunks[-1][0], all_chunks[-1][1], max(all_chunks[-1][1] + 0.20, cs_ok))
+                all_chunks.append((c_txt, round(cs_ok, 4), round(ce_ok, 4)))
+                prev_end = ce_ok
+        return all_chunks
+
+    def _norm_cov(text_v: str) -> str:
+        s_n = clean_display_text(text_v)
+        for k_zh, v_num in (
+            ("两千", "2000"), ("两百", "200"), ("二百", "200"), ("三百", "300"),
+            ("五百", "500"), ("六百", "600"), ("十万", "10万"),
+        ):
+            s_n = s_n.replace(k_zh, v_num)
+        return s_n
+
+    # 过渡句/呼吸段：无黑方底框通透白字 bridge_bar（0 音效，<=9 字严格居中不碰右侧点赞区）
+    if primitive in ("plain_bridge", "clean_breath"):
+        for c_txt, cs, ce in _build_act_speech_chunks(target_min=4, target_max=9):
+            add(c_txt, "bridge_bar", cs, ce, 0.0, -0.45, _UNIFIED_L1_U, "", 0, sfx=None, tier="L1")
+        return items
+
     # 收集逐字时间轴
     timeline: List[Tuple[str, float, float]] = []
     sentence_starts: set = set()
@@ -1765,22 +1832,6 @@ def _unified_style02_items(
         timeline.extend(chars)
         if _has_word_timing(sentence):
             word_backed.update(range(s_idx, s_idx + len(chars)))
-
-    # 过渡句/呼吸段：单层 L1 紧凑黑方底白字 bridge_bar（0 音效，按短语切分为 <=11 字不破词，绝不留哑屏）
-    if primitive in ("plain_bridge", "clean_breath"):
-        tl_clean = [(ch, st, en) for ch, st, en in timeline if ch.strip()]
-        for sent in sentences:
-            s_st, s_en = float(sent["start_sec"]), float(sent["end_sec"])
-            raw_txt = str(sent.get("text") or "").strip()
-            chunks = split_clean_phrases(raw_txt, target_min=4, target_max=11) or [clean_display_text(raw_txt)]
-            mapped = map_chunks_to_times(chunks, tl_clean, s_st, s_en)
-            for ci, (c_txt, cs, ce) in enumerate(mapped):
-                nxt_s = mapped[ci + 1][1] if ci + 1 < len(mapped) else s_en
-                add(
-                    c_txt, "bridge_bar", cs, max(cs + 0.25, nxt_s),
-                    0.0, -0.52, _UNIFIED_L1_U, "", 0, sfx=None, tier="L1",
-                )
-        return items
 
     visual = act.get("visual_copy") or {}
     raw_items_list = [str(t or "").strip() for t in (visual.get("items") or []) if str(t or "").strip()]
@@ -1795,7 +1846,7 @@ def _unified_style02_items(
         headline = ""
     accent_tok = _strip_tofu_symbols(visual.get("accent_token") or "")
     footnote = _strip_tofu_symbols(visual.get("footnote") or "")
-    y_base = max(-0.44, min(-0.28, _stage_y(composition)))
+    y_base = max(-0.34, min(-0.24, _stage_y(composition)))
     u_prim = _UNIFIED_PRIMITIVE_ALIAS.get(primitive, primitive)
 
     def timed_spans(texts: List[str]) -> List[Tuple[float, float]]:
@@ -1807,25 +1858,29 @@ def _unified_style02_items(
             add(rows[0], "hero_lime", start, end, 0.0, y_base + 0.04, _UNIFIED_L3_U, "in:缩小 II", 1, "pop", tier="L3")
         elif len(rows) == 2:
             spans = timed_spans(rows)
-            add(rows[0], "hero_white", start, end, 0.0, y_base + 0.10, _UNIFIED_L2_U, "in:向上露出", 1, "swish", tier="L2")
+            add(rows[0], "hero_white", start, end, 0.0, y_base + 0.09, _UNIFIED_L2_U, "in:向上露出", 1, "swish", tier="L2")
             add(rows[1], "hero_lime", spans[1][0], end, 0.0, y_base - 0.04, _UNIFIED_L3_U, "in:缩小 II", 2, "pop", tier="L3")
         elif rows:
             trio = rows[:3]
             spans = timed_spans(trio)
-            add(trio[0], "hero_white", start, end, -0.06, y_base + 0.14, _UNIFIED_L2_U, "in:向上露出", 1, "swish", tier="L2")
-            add(trio[1], "hero_lime", spans[1][0], end, 0.04, y_base + 0.01, _UNIFIED_L3_U, "in:缩小 II", 2, "pop", tier="L3")
-            add(trio[2], "red_pill", spans[2][0], end, 0.0, y_base - 0.13, _UNIFIED_L2_U, "in:向下露出", 3, "pop", tier="L2")
+            t0_off = _locate_phrase_offset(trio[0], timeline, start, max(0.2, spans[1][0] - start))
+            trio0_s = start
+            if t0_off is not None and t0_off >= 1.15 and spans[1][0] - (start + t0_off) >= 0.45:
+                trio0_s = round(max(start, min(spans[1][0] - 0.55, start + t0_off - 0.15)), 4)
+            add(trio[0], "hero_white", trio0_s, end, -0.05, y_base + 0.12, _UNIFIED_L2_U, "in:向上露出", 1, "swish", tier="L2")
+            add(trio[1], "hero_lime", max(trio0_s, spans[1][0]), end, 0.04, y_base - 0.01, _UNIFIED_L3_U, "in:缩小 II", 2, "pop", tier="L3")
+            add(trio[2], "red_pill", max(trio0_s, spans[2][0]), end, 0.0, max(-0.46, y_base - 0.13), _UNIFIED_L2_U, "in:向下露出", 3, "pop", tier="L2")
 
     elif u_prim == "left_right_punch":
         pair = lines[:2] if len(lines) >= 2 else ([headline, lines[0]] if headline and lines else [])
         if len(pair) >= 2:
             spans = timed_spans(pair)
             if headline and pair[0] != headline:
-                add(headline, "hero_white", start, end, 0.0, y_base + 0.15, _UNIFIED_L2_U, "in:向上露出", 1, tier="L2")
+                add(headline, "hero_white", start, end, 0.0, y_base + 0.14, _UNIFIED_L2_U, "in:向上露出", 1, tier="L2")
             l_var = "red_slam" if pair[0] in neg_items else "hero_white"
             r_var = "hero_lime"
-            add(pair[0], l_var, spans[0][0], end, -0.26, y_base + 0.02, _UNIFIED_L2_U, "in:向左露出", 2, "swish", tier="L2")
-            add(pair[1], r_var, spans[1][0], end, 0.24, y_base - 0.09, _UNIFIED_L3_U, "in:缩小 II", 3, "pop", tier="L3")
+            add(pair[0], l_var, spans[0][0], end, -0.16, y_base + 0.01, _UNIFIED_L2_U, "in:向左露出", 2, "swish", tier="L2")
+            add(pair[1], r_var, spans[1][0], end, 0.14, max(-0.46, y_base - 0.10), _UNIFIED_L3_U, "in:缩小 II", 3, "pop", tier="L3")
         elif headline or lines:
             txt = headline or lines[0]
             add(txt, "hero_lime", start, end, 0.0, y_base + 0.02, _UNIFIED_L3_U, "in:缩小 II", 1, "pop", tier="L3")
@@ -1835,19 +1890,29 @@ def _unified_style02_items(
         sub_txt = (lines[0] if headline and lines and lines[0] != headline else "") or (footnote if footnote != main_txt else "")
         has_num = bool(_NUMBER_RUN.search(main_txt))
         m_var = "hero_lime" if (has_num or accent_tok) else "hero_white"
-        add(main_txt, m_var, start, end, 0.0, y_base + 0.06, _UNIFIED_L3_U, "in:缩小 II", 1, "cash_register" if has_num else "pop", tier="L3")
+        anchor_s = start
+        if main_txt and (end - start) >= 2.8:
+            ph_off = _locate_phrase_offset(main_txt, timeline, start, max(0.2, end - start - 1.4))
+            if ph_off is not None and ph_off >= 1.35:
+                anchor_s = round(max(start, min(end - 1.65, start + ph_off - 0.18)), 4)
+        add(main_txt, m_var, anchor_s, end, 0.0, y_base + 0.05, _UNIFIED_L3_U, "in:缩小 II", 1, "cash_register" if has_num else "pop", tier="L3")
         if sub_txt:
             sub_span = timed_spans([main_txt, sub_txt])[-1][0]
             is_pill = len(sub_txt) <= 6
-            add(sub_txt, "red_pill" if is_pill else "bridge_bar", max(start, sub_span), end,
-                0.0, y_base - 0.09, _UNIFIED_L2_U if is_pill else _UNIFIED_L1_U, "in:向下露出", 2,
+            add(sub_txt, "red_pill" if is_pill else "bridge_bar", max(anchor_s, sub_span), end,
+                0.0, max(-0.46, y_base - 0.10), _UNIFIED_L2_U if is_pill else _UNIFIED_L1_U, "in:向下露出", 2,
                 tier="L2" if is_pill else "L1")
 
     elif u_prim == "pain_slam_danmaku":
         slam_txt = headline or (lines[0] if lines else "")
+        slam_end = end
         if slam_txt:
             slam_lbl = slam_txt.lstrip("✕✓ ")
-            add(slam_lbl, "red_slam", start, end, 0.0, y_base + 0.04, _UNIFIED_L3_U, "in:震动冲击", 1, "punch", tier="L3")
+            if (end - start) >= 3.8:
+                sl_off = _locate_phrase_offset(slam_lbl, timeline, start, max(0.2, end - start - 1.8))
+                if sl_off is not None and (start + sl_off + len(slam_lbl) * 0.25) <= end - 2.0:
+                    slam_end = round(min(end, max(start + 1.85, start + sl_off + len(slam_lbl) * 0.25 + 0.35)), 4)
+            add(slam_lbl, "red_slam", start, slam_end, 0.0, y_base + 0.04, _UNIFIED_L3_U, "in:震动冲击", 1, "punch", tier="L3")
         extra_rows = [r.lstrip("✕✓ ") for r in lines if r.lstrip("✕✓ ") != (slam_txt or "").lstrip("✕✓ ")]
         if extra_rows:
             all_behind_ok = bool(shot_comps) and all(c.get("allow_behind_person") for c in shot_comps)
@@ -1863,7 +1928,7 @@ def _unified_style02_items(
                     add(rtxt, "danmaku_line", rs, end, dn_xn, dn_yn, 14.0, "in:向右露出", 2 + ri,
                         sfx=None, layer="behind_person", tier="L2")
                 else:
-                    fg_yn = round(max(-0.62, y_base - 0.11 - ri * 0.095), 4)
+                    fg_yn = round(max(-0.46, y_base - 0.10 - ri * 0.095), 4)
                     add(rtxt, "hero_white", rs, end, 0.0, fg_yn, _UNIFIED_L2_U, "in:向上露出", 2 + ri,
                         sfx=None, layer="foreground", tier="L2")
 
@@ -1879,7 +1944,7 @@ def _unified_style02_items(
                     rs if ri > 0 else start,
                     end,
                     0.0,
-                    y_base + 0.11 - ri * 0.115,
+                    max(-0.46, y_base + 0.10 - ri * 0.105),
                     _UNIFIED_L3_U if is_focus else _UNIFIED_L2_U,
                     "in:缩小 II" if is_focus else "in:向上露出",
                     1 + ri,
@@ -1892,19 +1957,38 @@ def _unified_style02_items(
     elif u_prim == "list_gather_depth":
         row_items = lines or ([headline] if headline else [])
         has_top_lead = bool(headline and lines and headline not in lines)
-        if has_top_lead:
-            add(headline, "hero_lime", start, end, 0.0, y_base + 0.16, _UNIFIED_L2_U, "in:向上露出", 1, "pop", tier="L2")
-        spans = timed_spans(row_items)
         max_rows = min(len(row_items), 4)
+        compact_4 = max_rows >= 4
+        row_u = 12.5 if compact_4 else _UNIFIED_L2_U
+        step_y = 0.078 if compact_4 else 0.098
+        top_yn = -0.15 if compact_4 else (y_base + 0.14)
+        first_row_yn = -0.235 if compact_4 else (y_base + (0.04 if has_top_lead else 0.10))
+        if has_top_lead:
+            add(headline, "hero_lime", start, end, 0.0, top_yn, 13.5 if compact_4 else _UNIFIED_L2_U, "in:向上露出", 1, "pop", tier="L2")
+        spans = timed_spans(row_items)
+        # 若首行列表延迟 >=1.25s（如先说「第一·先答清楚」「过了夫妻店那条线规矩」），在首行空档插入纯前景过渡行，Row 1 入场时淡出
+        if has_top_lead and spans and (spans[0][0] - start) >= 1.25:
+            lead_end = spans[0][0]
+            lead_chunks = [
+                (ct, cs, ce) for ct, cs, ce in _build_act_speech_chunks(target_min=3, target_max=9)
+                if cs < lead_end - 0.25 and ce > start + 0.25
+            ]
+            head_clean = _norm_cov(headline)
+            lead_pieces = [ct for ct, _, _ in lead_chunks if _norm_cov(ct) not in head_clean and len(clean_display_text(ct)) >= 3]
+            if lead_pieces:
+                lead_txt = "".join(lead_pieces)[:9]
+                lead_cs = max(start + 0.30, min(lead_chunks[0][1], lead_end - 0.85))
+                if lead_end - lead_cs >= 0.70:
+                    add(lead_txt, "hero_white", lead_cs, lead_end, 0.0, first_row_yn, row_u, "in:向上露出", 2, sfx=None, tier="L2")
         for idx_r in range(max_rows):
             rtxt = row_items[idx_r]
             rs, _ = spans[idx_r]
             nxt_s = spans[idx_r + 1][0] if idx_r + 1 < max_rows else None
             dim_after = round(max(0.18, nxt_s - rs), 3) if nxt_s is not None else None
-            yn_r = round(y_base + (0.04 if has_top_lead else 0.11) - idx_r * 0.105, 4)
+            yn_r = round(max(-0.468, first_row_yn - idx_r * step_y), 4)
             add(
                 rtxt, "hero_white", rs, end, 0.0, yn_r,
-                _UNIFIED_L2_U, "in:向右露出", 2 + idx_r, "pop" if idx_r == 0 else None,
+                row_u, "in:向右露出", 2 + idx_r, "pop" if idx_r == 0 else None,
                 dim_after=dim_after, tier="L2",
             )
 
@@ -1918,7 +2002,7 @@ def _unified_style02_items(
                 num_it["beat_offsets"] = {"roll_start": 0.0, "roll_end": round(min(0.32, num_dur * 0.42), 4)}
         if note_txt:
             ns = timed_spans([num_txt, note_txt])[-1][0] if num_txt else start
-            add(note_txt, "hero_white", max(start, ns), end, 0.0, y_base - 0.09, _UNIFIED_L2_U, "in:向上露出", 2, tier="L2")
+            add(note_txt, "hero_white", max(start, ns), end, 0.0, max(-0.46, y_base - 0.09), _UNIFIED_L2_U, "in:向上露出", 2, tier="L2")
 
     else:  # inline_highlight_cta 及回退默认
         rows = [r for r in lines if r != headline]
@@ -1936,42 +2020,115 @@ def _unified_style02_items(
             )
         else:
             if lead:
-                add(lead, "hero_white", start, end, 0.0, y_base + 0.09, _UNIFIED_L1_U, "in:向上露出", 1, tier="L1")
+                add(lead, "hero_white", start, end, 0.0, y_base + 0.08, _UNIFIED_L1_U, "in:向上露出", 1, tier="L1")
             if kw:
                 ks = timed_spans([lead, kw])[-1][0] if lead else start
-                add(kw, "hero_lime", max(start, ks), end, 0.0, y_base - 0.03, _UNIFIED_L2_U, "in:缩小 II", 2, "pop", tier="L2")
+                add(kw, "hero_lime", max(start, ks), end, 0.0, max(-0.46, y_base - 0.04), _UNIFIED_L2_U, "in:缩小 II", 2, "pop", tier="L2")
 
-    # 全句不断档补全：若本幕主舞台仅呈现了局部核心大字，自动把其余未呈现的口播话以通透无黑框 L1 白字接在下方安全区
-    tl_clean = [(ch, st_c, en_c) for ch, st_c, en_c in timeline if ch.strip()]
-    base_stage_items = list(items)
-    for sent in sentences:
-        s_st, s_en = float(sent["start_sec"]), float(sent["end_sec"])
-        raw_txt = str(sent.get("text") or "").strip()
-        if not raw_txt:
-            continue
-        chunks = split_clean_phrases(raw_txt, target_min=4, target_max=11) or [clean_display_text(raw_txt)]
-        mapped = map_chunks_to_times(chunks, tl_clean, s_st, s_en)
-        for ci, (c_txt, cs, ce) in enumerate(mapped):
-            nxt_s = mapped[ci + 1][1] if ci + 1 < len(mapped) else s_en
-            c_end = max(cs + 0.25, nxt_s)
-            c_alnum = [ch for ch in c_txt if "\u4e00" <= ch <= "\u9fff" or ch.isalnum()]
+    # ── 单层绝对零重叠时间分区 + 完整补全（先按语段边界收束滞留大字，再以差集填入非重叠 bridge_bar）──
+    act_chunks = _build_act_speech_chunks(target_min=4, target_max=9)
+    fg_hi_items = [it for it in items if it.get("z_layer", "foreground") == "foreground" and it.get("variant") != "bridge_bar"]
+    if act_chunks and fg_hi_items:
+        # 1) 识别连续 >=1.15s 未被同期前台文字覆盖的语块，若覆盖它们的先前大字已说完，提前收束于 gap_s
+        def _chunk_cov(ct: str, cs: float, ce: float) -> float:
+            nc = _norm_cov(ct)
+            c_alnum = [ch for ch in nc if ("\u4e00" <= ch <= "\u9fff" or ch.isalnum()) and ch not in set("的嘅了我你佢吧呢啊嘛")]
             if len(c_alnum) < 2:
+                return 1.0
+            ov_blob = _norm_cov("".join(
+                str(it.get("text_or_asset") or "")
+                for it in fg_hi_items
+                if float(it["start_sec"]) < ce - 0.10 and float(it["end_sec"]) > cs + 0.10
+            ))
+            return sum(1 for ch in c_alnum if ch in ov_blob) / float(len(c_alnum))
+
+        raw_gaps: List[Tuple[float, float]] = []
+        for c_txt, cs, ce in act_chunks:
+            if _chunk_cov(c_txt, cs, ce) < 0.60:
+                if raw_gaps and abs(cs - raw_gaps[-1][1]) <= 0.12:
+                    raw_gaps[-1] = (raw_gaps[-1][0], max(raw_gaps[-1][1], ce))
+                else:
+                    raw_gaps.append((cs, ce))
+        for gs, ge in raw_gaps:
+            if (ge - gs) < 1.15:
                 continue
-            ov_items = [
-                it for it in base_stage_items
-                if float(it.get("start_sec") or 0.0) < c_end - 0.10
-                and float(it.get("end_sec") or 0.0) > cs + 0.10
-            ]
-            ov_blob = "".join(str(it.get("text_or_asset") or "") for it in ov_items)
-            covered_n = sum(1 for ch in c_alnum if ch in ov_blob)
-            if covered_n / float(len(c_alnum)) >= 0.65:
+            ov_fg = [it for it in fg_hi_items if float(it["start_sec"]) < gs - 0.35 and float(it["end_sec"]) > gs + 0.15]
+            if not ov_fg:
                 continue
-            min_ov_y = min((float(it.get("y_norm") or 0.0) for it in ov_items), default=0.0)
-            y_fill = max(-0.63, min(-0.56, min_ov_y - 0.15)) if ov_items else -0.56
-            add(
-                c_txt, "bridge_bar", cs, c_end,
-                0.0, round(y_fill, 4), _UNIFIED_L1_U, "", 0, sfx=None, tier="L1",
-            )
+            # 检查所有跨入 gap 的先前大字：它们的字不能主要落在 gap 之后，且在 gs 收束后可保留 >=1.10s 时长
+            can_trim = True
+            pending_adj: List[Tuple[Dict[str, Any], Optional[float], float]] = []
+            for it in ov_fg:
+                it_txt = str(it.get("text_or_asset") or "")
+                it_s = float(it["start_sec"])
+                if (gs - it_s) < 1.05:
+                    # 仅当该条可左移 <=0.55s 且不早于 start（如「下载了一份」）才允许微调
+                    shift_s = max(start, gs - 1.25)
+                    if (gs - shift_s) >= 1.10 and (it_s - shift_s) <= 0.65:
+                        adj_s: Optional[float] = shift_s
+                    else:
+                        can_trim = False
+                        break
+                else:
+                    adj_s = None
+                later_text = "".join(ct for ct, cs2, _ in act_chunks if cs2 >= ge - 0.15)
+                in_later = sum(1 for ch in _norm_cov(it_txt) if ch in _norm_cov(later_text))
+                if len(it_txt) >= 3 and in_later >= max(3, int(len(it_txt) * 0.7)):
+                    can_trim = False
+                    break
+                pending_adj.append((it, adj_s, gs))
+            if can_trim:
+                for it, adj_s, new_en in pending_adj:
+                    _sync_timing(it, new_st=adj_s, new_en=new_en)
+
+    # 2) 构建严格前景封锁区间，差集排出纯无重叠 bridge_bar
+    raw_fg_spans = sorted(
+        (max(0.0, float(it["start_sec"]) - 0.02), float(it["end_sec"]) + 0.02)
+        for it in items
+        if it.get("z_layer", "foreground") == "foreground" and it.get("variant") != "bridge_bar"
+    )
+    fg_spans: List[Tuple[float, float]] = []
+    for fa, fb in raw_fg_spans:
+        if fg_spans and fa <= fg_spans[-1][1]:
+            fg_spans[-1] = (fg_spans[-1][0], max(fg_spans[-1][1], fb))
+        else:
+            fg_spans.append((fa, fb))
+
+    def _free_slices(ws: float, we: float) -> List[Tuple[float, float]]:
+        cur = [(ws, we)]
+        for ba, bb in fg_spans:
+            nxt_cur: List[Tuple[float, float]] = []
+            for sa, sb in cur:
+                if bb <= sa or ba >= sb:
+                    nxt_cur.append((sa, sb))
+                else:
+                    if ba > sa:
+                        nxt_cur.append((sa, ba))
+                    if bb < sb:
+                        nxt_cur.append((bb, sb))
+            cur = nxt_cur
+        return [(a, b) for a, b in cur if (b - a) >= 0.55]
+
+    last_bb_end = 0.0
+    for c_txt, cs, ce in act_chunks:
+        nc = _norm_cov(c_txt)
+        c_alnum = [ch for ch in nc if ("\u4e00" <= ch <= "\u9fff" or ch.isalnum()) and ch not in set("的嘅了我你佢吧呢啊嘛")]
+        if len(c_alnum) < 2:
+            continue
+        ov_items = [
+            it for it in fg_hi_items
+            if float(it["start_sec"]) < ce - 0.10 and float(it["end_sec"]) > cs + 0.10
+        ]
+        ov_blob = _norm_cov("".join(str(it.get("text_or_asset") or "") for it in ov_items))
+        covered_n = sum(1 for ch in c_alnum if ch in ov_blob)
+        if covered_n / float(len(c_alnum)) >= 0.65:
+            continue
+        for sa, sb in _free_slices(cs, ce):
+            sa_ok = max(sa, last_bb_end)
+            if (sb - sa_ok) >= 0.55:
+                it_bb = add(c_txt, "bridge_bar", sa_ok, sb, 0.0, -0.45, _UNIFIED_L1_U, "", 0, sfx=None, tier="L1")
+                if it_bb is not None:
+                    last_bb_end = float(it_bb["end_sec"])
     return items
 
 
