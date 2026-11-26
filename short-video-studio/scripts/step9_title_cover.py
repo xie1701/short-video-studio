@@ -59,7 +59,7 @@ if __name__ == "__main__":
 from generate_code_broll import resolve_style_palette
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 from vision_inspector import compute_laplacian_sharpness, inspect_images, segment_person_mask
 
 _CTA_STOP_KWS = {"评论区", "点赞", "关注", "私信", "门店地址", "戳链接", "收藏"}
@@ -87,9 +87,16 @@ def pick_best_cover_frame(
     if not pool:
         return None, {"score": 0.0, "face_bbox": None, "reason": "no_existing_file"}
 
-    # 结合 03_audio_events 定位全片高情绪/爆点句所在镜头加入封面候选（不再局限于前 4 段）
-    selected_clips: List[Dict[str, Any]] = list(pool[:4])
-    seen_cids = {c["clip_id"] for c in selected_clips}
+    # 真人出镜镜头优先入池（至少涵盖开篇/中段 A-roll），避免毛坯/无人背影夺走封面
+    aroll_pool = [c for c in pool if c.get("track_role") == "a_roll"]
+    selected_clips: List[Dict[str, Any]] = []
+    seen_cids: set[str] = set()
+    for c in (aroll_pool[:4] + pool[:4]):
+        if c["clip_id"] not in seen_cids:
+            selected_clips.append(c)
+            seen_cids.add(c["clip_id"])
+        if len(selected_clips) >= 6:
+            break
     if audio_events:
         high_sents = [
             s for s in (audio_events.get("sentences") or [])
@@ -97,11 +104,11 @@ def pick_best_cover_frame(
         ]
         for hs in high_sents[:4]:
             hs_t = float(hs.get("start_sec", 0.0))
-            hit_c = next((c for c in pool if float(c.get("timeline_in_sec", 0.0)) <= hs_t <= float(c.get("timeline_out_sec", 0.0))), None)
+            hit_c = next((c for c in (aroll_pool or pool) if float(c.get("timeline_in_sec", 0.0)) <= hs_t <= float(c.get("timeline_out_sec", 0.0))), None)
             if hit_c and hit_c["clip_id"] not in seen_cids:
                 selected_clips.append(hit_c)
                 seen_cids.add(hit_c["clip_id"])
-            if len(selected_clips) >= 7:
+            if len(selected_clips) >= 8:
                 break
 
     vf_by_cid = {p["clip_id"]: p.get("vf_filter") for p in (color_plan or {}).get("clip_plans", []) if p.get("apply_color_grade")}
@@ -176,6 +183,11 @@ def pick_best_cover_frame(
             sharps.append(full_sh)
     s_min, s_max = min(sharps), max(sharps)
 
+    has_clear_face_cands = any(
+        bool(_filter_primary_faces((vis_map.get(str(p), {}) or {}).get("faces") or []))
+        for p, _, _, _, _ in candidates
+    )
+
     best_idx = 0
     best_score = -1.0
     best_face: Optional[Dict[str, float]] = None
@@ -185,18 +197,22 @@ def pick_best_cover_frame(
         s_norm = (sh - s_min) / max(1e-4, s_max - s_min) if s_max > s_min else 0.7
         vr = vis_map.get(str(p), {})
         faces = _filter_primary_faces(vr.get("faces") or [])
+        if has_clear_face_cands and not faces:
+            # 片中有清晰正面人脸帧时，强制剔除无人背影/毛坯空镜，绝不挑工地背影当封面
+            continue
         f_bb = None
         if faces:
             f0 = faces[0]
             f_bb = f0.get("bbox")
             eye_r = float(f0.get("eye_open_ratio", 0.24))
             mouth_r = float(f0.get("mouth_open_ratio", 0.15))
+            area_f = float(f_bb.get("w", 0.2)) * float(f_bb.get("h", 0.2)) if isinstance(f_bb, dict) else 0.08
             if eye_r < 0.13:
                 face_score = 0.15
             elif mouth_r > 0.42:
-                face_score = 0.45
+                face_score = 0.48
             else:
-                face_score = min(1.0, 0.72 + (eye_r - 0.13) * 2.0)
+                face_score = min(1.0, 0.72 + (eye_r - 0.13) * 1.8 + min(0.12, area_f))
         else:
             f_bb = saliency_by_mp.get(str(mp_s or ""))
             face_score = 0.55
@@ -208,7 +224,7 @@ def pick_best_cover_frame(
                 fy_c /= float(CANVAS_HEIGHT)
             comp_score = 1.0 if 0.22 <= fy_c <= 0.65 else 0.55
 
-        total = 0.45 * s_norm + 0.40 * face_score + 0.15 * comp_score
+        total = 0.42 * s_norm + 0.43 * face_score + 0.15 * comp_score
         if total > best_score:
             best_score = total
             best_idx = idx
@@ -659,8 +675,14 @@ def extract_best_host_face_frame(pipeline_dir: Path) -> Optional[Dict[str, Any]]
             vinfo = vis_map.get(str(fpath)) or vis_map.get(str(fpath.resolve())) or {}
             faces = vinfo.get("faces") or []
             if faces:
-                f0 = max(faces, key=lambda b: float(b.get("w", 0.0)) * float(b.get("h", 0.0)))
-                fx, fy, fw, fh = float(f0.get("x", 0.3)), float(f0.get("y", 0.15)), float(f0.get("w", 0.25)), float(f0.get("h", 0.25))
+                f0 = max(
+                    faces,
+                    key=lambda b: float((b.get("bbox") if isinstance(b.get("bbox"), dict) else b).get("w", 0.0))
+                    * float((b.get("bbox") if isinstance(b.get("bbox"), dict) else b).get("h", 0.0)),
+                )
+                bb0 = f0.get("bbox") if isinstance(f0.get("bbox"), dict) else f0
+                fx, fy = float(bb0.get("x", 0.3)), float(bb0.get("y", 0.15))
+                fw, fh = float(bb0.get("w", 0.25)), float(bb0.get("h", 0.25))
                 area = fw * fh
                 cx = fx + fw * 0.5
                 cy = fy + fh * 0.5
@@ -856,30 +878,45 @@ def run_step9(
     dir_plan_p = pipeline_dir / "03b_director_plan.json"
     dir_plan = read_json(dir_plan_p) if dir_plan_p.is_file() else {}
     dir_acts = list(dir_plan.get("acts") or [])
+    cov_spec = dir_plan.get("cover_copy") if isinstance(dir_plan.get("cover_copy"), dict) else None
     is_unified_s02 = (eff_style == "style_02") and (
         str(dir_plan.get("theme_profile") or "") == "style_02_unified" or dir_plan_p.is_file()
     )
-    if is_unified_s02 and dir_acts:
+    if cov_spec and (cov_spec.get("headline_top") or cov_spec.get("highlight_badge")):
+        cover_main_l1 = str(cov_spec.get("headline_top") or cover_main_l1).strip()[:10]
+        cover_main_l2 = str(cov_spec.get("highlight_badge") or cover_main_l2).strip()[:10]
+        raw_sub = str(cov_spec.get("sub_line") or "").strip()
+        cover_sub = raw_sub[:14] if raw_sub else (
+            f"粤语实拍 · {cover_main_l2[:7]}" if track == "store" else f"实操复盘 · {cover_main_l2[:7]}"
+        )
+    elif dir_acts:
         act0 = dir_acts[0].get("visual_copy") or {}
         act1 = dir_acts[1].get("visual_copy") or {} if len(dir_acts) > 1 else {}
         a0_items = [str(x).strip() for x in (act0.get("items") or []) if str(x).strip()]
         a0_hl = str(act0.get("headline") or "").strip()
         a1_hl = str(act1.get("headline") or "").strip()
-        # 优先使用含数字/强核心的短语作封面第一主行，彻底避免旧分词截成“负债多万/六百”
-        num_item = next((x for x in [a0_hl, *a0_items] if any(ch.isdigit() for ch in x)), "")
-        cover_main_l1 = (num_item or a0_hl or cover_main_l1)[:9]
-        sub_pool = [x for x in [*a0_items, a0_hl, a1_hl] if x and x != cover_main_l1 and len(x) >= 2]
-        if track == "store" and len(a0_items) >= 2 and num_item == a0_hl:
-            # 探店开篇三元组可组合“三百万·六百平”或“点赞茶楼”
-            if any(ch.isdigit() for ch in a0_items[0]) and len(cover_main_l1 + a0_items[0]) <= 8:
-                cover_main_l1 = f"{cover_main_l1}·{a0_items[0]}"
-            sub_pool = [x for x in [*a0_items[1:], a1_hl] if x and x not in cover_main_l1 and len(x) >= 2]
+        # 自动拼接饱满短句（严禁出现「那年」「六百」单薄二字残片）
+        cand_pairs = [x for x in [a0_hl, *a0_items, a1_hl] if len(x) >= 3]
+        if len(a0_hl) == 2 and a0_items and len(a0_hl + a0_items[0]) <= 8:
+            cand_pairs.insert(0, f"{a0_hl}·{a0_items[0]}")
+        num_item = next((x for x in cand_pairs if any(ch.isdigit() for ch in x)), "")
+        cover_main_l1 = (num_item or (cand_pairs[0] if cand_pairs else cover_main_l1))[:9]
+        sub_pool = [x for x in cand_pairs if x and x != cover_main_l1 and x not in cover_main_l1]
         if sub_pool:
             cover_main_l2 = sub_pool[0][:9]
+        elif len(hook_parts) >= 2 and hook_parts[1] != cover_main_l1:
+            cover_main_l2 = hook_parts[1][:9]
         sec_clean = re.sub(r"^(不是|但是|而且|所以)", "", str(cover_main_l2 or "")).strip() or "核心真相"
         cover_sub = (
             f"粤语实拍 · {sec_clean[:7]}" if track == "store" else f"实操复盘 · {sec_clean[:7]}"
         )
+    else:
+        # 无总谱时亦禁用 2 字碎片复读，确保封面双行表达完整人话
+        if len(cover_main_l1) <= 3 and len(hook_parts) >= 1 and len(hook_parts[0]) >= 4:
+            cover_main_l1 = hook_parts[0][:9]
+        if len(cover_main_l2) <= 3 or cover_main_l2 == cover_main_l1:
+            cand_b = next((hp[:9] for hp in hook_parts[1:] if len(hp) >= 4 and hp[:9] != cover_main_l1), "")
+            cover_main_l2 = cand_b or (sent2_clean[:9] if len(sent2_clean) >= 4 else "一线真实全拆解")
 
     titles = [str(t).rstrip("。") for t in titles]
     cover_main = f"{cover_main_l1}\n{cover_main_l2}"
@@ -916,12 +953,19 @@ def run_step9(
     layouts_cfg = cover_rules.get("cover_3x4_layouts") or {}
     style_entry = load_style_spectrum_entry(eff_style) if eff_style else None
     cover_layout_id = str(((style_entry or {}).get("title_cover_layout") or {}).get("layout_id") or "")
-    use_jianying_poster = (cover_layout_id == "jianying_poster_4zone")
+    use_gbro_poster = (
+        bool(cov_spec)
+        or dir_plan_p.is_file()
+        or eff_style == "style_02"
+        or cover_layout_id not in ("four_corner_editorial",)
+    )
+    use_jianying_poster = (not use_gbro_poster) and (cover_layout_id == "jianying_poster_4zone")
     sub_spec = (style_entry or {}).get("subtitle_spec") or {}
     style_font_cands = sub_spec.get("font_candidates") or pal.get("font_candidates")
-    if is_unified_s02:
-        style_font_cands = ["SourceHanSansCN-Bold.otf", "NotoSansSC-Bold.ttf", "AlimamaShuHeiTi-Bold.otf"]
-    kw_hex_style = "#BCFF00" if is_unified_s02 else str(sub_spec.get("keyword_color") or pal.get("accent_hex") or "#FFBF17")
+    if use_gbro_poster or is_unified_s02:
+        # 狗哥爆款封面：超粗无衬线方正黑体，硬朗高点击视觉冲击
+        style_font_cands = ["AlimamaShuHeiTi-Bold.otf", "SourceHanSansCN-Bold.otf", "NotoSansSC-Bold.ttf"]
+    kw_hex_style = "#FFE135" if use_gbro_poster else str(sub_spec.get("keyword_color") or pal.get("accent_hex") or "#FFBF17")
 
     card_x1, card_x2 = 80, SAFE_ZONE["x_max"] - 20  # [80, 860] -> w=780
     card_h = 340
@@ -934,7 +978,87 @@ def run_step9(
     scrim_draw = ImageDraw.Draw(scrim_layer)
     font_path = find_commercial_font(style_font_cands)
 
-    if use_jianying_poster:
+    if use_gbro_poster:
+        # gbro-cover-design 统一爆款封面：深色柔焦渐变背景 + 清晰正脸人物立体前置 + 上方超粗白字 + 高饱和亮黄警示色块黑字（10% 四边安全区）
+        if person_mask_img is not None:
+            # 有人像抠像：轻微压暗背景并柔和边缘，突出前景真人立体质感
+            dim_bg = ImageEnhance.Brightness(base_img.convert("RGB")).enhance(0.68)
+            dim_bg = dim_bg.filter(ImageFilter.GaussianBlur(radius=2.8))
+            base_rgb = dim_bg.convert("RGBA")
+            fg_p = base_img.copy()
+            fg_p.putalpha(person_mask_img)
+            base_img = Image.alpha_composite(base_rgb, fg_p)
+            person_cutout_applied = True
+        for gy in range(0, 620, 4):
+            a = int(175 * (1.0 - gy / 620.0))
+            scrim_draw.rectangle([0, gy, CANVAS_WIDTH, gy + 4], fill=(10, 12, 18, a))
+        for gy in range(1120, CANVAS_HEIGHT, 4):
+            a = int(195 * min(1.0, (gy - 1120) / 480.0))
+            scrim_draw.rectangle([0, gy, CANVAS_WIDTH, gy + 4], fill=(10, 12, 18, a))
+
+        safe_x = 104  # >= 约10% 左安全区，右不超过 SAFE_ZONE["x_max"] (880)
+        safe_w = SAFE_ZONE["x_max"] - safe_x - 16
+        fb_raw = best_meta.get("face_bbox")
+        face_top_px = 9999.0
+        face_bot_px = 0.0
+        if isinstance(fb_raw, dict):
+            rfy = float(fb_raw.get("y", 0.5))
+            rfh = float(fb_raw.get("h", 0.18))
+            is_norm = max(rfy, rfh, float(fb_raw.get("w", 0.1))) <= 1.05
+            face_top_px = rfy * CANVAS_HEIGHT if is_norm else rfy
+            face_bot_px = face_top_px + (rfh * CANVAS_HEIGHT if is_norm else rfh)
+
+        # 1) 上半部超粗纯白主标题（紧守 [256, 1680] 3:4 窗且绝不压额头眉眼）
+        f_l1, fit_l1 = _fit_text(draw, cover_main_l1, font_path, 96, safe_w, min_size=50)
+        l1_bb = draw.textbbox((0, 0), fit_l1, font=f_l1, stroke_width=6)
+        l1_h = max(68, int(l1_bb[3] - l1_bb[1]))
+        l1_y = 264
+        if face_top_px < 460:
+            l1_y = max(248, min(286, int(face_top_px) - l1_h - 14))
+        draw.text((safe_x + 4, l1_y + 6), fit_l1, fill=(0, 0, 0, 235), font=f_l1, stroke_width=6, stroke_fill=(0, 0, 0, 235))
+        draw.text((safe_x, l1_y), fit_l1, fill=(255, 255, 255, 255), font=f_l1, stroke_width=6, stroke_fill=(0, 0, 0, 255))
+
+        # 2) 高饱和亮黄色 #FFE135 警示牌矩形色块 + 超粗纯黑大字（头顶宽裕放标题下方，大头近景落胸前下方绝不遮脸）
+        f_l2, fit_l2 = _fit_text(draw, cover_main_l2, font_path, 76, safe_w - 48, min_size=40)
+        l2_bb = draw.textbbox((0, 0), fit_l2, font=f_l2)
+        l2_tw = int(l2_bb[2] - l2_bb[0])
+        l2_th = max(56, int(l2_bb[3] - l2_bb[1]))
+        pill_w = min(safe_w, l2_tw + 52)
+        pill_h = l2_th + 30
+        if face_top_px >= l1_y + l1_h + pill_h + 44:
+            pill_y = l1_y + l1_h + 24
+        else:
+            pill_y = max(int(face_bot_px) + 34 if face_bot_px > 0 else 1180, 1210)
+            pill_y = min(1450 - pill_h, pill_y)
+        draw.rounded_rectangle(
+            [safe_x + 4, pill_y + 5, safe_x + pill_w + 4, pill_y + pill_h + 5],
+            radius=12, fill=(0, 0, 0, 180),
+        )
+        draw.rounded_rectangle(
+            [safe_x, pill_y, safe_x + pill_w, pill_y + pill_h],
+            radius=12, fill=(255, 225, 53, 255),
+        )
+        draw.text(
+            (safe_x + pill_w // 2, pill_y + pill_h // 2 - int(l2_bb[1] // 3)),
+            fit_l2, fill=(14, 14, 18, 255), font=f_l2, anchor="mm",
+        )
+
+        fit_sub = cover_sub
+        if cover_sub and face_top_px < 560 and pill_y >= 1150:
+            f_sub_p, fit_sub = _fit_text(draw, cover_sub, font_path, 38, safe_w, min_size=24)
+            sub_y = max(pill_y - 54, int(face_bot_px) + 12) if pill_y - int(face_bot_px) >= 92 else pill_y + pill_h + 18
+            if sub_y + 42 <= 1540:
+                draw.text((safe_x + 2, sub_y + 2), fit_sub, fill=(0, 0, 0, 220), font=f_sub_p, stroke_width=4, stroke_fill=(0, 0, 0, 220))
+                draw.text((safe_x, sub_y), fit_sub, fill=(245, 245, 248, 255), font=f_sub_p, stroke_width=4, stroke_fill=(0, 0, 0, 255))
+
+        card_y = l1_y
+        thumb_eval_box = (
+            safe_x - 8,
+            min(l1_y, pill_y) - 8,
+            min(860, max(safe_x + 360, safe_x + max(int(l1_bb[2] - l1_bb[0]), pill_w) + 16)),
+            max(l1_y + l1_h, pill_y + pill_h) + 12,
+        )
+    elif use_jianying_poster:
         # 四区高低错落无闷框爆款封面（底图压暗渐变留在主体图层下方，保人物清晰）
         for gy in range(0, 560, 4):
             a = int(125 * (1.0 - gy / 560.0))
@@ -1303,18 +1427,16 @@ def run_step9(
         track=track,
     )
 
-    # 若检测到当前运行的智能体是 Cola（PI_PROVIDER=cola / COLA_ACCOUNT_DIR / COLA_*），自动衔接内置 gbro-cover-design
+    # 全环境与全部 24 套风格默认产出 gbro-cover-design 交接资产（09_host_face_ref.png + 09_gbro_cover_prompt.md）
     agent_info = detect_active_agent(agent)
-    gbro_handoff: Optional[Dict[str, Any]] = None
-    if agent_info.get("is_cola"):
-        gbro_handoff = build_gbro_cover_handoff(
-            pipeline_dir,
-            title_main=cover_main,
-            title_sub=fit_sub,
-            hook_text=hook_clean,
-            track=track,
-            agent_info=agent_info,
-        )
+    gbro_handoff: Optional[Dict[str, Any]] = build_gbro_cover_handoff(
+        pipeline_dir,
+        title_main=cover_main,
+        title_sub=fit_sub,
+        hook_text=hook_clean,
+        track=track,
+        agent_info=agent_info,
+    )
 
     out = {
         "step": "09_title_cover",

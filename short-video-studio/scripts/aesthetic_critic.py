@@ -262,8 +262,12 @@ def score_aesthetic_review(pipeline_dir: Path) -> Dict[str, Any]:
         plan_lines.extend(lines)
         if any(_display_length(line) > 7 for line in lines):
             patches.append({"type": "shorten_visual_copy", "act_id": act.get("act_id")})
-    item_lines = [line for item in highlights
-                  for line in item.get("card_lines") or str(item.get("text_or_asset") or "").splitlines()]
+    item_lines = []
+    for item in highlights:
+        if item.get("variant") == "inline_rich" and isinstance(item.get("inline_parts"), list) and item["inline_parts"]:
+            item_lines.extend(str(p.get("text") or "").strip() for p in item["inline_parts"] if str(p.get("text") or "").strip())
+        else:
+            item_lines.extend(item.get("card_lines") or str(item.get("text_or_asset") or "").splitlines())
     max_chars = max((_display_length(line) for line in [*plan_lines, *item_lines]), default=0)
     duplicates = duplicate_short_captions(docs["stage"].get("items") or [])
     choreo_items = sum(1 for item in highlights if item.get("element_choreo"))

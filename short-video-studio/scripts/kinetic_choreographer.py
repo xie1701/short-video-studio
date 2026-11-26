@@ -112,11 +112,53 @@ STYLE_DNA_REGISTRY: Dict[str, Dict[str, Any]] = {
 }
 
 
-DIRECTOR_ENABLED_STYLES = frozenset({"style_02", "style_01", "style_03", "style_17"})
+ALL_24_STYLE_IDS = frozenset(f"style_{i:02d}" for i in range(1, 25))
+DIRECTOR_ENABLED_STYLES = ALL_24_STYLE_IDS
+
+
+def is_director_plan_supported(style_id: str) -> bool:
+    """全部 24 套风格均支持大模型总导演规划与圣经闭环。"""
+    return str(style_id or "").strip() in ALL_24_STYLE_IDS
 
 
 def get_style_dna(style_id: str) -> Optional[Dict[str, Any]]:
-    return STYLE_DNA_REGISTRY.get(str(style_id or "").strip())
+    sid = str(style_id or "").strip()
+    if sid in STYLE_DNA_REGISTRY:
+        return STYLE_DNA_REGISTRY[sid]
+    if sid not in ALL_24_STYLE_IDS:
+        return None
+    try:
+        from common import load_style_spectrum_entry
+        entry = load_style_spectrum_entry(sid) or {}
+    except Exception:
+        entry = {}
+    if not entry:
+        return None
+    sub_spec = entry.get("subtitle_spec") or {}
+    f_cands = list(sub_spec.get("font_candidates") or []) or ["SourceHanSansCN-Bold.otf", "AlimamaShuHeiTi-Bold.otf"]
+    kw_col = str(sub_spec.get("keyword_color") or "#FFBF17")
+    broll_t = float(entry.get("broll_overlay_ratio_target") if entry.get("broll_overlay_ratio_target") is not None else 0.25)
+    return {
+        "style_id": sid,
+        "video_topology": "pure_talking_head" if broll_t < 0.05 else "talking_head_with_evidence_broll",
+        "matting_role": "none",
+        "subtitle_stage_mode": "inline_highlight_track",
+        "broll_policy": {
+            "strategy": "evidence_anchored",
+            "target_ratio": round(broll_t, 3),
+            "band": (max(0.0, round(broll_t - 0.15, 2)), min(0.95, round(broll_t + 0.20, 2))),
+            "min_semantic_score": 0.30,
+        },
+        "palette": {
+            "white": "#FFFFFF",
+            "lime": kw_col,
+            "red": "#B71C1C",
+            "pill_bg": "#18181B",
+            "bridge_bg": "#000000B3",
+            "stroke": str(sub_spec.get("outline_color") or "#000000"),
+        },
+        "font_candidates": f_cands,
+    }
 
 
 def is_kinetic_stage_style(style_id: str, enable_v6_director: bool = False) -> bool:
@@ -534,14 +576,14 @@ def split_clean_phrases(
         return []
 
     raw_chunks: List[str] = []
-    # 先剔除前置助词/介词/冠词（如「的/嘅/在/把/一间」）被单独孤立在行尾；
-    # 严禁把动态助词「了/着/过」和普通「种/个」强推到下一行行首（否则会把「改了几个数字」劈成「改 / 了几个数字」）。
-    _no_hang_tail = set("的嘅只在把被从向和跟与同") | {
+    # 介词/冠词（如「在/把/一间」）不能悬在行尾；
+    # 结构/动态助词（「的/地/得/了/着/过/嘅/之」）绝不允许当下一行行首（否则劈成「还有种 / 的踏实感」）。
+    _no_hang_tail = set("只在把被从向和跟与同") | {
         "一间", "一个", "一家", "一套", "一份", "一种",
         "这间", "那间", "呢间", "𠮶间", "这种", "那种", "呢种", "𠮶种", "这个", "那个", "呢个", "𠮶个",
         "也不",
     }
-    _attach_tail_suffix = set("了着过得")
+    _attach_tail_suffix = set("的地得之了着过嘅")
     for cl in clauses:
         if len(cl) <= target_max:
             raw_chunks.append(cl)
@@ -591,13 +633,28 @@ def split_clean_phrases(
             merged[-1] += chunk
         else:
             merged.append(chunk)
-    # 边界保护：防止指示代词「这/那/呢/𠮶」与紧随量词「种/个/间/些/啲/边」跨块腰斩，也防止块尾单独挂助词
+    # 边界保护：防止指示代词「这/那/呢/𠮶」与紧随量词跨块腰斩，也禁止任何结构/动态助词或尾缀虚词充当行首
     _demo_heads = set("这那呢𠮶")
     _demo_tails = set("种个间些啲边度")
+    _bad_line_starts = set("的地得之了着过嘅啲嘛呢吧啊呀")
     for k in range(len(merged) - 1):
         if len(merged[k]) >= 3 and merged[k][-1] in _demo_heads and merged[k + 1][0] in _demo_tails:
             merged[k + 1] = merged[k][-1] + merged[k + 1]
             merged[k] = merged[k][:-1]
+    k = 0
+    while k < len(merged) - 1:
+        nxt = merged[k + 1]
+        if nxt and nxt[0] in _bad_line_starts and len(merged[k]) >= 2:
+            if len(merged[k]) + len(nxt) <= target_max + 2:
+                merged[k] = merged[k] + nxt
+                merged.pop(k + 1)
+                continue
+            # 上块若较长，将前导助词收回上一块末尾，若上块末尾仍是虚字则继续前收 1~2 字实体（如「种的」）
+            if len(merged[k]) + 1 <= target_max + 2 and len(nxt) >= 2:
+                merged[k] = merged[k] + nxt[0]
+                merged[k + 1] = nxt[1:]
+                continue
+        k += 1
     return [m for m in merged if m]
 
 
@@ -1800,11 +1857,11 @@ def _unified_style02_items(
             for ri, (rtxt, (rs, _)) in enumerate(zip(extra_rows[:3], spans)):
                 if all_behind_ok and top_head_ok:
                     fy_min = float(fb_union["y"]) if fb_union else 0.33
-                    target_y01 = max(0.195, min(fy_min - 0.055, 0.21 + (ri % 2) * 0.045))
+                    target_y01 = max(0.185, min(fy_min - 0.035, 0.225 + (ri % 2) * 0.055))
                     dn_yn = round(1.0 - 2.0 * target_y01, 4)
-                    dn_xn = round((-0.24 if ri % 2 == 0 else 0.24), 4)
-                    add(rtxt, "danmaku_line", rs, end, dn_xn, dn_yn, _UNIFIED_L1_U, "in:向右露出", 2 + ri,
-                        sfx=None, layer="behind_person", tier="L1")
+                    dn_xn = round((-0.27 if ri % 2 == 0 else 0.27), 4)
+                    add(rtxt, "danmaku_line", rs, end, dn_xn, dn_yn, 14.0, "in:向右露出", 2 + ri,
+                        sfx=None, layer="behind_person", tier="L2")
                 else:
                     fg_yn = round(max(-0.62, y_base - 0.11 - ri * 0.095), 4)
                     add(rtxt, "hero_white", rs, end, 0.0, fg_yn, _UNIFIED_L2_U, "in:向上露出", 2 + ri,
@@ -1883,6 +1940,38 @@ def _unified_style02_items(
             if kw:
                 ks = timed_spans([lead, kw])[-1][0] if lead else start
                 add(kw, "hero_lime", max(start, ks), end, 0.0, y_base - 0.03, _UNIFIED_L2_U, "in:缩小 II", 2, "pop", tier="L2")
+
+    # 全句不断档补全：若本幕主舞台仅呈现了局部核心大字，自动把其余未呈现的口播话以通透无黑框 L1 白字接在下方安全区
+    tl_clean = [(ch, st_c, en_c) for ch, st_c, en_c in timeline if ch.strip()]
+    base_stage_items = list(items)
+    for sent in sentences:
+        s_st, s_en = float(sent["start_sec"]), float(sent["end_sec"])
+        raw_txt = str(sent.get("text") or "").strip()
+        if not raw_txt:
+            continue
+        chunks = split_clean_phrases(raw_txt, target_min=4, target_max=11) or [clean_display_text(raw_txt)]
+        mapped = map_chunks_to_times(chunks, tl_clean, s_st, s_en)
+        for ci, (c_txt, cs, ce) in enumerate(mapped):
+            nxt_s = mapped[ci + 1][1] if ci + 1 < len(mapped) else s_en
+            c_end = max(cs + 0.25, nxt_s)
+            c_alnum = [ch for ch in c_txt if "\u4e00" <= ch <= "\u9fff" or ch.isalnum()]
+            if len(c_alnum) < 2:
+                continue
+            ov_items = [
+                it for it in base_stage_items
+                if float(it.get("start_sec") or 0.0) < c_end - 0.10
+                and float(it.get("end_sec") or 0.0) > cs + 0.10
+            ]
+            ov_blob = "".join(str(it.get("text_or_asset") or "") for it in ov_items)
+            covered_n = sum(1 for ch in c_alnum if ch in ov_blob)
+            if covered_n / float(len(c_alnum)) >= 0.65:
+                continue
+            min_ov_y = min((float(it.get("y_norm") or 0.0) for it in ov_items), default=0.0)
+            y_fill = max(-0.63, min(-0.56, min_ov_y - 0.15)) if ov_items else -0.56
+            add(
+                c_txt, "bridge_bar", cs, c_end,
+                0.0, round(y_fill, 4), _UNIFIED_L1_U, "", 0, sfx=None, tier="L1",
+            )
     return items
 
 

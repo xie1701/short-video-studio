@@ -149,7 +149,9 @@ _CONCEPTS: Dict[str, Dict[str, Any]] = {
     },
     "出餐成品": {
         "kind": "entity",
-        "terms": ("出餐", "成品", "摆盘", "上菜", "蒸菜", "菜品", "热气", "蒸汽", "揭锅", "锅盖"),
+        "terms": ("出餐", "成品", "摆盘", "上菜", "蒸菜", "菜品"),
+        # 锅盖/蒸汽本身高度泛化，避免"蒸鱼揭锅盖"靠蒸汽压倒物种冲突匹配桑拿鸡
+        "weak_terms": ("热气", "蒸汽", "揭锅", "锅盖"),
         "related": ("厨房后厨", "点心虾饺"),
     },
     # ---- 食材 / 生鲜 ----
@@ -423,6 +425,28 @@ def _overlap(sentence_text: str, clip_text: str) -> float:
 # ---------------------------------------------------------------------------
 # 单条打分
 # ---------------------------------------------------------------------------
+# 食材/主体硬互斥：实体概念错位时禁止以泛场景或通用动作伪凑命中（鸡不配鱼、面不配外景/煎饺）
+_CONFLICT_PASTE_FOOD_NOODLE = ("炒面", "牛河", "干炒牛河", "肠粉", "拌面", "拉面", "面条", "河粉")
+_CONFLICT_FISH_WORDS = ("鱼块", "蒸鱼", "鱼片", "水产", "海鲜", "水族箱", "活鱼", "鱼池", "带子", "青蟹", "水蟹")
+_CONFLICT_CHICKEN_WORDS = ("桑拿鸡", "走地鸡", "蒸鸡", "鸡群", "捉鸡", "抓鸡", "喂鸡", "鸡肉")
+_CONFLICT_EXTERIOR_OR_DUMPLING = ("建筑外", "外立面", "外墙", "仰拍", "仰视餐厅", "大楼", "煎饺", "饺子", "蒸饺", "切肉")
+
+
+def _detect_entity_conflict(sentence_text: str, clip_text: str, keywords: Optional[Sequence[str]] = None) -> Optional[str]:
+    """若台词与画面属于明确互斥的物理食材/场景主体，直接阻断伪命中。"""
+    s_blob = f"{sentence_text} {' '.join(str(k) for k in (keywords or []))}"
+    c_blob = str(clip_text or "")
+    # 1. 讲鸡（且未提鱼/海鲜/金针菇海鲜）vs 画面是纯鱼/海鲜菜或鱼池
+    if any(w in s_blob for w in _CONFLICT_CHICKEN_WORDS) or ("鸡" in s_blob and "鱼" not in s_blob and "海鲜" not in s_blob):
+        if any(w in c_blob for w in _CONFLICT_FISH_WORDS) and "鸡" not in c_blob:
+            return "主体互斥：台词讲禽鸡而画面为水产鱼类，禁止错配"
+    # 2. 讲炒面/河粉主食（且未提建筑门头/饺子）vs 画面是建筑外墙或饺子/生肉切片
+    if any(w in s_blob for w in _CONFLICT_PASTE_FOOD_NOODLE) and not any(w in s_blob for w in ("饺子", "门头", "建筑", "大楼")):
+        if any(w in c_blob for w in _CONFLICT_EXTERIOR_OR_DUMPLING) and not any(w in c_blob for w in ("炒面", "面条", "拉面", "牛河", "河粉", "面")):
+            return "主体互斥：台词讲面食主菜而画面为建筑外景或非面食，禁止错配"
+    return None
+
+
 def score_clip(
     sentence_text: str,
     clip: Dict[str, Any],
@@ -444,7 +468,12 @@ def score_clip(
     hits: List[str] = []
     why_parts: List[str] = []
 
-    if not c_det:
+    conflict_reason = _detect_entity_conflict(sentence_text, clip_text, keywords=keywords)
+    if conflict_reason:
+        score = 0.0
+        tier = TIER_NONE
+        why = conflict_reason
+    elif not c_det:
         score = 0.0
         tier = TIER_NONE
         why = "素材侧没有可用画面描述（scene_tags_zh/description/备注都是空的），不能声称对得上"

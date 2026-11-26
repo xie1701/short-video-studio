@@ -198,8 +198,8 @@ class V8PlaybooksAndUnifiedStyle02Tests(unittest.TestCase):
         self.assertEqual(stage["theme_profile"], "style_02_unified")
         items = stage["items"]
         self.assertTrue(all("serif" not in str((it.get("font_candidates") or [""])[0]).lower() for it in items))
-        # opening_triad 后两阶滞后发声时间防剧透
-        open_items = [it for it in items if it.get("group_id") == "v6_01"]
+        # opening_triad 后两阶滞后发声时间防剧透（过滤自动补全下方未呈现短句 bridge_bar）
+        open_items = [it for it in items if it.get("group_id") == "v6_01" and it.get("variant") != "bridge_bar"]
         self.assertEqual([it["variant"] for it in open_items], ["hero_white", "hero_lime", "red_pill"])
         self.assertGreater(open_items[1]["start_sec"], open_items[0]["start_sec"])
         self.assertGreater(open_items[2]["start_sec"], open_items[1]["start_sec"])

@@ -1331,7 +1331,7 @@ def split_sentence_into_chunks(
                 "keywords": sent_kws,
             })
             cursor_t += seg_dur
-        return out_no_words
+        return _guard_no_aux_head(out_no_words, max_chars=max_chars)
 
     breath_groups: List[List[Dict[str, Any]]] = []
     cur_grp: List[Dict[str, Any]] = [words[0]]
@@ -1459,7 +1459,50 @@ def split_sentence_into_chunks(
     for _c in chunks:
         for _w in _c.get("words") or []:
             _w.pop("_sent_end", None)
-    return chunks
+    return _guard_no_aux_head(chunks, max_chars=max_chars)
+
+
+_BAD_SUB_HEAD_AUX = frozenset("的地得之了着过嘅啲嘛呢吧啊呀")
+
+
+def _guard_no_aux_head(chunks: List[Dict[str, Any]], max_chars: int = 12) -> List[Dict[str, Any]]:
+    """全风格通用字幕行首护栏：绝不允许以「的/地/得/了/着/过/嘅」等助词作下一条字幕的第一个字。"""
+    if len(chunks) < 2:
+        return chunks
+    out = [dict(c) for c in chunks]
+    changed = True
+    while changed:
+        changed = False
+        for k in range(len(out) - 1):
+            cur_t = str(out[k].get("text") or "")
+            nxt_t = str(out[k + 1].get("text") or "")
+            if not cur_t or not nxt_t or nxt_t[0] not in _BAD_SUB_HEAD_AUX:
+                continue
+            cur_w = list(out[k].get("words") or [])
+            nxt_w = list(out[k + 1].get("words") or [])
+            if len(cur_t) + len(nxt_t) <= max(12, max_chars + 2):
+                out[k]["text"] = cur_t + nxt_t
+                out[k]["end_sec"] = max(float(out[k]["end_sec"]), float(out[k + 1]["end_sec"]))
+                out[k]["words"] = cur_w + nxt_w
+                out[k]["keywords"] = list(dict.fromkeys(list(out[k].get("keywords") or []) + list(out[k + 1].get("keywords") or [])))
+                out.pop(k + 1)
+                changed = True
+                break
+            if len(nxt_t) >= 2 and len(cur_t) < 13:
+                ch_mv = nxt_t[0]
+                out[k]["text"] = cur_t + ch_mv
+                out[k + 1]["text"] = nxt_t[1:]
+                if nxt_w and len(str(nxt_w[0].get("word") or "")) == 1:
+                    w_mv = nxt_w.pop(0)
+                    cur_w.append(w_mv)
+                    out[k]["words"] = cur_w
+                    out[k + 1]["words"] = nxt_w
+                    out[k]["end_sec"] = float(w_mv.get("end_sec", out[k]["end_sec"]))
+                    if nxt_w:
+                        out[k + 1]["start_sec"] = float(nxt_w[0].get("start_sec", out[k + 1]["start_sec"]))
+                changed = True
+                break
+    return out
 
 
 _TAIL_FILLER_CHARS = set("嘅啲啦嘛的了呢吧啊呀哦喂么咯噃囉㗎")

@@ -1087,6 +1087,15 @@ def render_kinetic_stage_item_png(
 
     if variant == "bridge_bar":
         bridge_fs = min(80, max(56, int(font_px))) if is_unified else min(68, max(42, int(font_px * 0.64)))
+        if is_unified:
+            # 还原母本 style_02.mov 无黑方底框通透白字：粗黑体+厚黑描边+柔和投影，绝不遮挡画面美食与主体
+            return _draw_kinetic_line_sprite(
+                text, base_f, bridge_fs,
+                (255, 255, 255, 255),
+                stroke_rgba=(0, 0, 0, 248), stroke_w=3,
+                shadow_rgba=(0, 0, 0, 205), shadow_dx=3, shadow_dy=4, shadow_blur=2.2,
+                max_w=920,
+            )
         sp = _draw_kinetic_line_sprite(
             text, base_f, bridge_fs,
             (255, 255, 255, 255),
@@ -1096,11 +1105,11 @@ def render_kinetic_stage_item_png(
         )
         if sp is None:
             return None
-        px_pad, py_pad = (24, 12) if is_unified else (22, 11)
+        px_pad, py_pad = 22, 11
         pw, ph = sp.width + px_pad * 2, sp.height + py_pad * 2
         card = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
         d = ImageDraw.Draw(card)
-        d.rounded_rectangle([(0, 0), (pw - 1, ph - 1)], radius=6 if is_unified else 8, fill=(0, 0, 0, 180))
+        d.rounded_rectangle([(0, 0), (pw - 1, ph - 1)], radius=8, fill=(0, 0, 0, 180))
         card.alpha_composite(sp, dest=(px_pad, py_pad))
         return card
 

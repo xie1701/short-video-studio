@@ -1105,7 +1105,17 @@ def _prepare_v6_director(
             raw = read_json(Path(director_plan_path))
         except (OSError, ValueError) as exc:
             raise RuntimeError(f"外部导演总谱 {director_plan_path} 读取失败：{exc}") from exc
-        checked = director_plan.validate_director_plan(raw, audio, profile)
+        checked = director_plan.validate_director_plan(
+            raw, audio, profile,
+            valid_broll_names={
+                n
+                for item in director_plan._broll_pool(
+                    director_plan._optional_document(pipeline_dir, director_plan._INVENTORY_FILENAME),
+                    director_plan._optional_document(pipeline_dir, "00_visual_index.json"),
+                )
+                for n in (item.get("filename"), director_plan._media_name(item.get("filename"))) if n
+            } or None,
+        )
         if not checked["ok"]:
             raise RuntimeError(
                 f"外部导演总谱 {director_plan_path} 校验失败，已停止出片：" + "；".join(checked["errors"])

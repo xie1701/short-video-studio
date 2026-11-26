@@ -2297,11 +2297,23 @@ def run_step4(
         s_txt = str(sent.get("text", ""))
         d_act_cur = _director_act_for_span(t_start, t_start + seg_dur)
         d_kws_cur = [str(x) for x in (d_act_cur.get("broll_keywords") or [])] if (d_act_cur and d_act_cur.get("broll_policy") == "allow_verified_broll") else []
+        d_pinned_clips = [str(x).strip() for x in (d_act_cur.get("broll_clips") or []) if str(x).strip()] if (d_act_cur and d_act_cur.get("broll_policy") == "allow_verified_broll") else []
         s_kws = list(dict.fromkeys([*d_kws_cur, *(str(k) for k in sent.get("keywords", []))]))
         is_praise = any(cue in s_txt for cue in POSITIVE_PRAISE_CUES)
         candidates = [m for m in broll_pool if not (forbid_code and m.get("role") == "code_broll")] or broll_pool
         if code_only:
             candidates = [m for m in candidates if m["role"] == "code_broll"]
+        if d_pinned_clips and not code_only:
+            pinned_set = set(d_pinned_clips)
+            candidates = [
+                m for m in candidates
+                if m.get("role") == "b_roll" and (
+                    Path(str(m.get("source_path") or "")).name in pinned_set
+                    or Path(str(m.get("filename") or "")).name in pinned_set
+                    or re.sub(r"^norm_\d+_", "", Path(str(m.get("normalized_mp4") or "")).name) in pinned_set
+                    or Path(str(m.get("normalized_mp4") or "")).name in pinned_set
+                )
+            ]
         if matching_live_only:
             candidates = [
                 m for m in candidates
@@ -2413,7 +2425,8 @@ def run_step4(
         best_m = max(band, key=lambda r: (r["cont"], r["sem"]))["m"]
         if blocked_here and not best_m.get("taboo_tags"):
             taboo_blocked_count += 1
-        return best_m, "rules", takes[best_m["id"]]
+        pick_src = "director_pinned" if d_pinned_clips else "rules"
+        return best_m, pick_src, takes[best_m["id"]]
 
     clips: List[Dict[str, Any]] = []
     last_group = "shoot_default"
@@ -2717,6 +2730,41 @@ def run_step4(
                     matching_live_only=director_mode,
                 )
             if broll_pick is None:
+                if director_mode and usable_arolls and source_aroll_valid[idx] and not audio_only_flags[idx]:
+                    # 导演白名单或实体互斥过滤后无无瑕疵 B-roll：宁可保真人出镜，绝不硬插错配画面
+                    ar = next((a for a in usable_arolls if a["normalized_mp4"] == sent.get("source_media")), usable_arolls[0])
+                    ar_mp = str(ar["normalized_mp4"])
+                    src_in, src_out, first_in = _aroll_take(ar, sent, t_start, t_end, seg_dur)
+                    if src_in < src_out:
+                        max_out_by_mp[ar_mp] = max(float(max_out_by_mp.get(ar_mp, 0.0)), src_out)
+                        clips.append({
+                            "clip_id": clip_id,
+                            "track_role": "a_roll",
+                            "media_path": ar["normalized_mp4"],
+                            "source_in_sec": src_in,
+                            "source_out_sec": src_out,
+                            "tight": True,
+                            "timeline_in_sec": t_start,
+                            "timeline_out_sec": t_end,
+                            "timeline_in_frame": f_start,
+                            "timeline_out_frame": f_end,
+                            "duration_sec": seg_dur,
+                            "audio_locked": True,
+                            "b_roll_overlay": False,
+                            "underlying_audio_untouched": True,
+                            "j_cut_lead_frames": j_leads[idx],
+                            "punch_in_zoom": 1.0,
+                            "ken_burns": None,
+                            "vf_extra": "",
+                            "cut_event_id": ev["id"],
+                            "cut_event_type": ev["type"],
+                            "cut_event_frame": ev["frame"],
+                            "sentence_id": sent["id"],
+                            "sentence_text": sent["text"],
+                            "purpose": "导演点名与互斥过滤后回留真人出镜，宁缺毋滥",
+                        })
+                        roles[idx] = "a_roll"
+                        continue
                 raise ValueError(f"{clip_id} 没有可用的外插画面区间，请补充素材或检查标废范围")
             br, br_source, take = broll_pick
             _record_broll_use(br, take)
@@ -2787,6 +2835,36 @@ def run_step4(
                 "sem_match": sem_here,
                 "media_signal": describe_clip(br)[:160],
             })
+
+    # 跨源文件 A-roll 衔接防冻尾：前镜源尾短缺 <=0.32s 且下一镜是不同源文件且句首前留有充足源准备帧时，
+    # 由下一镜做 J-cut 在句间气口提前进场接盘，既维持全片 A-roll 原速 1.0x，又彻底消灭冻帧拖尾。
+    for ci in range(len(clips) - 1):
+        c_cur, c_nxt = clips[ci], clips[ci + 1]
+        if c_cur.get("track_role") != "a_roll" or c_nxt.get("track_role") != "a_roll":
+            continue
+        if str(c_cur.get("media_path") or "") == str(c_nxt.get("media_path") or ""):
+            continue
+        cur_src_span = float(c_cur["source_out_sec"]) - float(c_cur["source_in_sec"])
+        cur_shortfall = float(c_cur["duration_sec"]) - cur_src_span
+        if not (1.0 / fps + SOURCE_EPSILON_SEC < cur_shortfall <= 0.32):
+            continue
+        shift_frames = min(10, int(math.ceil((cur_shortfall + 0.02) * fps)))
+        shift_sec = frames_to_sec(shift_frames, fps)
+        if (
+            float(c_cur["duration_sec"]) - shift_sec >= 0.45
+            and float(c_nxt["source_in_sec"]) >= shift_sec + 0.04
+            and int(c_cur["timeline_out_frame"]) - shift_frames > int(c_cur["timeline_in_frame"]) + 10
+        ):
+            new_cut_f = int(c_cur["timeline_out_frame"]) - shift_frames
+            new_cut_s = frames_to_sec(new_cut_f, fps)
+            c_cur["timeline_out_frame"] = new_cut_f
+            c_cur["timeline_out_sec"] = new_cut_s
+            c_cur["duration_sec"] = round(new_cut_s - float(c_cur["timeline_in_sec"]), 4)
+            c_nxt["timeline_in_frame"] = new_cut_f
+            c_nxt["timeline_in_sec"] = new_cut_s
+            c_nxt["duration_sec"] = round(float(c_nxt["timeline_out_sec"]) - new_cut_s, 4)
+            c_nxt["source_in_sec"] = round(float(c_nxt["source_in_sec"]) - shift_sec, 4)
+            c_nxt["j_cut_lead_frames"] = int(c_nxt.get("j_cut_lead_frames") or 0) + shift_frames
 
     first_3s_changes = sum(1 for c in clips[1:] if c["timeline_in_frame"] < first_3s_cutoff_f)
     jcut_real_count = sum(1 for c in clips if c.get("j_cut_lead_frames", 0) > 0)

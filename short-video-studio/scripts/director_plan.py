@@ -291,9 +291,10 @@ def _render_director_prompt_md(
     lines.extend([
         "",
         "## 6. 目标输出 JSON 规范 (`03b_director_plan.json`)",
-        "- 必填顶层字段：`step='03b_director_plan'`, `source='agent'`, `style_id`, `theme_profile`（`style_02` 统一使用 `'style_02_unified'`）, `acts`, `music_cues`。",
-        "- 每幕 `act` 必填：`act_id`, `sentence_ids`, `dramatic_role`, `emotion_intensity`, `primitive`, `visual_copy` (`headline`/`items`/`accent_token`/`footnote`), `camera_intent`, `broll_policy`, `broll_keywords`（可选，供 allow_verified_broll 精确召回）, `sfx_budget`。",
-        "- 写完后运行 `director_plan.py apply-plan --pipeline-dir <dir>` 校验溯源与覆盖率。",
+        "- 必填顶层字段：`step='03b_director_plan'`, `source='agent'`, `style_id`（`style_01..style_24` 全部支持）, `theme_profile`（`style_02` 统一使用 `'style_02_unified'`；其余快节奏探店可选 `'store_vibrant'`，商业口播可选 `'business_editorial'`）, `acts`, `music_cues`。",
+        "- 推荐顶层字段 `cover_copy`：`{\"headline_top\": \"主标题4-9字整句\", \"highlight_badge\": \"黄标黑字重点4-8字\", \"sub_line\": \"可选副标\", \"gbro_style\": \"style-01|style-04|style-10\"}`（面向 `gbro-cover-design` 爆款封面直出，禁止 2 字虚词碎片）。",
+        "- 每幕 `act` 必填：`act_id`, `sentence_ids`, `dramatic_role`, `emotion_intensity`, `primitive`, `visual_copy` (`headline`/`items`/`accent_token`/`footnote`), `camera_intent`, `broll_policy`, `broll_keywords`（可选）, `broll_clips`（可选实拍文件名白名单列表——强烈建议依据上方第 5 节实拍画面逐条描述精确点名；凡素材库没拍到的菜品或细节，必须设 `broll_policy='lock_aroll'` 留真人出镜，宁缺毋滥绝不强行切无关外景或冲突食材）, `sfx_budget`。",
+        "- 写完后运行 `director_plan.py apply-plan --pipeline-dir <dir>` 校验溯源、实拍点名白名单与覆盖率。",
         "",
     ])
     return "\n".join(lines)
@@ -587,8 +588,9 @@ def _coverage(spans: List[tuple[float, float]], total: float) -> float:
 def validate_director_plan(
     plan: Dict[str, Any], audio_events: Dict[str, Any],
     composition_profile: Optional[Dict[str, Any]] = None,
+    valid_broll_names: Optional[set[str]] = None,
 ) -> Dict[str, Any]:
-    """校验总谱及同幕溯源，按锁定时间重算高光覆盖率。"""
+    """校验总谱、封面文案、broll_clips 实拍白名单及同幕溯源，按锁定时间重算高光覆盖率。"""
     errors: List[str] = []
     warnings: List[str] = []
     result = {"ok": False, "errors": errors, "warnings": warnings, "sanitized_plan": {}}
@@ -610,6 +612,21 @@ def validate_director_plan(
         value = cleaned.setdefault(key, default)
         if value not in choices:
             errors.append(f"{key} 不支持 {value!r}")
+
+    cov_raw = plan.get("cover_copy")
+    if cov_raw is not None:
+        if not isinstance(cov_raw, dict):
+            errors.append("cover_copy 必须是对象")
+        else:
+            cov_clean: Dict[str, str] = {}
+            for ck in ("headline_top", "highlight_badge", "sub_line", "gbro_style"):
+                val = cov_raw.get(ck)
+                if val is not None:
+                    if not isinstance(val, str):
+                        errors.append(f"cover_copy.{ck} 必须是字符串")
+                    else:
+                        cov_clean[ck] = val.strip()
+            cleaned["cover_copy"] = cov_clean
 
     by_id = {sentence["id"]: sentence for sentence in sentences}
     positions = {sid: i for i, sid in enumerate(by_id)}
@@ -675,6 +692,17 @@ def validate_director_plan(
                 errors.append(f"{path}.broll_keywords 必须是字符串列表")
             else:
                 act["broll_keywords"] = list(dict.fromkeys(x.strip() for x in raw_kws if x.strip()))
+        raw_clips = act.get("broll_clips")
+        if raw_clips is not None:
+            if not isinstance(raw_clips, list) or not all(isinstance(x, str) for x in raw_clips):
+                errors.append(f"{path}.broll_clips 必须是字符串列表")
+            else:
+                pin_names = list(dict.fromkeys(x.strip() for x in raw_clips if x.strip()))
+                if valid_broll_names is not None:
+                    bad_pins = [n for n in pin_names if _media_name(n) not in valid_broll_names and n not in valid_broll_names]
+                    if bad_pins:
+                        errors.append(f"{path}.broll_clips 指定了不存在或不可用的素材：{bad_pins}")
+                act["broll_clips"] = pin_names
         if primitive == "clean_breath" and (budget != 0 or any(visual.values())):
             errors.append(f"{path} clean_breath 需要留空前景大字及主动音效")
         if primitive == "hero_anchor_plus_danmaku" and not _allows_behind_person(composition_profile, anchored):
@@ -1544,9 +1572,21 @@ def generate_deterministic_director_plan(
             act_obj["broll_keywords"] = kw_hits
         acts.append(act_obj)
     out_theme = "style_02_unified" if use_unified else ("store_vibrant" if store else "business_editorial")
+    head_t = _phrase(sentences[0].get("text", ""), 9) or clean_s0 if (clean_s0 := re.sub(r"[，。！？、；：,.!?;:]+", "", str((sentences[0].get("text") if sentences else "") or "")).strip()[:8]) else "核心真相"
+    badge_t = (
+        next((str(a["visual_copy"].get("headline") or (a["visual_copy"].get("items") or [""])[0]) for a in acts if a["primitive"] not in _QUIET_PRIMITIVES), "")
+        or "实地全拆解"
+    )[:8]
+    cov_copy = {
+        "headline_top": head_t,
+        "highlight_badge": badge_t if badge_t != head_t else (f"{head_t[:5]}实拍" if store else f"{head_t[:5]}拆解"),
+        "sub_line": "",
+        "gbro_style": "style-04" if any(k in head_t + badge_t for k in ("对比", "VS", "算账", "破产", "差")) else ("style-01" if store else "style-10"),
+    }
     result = validate_director_plan({
         "step": "03b_director_plan", "source": "fallback_deterministic", "style_id": style_id,
         "theme_profile": out_theme,
+        "cover_copy": cov_copy,
         "acts": acts, "music_cues": _music_cues(candidates, total, store, highlights),
     }, audio_events, composition_profile)
     if not result["ok"]:
@@ -1608,17 +1648,24 @@ def main() -> None:
             return
         audio = read_json(pipeline_dir / _AUDIO_FILENAME)
         profile = _optional_document(pipeline_dir, _COMPOSITION_FILENAME)
+        inv_doc = _optional_document(pipeline_dir, _INVENTORY_FILENAME)
+        vi_doc = _optional_document(pipeline_dir, "00_visual_index.json")
+        bpool = _broll_pool(inv_doc, vi_doc)
+        valid_broll_names = (
+            {n for item in bpool for n in (item.get("filename"), _media_name(item.get("filename"))) if n}
+            if bpool else None
+        )
         output = args.out if args.out is not None else pipeline_dir / PLAN_FILENAME
         if args.command == "apply-plan":
             plan = read_json(args.plan if args.plan is not None else pipeline_dir / PLAN_FILENAME)
         else:
             plan = generate_deterministic_director_plan(
                 audio, args.style_id,
-                _optional_document(pipeline_dir, _INVENTORY_FILENAME),
+                inv_doc,
                 profile,
-                _optional_document(pipeline_dir, "00_visual_index.json"),
+                vi_doc,
             )
-        result = validate_director_plan(plan, audio, profile)
+        result = validate_director_plan(plan, audio, profile, valid_broll_names=valid_broll_names)
         if not result["ok"]:
             raise ValueError("\n".join(result["errors"]))
         for warning in result["warnings"]:
