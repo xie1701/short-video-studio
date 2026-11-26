@@ -2001,13 +2001,13 @@ def _unified_style02_items(
         max_rows = min(len(row_items), 4)
         total_lines = max_rows + int(has_top_lead)
         if total_lines >= 5:
-            head_u, row_u, step_y = 12.0, 10.8, 0.084
+            head_u, row_u, step_y = 11.8, 10.4, 0.084
             top_yn = -0.115
             first_row_yn = -0.205 if has_top_lead else -0.115
         elif total_lines == 4:
-            head_u, row_u, step_y = 13.5, 12.5, 0.102
-            top_yn = -0.15
-            first_row_yn = -0.252 if has_top_lead else -0.15
+            head_u, row_u, step_y = 11.8, 10.4, 0.091
+            top_yn = -0.195
+            first_row_yn = -0.286 if has_top_lead else -0.195
         else:
             head_u, row_u, step_y = 16.0, 15.0, 0.115
             top_yn = -0.22

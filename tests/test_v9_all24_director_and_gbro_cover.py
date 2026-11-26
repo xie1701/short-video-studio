@@ -385,9 +385,11 @@ class V9All24DirectorAndQualityTests(unittest.TestCase):
             key=lambda x: -float(x["y_norm"]),
         )
         self.assertEqual(len(act1_rows), 4)
+        self.assertLessEqual(float(act1_rows[0]["y_norm"]), -0.19)
         for a, b in zip(act1_rows, act1_rows[1:]):
-            self.assertGreaterEqual(float(a["y_norm"]) - float(b["y_norm"]), 0.10, (a, b))
+            self.assertGreaterEqual(float(a["y_norm"]) - float(b["y_norm"]), 0.09, (a, b))
         self.assertGreaterEqual(float(act1_rows[-1]["y_norm"]), -0.468)
+        self.assertTrue(all(int(r["font_size_px"]) >= 60 for r in act1_rows), act1_rows)
 
         act2_rows = sorted(
             [
@@ -402,6 +404,7 @@ class V9All24DirectorAndQualityTests(unittest.TestCase):
         for a, b in zip(act2_rows, act2_rows[1:]):
             self.assertGreaterEqual(float(a["y_norm"]) - float(b["y_norm"]), 0.08, (a, b))
         self.assertGreaterEqual(float(act2_rows[-1]["y_norm"]), -0.468)
+        self.assertTrue(all(int(r["font_size_px"]) >= 60 for r in act2_rows), act2_rows)
 
     def test_legacy_num_anchor_strips_leading_auxiliary_from_post_phrase(self) -> None:
         audio = {
