@@ -33,9 +33,20 @@ from common import (  # noqa: E402
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
     DEFAULT_FPS,
+    read_json,
+)
+from composition_profile import PROFILE_FILENAME
+from director_plan import (
+    PLAN_FILENAME,
+    _coverage,
+    _display_length,
+    _media_name,
+    generate_deterministic_director_plan,
+    load_or_build_director_plan,
 )
 from step5_subtitles import (  # noqa: E402
     load_protected_terms,
+    split_sentence_into_chunks,
     tokenize_semantic_words,
 )
 
@@ -813,7 +824,7 @@ def _extract_anchor_phrase(clean_txt: str, max_len: int = 6) -> str:
     return parts[-1][:max_len] if parts else clean_txt[:max_len]
 
 
-def plan_kinetic_stage(
+def _plan_legacy_stage(
     audio_events: Dict[str, Any],
     style_id: str = "style_02",
     pipeline_dir: Optional[Path] = None,
@@ -1316,6 +1327,375 @@ def plan_kinetic_stage(
             "broll_evidence_budget_ratio": round(1.0 - locked_dur / total_dur, 3),
         },
     }
+
+
+
+_QUIET_STAGE_PRIMITIVES = {"plain_bridge", "clean_breath"}
+_DIRECTOR_SFX_GAP_SEC = 1.2
+
+
+def _read_optional_json(path: Path) -> Dict[str, Any]:
+    try:
+        data = read_json(path)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def composition_for_sentence(
+    profile: Dict[str, Any], sentence: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Resolve the take-level framing, with the same normalized-name fallback as the director."""
+    source = str(sentence.get("source_media") or "").replace("\\", "/")
+    stem = Path(_media_name(source)).stem
+    takes = [take for take in profile.get("aroll_profiles") or [] if isinstance(take, dict)]
+    matches = [
+        take for take in takes
+        if stem and Path(_media_name(take.get("media_path"))).stem == stem
+    ]
+    exact = [take for take in matches if str(take.get("media_path") or "").replace("\\", "/") == source]
+    fallback = profile.get("allow_behind_person", profile.get("primary_stage_mode") != "closeup_chest_stage")
+
+    def fits(take: Dict[str, Any]) -> bool:
+        return bool(take.get("allow_behind_person", fallback)) and float(take.get("face_area_ratio") or 0) < 0.085
+
+    matches = exact or matches or [profile]
+    take = min(matches, key=fits)
+    return {**profile, **take, "allow_behind_person": fits(take)}
+
+
+def _stage_y(composition: Dict[str, Any]) -> float:
+    return float(composition.get("safe_fg_y_norm", -0.46))
+
+
+def _retarget_legacy_composition(
+    stage: Dict[str, Any], sentences: List[Dict[str, Any]], profile: Dict[str, Any],
+) -> None:
+    if not profile:
+        return
+    shots = [(s["start_sec"], s["end_sec"], composition_for_sentence(profile, s)) for s in sentences]
+
+    def closeups(start: float, end: float) -> List[Dict[str, Any]]:
+        return [c for st, en, c in shots if not c["allow_behind_person"] and st < end and start < en]
+
+    for item in stage["items"]:
+        if item["z_layer"] != "behind_person":
+            continue
+        constrained = closeups(item["start_sec"], item["end_sec"])
+        if constrained:
+            y = min(_stage_y(c) for c in constrained)
+            # Reserve the upper chest row for red_slam and stagger the smaller rows below it.
+            yn = round(max(-0.65, min(-0.49, y - 0.05)) - (item["track_lane"] - 3) * 0.075, 4)
+            item.update(
+                z_layer="foreground", x_norm=0.0, y_norm=yn,
+                center_px=list(norm_to_canvas_px(0.0, yn)), font_size_px=76, font_size_units=12.7,
+            )
+    behind_groups = {it["group_id"] for it in stage["items"] if it["z_layer"] == "behind_person"}
+    for group in stage["groups"]:
+        group["self_matting"] = group["group_id"] in behind_groups
+    stage["matting_windows"] = [w for w in stage["matting_windows"] if w["group_id"] in behind_groups]
+
+
+def _director_rows(
+    texts: List[str], timeline: List[Tuple[str, float, float]], start: float, end: float, fps: int,
+) -> List[Tuple[float, float]]:
+    # Later rows get at least one frame even when ASR places a word close to the act boundary.
+    count = min(len(texts), max(1, int(round((end - start) * fps))))
+    labels = [clean_display_text(text.lstrip("✕✓ ")) for text in texts[:count]]
+    timeline = [(ch, st, en) for ch, st, en in timeline if not ch.isspace()]
+    spoken = "".join(ch for ch, _, _ in timeline)
+    estimates = map_chunks_to_times(labels, timeline, start, end)
+    starts: List[float] = []
+    cursor = 0
+    for idx, (label, estimate, _) in enumerate(estimates):
+        phrase = "".join(label.split())
+        match = spoken.find(phrase, cursor)
+        if match >= 0:
+            at = timeline[match][1]
+            cursor = match + len(phrase)
+        else:
+            at = estimate
+        latest = max(start, end - (len(estimates) - idx) / fps)
+        starts.append(max(starts[-1] + 1 / fps if starts else start, min(latest, at)))
+    return list(zip(starts, [*starts[1:], end]))
+
+
+def _director_items(
+    act: Dict[str, Any], sentences: List[Dict[str, Any]], composition: Dict[str, Any],
+    ordinal: int, theme: str, fps: int,
+) -> List[Dict[str, Any]]:
+    primitive = act["primitive"]
+    if primitive in _QUIET_STAGE_PRIMITIVES:
+        return []
+
+    visual = act.get("visual_copy") or {}
+    headline = str(visual.get("headline") or "").strip()
+    lines = [text for text in visual.get("items", []) if text.strip() and _display_length(text) <= 7]
+    if _display_length(headline) > 7:
+        headline = ""
+    start, end = act["start_sec"], act["end_sec"]
+    timeline = [entry for sentence in sentences for entry in _extract_char_timeline(sentence)]
+    y = max(-0.43, min(-0.32, _stage_y(composition)))
+    items: List[Dict[str, Any]] = []
+
+    def add(
+        text: str, variant: str, st: float, en: float, x: float, yn: float, size: float,
+        anim: str, lane: int, sfx: Optional[str] = None, layer: str = "foreground",
+    ) -> None:
+        if not text or en <= st:
+            return
+        item = _make_item(
+            item_id=f"ks_v6_{ordinal:02d}_{len(items) + 1:02d}", group_id=act["group_id"],
+            text=text, start_sec=st, end_sec=en, fps=fps, variant=variant,
+            x_norm=x, y_norm=yn, font_size_units=size, anim_key=anim,
+            track_lane=lane, z_layer=layer, sfx_role_override=sfx,
+        )
+        item.update(
+            act_id=act["act_id"], anim_style_v6=primitive, theme_profile=theme,
+            render_backend="web_spring", out_anim="fade_out",
+        )
+        items.append(item)
+
+    if primitive == "negation_strike":
+        add(headline, "hero_lime", start, end, 0.0, y + 0.10, 19.0, "in:缩小 II", 1)
+        for line, (st, en) in zip(lines, _director_rows(lines, timeline, start, end, fps)):
+            label = line if line.startswith("✕") else f"✕ {line}"
+            # Use a separate row so a headline and the current negation can be read together.
+            add(label, "negation_line", st, en, 0.0, y, 11.5, "in:向右露出", 2, "punch")
+    elif primitive == "framework_pillar":
+        badge = str(visual.get("accent_token") or "")
+        rows = [(badge if badge.isdecimal() else "", headline)]
+        for line in lines:
+            number = re.fullmatch(r"(\d+)(?:[\s·.:：]+(.+))?", line)
+            rows.append((number[1], number[2] or "") if number else ("", line))
+        rows = [(number, label) for number, label in rows if number or label]
+        row_spans = _director_rows([label or number for number, label in rows], timeline, start, end, fps)
+        for idx, ((number, label), (st, en)) in enumerate(zip(rows, row_spans)):
+            if idx == 0:
+                st = start
+            add(number.zfill(2) if number else "", "pillar_badge", st, en, -0.55 if label else 0.0, y,
+                11.5, "in:缩小 II", 1, "pop")
+            add(label, "hero_white", st, en, 0.08 if number else 0.0, y,
+                12.5, "in:渐显", 2, None if number else "pop")
+    elif primitive == "concept_split_card":
+        card_lines = list(dict.fromkeys([*([headline] if headline else []), *lines]))
+        shift = act["side_shift_x"] if act["camera_intent"] == "side_shift_card" else 0.0
+        x = -0.46 if shift > 0 else (0.38 if shift < 0 else 0.0)
+        if card_lines:
+            add(card_lines[0], "concept_card", start, end, x, y + 0.04, 12.0, "in:向右露出", 1, "boom_hollow")
+            items[-1].update(card_lines=card_lines, card_has_headline=bool(headline))
+    else:
+        variant = "hero_lime" if primitive in {"hero_intro_pop", "num_anchor_dim_overlay"} else "hero_white"
+        behind = primitive == "hero_anchor_plus_danmaku" and composition["allow_behind_person"]
+        rows = [line for line in lines if line != headline]
+        title_y = y + 0.10 if rows and not behind else y
+        add(headline, variant, start, end, 0.0, title_y, 17.0, "in:缩小 II", 1)
+        for idx, (line, (st, en)) in enumerate(zip(rows, _director_rows(rows, timeline, start, end, fps))):
+            add(line, "danmaku_line" if behind else "hero_white", st, en,
+                0.0, 0.28 if behind else y, 11.5, "in:向右露出",
+                3 if behind else 2, layer="behind_person" if behind else "foreground")
+    return items
+
+
+def _director_sfx(
+    items: List[Dict[str, Any]], acts: List[Dict[str, Any]], duration: float, fps: int,
+    *, theme: str = "business_editorial",
+) -> int:
+    act_by_id = {act["act_id"]: act for act in acts}
+    half_frame_sec = 0.5 / fps
+    candidates = []
+    retained_candidates = []
+    for item in items:
+        role = item["sfx_role"]
+        item.update(sfx_role=None, paired_jianying_sfx="")
+        if not role or role in BANNED_SFX_ROLES or item.get("variant") == "bridge_bar":
+            continue
+
+        item_act_id = item.get("act_id")
+        act = act_by_id.get(item_act_id)
+        if not item_act_id:
+            # Match legacy items on their timeline time. Quantized frames are for cue spacing.
+            time = item["start_sec"]
+            act = next((a for a in acts if a["start_sec"] - half_frame_sec <= time < a["end_sec"]), None)
+        if act is None:
+            continue
+
+        priority = (
+            act["dramatic_role"] == "hook",
+            role in {"punch", "boom_heavy", "boom_hollow", "cash_register", "pop"},
+            act["emotion_intensity"],
+        )
+        candidate = (priority, item["start_frame"], act["act_id"], item, role)
+        if act["primitive"] not in _QUIET_STAGE_PRIMITIVES and act["sfx_budget"] > 0:
+            candidates.append(candidate)
+        elif theme == "store_vibrant" and not item_act_id and act["primitive"] == "plain_bridge":
+            retained_candidates.append(candidate)
+
+    budgets = {act["act_id"]: act["sfx_budget"] for act in acts}
+    gap_frames = math.ceil(_DIRECTOR_SFX_GAP_SEC * fps)
+    limit = max(6, min(14, math.ceil(duration / 5.0)))
+
+    def has_gap(frame: int, selected: List[tuple]) -> bool:
+        return all(abs(frame - row[1]) >= gap_frames for row in selected)
+
+    def choose(ordered: List[tuple]) -> List[tuple]:
+        available = budgets.copy()
+        selected: List[tuple] = []
+        for row in ordered:
+            _, frame, act_id, _, _ = row
+            if available[act_id] > 0 and has_gap(frame, selected):
+                selected.append(row)
+                available[act_id] -= 1
+                if len(selected) == limit:
+                    break
+        return selected
+
+    # Prefer high-information accents, then retry earliest-first if priorities leave a sparse cut.
+    selected = choose(sorted(candidates, key=lambda row: (row[0], -row[1]), reverse=True))
+    if len(selected) < limit:
+        earliest = choose(sorted(candidates, key=lambda row: row[1]))
+        if len(earliest) > len(selected):
+            selected = earliest
+    for row in sorted(retained_candidates, key=lambda row: row[1]):
+        if len(selected) >= limit:
+            break
+        if has_gap(row[1], selected):
+            selected.append(row)
+    for _, _, _, item, role in selected:
+        item["sfx_role"] = role
+        anim = ANIM_SFX_BINDING_TABLE.get(item["jianying_anim_key"]) or {}
+        if anim.get("sfx_role") == role:
+            item["paired_jianying_sfx"] = anim["jianying_sfx_name"]
+    return limit
+
+
+def business_caption_items(
+    audio_events: Dict[str, Any], subtitles: List[Dict[str, Any]], fps: int,
+) -> List[Dict[str, Any]]:
+    """Use the ordinary subtitle text in the stage that owns style_02's on-screen text."""
+    if not subtitles:
+        subtitles = [line for sentence in audio_events["sentences"] for line in split_sentence_into_chunks(sentence)]
+    items = []
+    for idx, line in enumerate(subtitles, 1):
+        if line.get("suppressed") and line.get("suppress_reason") != "kinetic_typography_stage":
+            continue
+        start, end = line["start_sec"], line["end_sec"]
+        if not line["text"].strip() or end <= start:
+            continue
+        item = _make_item(
+            item_id=f"ks_caption_{idx:03d}", group_id="captions", text=line["text"],
+            start_sec=start, end_sec=end, fps=fps, variant="bridge_bar",
+            x_norm=0.0, y_norm=-0.51, font_size_units=8.5, track_lane=0, trigger="subtitle",
+        )
+        item.update(theme_profile="business_editorial", base_caption=True)
+        items.append(item)
+    return items
+
+
+def plan_kinetic_stage(
+    audio_events: Dict[str, Any],
+    style_id: str = "style_02",
+    pipeline_dir: Optional[Path] = None,
+    fps: int = DEFAULT_FPS,
+    broll_evidence_by_sent: Optional[Dict[str, Dict[str, Any]]] = None,
+    *,
+    director_plan: Optional[Dict[str, Any]] = None,
+    composition_profile: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Keep the original stage for unprofiled jobs and layer the director's decisions over V6 jobs."""
+    profile = composition_profile
+    if profile is None and pipeline_dir is not None:
+        profile = _read_optional_json(Path(pipeline_dir) / PROFILE_FILENAME)
+    profile = profile or {}
+    plan = director_plan
+    if style_id == "style_02" and plan is None:
+        if pipeline_dir is not None and (profile or (Path(pipeline_dir) / PLAN_FILENAME).is_file()):
+            plan = load_or_build_director_plan(pipeline_dir, style_id)
+        if plan is None and profile:
+            try:
+                plan = generate_deterministic_director_plan(audio_events, style_id, composition_profile=profile)
+            except ValueError:
+                pass
+    if style_id != "style_02":
+        plan, profile = None, {}
+    theme = (plan or {}).get("theme_profile", "store_vibrant")
+
+    if plan is None or theme == "store_vibrant":
+        stage = _plan_legacy_stage(audio_events, style_id, pipeline_dir, fps, broll_evidence_by_sent)
+        if stage["groups"]:
+            _retarget_legacy_composition(stage, audio_events["sentences"], profile)
+    else:
+        stage = {
+            "style_id": style_id, "dna": get_style_dna(style_id), "enabled": True,
+            "groups": [], "items": [], "matting_windows": [], "stats": {},
+        }
+    stage["theme_profile"] = theme
+    for item in stage["items"]:
+        item["theme_profile"] = theme
+    if not plan:
+        return stage
+
+    by_id = {s["id"]: s for s in audio_events["sentences"]}
+    legacy_highlights = [item for item in stage["items"] if item["variant"] != "bridge_bar"]
+    acts: List[Dict[str, Any]] = []
+    for idx, raw in enumerate(plan.get("acts", []), 1):
+        sentences = [by_id[sid] for sid in raw["sentence_ids"] if sid in by_id]
+        if not sentences:
+            continue
+        st, en = min(s["start_sec"] for s in sentences), max(s["end_sec"] for s in sentences)
+        compositions = [composition_for_sentence(profile, sentence) for sentence in sentences]
+        composition = min(compositions, key=lambda c: (c["allow_behind_person"], _stage_y(c)))
+        shift = composition.get("safe_center_shift_x", 0.08)
+        act = dict(
+            raw, start_sec=st, end_sec=en, group_id=f"v6_{idx:02d}",
+            side_shift_x=max(-0.12, min(0.12, float(shift))),
+        )
+        for key, default in (
+            ("act_id", f"act_{idx:02d}"), ("camera_intent", "steady_hold"),
+            ("broll_policy", "lock_aroll"), ("sfx_budget", 0),
+            ("dramatic_role", "setup"), ("emotion_intensity", 0.0),
+        ):
+            act.setdefault(key, default)
+        acts.append(act)
+        if theme == "store_vibrant" and any(
+            it["start_sec"] < en and st < it["end_sec"] for it in legacy_highlights
+        ):
+            # The existing multi-layer store stage owns this beat. Keep all of its visual layers.
+            continue
+        new_items = _director_items(act, sentences, composition, idx, theme, fps)
+        stage["items"].extend(new_items)
+        self_matting = any(item["z_layer"] == "behind_person" for item in new_items)
+        if self_matting:
+            stage["matting_windows"].append({"start_sec": st, "end_sec": en, "group_id": act["group_id"]})
+        if theme == "business_editorial" or new_items:
+            locked = act["broll_policy"] == "lock_aroll" or self_matting
+            stage["groups"].append({
+                "group_id": act["group_id"], "sentence_ids": act["sentence_ids"],
+                "start_sec": st, "end_sec": en, "duration_sec": en - st,
+                "text": "，".join(s["text"] for s in sentences), "pattern": act["primitive"],
+                "a_roll_locked": locked, "self_matting": self_matting,
+                "allow_broll_evidence": not locked, "item_count": len(new_items),
+            })
+
+    duration = float(audio_events.get("locked_duration_sec") or max((a["end_sec"] for a in acts), default=0.0))
+    limit = _director_sfx(stage["items"], acts, duration, fps, theme=theme)
+    groups = stage["groups"]
+    quiet = sum(g["pattern"] in _QUIET_STAGE_PRIMITIVES for g in groups)
+    locked_spans = [(g["start_sec"], g["end_sec"]) for g in groups if g["a_roll_locked"]]
+    locked_spans.extend((a["start_sec"], a["end_sec"]) for a in acts if a["broll_policy"] == "lock_aroll")
+    locked_ratio = _coverage(locked_spans, duration)
+    stage["stats"].update(
+        total_groups=len(groups), kinetic_groups=len(groups) - quiet, bridge_groups=quiet,
+        a_roll_locked_ratio=round(locked_ratio, 3), broll_evidence_budget_ratio=round(1.0 - locked_ratio, 3),
+        total_items=len(stage["items"]), sfx_trigger_items=sum(bool(it["sfx_role"]) for it in stage["items"]),
+    )
+    stage.update(
+        director_source=plan.get("source", "agent"), director_acts=acts, sfx_budget=limit,
+        composition_stage_mode=profile.get("primary_stage_mode"),
+        highlight_coverage_ratio=plan.get("highlight_coverage_ratio"),
+        music_cues=plan.get("music_cues", []),
+    )
+    return stage
 
 
 def main() -> None:

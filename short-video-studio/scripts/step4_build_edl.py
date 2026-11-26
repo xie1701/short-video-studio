@@ -46,6 +46,7 @@ import pip_policy
 import scene_budget
 import treatment_policy
 from broll_semantics import describe_clip, legacy_score
+from composition_profile import _first_face_bbox
 from edit_grammar import check_edl, load_grammar, plan_shot_budget, select_cuts
 from generate_code_broll import render_broll_clip_pillow, render_code_clip, resolve_style_palette
 
@@ -505,15 +506,75 @@ def ensure_code_broll_pool(
     return pool
 
 
-def _build_eye_locked_vf(eye_anchor: Optional[Dict[str, Any]], zoom: float = 1.15) -> str:
-    """商业剪辑标准锁眼微推拉（1.15x 确保景别明显拉近而不产生抽搐感）。"""
+def _build_eye_locked_vf(
+    eye_anchor: Optional[Dict[str, Any]], zoom: float = 1.15, *,
+    progress: Optional[str] = None, shift_x: float = 0.0, face: Optional[Dict[str, float]] = None,
+) -> str:
+    """Build the crop on the already normalized portrait canvas, keeping the eye fixed."""
     cx = float((eye_anchor or {}).get("cx", (eye_anchor or {}).get("eye_cx", 0.50)))
     cy = float((eye_anchor or {}).get("cy", (eye_anchor or {}).get("eye_cy", 0.36)))
+    if progress is not None:
+        width, height = CANVAS_WIDTH, CANVAS_HEIGHT
+        if face:
+            # Reserve space above the face as well as around its edges.
+            left = max(0.0, face["x"] - 0.02)
+            top = max(0.0, face["y"] - 0.04)
+            right = min(1.0, face["x"] + face["w"] + 0.02)
+            bottom = min(1.0, face["y"] + face["h"] + 0.02)
+            zoom = min(zoom, 1.0 / max(right - left, bottom - top))
+        else:
+            left, top, right, bottom = 1.0, 1.0, 0.0, 0.0
+        z = f"(1+{zoom - 1.0:.6f}*{progress})"
+        x = (
+            f"clip({cx:.6f}*(iw-ow)-{shift_x:.6f}*ow*{progress},"
+            f"max(0,{right:.6f}*iw-ow),min(iw-ow,{left:.6f}*iw))"
+        )
+        y = f"clip({cy:.6f}*(ih-oh),max(0,{bottom:.6f}*ih-oh),min(ih-oh,{top:.6f}*ih))"
+        return (
+            f"scale=w='trunc({width}*{z}/2)*2':h='trunc({height}*{z}/2)*2':eval=frame:flags=lanczos,"
+            f"crop={width}:{height}:x='{x}':y='{y}',setsar=1"
+        )
     zw = (int(round(CANVAS_WIDTH * zoom)) // 2) * 2
     zh = (int(round(CANVAS_HEIGHT * zoom)) // 2) * 2
     crop_x = max(0, min(zw - CANVAS_WIDTH, int(round(cx * (zw - CANVAS_WIDTH)))))
     crop_y = max(0, min(zh - CANVAS_HEIGHT, int(round(cy * (zh - CANVAS_HEIGHT)))))
     return f"scale={zw}:{zh}:flags=lanczos,crop={CANVAS_WIDTH}:{CANVAS_HEIGHT}:{crop_x}:{crop_y}"
+
+
+def _apply_director_cameras(
+    clips: List[Dict[str, Any]], acts: List[Dict[str, Any]],
+    media_by_mp4: Dict[str, Dict[str, Any]], allow_punch: bool,
+) -> None:
+    def overlap(clip: Dict[str, Any], act: Dict[str, Any]) -> float:
+        return min(clip["timeline_out_sec"], act["end_sec"]) - max(clip["timeline_in_sec"], act["start_sec"])
+
+    for clip in clips:
+        if clip["track_role"] != "a_roll" or clip.get("pip_layout"):
+            continue
+        act = max(acts, key=lambda row: overlap(clip, row), default=None)
+        if act is None or overlap(clip, act) <= 0:
+            continue
+        intent = act["camera_intent"]
+        clip.update(camera_intent=intent, director_act_id=act["act_id"], punch_in_zoom=1.0,
+                    ken_burns=None, vf_extra="")
+        if intent == "steady_hold":
+            continue
+
+        media = media_by_mp4.get(str(clip["media_path"])) or {}
+        face = _first_face_bbox(media.get("faces"))
+        eye = media.get("eye_anchor")
+        if not eye and face:
+            eye = {"cx": face["x"] + face["w"] / 2, "cy": face["y"] + face["h"] * 0.36}
+        # Use the same phase after a sentence cut inside the act.
+        offset = clip["timeline_in_sec"] - act["start_sec"]
+        duration = max(0.1, act["end_sec"] - act["start_sec"])
+        u = f"clip((t+({offset:.6f}))/{duration:.6f},0,1)"
+        smooth = f"({u}*{u}*(3-2*{u}))"
+        shift = act["side_shift_x"] if intent == "side_shift_card" else 0.0
+        clip["vf_extra"] = _build_eye_locked_vf(eye, progress=smooth, shift_x=shift, face=face)
+        # The legacy jump-cut zoom remains disabled for zero-keyframe style templates.
+        if allow_punch:
+            clip["punch_in_zoom"] = 1.15
 
 
 def _apply_keyframe_policy(clips: List[Dict[str, Any]], kf_per_min: float, total_dur: float) -> int:
@@ -760,7 +821,26 @@ def run_step4(
     else:
         print("[step4] [WARN] 没有可用的画面描述（00_inventory/00_visual_index 缺 description），"
               "B-roll 只能按质量轮转，对位会大面积记 none")
-    broll_pool = ensure_code_broll_pool(pipeline_dir, sentences, brolls_raw, track, style_id=style_id, total_dur=total_dur)
+    kinetic_stage_mode = bool(style_id and kinetic_choreographer.is_kinetic_stage_style(style_id))
+    kinetic_stage_plan: Dict[str, Any] = (
+        kinetic_choreographer.plan_kinetic_stage(
+            audio_events, style_id=style_id, pipeline_dir=pipeline_dir, fps=fps,
+        )
+        if kinetic_stage_mode
+        else {"enabled": False, "groups": [], "items": [], "matting_windows": [], "stats": {}}
+    )
+    director_acts = kinetic_stage_plan.get("director_acts") or []
+    director_mode = bool(kinetic_stage_plan.get("director_source"))
+    live_brolls_v6 = [
+        m for m in brolls_raw
+        if m["role"] == "b_roll" and not m.get("source_is_code_scene")
+        and m.get("video_grade", "usable") == "usable"
+    ]
+    has_broll_source = bool(live_brolls_v6 if director_mode else brolls_raw)
+    broll_pool = (
+        live_brolls_v6 if director_mode and usable_arolls else
+        ensure_code_broll_pool(pipeline_dir, sentences, brolls_raw, track, style_id=style_id, total_dur=total_dur)
+    )
 
     contract = None
     choreography_applied = None
@@ -841,14 +921,6 @@ def run_step4(
     # 镜头预算先算出来：挑切点时要用（目标刀数 / 单镜时长带 / 快切配额 / 开场刀数）
     shot_budget: Optional[Dict[str, Any]] = plan_shot_budget(total_dur, gram) if gram is not None else None
     grammar_notes: List[str] = []
-    kinetic_stage_mode = bool(style_id and kinetic_choreographer.is_kinetic_stage_style(style_id))
-    kinetic_stage_plan: Dict[str, Any] = (
-        kinetic_choreographer.plan_kinetic_stage(
-            audio_events, style_id=style_id, pipeline_dir=pipeline_dir, fps=fps,
-        )
-        if kinetic_stage_mode
-        else {"enabled": False, "groups": [], "items": [], "matting_windows": [], "stats": {}}
-    )
     kinetic_locked_spans: List[Tuple[float, float]] = [
         (float(g["start_sec"]), float(g["end_sec"]))
         for g in (kinetic_stage_plan.get("groups") or [])
@@ -858,8 +930,17 @@ def run_step4(
         sid: group for group in kinetic_stage_plan.get("groups", []) for sid in group["sentence_ids"]
     }
 
+    director_locked_spans = [
+        (a["start_sec"], a["end_sec"]) for a in director_acts if a["broll_policy"] == "lock_aroll"
+    ]
+
+    def _overlaps_director_locked(t_s: float, t_e: float) -> bool:
+        return any(min(t_e, g_e) - max(t_s, g_s) > 0.5 / fps for g_s, g_e in director_locked_spans)
+
     def _overlaps_kinetic_locked(t_s: float, t_e: float) -> bool:
-        return any(min(t_e, g_e) - max(t_s, g_s) >= 0.12 for g_s, g_e in kinetic_locked_spans)
+        return _overlaps_director_locked(t_s, t_e) or any(
+            min(t_e, g_e) - max(t_s, g_s) >= 0.12 for g_s, g_e in kinetic_locked_spans
+        )
 
     def _overlaps_matting_window(t_s: float, t_e: float) -> bool:
         return any(
@@ -880,7 +961,7 @@ def run_step4(
     if kinetic_stage_mode:
         _kdna = kinetic_choreographer.get_style_dna(style_id) or {}
         _kbp = _kdna.get("broll_policy") or {}
-        if brolls_raw:
+        if has_broll_source:
             broll_prior_ratio = float(_kbp.get("target_ratio", 0.22))
             _kband = _kbp.get("band") or (0.0, 0.30)
             broll_band = (max(0.0, float(_kband[0])), min(0.30, float(_kband[1])))
@@ -904,7 +985,7 @@ def run_step4(
     capacity_pool = live_brolls_for_choreography if choreography_broll else broll_pool
     broll_capacity = min(1.0, sum(float(m.get("duration_sec") or 0) for m in capacity_pool) / max(total_dur, 0.1))
     broll_target_ratio = broll_prior_ratio
-    if kinetic_stage_mode and not brolls_raw:
+    if kinetic_stage_mode and not has_broll_source:
         broll_target_ratio = 0.0
         broll_policy_note = f"{style_id} 动态花字舞台模式无外插实拍素材，保持纯口播 0% B-roll"
     elif usable_arolls and aroll_capacity < (1.0 - broll_prior_ratio) - 0.02:
@@ -2368,6 +2449,9 @@ def run_step4(
         has_prop_show = any(cue in sent.get("text", "") for cue in PROP_SHOW_CUES)
 
         use_aroll = (roles[idx] == "a_roll")
+        if _overlaps_director_locked(t_start, t_end) and source_aroll_valid[idx] and not audio_only_flags[idx]:
+            use_aroll = True
+            roles[idx] = "a_roll"
         broll_pick = None
         prev_mp = str(clips[-1]["media_path"]) if clips else ""
         prev_so = float(clips[-1]["source_out_sec"]) if clips else 0.0
@@ -2500,6 +2584,7 @@ def run_step4(
                 broll_pick = pick_best_broll(
                     broll_sent, seg_dur, last_group, t_start, prev_mp, prev_so,
                     prev_motion=last_motion, prev_shot_size=last_shot_size, forbid_code=forbid_code,
+                    matching_live_only=director_mode,
                 )
             if broll_pick is None:
                 raise ValueError(f"{clip_id} 没有可用的外插画面区间，请补充素材或检查标废范围")
@@ -3452,7 +3537,7 @@ def run_step4(
             c_obj["handles_guarded"] = True
         elif role == "code_broll":
             c_obj["handles_guarded"] = True
-        elif contract and role == "a_roll":
+        elif (contract or director_mode) and role == "a_roll":
             c_obj["speed"] = 1.0
         dur = float(c_obj["duration_sec"])
         source_span = max(0.0, c_obj["source_out_sec"] - c_obj["source_in_sec"])
@@ -3469,6 +3554,11 @@ def run_step4(
         warn_threshold = 1.0 / fps if role == "a_roll" else MAX_AROLL_SHORTFALL_SEC
         if shortfall > warn_threshold + SOURCE_EPSILON_SEC:
             print(f"[step4] [WARN] {c_obj['clip_id']} 的可用画面仍短 {shortfall:.2f}s，请补充可用素材")
+
+    if director_acts and not has_broll_source and (
+        kinetic_stage_plan["theme_profile"] == "business_editorial" or len(usable_arolls) == 1
+    ):
+        _apply_director_cameras(clips, director_acts, media_by_mp4, allow_punch)
 
     # 转场 / 叠加层 / 画面特效：step4 不铺它们（铺在套用端），但要把「这一片一处都没套」和为什么记下来，
     # 否则报告里看不出到底是「没这个能力」还是「按条件拒绝了」。

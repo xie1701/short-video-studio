@@ -7,7 +7,7 @@
  *   1) 单任务渲染：
  *      node capture_html_video.mjs <project_dir> [--page index.html] [--fps 30] [--dur 12] [--size 1080x1920]
  *        [--from 0 --to 6] [--blur 1 --shutter 0.5] [--query "ratio=16x9"] [--out out.mp4] [--start 0] [--frames N]
- *        [--jpeg] [--smoke-json smoke.json] [--smoke-checkpoints]
+ *        [--alpha] [--jpeg] [--smoke-json smoke.json] [--smoke-checkpoints]
  *   2) 单浏览器实例多幕批处理：
  *      node capture_html_video.mjs --batch-json <batch_manifest.json>
  *   3) 三拍跳转纯函数校验：
@@ -100,6 +100,7 @@ async function loadBrowserLib(seedDir) {
   const pkgNames = ["playwright-core", "playwright"];
   const searchDirs = [
     ...(seedDir ? [seedDir] : []),
+    ...(process.env.SVS_PLAYWRIGHT_DIR ? [process.env.SVS_PLAYWRIGHT_DIR] : []),
     path.join(os.homedir(), ".short-video-studio", "node_tools"),
   ];
   for (const baseDir of searchDirs) {
@@ -317,8 +318,11 @@ function normalizeTask(raw) {
   if (W % 2 !== 0 || H % 2 !== 0) {
     throw new Error(`Width and height must be even, got ${W}x${H}`);
   }
-  const outOpt = String(raw.out || path.join(projectDir, "out", "code_render.mp4"));
+  const outOpt = String(raw.out || path.join(projectDir, "out", raw.alpha ? "code_render.mov" : "code_render.mp4"));
   const outPath = path.isAbsolute(outOpt) ? outOpt : path.resolve(process.cwd(), outOpt);
+  const isMov = path.extname(outPath).toLowerCase() === ".mov";
+  const alpha = raw.alpha === true || isMov;
+  if (alpha && !isMov) throw new Error("Alpha output requires a .mov file");
   const durOpt = raw.dur !== undefined && raw.dur !== null ? Number(raw.dur) : null;
   const fromSec = raw.from !== undefined && raw.from !== null ? Math.max(0, Number(raw.from)) : null;
   const toSec = raw.to !== undefined && raw.to !== null ? Math.max(0, Number(raw.to)) : null;
@@ -349,6 +353,7 @@ function normalizeTask(raw) {
     blurN,
     shutter,
     queryStr,
+    alpha,
     useJpeg,
     smokePath,
     smokeCheckpoints: Boolean(raw.smokeCheckpoints),
@@ -371,6 +376,7 @@ async function captureSingleTask(browser, task, chromeBin) {
     blurN,
     shutter,
     queryStr,
+    alpha,
     useJpeg,
     smokePath,
     smokeCheckpoints,
@@ -408,15 +414,18 @@ async function captureSingleTask(browser, task, chromeBin) {
     if (blurN > 1 && !smokeCheckpoints) {
       vfList.push(`tmix=frames=${blurN}`, `select='eq(mod(n\\,${blurN})\\,${blurN - 1})'`, `setpts=N/${fps}/TB`);
     }
-    vfList.push("format=yuv420p");
+    vfList.push(alpha ? "format=argb" : "format=yuv420p");
+    const codecArgs = alpha
+      ? ["-c:v", "qtrle", "-pix_fmt", "argb"]
+      : ["-c:v", "libx264", "-preset", "medium", "-crf", "18",
+         "-pix_fmt", "yuv420p", "-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709"];
 
     const ffArgs = [
       "-v", "error", "-y",
       "-f", "image2pipe", "-framerate", String(smokeCheckpoints ? fps : fps * blurN), "-i", "-",
       "-vf", vfList.join(","),
       "-r", String(fps),
-      "-c:v", "libx264", "-preset", "medium", "-crf", "18",
-      "-pix_fmt", "yuv420p", "-color_range", "tv", "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+      ...codecArgs,
       "-movflags", "+faststart", "-an",
       outPath,
     ];
@@ -440,7 +449,9 @@ async function captureSingleTask(browser, task, chromeBin) {
       ffStderr += d.toString();
     });
 
-    const shotOpts = useJpeg ? { type: "jpeg", quality: 96, animations: "disabled" } : { type: "png", animations: "disabled" };
+    const shotOpts = useJpeg && !alpha
+      ? { type: "jpeg", quality: 96, animations: "disabled" }
+      : { type: "png", animations: "disabled", omitBackground: alpha };
     const effectiveBlur = smokeCheckpoints ? 1 : blurN;
     for (let idx = 0; idx < totalFrames; idx++) {
       if (ffClosed || errors.length > 0) break;
@@ -777,7 +788,8 @@ try {
         page: opt("page", "index.html"),
         fps: opt("fps", 30),
         size: opt("size", "1080x1920"),
-        out: opt("out", path.join(path.resolve(argv[0]), "out", "code_render.mp4")),
+        alpha: Boolean(opt("alpha", false)),
+        out: opt("out", null),
         dur: opt("dur", null),
         from: opt("from", null),
         to: opt("to", null),
@@ -813,10 +825,9 @@ try {
   if (failed.length > 0) {
     const f0 = failed[0];
     console.error(`[capture_html] FAILED: frames=${f0.framesRendered}/${f0.totalFrames}, errors=${JSON.stringify(f0.errors)}`);
-    process.exit(1);
-  }
-  for (const r of results) {
-    console.log(`[capture_html] OK: ${r.framesRendered} frames (${r.avgMsPerFrame} ms/f) -> ${r.outPath}`);
+    process.exitCode = 1;
+  } else {
+    for (const r of results) console.log(`[capture_html] OK: ${r.framesRendered} frames (${r.avgMsPerFrame} ms/f) -> ${r.outPath}`);
   }
 } finally {
   if (browser) await browser.close().catch(() => {});

@@ -834,6 +834,19 @@ def run_step6(
         else None
     )
 
+    director_stage = bool(kinetic_stage_plan and kinetic_stage_plan.get("director_source"))
+    business_stage = bool(director_stage and kinetic_stage_plan["theme_profile"] == "business_editorial")
+    if director_stage:
+        max_sfx_budget = kinetic_stage_plan["sfx_budget"]
+    if business_stage:
+        subtitle_file = pipeline_dir / "05_subtitles.json"
+        subtitles = read_json(subtitle_file).get("entries", []) if subtitle_file.is_file() else []
+        captions = kinetic_choreographer.business_caption_items(audio_events, subtitles, fps)
+        kinetic_stage_plan["items"] = captions + kinetic_stage_plan["items"]
+        kinetic_stage_plan["stats"].update(
+            caption_items=len(captions), total_items=len(kinetic_stage_plan["items"]),
+        )
+
     _allow_flower = element_rules.is_present(style_id, "flower", default=True)
     _allow_giant = element_rules.is_present(style_id, "giant_text", default=True)
     _allow_end_card = element_rules.is_present(style_id, "end_card", default=False)
@@ -1499,7 +1512,7 @@ def run_step6(
             print(f"[step6] 台词五格体检：缺「{'、'.join(ending['framework_map']['missing'])}」")
         has_end_card = any(str(e.get("kind")) == "end_card_cta" for e in visual_elements)
         # 用户显式关了花字（--no-flower-text）就不硬塞尾卡，只在报告里点名"片尾没收住"
-        if (ending["verdict"] != "closed" and not has_end_card and not no_flower_text
+        if (ending["verdict"] != "closed" and not has_end_card and not no_flower_text and not business_stage
                 and len(visual_elements) < max_visual_budget):
             sf, ef = EP.card_frames(ending, total_frames, fps)
             if ef - sf >= int(1.2 * fps):
@@ -1724,7 +1737,7 @@ def run_step6(
 
     sfx_cues: List[Dict[str, Any]] = []
     has_style_sfx_truth = bool(sfx_pool) or (ASSETS_DIR / "sound_vibe" / "sfx" / f"{style_id}_accent.wav").is_file()
-    if kinetic_stage_mode and kinetic_stage_plan is not None and has_style_sfx_truth:
+    if kinetic_stage_mode and kinetic_stage_plan is not None and (has_style_sfx_truth or director_stage):
         # ── 动态花字舞台 0ms 音效咬合通道：每个花字动效按角色直配真实专属音色，呼吸过渡句严格 0 音效 ──
         k_sfx_assets = kinetic_choreographer.ensure_kinetic_sfx_assets(
             pipeline_dir / "06_kinetic_sfx", style_id=style_id, assets_dir=ASSETS_DIR,
@@ -1734,7 +1747,9 @@ def run_step6(
             key=lambda it: (float(it.get("start_sec") or 0.0), int(it.get("track_lane") or 0)),
         )
         # 遵守 style_02 因果规则：min_gap_sec >= 0.60s，总数 <= max_sfx_budget
+        min_gap = kinetic_choreographer._DIRECTOR_SFX_GAP_SEC if director_stage else 0.58
         last_k_sfx_t = -9.9
+        last_frame = -10 * fps
         k_rows: List[Dict[str, Any]] = []
         k_dropped: List[Dict[str, Any]] = []
         for it in k_items_sorted:
@@ -1745,15 +1760,17 @@ def run_step6(
             wav_p = k_sfx_assets.get(role_k) or next(iter(k_sfx_assets.values()), None)
             if wav_p is None or not Path(wav_p).is_file():
                 continue
-            if t_it - last_k_sfx_t < 0.58:
-                k_dropped.append({"time_sec": t_it, "reason": "kinetic_min_gap", "dropped_because": "min_gap_0.58s", "detail": f"与前音间距<{0.58:.2f}s"})
-                k_rows.append({"time_sec": t_it, "decision": "drop", "trigger": "kinetic_stage_item", "anchor_time": t_it, "offset_sec": 0.0, "why": f"{role_k}｜间距<0.58s跳过"})
+            frame_c = int(round(t_it * fps))
+            too_close = (frame_c - last_frame < math.ceil(min_gap * fps)
+                         if director_stage else t_it - last_k_sfx_t < min_gap)
+            if too_close:
+                k_dropped.append({"time_sec": t_it, "reason": "kinetic_min_gap", "dropped_because": f"min_gap_{min_gap:g}s", "detail": f"与前音间距<{min_gap:.2f}s"})
+                k_rows.append({"time_sec": t_it, "decision": "drop", "trigger": "kinetic_stage_item", "anchor_time": t_it, "offset_sec": 0.0, "why": f"{role_k}｜间距<{min_gap:g}s跳过"})
                 continue
             if len(sfx_cues) >= max_sfx_budget:
                 k_dropped.append({"time_sec": t_it, "reason": "budget_cap", "dropped_because": "budget_cap", "detail": f"达风格音效预算上限 {max_sfx_budget}"})
                 k_rows.append({"time_sec": t_it, "decision": "drop", "trigger": "kinetic_stage_item", "anchor_time": t_it, "offset_sec": 0.0, "why": f"{role_k}｜预算上限跳过"})
                 continue
-            frame_c = int(round(t_it * fps))
             cue_t = round(frame_c / float(fps), 4)
             gain_k = -4.2 if role_k in ("boom_heavy", "punch", "boom_hollow", "cash_register") else -4.8
             sfx_cues.append({
@@ -1772,7 +1789,7 @@ def run_step6(
                 "policy": f"{style_id} 花字动效↔音效 0ms 咬合 ({it.get('jianying_anim_name') or role_k} ↔ {role_k})",
             })
             k_rows.append({"time_sec": cue_t, "decision": "keep", "trigger": "kinetic_stage_item", "anchor_time": t_it, "offset_sec": round(cue_t - t_it, 4), "why": f"{role_k}｜{it.get('jianying_anim_name') or '动效'}咬合"})
-            last_k_sfx_t = t_it
+            last_k_sfx_t, last_frame = t_it, frame_c
         sfx_res = {
             "style_id": style_id,
             "rules_used": f"kinetic_stage:{style_id}",
@@ -1949,6 +1966,14 @@ def run_step6(
         "kinetic_stage": kinetic_stage_plan,
         "ending_plan": ending,
     }
+    if director_stage:
+        packaging["director_plan_applied"] = {
+            "source": kinetic_stage_plan["director_source"],
+            "theme_profile": kinetic_stage_plan["theme_profile"],
+            "act_count": len(kinetic_stage_plan["director_acts"]),
+            "highlight_coverage_ratio": kinetic_stage_plan["highlight_coverage_ratio"],
+            "composition_stage_mode": kinetic_stage_plan["composition_stage_mode"],
+        }
     write_json(pipeline_dir / "06_packaging.json", packaging)
     # 依据清单：每条音效/花字出或不出、凭什么、参照哪个锚点，全部打印出来备查
     if (not sfx_pool) and (not sfx_cues):

@@ -285,6 +285,92 @@ def compute_mono_phase_correlation(audio: np.ndarray) -> float:
     return round(float(np.dot(l_ch, r_ch) / denom), 4)
 
 
+def apply_music_cues_envelope(
+    bgm: np.ndarray, music_cues: List[Dict[str, Any]], sr: int = SR, *, return_metrics: bool = False,
+) -> np.ndarray | tuple[np.ndarray, Dict[str, Any]]:
+    """Apply sample-accurate raised-cosine ramps around each cue window to every channel."""
+    length = len(bgm)
+    attenuation = np.zeros(length, dtype=np.float32)
+    swell = np.zeros(length, dtype=np.float32)
+    applied = []
+    for cue in music_cues:
+        if not isinstance(cue, dict):
+            continue
+        kind = cue.get("type")
+        if kind not in ("delay_entry", "silence_drop", "section_swell"):
+            continue
+        default_depth = {"delay_entry": -36.0, "silence_drop": -26.0, "section_swell": 2.5}[kind]
+        default_fade = 120.0 if kind == "delay_entry" else 65.0
+        try:
+            start, end = float(cue["start_sec"]), float(cue["end_sec"])
+            depth = float(cue.get("depth_db", default_depth))
+            fade_ms = float(cue.get("fade_ms", default_fade))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not all(math.isfinite(value) for value in (start, end, depth, fade_ms)):
+            continue
+        if kind == "silence_drop":
+            depth, fade_ms = max(-60.0, min(-18.0, depth)), max(50.0, min(80.0, fade_ms))
+        elif kind == "delay_entry":
+            depth, fade_ms = max(-60.0, min(-36.0, depth)), max(50.0, min(300.0, fade_ms))
+        else:
+            depth, fade_ms = max(2.0, min(3.0, depth)), max(120.0, min(450.0, fade_ms))
+
+        if not 0 <= start < end or start >= length / sr:
+            continue
+        start_index = round(start * sr)
+        end_index = round(min(end, length / sr) * sr)
+        if end_index <= start_index:
+            continue
+        fade = max(1, round(fade_ms * sr / 1000.0))
+        window_start, window_end = max(0, start_index - fade), min(length, end_index + fade)
+        if not np.any(np.abs(bgm[window_start:window_end]) > 1e-6):
+            continue
+        samples = np.arange(window_start, window_end, dtype=np.int64)
+        distance = np.maximum(start_index - samples, samples - end_index)
+        phase = 1.0 - np.clip(distance / fade, 0.0, 1.0)
+        delta = ((0.5 - 0.5 * np.cos(np.pi * phase)) * depth).astype(np.float32)
+        curve = attenuation if depth < 0.0 else swell
+        combine = np.minimum if depth < 0.0 else np.maximum
+        combine(curve[window_start:window_end], delta, out=curve[window_start:window_end])
+        applied.append({"type": kind, "start_sec": start_index / sr, "end_sec": end_index / sr,
+                        "depth_db": depth, "fade_ms": fade_ms})
+
+    # Attenuation smoothly overrides any swell beneath it, preserving the full drop in the plateau.
+    gain_db = attenuation + swell * np.maximum(0.0, 1.0 + attenuation / 18.0)
+    gain = np.power(10.0, gain_db / 20.0)
+    if bgm.ndim > 1:
+        gain = gain.reshape((length,) + (1,) * (bgm.ndim - 1))
+    out = bgm * gain
+    if return_metrics:
+        return out, {
+            "applied_count": len(applied),
+            "min_gain_db": round(min(0.0, float(np.min(gain_db))) if length else 0.0, 2),
+            "applied_cues": applied,
+        }
+    return out
+
+
+def _planned_music_cues(
+    pipeline_dir: Path, style_id: Optional[str], packaging: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    effective_style = style_id or packaging.get("style_id")
+    if effective_style not in (None, "style_02"):
+        return []
+    stage = packaging.get("kinetic_stage") or {}
+    if stage.get("director_source") and isinstance(stage.get("music_cues"), list):
+        return stage["music_cues"]
+
+    try:
+        plan = read_json(pipeline_dir / "03b_director_plan.json")
+    except (OSError, ValueError):
+        return []
+    if not isinstance(plan, dict) or plan.get("style_id") not in (None, "style_02"):
+        return []
+    cues = plan.get("music_cues")
+    return cues if isinstance(cues, list) else []
+
+
 def run_step8(
     pipeline_dir: Path,
     target_lufs: float = TARGET_LUFS,
@@ -407,12 +493,18 @@ def run_step8(
     t_hops = (np.arange(n_hops, dtype=np.float32) + 0.5) * hop
     duck_factor = np.interp(np.arange(n_samples, dtype=np.float32), t_hops, duck_ctrl).astype(np.float32)
 
+    pkg_p = pipeline_dir / "06_packaging.json"
+    packaging = read_json(pkg_p) if pkg_p.is_file() else {}
+    music_cues = _planned_music_cues(pipeline_dir, style_id, packaging)
     bgm_mid, bgm_outer, dual_band_ok = split_bgm_dual_band(bgm_arr, SR)
     mid_gain_db = bgm_base_gain_db + duck_depth_db * duck_factor
     outer_gain_db = bgm_base_gain_db + (duck_depth_db * 0.32) * duck_factor
     mid_lin = np.power(10.0, mid_gain_db / 20.0).astype(np.float32)
     outer_lin = np.power(10.0, outer_gain_db / 20.0).astype(np.float32)
     ducked_bgm = bgm_mid * mid_lin[:, None] + bgm_outer * outer_lin[:, None]
+    music_cue_metrics = {"applied_count": 0, "min_gain_db": 0.0, "applied_cues": []}
+    if music_cues:
+        ducked_bgm, music_cue_metrics = apply_music_cues_envelope(ducked_bgm, music_cues, SR, return_metrics=True)
 
     act_mask = duck_factor > 0.35
     if np.any(act_mask):
@@ -497,8 +589,7 @@ def run_step8(
             pass
 
     # 局部防掩蔽校准：逐条核对 06_packaging SFX 峰值窗口 [t-0.04, t+0.16] 的 2–8kHz 可听度（不加噪、统一写入 pre_mix 与 08_sfx_master）
-    pkg_p = pipeline_dir / "06_packaging.json"
-    cues_early = read_json(pkg_p).get("sfx_cues", []) if pkg_p.exists() else []
+    cues_early = packaging.get("sfx_cues", [])
     if cues_early and float(np.max(np.abs(sfx_arr))) > 1e-6:
         try:
             from scipy import signal as sp_sig
@@ -636,8 +727,7 @@ def run_step8(
     save_stereo_wav_np(sfx_master_path, s_stem_raw * stem_gain_curve, SR)
 
     # 使用 common 唯一权威函数 compute_sfx_band_windows 持久化全量 SFX 基准，供 #20 复验
-    pkg_p = pipeline_dir / "06_packaging.json"
-    cues = read_json(pkg_p).get("sfx_cues", []) if pkg_p.exists() else []
+    cues = cues_early
     scaled_nosfx, _ = load_stereo_wav_np(stem_nosfx_wav)
     sfx_windows = compute_sfx_band_windows(cues, scaled_nosfx.mean(axis=1).astype(np.float64), SR)
     write_json(pipeline_dir / "08_sfx_audit_window.json", {
@@ -674,6 +764,7 @@ def run_step8(
         "voice_denoised": bool(use_denoise),
         "bgm_ducking_applied": True,
         "bgm_ref_norm_gain_db": bgm_ref_norm_gain_db,
+        "music_cue_metrics": music_cue_metrics,
         "broll_ambient_mixed_count": broll_ambient_mixed_count,
         "offmic_bleed_suppressed_count": len(offmic_bleed_hits),
         "offmic_bleed_hits": offmic_bleed_hits,

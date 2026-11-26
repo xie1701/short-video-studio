@@ -493,25 +493,47 @@ def export_native_draft(pipeline_dir: Path, out_dir: Optional[Path] = None) -> D
     ks_lanes_segs: Dict[int, List[Dict[str, Any]]] = {}
     ks_block = pkg.get("kinetic_stage") or {}
     if ks_block.get("enabled") and ks_block.get("items"):
+        from render_template_overlays import kinetic_item_paint
+
+        default_lanes = {"negation_line": 2, "pillar_badge": 1, "concept_card": 1}
         for kit in ks_block.get("items") or []:
+            variant = kit.get("variant")
             ktxt = str(kit.get("text_or_asset") or "").strip()
+            card_lines = kit.get("card_lines")
+            parts = kit.get("inline_parts")
+            paint = kinetic_item_paint(kit)
+            size = float(kit.get("font_size_units") or 16.0)
+            if variant == "concept_card" and card_lines:
+                ktxt = "\n".join(card_lines)
+                parts = [
+                    {"text": ("\n" if idx else "") + line,
+                     "color": paint["accent_hex"] if idx == 0 and kit.get("card_has_headline") else paint["fg_hex"],
+                     "size_units": size if idx == 0 and kit.get("card_has_headline") else size * 0.83}
+                    for idx, line in enumerate(card_lines)
+                ]
+            elif variant == "negation_line" and ktxt.startswith("✕"):
+                parts = [{"text": "✕", "color": paint["marker_hex"], "size_units": size},
+                         {"text": ktxt[1:], "color": paint["fg_hex"], "size_units": size}]
             kst, ken = float(kit.get("start_sec") or 0.0), float(kit.get("end_sec") or 0.0)
             if not ktxt or ken <= kst:
                 continue
-            lane = int(kit.get("track_lane") or 0)
+            lane = int(kit["track_lane"]) if kit.get("track_lane") is not None else default_lanes.get(variant, 0)
+            text_spec = {**sub_spec, "bg_radius": paint["radius_px"]} if paint else sub_spec
+            fg = paint["fg_hex"] if paint else str(kit.get("fg_hex") or "#FFFFFF")
+            bg = paint["bg_hex"] if paint else str(kit.get("bg_hex") or "#000000")
+            bg_alpha = paint["bg_alpha"] if paint else float(kit.get("bg_alpha") or 0.0)
+            stroke = "" if paint else str(kit.get("stroke_hex") or "")
             mat, seg = build_text_material(
-                ktxt, sub_spec, start_sec=kst, end_sec=ken,
-                size_units=float(kit.get("font_size_units") or 16.0),
-                is_flower=(str(kit.get("variant")) != "bridge_bar"),
-                fill_hex=str(kit.get("fg_hex") or "#FFFFFF"),
-                stroke_hex=str(kit.get("stroke_hex") or ""),
-                stroke_units=(2.0 if kit.get("stroke_hex") else 0.0),
+                ktxt, text_spec, start_sec=kst, end_sec=ken,
+                size_units=size, is_flower=(variant != "bridge_bar"),
+                fill_hex=fg, stroke_hex=stroke, stroke_units=2.0 if stroke else 0.0,
                 x_norm=float(kit.get("x_norm") or 0.0),
-                y_norm=float(kit.get("y_norm") or -0.45),
-                bg_alpha_override=float(kit.get("bg_alpha") or 0.0),
-                bg_color_override=str(kit.get("bg_hex") or "#000000"),
-                inline_parts=kit.get("inline_parts"),
+                y_norm=float(kit.get("y_norm", -0.45) if paint else (kit.get("y_norm") or -0.45)),
+                bg_alpha_override=bg_alpha, bg_color_override=bg, inline_parts=parts,
             )
+            if paint:
+                mat["background_width"] = {"pillar_badge": 0.19, "concept_card": 0.46}.get(variant, 0.62)
+                mat["background_height"] = {"pillar_badge": 0.05, "concept_card": 0.14}.get(variant, 0.075)
             texts.append(mat)
             ks_lanes_segs.setdefault(lane, []).append(seg)
     else:
