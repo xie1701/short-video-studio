@@ -980,51 +980,74 @@ def _detect_clip_dynamic_faces(
 
     pending: List[Tuple[Path, str, float]] = []
     out: Dict[str, List[Tuple[float, Dict[str, float]]]] = {}
+    # 同一条源素材只对其最长代表镜抽动态人脸，避免对同一 A-roll 的 38 个切段串行抽 150+ 帧拖慢 35 秒
+    rep_clips_by_mp: Dict[str, Dict[str, Any]] = {}
+    clips_by_mp: Dict[str, List[str]] = {}
+    for clip in clips:
+        clip_id = str(clip.get("clip_id") or "")
+        mp = str(clip.get("media_path") or "")
+        if not clip_id or not mp:
+            continue
+        mp_item = manifest_by_mp4.get(mp) or {}
+        is_code = (str(clip.get("track_role") or "") == "code_broll") or bool(mp_item.get("source_is_code_scene"))
+        if is_code:
+            continue
+        has_manifest_face = bool(_prominent_guard_faces(parse_manifest_faces(mp_item)))
+        if str(clip.get("track_role") or "") != "a_roll" and not has_manifest_face:
+            continue
+        if not Path(mp).is_file():
+            continue
+        clips_by_mp.setdefault(mp, []).append(clip_id)
+        prev_r = rep_clips_by_mp.get(mp)
+        if prev_r is None or float(clip.get("duration_sec", 0.0)) > float(prev_r.get("duration_sec", 0.0)):
+            rep_clips_by_mp[mp] = clip
+
+    if not rep_clips_by_mp:
+        return {}
+
+    from concurrent.futures import ThreadPoolExecutor
+
     with tempfile.TemporaryDirectory(prefix="svs_step7_faces_") as td:
         td_path = Path(td)
-        for clip in clips:
+        extract_jobs: List[Tuple[Path, Path, str, str, float]] = []
+        for mp, clip in rep_clips_by_mp.items():
             clip_id = str(clip.get("clip_id") or "")
-            mp = str(clip.get("media_path") or "")
-            if not clip_id or not mp:
-                continue
-            mp_item = manifest_by_mp4.get(mp) or {}
-            is_code = (str(clip.get("track_role") or "") == "code_broll") or bool(mp_item.get("source_is_code_scene"))
-            if is_code:
-                continue
-            has_manifest_face = bool(_prominent_guard_faces(parse_manifest_faces(mp_item)))
-            if str(clip.get("track_role") or "") != "a_roll" and not has_manifest_face:
-                continue
-            mp_path = Path(mp)
-            if not mp_path.is_file():
-                continue
-
             c_in = float(clip.get("source_in_sec", 0.0))
             c_dur = float(clip.get("duration_sec", 2.0))
             sample_ts = _guard_probe_times(c_in, c_dur)
             safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", clip_id)
             for idx, at_sec in enumerate(sample_ts):
-                jpg = td_path / f"{safe_id}_{idx}_{len(pending)}.jpg"
-                subprocess.run(
-                    [
-                        ffmpeg, "-hide_banner", "-loglevel", "error",
-                        "-ss", f"{max(0.0, float(at_sec)):.2f}", "-i", str(mp_path),
-                        "-frames:v", "1", "-vf", "scale=540:-2", "-q:v", "4", "-y", str(jpg),
-                    ],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                )
-                if jpg.is_file() and jpg.stat().st_size > 0:
-                    pending.append((jpg, clip_id, float(at_sec)))
+                jpg = td_path / f"{safe_id}_{idx}_{len(extract_jobs)}.jpg"
+                extract_jobs.append((Path(mp), jpg, mp, clip_id, float(at_sec)))
 
-        if not pending:
+        def _extract_one(job: Tuple[Path, Path, str, str, float]) -> Optional[Tuple[Path, str, str, float]]:
+            mp_p, jpg_p, mp_s, cid_s, at_s = job
+            subprocess.run(
+                [
+                    ffmpeg, "-hide_banner", "-loglevel", "error",
+                    "-ss", f"{max(0.0, at_s):.2f}", "-i", str(mp_p),
+                    "-frames:v", "1", "-vf", "scale=540:-2", "-q:v", "4", "-y", str(jpg_p),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            if jpg_p.is_file() and jpg_p.stat().st_size > 0:
+                return (jpg_p, mp_s, cid_s, at_s)
+            return None
+
+        with ThreadPoolExecutor(max_workers=min(4, max(1, len(extract_jobs)))) as pool:
+            done_items = [r for r in pool.map(_extract_one, extract_jobs) if r is not None]
+
+        if not done_items:
             return {}
         try:
-            inspected = inspect_images([p for p, _, _ in pending])
+            inspected = inspect_images([p for p, _, _, _ in done_items])
         except Exception:
             return {}
 
-        for jpg, clip_id, at_sec in pending:
+        mp_faces: Dict[str, List[Tuple[float, Dict[str, float]]]] = {}
+        for jpg, mp_s, clip_id, at_sec in done_items:
             item = inspected.get(str(jpg)) or {}
             faces = item.get("faces") or []
             best_bb: Optional[Dict[str, float]] = None
@@ -1045,7 +1068,10 @@ def _detect_clip_dynamic_faces(
                     best_area = area
                     best_bb = {"x": fx, "y": fy, "w": fw, "h": fh}
             if best_bb is not None:
-                out.setdefault(clip_id, []).append((at_sec, best_bb))
+                mp_faces.setdefault(mp_s, []).append((at_sec, best_bb))
+        for mp_s, f_series in mp_faces.items():
+            for cid_s in clips_by_mp.get(mp_s, []):
+                out[cid_s] = f_series
     return out
 
 
@@ -1253,8 +1279,8 @@ def run_step7(
             if abs(best_eff - float(lut_strength)) > 1e-6 or best_lut != blended_out_path:
                 blended_lut, eff_strength = build_blended_cube_lut(lut_path, best_eff, blended_out_path)
 
-    # 按源素材（media_path）汇总代表性画面统计：同一拍摄机位的相邻切段使用一致的机位对齐参数，杜绝同景跳色
-    media_stats_samples: Dict[str, List[Dict[str, float]]] = {}
+    # 按源素材（media_path）汇总代表性画面统计：每条源素材最多等距抽 4 段并并发测光，兼顾精度与速度
+    clips_by_media: Dict[str, List[Dict[str, Any]]] = {}
     for clip in edl["clips"]:
         mp = str(clip.get("media_path") or "")
         if not mp:
@@ -1262,8 +1288,26 @@ def run_step7(
         is_code = (clip["track_role"] == "code_broll") or bool((manifest_by_mp4.get(mp) or {}).get("source_is_code_scene"))
         if is_code:
             continue
-        st = _get_clip_stats(mp, float(clip.get("source_in_sec", 0.0)), float(clip.get("duration_sec", 2.0)))
-        media_stats_samples.setdefault(mp, []).append(st)
+        clips_by_media.setdefault(mp, []).append(clip)
+
+    stat_jobs: List[Tuple[str, float, float]] = []
+    for mp_k, c_list in clips_by_media.items():
+        if len(c_list) <= 4:
+            picked = c_list
+        else:
+            step_f = (len(c_list) - 1) / 3.0
+            picked = [c_list[int(round(k * step_f))] for k in range(4)]
+        for cp_s in picked:
+            stat_jobs.append((mp_k, float(cp_s.get("source_in_sec", 0.0)), float(cp_s.get("duration_sec", 2.0))))
+
+    media_stats_samples: Dict[str, List[Dict[str, float]]] = {}
+    if stat_jobs:
+        from concurrent.futures import ThreadPoolExecutor
+        def _probe_st(job: Tuple[str, float, float]) -> Tuple[str, Dict[str, float]]:
+            return job[0], probe_clip_color_stats(Path(job[0]), job[1], job[2])
+        with ThreadPoolExecutor(max_workers=min(4, len(stat_jobs))) as pool:
+            for mp_k, st_r in pool.map(_probe_st, stat_jobs):
+                media_stats_samples.setdefault(mp_k, []).append(st_r)
 
     media_anchor_stats: Dict[str, Dict[str, float]] = {}
     for mp_k, st_list in media_stats_samples.items():

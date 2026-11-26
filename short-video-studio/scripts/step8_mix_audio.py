@@ -627,10 +627,20 @@ def run_step8(
                 # 避免盲目拉大低频把 alimiter 压限触发，反把人声高频一起压塌。
                 loc_seg = sfx_arr[loc0:loc1].astype(np.float64)
                 nosfx_loc_pk = float(np.max(np.abs(pre_mix_nosfx[loc0:loc1])))
-                hf_boost = min(4.0, max(0.0, (need_scale - 1.0) * 1.25))
-                loc_hf = np.column_stack([sp_sig.sosfiltfilt(sos_hf, loc_seg[:, ch]) for ch in range(2)])
-                loc_adj = loc_seg * min(1.35, 1.0 + 0.25 * (need_scale - 1.0)) + hf_boost * loc_hf
-                safe_ceil = min(0.62, max(0.44, 0.98 - nosfx_loc_pk))
+                is_sparse_sfx = (len(cues_early) <= 3 and cur_lift_db < 3.0)
+                if is_sparse_sfx:
+                    # 极稀疏低频敲锣等音效：先轻度衰减 240Hz 以下次低频腾出峰值余量，再加强 2–8kHz 泛音存在感
+                    sos_hp_sp = sp_sig.butter(2, 240.0, btype="highpass", fs=float(SR), output="sos")
+                    loc_base = np.column_stack([sp_sig.sosfiltfilt(sos_hp_sp, loc_seg[:, ch]) for ch in range(2)])
+                    hf_boost = min(8.0, max(1.5, (need_scale - 1.0) * 2.2))
+                    loc_hf = np.column_stack([sp_sig.sosfiltfilt(sos_hf, loc_base[:, ch]) for ch in range(2)])
+                    loc_adj = loc_base * 0.85 + hf_boost * loc_hf
+                    safe_ceil = min(0.76, max(0.56, 0.98 - nosfx_loc_pk))
+                else:
+                    hf_boost = min(4.0, max(0.0, (need_scale - 1.0) * 1.25))
+                    loc_hf = np.column_stack([sp_sig.sosfiltfilt(sos_hf, loc_seg[:, ch]) for ch in range(2)])
+                    loc_adj = loc_seg * min(1.35, 1.0 + 0.25 * (need_scale - 1.0)) + hf_boost * loc_hf
+                    safe_ceil = min(0.62, max(0.44, 0.98 - nosfx_loc_pk))
                 adj_pk = float(np.max(np.abs(loc_adj)))
                 if adj_pk > safe_ceil:
                     loc_adj = np.tanh(loc_adj / max(1e-4, safe_ceil)) * safe_ceil

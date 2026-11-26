@@ -1065,9 +1065,18 @@ def _v6_style_active(
 
 
 def _v6_director_enabled(pipeline_dir: Path, v6_director: bool, style_id: Optional[str] = None) -> bool:
-    """V6 是否接管画面：显式开启、已落盘导演总谱，或 style_02 的动态舞台已开启。"""
-    if v6_director or (pipeline_dir / "03b_director_plan.json").is_file():
+    """V6 是否接管画面：显式开启、已落盘非原生模式导演总谱，或 style_02 的动态舞台已开启。"""
+    if v6_director:
         return True
+    dp_p = pipeline_dir / "03b_director_plan.json"
+    if dp_p.is_file():
+        if style_id is None or style_id == "style_02":
+            return True
+        try:
+            if not bool(read_json(dp_p).get("native_style_mode")):
+                return True
+        except (OSError, ValueError):
+            return True
     if style_id is not None and style_id != "style_02":
         return False
     pkg_path = pipeline_dir / "06_packaging.json"
@@ -1336,7 +1345,7 @@ def run_visual_to_delivery(
                 step4_kwargs["enable_v6_director"] = True
             run_step4(pipeline_dir, **step4_kwargs)
         _record_cli_style_choices(pipeline_dir, style_id, subtitle_template, lut_name)
-        run_step5(pipeline_dir, track=track, template_id=subtitle_template)
+        run_step5(pipeline_dir, track=track, template_id=subtitle_template, enable_v6_director=bool(v6_ready))
         step6_kwargs: Dict[str, Any] = dict(
             style_id=style_id, no_flower_text=no_flower_text,
             keep_manual_texts=keep_existing_edl and keep_edl, no_v6_director=no_v6_director,

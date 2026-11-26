@@ -82,7 +82,7 @@ _COMMON_TWO_CHAR_WORDS = {
     "一雇人", "三样", "三样全碎", "分工计酬", "计酬监督", "分工计酬监督", "去别人",
     "喺𠮶度", "俾大家", "我哋嘅", "食过嘅话", "新鲜嘅海鲜",
     "好多新鲜嘅", "一间六百平", "六百平嘅店", "一间六百平嘅店", "嘅店", "唔会", "好抵食",
-    "两百多万", "两百万", "红灯笼", "广式点心", "古风灯笼", "手工制作", "长在", "前提上", "答清楚",
+    "两百多万", "两百万", "红灯笼", "广式点心", "古风灯笼", "手工制作", "长在", "前提上", "答清楚", "做法", "看到", "前提",
 }
 _SPOKEN_CANTONESE_COHESIVE = {
     "我哋", "佢哋", "你哋", "就系", "唔系", "唔知", "唔好", "唔同", "依家", "点解", "跟住",
@@ -94,7 +94,7 @@ _COHESIVE_PROTECT_PHRASES = (
     "百度文库", "管理制度", "装修公司", "海底捞", "师徒制", "小老板", "公司名",
     "第一反应", "哪一环", "两个人", "其他人", "别人", "去别人", "私信我", "还有种", "踏实感",
     "发给", "打印出来", "下载了", "搬不过来", "答不上来", "分到钱", "挣出来",
-    "一雇人", "三样全碎", "分工计酬", "计酬监督", "分工计酬监督",
+    "一雇人", "三样全碎", "分工计酬", "计酬监督", "分工计酬监督", "做法", "看到", "前提", "答清楚", "先答清楚",
     "喺𠮶度", "俾大家", "我哋嘅", "食过嘅话", "好抵食", "新鲜嘅海鲜",
     "一间六百平", "六百平嘅店", "一间六百平嘅店", "两百多万", "两百万", "红灯笼", "广式点心", "手工制作",
 )
@@ -219,9 +219,28 @@ def tokenize_semantic_words(sentence: str, terms: Optional[List[str]] = None) ->
     try:
         import jieba  # type: ignore
         jieba.setLogLevel(60)
+        hard_prot = sorted(
+            {tm for tm in (prot_set | set(_COHESIVE_PROTECT_PHRASES) | _SPOKEN_CANTONESE_COHESIVE) if len(tm) >= 2 and tm in s},
+            key=len,
+            reverse=True,
+        )
         for tm in sorted(prot_set | _COMMON_TWO_CHAR_WORDS | set(_COHESIVE_PROTECT_PHRASES), key=len, reverse=True):
             jieba.add_word(tm, freq=2_000_000)
-        raw_toks = _merge_numeral_units([t for t in jieba.cut(s, HMM=True) if t])
+        # 先按保护词原子拆段再分段 jieba，彻底杜绝 HMM 未登录黏合把「别人」劈成「别|人那成立」
+        if hard_prot:
+            prot_re = re.compile("|".join(re.escape(tm) for tm in hard_prot))
+            pieces: List[str] = []
+            last_i = 0
+            for m_p in prot_re.finditer(s):
+                if m_p.start() > last_i:
+                    pieces.extend([t for t in jieba.cut(s[last_i:m_p.start()], HMM=True) if t])
+                pieces.append(m_p.group(0))
+                last_i = m_p.end()
+            if last_i < len(s):
+                pieces.extend([t for t in jieba.cut(s[last_i:], HMM=True) if t])
+            raw_toks = _merge_numeral_units(pieces)
+        else:
+            raw_toks = _merge_numeral_units([t for t in jieba.cut(s, HMM=True) if t])
     except Exception:
         # 零依赖高质量分词兜底：先整块匹配保护词/数字+单位/英文词，再按虚词与常见词切分
         i, n = 0, len(s)
@@ -423,14 +442,8 @@ def dp_segment_short_lines(
             prot_spans.append((m.start(), m.end()))
 
     gaps_map = word_gaps or {}
-    if gaps_map:
-        bound_set = set(bounds)
-        for gpos, gsec in gaps_map.items():
-            if gsec >= 0.12 and 0 < gpos < len(raw) and not any(ps < gpos < pe for ps, pe in prot_spans):
-                bound_set.add(gpos)
-        if len(bound_set) > len(bounds):
-            bounds = sorted(bound_set)
-            nb = len(bounds)
+    # 声学气口仅在现有语义词边界上奖励自然停顿，严禁把已分好的双字/多字整词（如「做法」「别人」）从中间劈开！
+    total_compact_len = len(_disp(0, len(raw)).replace(" ", ""))
 
     def _break_cost(pos: int) -> float:
         if pos <= 0 or pos >= len(raw):
@@ -497,7 +510,7 @@ def dp_segment_short_lines(
                             mid_gap_pen += 14.0
             short_pen = max(0, 5 - compact_len) * 2.5 if j < nb - 1 or i > 0 else 0.0
             if compact_len <= 3 and (i > 0 or j < nb - 1):
-                short_pen += 12.0
+                short_pen += 80.0 if total_compact_len >= 6 else 12.0
             cand = best[i] + _break_cost(bounds[j]) + short_pen + mid_gap_pen + 1.0
             # 一屏之内不允许跨句：span 中段（非末尾）夹着句末标点 = 先把两句话粘成一行，重罚
             mid = raw[bounds[i]:bounds[j]]
@@ -1048,25 +1061,32 @@ def _merge_short_chunks(
         w, _ = _measure_text_px(str(txt or ""), font_path, font_size)
         return w > int(max_px)
 
+    def _clean_char_len(txt: str) -> int:
+        return len(re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", str(txt or "")))
+
     out: List[Dict[str, Any]] = []
     for ch in chunks:
-        txt = str(ch.get("text") or "").replace(" ", "")
-        if out and len(txt) < min_chars:
+        ch_clean = dict(ch)
+        # 剥掉被断行留在行首的孤立标点（如 '：虾饺排' -> '虾饺排'），避免既难看又以 4 字符长度骗过 <=3 字残句检测
+        _raw_t = str(ch_clean.get("text") or "").lstrip("：；，、,;:。！？!? ")
+        if _raw_t:
+            ch_clean["text"] = _raw_t
+        if out and _clean_char_len(ch_clean.get("text") or "") < min_chars:
             prev = out[-1]
-            gap = float(ch["start_sec"]) - float(prev["end_sec"])
-            merged_txt = str(prev.get("text") or "") + str(ch.get("text") or "")
+            gap = float(ch_clean["start_sec"]) - float(prev["end_sec"])
+            merged_txt = str(prev.get("text") or "") + str(ch_clean.get("text") or "")
             if gap <= 0.50 and not _too_wide(merged_txt):
                 prev["text"] = merged_txt
-                prev["end_sec"] = max(float(prev["end_sec"]), float(ch["end_sec"]))
-                prev["words"] = list(prev.get("words") or []) + list(ch.get("words") or [])
-                prev["keywords"] = list(dict.fromkeys(list(prev.get("keywords") or []) + list(ch.get("keywords") or [])))
+                prev["end_sec"] = max(float(prev["end_sec"]), float(ch_clean["end_sec"]))
+                prev["words"] = list(prev.get("words") or []) + list(ch_clean.get("words") or [])
+                prev["keywords"] = list(dict.fromkeys(list(prev.get("keywords") or []) + list(ch_clean.get("keywords") or [])))
                 continue
-        out.append(dict(ch))
+        out.append(ch_clean)
     # 并不到一起的残块：按**完整语义词元**从邻块借词，绝不按单字劈开双字词或保护词（「好|傻」「两百|平」「桑拿|鸡」）
     if len(out) >= 2:
         out = _rebalance_short_chunks(out, min_chars, max_px, font_path, font_size, protected_terms=protected_terms)
     # 头一块太短（第一块就只剩两个字）并到后一块
-    if len(out) >= 2 and len(str(out[0].get("text") or "")) < min_chars:
+    if len(out) >= 2 and _clean_char_len(out[0].get("text") or "") < min_chars:
         first, second = out[0], out[1]
         merged_txt = str(first.get("text") or "") + str(second.get("text") or "")
         if float(second["start_sec"]) - float(first["end_sec"]) <= 0.50 and not _too_wide(merged_txt):
@@ -1080,22 +1100,21 @@ def _merge_short_chunks(
     while changed and len(out) >= 2:
         changed = False
         for k in range(len(out)):
-            cur_t = str(out[k].get("text") or "").replace(" ", "")
-            if len(cur_t) >= min_chars:
+            if _clean_char_len(out[k].get("text") or "") >= min_chars:
                 continue
             cand_neighbors: List[Tuple[int, int]] = []
             if k - 1 >= 0:
                 gap_prev = float(out[k]["start_sec"]) - float(out[k - 1]["end_sec"])
                 if gap_prev <= 1.20:
-                    cand_neighbors.append((len(str(out[k - 1].get("text") or "").replace(" ", "")), k - 1))
+                    cand_neighbors.append((_clean_char_len(out[k - 1].get("text") or ""), k - 1))
             if k + 1 < len(out):
                 gap_next = float(out[k + 1]["start_sec"]) - float(out[k]["end_sec"])
                 if gap_next <= 1.20:
-                    cand_neighbors.append((len(str(out[k + 1].get("text") or "").replace(" ", "")), k + 1))
+                    cand_neighbors.append((_clean_char_len(out[k + 1].get("text") or ""), k + 1))
             for _, nb_i in sorted(cand_neighbors):
                 lo, hi = (nb_i, k) if nb_i < k else (k, nb_i)
                 m_txt = str(out[lo].get("text") or "") + str(out[hi].get("text") or "")
-                if len(m_txt.replace(" ", "")) <= 12 and not _too_wide(m_txt):
+                if _clean_char_len(m_txt) <= 12 and not _too_wide(m_txt):
                     out[lo]["text"] = m_txt
                     out[lo]["end_sec"] = max(float(out[lo]["end_sec"]), float(out[hi]["end_sec"]))
                     out[lo]["words"] = list(out[lo].get("words") or []) + list(out[hi].get("words") or [])
@@ -1118,7 +1137,7 @@ def _rebalance_short_chunks(
 ) -> List[Dict[str, Any]]:
     """不足 min_chars 的残句：按**完整语义词/保护词**向邻块借词，严禁按单字从词中间劈半。"""
     def _chars(txt: str) -> int:
-        return len(str(txt or "").replace(" ", ""))
+        return len(re.sub(r"[^\u4e00-\u9fffA-Za-z0-9]", "", str(txt or "")))
 
     def _too_wide(txt: str) -> bool:
         if not max_px:
@@ -1126,7 +1145,7 @@ def _rebalance_short_chunks(
         w, _ = _measure_text_px(str(txt or ""), font_path, font_size)
         return w > int(max_px)
 
-    eff_terms = list(dict.fromkeys(list(protected_terms or []) + list(_SPOKEN_CANTONESE_COHESIVE)))
+    eff_terms = list(dict.fromkeys(list(protected_terms or []) + list(_SPOKEN_CANTONESE_COHESIVE) + list(_COHESIVE_PROTECT_PHRASES)))
 
     def _word_spans(nb_words: List[Dict[str, Any]]) -> List[Tuple[int, int]]:
         """把 nb_words 按语义分词划分成不可再拆的 token 索引区间 [(s_i, e_i), ...]。"""
@@ -1294,7 +1313,33 @@ def split_sentence_into_chunks(
         elif any(w.get("is_keyword") for w in words) or sent_kws:
             # 只要做过关键词清洗，同步按完整清洗结果重染（含 cleaned==[] 时清掉上游脏标签，同时不误伤单元测试构造的 words 标色）
             words = _paint_keyword_flags(words, sent_kws)
-    eff_terms = load_protected_terms(extra_terms=list(protected_terms or []) + [str(k) for k in sent_kws])
+    # 过滤上游 ASR 关键词中跨词/半拉噪声（如「文库下载」交叉「百度文库」、「人那成立」交叉「别人」、「是因」截断「是因为」），
+    # 绝不让脏关键词进入保护词表锁死 DP 断句边界或劈开固定词组
+    _known_cohesive = set(_COHESIVE_PROTECT_PHRASES) | _SPOKEN_CANTONESE_COHESIVE | set(protected_terms or [])
+    _known_spans: List[Tuple[int, int]] = []
+    for _kt in _known_cohesive:
+        if len(_kt) >= 2:
+            for _mk in re.finditer(re.escape(_kt), raw_sent_text):
+                _known_spans.append((_mk.start(), _mk.end()))
+    _kw_bad_head = set("是的了在把被从跟比和与让给那这人")
+    safe_kws_for_prot: List[str] = []
+    for _kw in sent_kws:
+        _ks = str(_kw).strip()
+        if not (2 <= len(_ks) <= 4) or _ks[0] in _kw_bad_head or _ks in _STOP_KEYWORDS:
+            continue
+        _crosses = False
+        for _mk in re.finditer(re.escape(_ks), raw_sent_text):
+            a_k, b_k = _mk.start(), _mk.end()
+            for a_c, b_c in _known_spans:
+                # 若与已知完整保护词发生部分交叉或仅为真子串，拒绝用它锁死切分
+                if (a_k < b_c and b_k > a_c) and not (a_k == a_c and b_k == b_c):
+                    _crosses = True
+                    break
+            if _crosses:
+                break
+        if not _crosses:
+            safe_kws_for_prot.append(_ks)
+    eff_terms = load_protected_terms(extra_terms=list(protected_terms or []) + safe_kws_for_prot)
 
     if not words:
         raw_t = str(sent.get("text", "")).strip()
@@ -1640,6 +1685,7 @@ def run_step5(
     pipeline_dir: Path,
     track: str = "store",
     template_id: Optional[str] = None,
+    enable_v6_director: Optional[bool] = None,
 ) -> Dict[str, Any]:
     audio_events = read_json(pipeline_dir / "03_audio_events.json")
     edl_p = pipeline_dir / "04_edl.json"
@@ -1687,20 +1733,37 @@ def run_step5(
     _kinetic_stage_suppressed = False
     try:
         from kinetic_choreographer import is_kinetic_stage_style
-        _has_dir_plan = (Path(pipeline_dir) / "03b_director_plan.json").is_file()
-        _kinetic_stage_suppressed = bool(is_kinetic_stage_style(template_id, enable_v6_director=_has_dir_plan))
+        if enable_v6_director is not None:
+            _v6_sub_flag = bool(enable_v6_director)
+        else:
+            _dp_path = Path(pipeline_dir) / "03b_director_plan.json"
+            if _dp_path.is_file():
+                _dp_doc = read_json(_dp_path)
+                _v6_sub_flag = not bool(_dp_doc.get("native_style_mode"))
+            else:
+                _v6_sub_flag = False
+        _kinetic_stage_suppressed = bool(is_kinetic_stage_style(template_id, enable_v6_director=_v6_sub_flag))
     except Exception:
         _kinetic_stage_suppressed = False
 
     idx = 1
     suppressed_count = 0
-    # 每套风格的字数上限来自源草稿实测（7–96 字），不再统一压到 14 字
-    tpl_char_cap = max(6, int(tpl.get("max_chars_hard", 96)))
-    base_fs = int(tpl.get("font_size", 62))
+    # 合并 V10.0 真母本常规字幕覆写（如 style_15 常规字幕实为精致 58px/10字而非开场 94px/4字拼音巨标），
+    # 同时严格保证常规字幕单行上限 >= 8 字（数学防死锁，杜绝 max_chars<=7 强制拆出 <=3 字残句）
+    _truth_sub_patch: Dict[str, Any] = {}
+    if not _kinetic_stage_suppressed:
+        try:
+            from style_visual_truth import get_visual_truth
+            _truth_sub_patch = dict(get_visual_truth(template_id).get("subtitle_patch") or {})
+        except Exception:
+            _truth_sub_patch = {}
+    tpl_char_cap = max(8, int(tpl.get("max_chars_hard", 96)))
+    base_fs = int(_truth_sub_patch.get("font_size") or tpl.get("font_size", 62))
     _line_px = SUBTITLE_SYMMETRIC_MAX_W - 8
     _chars_by_font = max(4, int(SUBTITLE_SYMMETRIC_MAX_W // max(1, base_fs)))
-    tpl_max_chars = max(4, min(tpl_char_cap, int(tpl.get("max_chars_per_line", 10)), _chars_by_font))
-    kw_scale_f = float(tpl.get("keyword_scale", 1.133))
+    _cfg_max_chars = int(_truth_sub_patch.get("max_chars_per_line") or tpl.get("max_chars_per_line", 10))
+    tpl_max_chars = max(4, min(tpl_char_cap, _cfg_max_chars, _chars_by_font))
+    kw_scale_f = float(_truth_sub_patch.get("keyword_scale") or tpl.get("keyword_scale", 1.133))
     eff_measure_fs = base_fs
     dual_banner = bool(tpl.get("dual_line_banner"))
     if _kinetic_stage_suppressed:
@@ -1710,9 +1773,9 @@ def run_step5(
         chunk_px = _line_px
         chunk_max_chars = min(tpl_char_cap, max(9, min(11 if template_id == "style_02" else 10, tpl_char_cap)))
     else:
-        chunk_fs = min(84, max(62, eff_measure_fs)) if dual_banner else eff_measure_fs
+        chunk_fs = min(84, max(62, eff_measure_fs)) if dual_banner else min(eff_measure_fs, int(_line_px // 8))
         chunk_px = int(_line_px * 1.85) if dual_banner else _line_px
-        chunk_max_chars = max(tpl_max_chars, min(tpl_char_cap, max(8, int(tpl.get("max_chars_per_line", 10))))) if dual_banner else tpl_max_chars
+        chunk_max_chars = max(8, tpl_max_chars, min(tpl_char_cap, max(8, _cfg_max_chars))) if dual_banner else max(8, tpl_max_chars)
 
     # 合并相邻极短无强标点碎句（<0.85s 且间隔 <0.16s），但严禁跨越序数/转折起句界或较大换气停顿
     merged_sentences: List[Dict[str, Any]] = []
@@ -1779,7 +1842,7 @@ def run_step5(
             sent_eff["display_keywords"] = _clean_display_keywords(sent_eff["display_keywords"], s_txt_full) or cleaned_kws
         if sent_eff.get("words"):
             sent_eff["words"] = _paint_keyword_flags(sent_eff["words"], cleaned_kws)
-        sent_prot = load_protected_terms(None, extra_terms=[*prot_terms, *(sent_eff.get("keywords") or [])])
+        sent_prot = list(prot_terms)
         _chunks = _merge_short_chunks(
             list(split_sentence_into_chunks(
                 sent_eff,
@@ -1857,7 +1920,9 @@ def run_step5(
             entries.append(entry_obj)
             idx += 1
 
-    # 跨句连贯助词护栏：消除句末切分留下的下一句首个「的/地/得/了/着/过/嘅」孤字开头（如「嘅店厨房」）
+    # 跨句连贯助词护栏：消除句末切分留下的下一句首个纯助词（「的/地/得/嘅/啲/嘛/呢/吧/啊/呀」，不含易作动词的「过/了/着」）
+    # 严禁把下句动词粘到前句序数词（如「第三」+「过了夫妻店」）；搬移时同步合并 merged_sentence_ids 并防下句变成 <=3 字残句！
+    _cross_sent_aux = frozenset("的地得嘅啲嘛呢吧啊呀")
     k_cross = 0
     while k_cross < len(entries) - 1:
         cur_e = entries[k_cross]
@@ -1865,14 +1930,65 @@ def run_step5(
         if not cur_e.get("suppressed") and not nxt_e.get("suppressed"):
             t0 = str(cur_e.get("text") or "")
             t1 = str(nxt_e.get("text") or "")
+            same_sent = str(cur_e.get("sentence_id") or "") == str(nxt_e.get("sentence_id") or "")
+            aux_set = _BAD_SUB_HEAD_AUX if same_sent else _cross_sent_aux
             if (
-                t0 and t1 and t1[0] in _BAD_SUB_HEAD_AUX
+                t0 and t1 and t1[0] in aux_set
+                and (same_sent or (len(t0.replace(" ", "")) >= 3 and not _CLAUSE_START_PROTECT_RE.match(t0.replace(" ", ""))))
                 and float(nxt_e["start_sec"]) - float(cur_e["end_sec"]) <= 0.35
                 and len(t0) <= 15
             ):
                 ch_mv = t1[0]
-                cur_e["text"] = t0 + ch_mv
-                nxt_e["text"] = t1[1:]
+                cand_t0 = t0 + ch_mv
+                cand_t1 = t1[1:]
+                # 预判剥离后是否会把下句打成 <=3 字残句；若是，先尝试把残剩段并入下下条同句块或整条合并，均不可行则不剥离
+                cand_t1_compact = cand_t1.replace(" ", "")
+                merge_into_next2 = False
+                merge_whole_into_cur = False
+                if cand_t1_compact and len(cand_t1_compact) < MIN_CHUNK_CHARS:
+                    if k_cross + 2 < len(entries) and not entries[k_cross + 2].get("suppressed"):
+                        n2 = entries[k_cross + 2]
+                        if (
+                            str(n2.get("sentence_id") or "") == str(nxt_e.get("sentence_id") or "")
+                            and float(n2["start_sec"]) - float(nxt_e["end_sec"]) <= 0.50
+                        ):
+                            m2_txt = cand_t1 + str(n2.get("text") or "")
+                            m2_w, _ = _measure_text_px(m2_txt, font_path, chunk_fs)
+                            if len(m2_txt.replace(" ", "")) <= 12 and m2_w <= chunk_px:
+                                merge_into_next2 = True
+                    if not merge_into_next2:
+                        m0_txt = t0 + t1
+                        m0_w, _ = _measure_text_px(m0_txt, font_path, chunk_fs)
+                        if len(m0_txt.replace(" ", "")) <= 12 and m0_w <= chunk_px:
+                            merge_whole_into_cur = True
+                    if not merge_into_next2 and not merge_whole_into_cur:
+                        k_cross += 1
+                        continue
+
+                def _merge_sids(dst_e: Dict[str, Any], src_e: Dict[str, Any]) -> None:
+                    sids = list(dst_e.get("merged_sentence_ids") or ([dst_e["sentence_id"]] if dst_e.get("sentence_id") else []))
+                    src_sids = list(src_e.get("merged_sentence_ids") or ([src_e["sentence_id"]] if src_e.get("sentence_id") else []))
+                    for sid_x in src_sids:
+                        if sid_x and sid_x not in sids:
+                            sids.append(sid_x)
+                    if len(sids) > 1:
+                        dst_e["merged_sentence_ids"] = sids
+
+                if merge_whole_into_cur:
+                    cur_e["text"] = t0 + t1
+                    cur_e["end_sec"] = max(float(cur_e["end_sec"]), float(nxt_e["end_sec"]))
+                    cur_e["words"] = list(cur_e.get("words") or []) + list(nxt_e.get("words") or [])
+                    cur_e["keywords"] = list(dict.fromkeys(list(cur_e.get("keywords") or []) + list(nxt_e.get("keywords") or [])))
+                    _merge_sids(cur_e, nxt_e)
+                    bb0, dy0 = _compute_authoritative_subtitle_bbox(cur_e["text"], tpl, font_path, [], keywords=cur_e.get("keywords"), terms=prot_terms)
+                    cur_e["bbox"] = cur_e["final_bbox"] = bb0
+                    cur_e["face_avoid_dy"] = int(dy0)
+                    cur_e["safe_zone_ok"], cur_e["safe_msg"] = check_bbox_in_safe_zone(bb0)
+                    entries.pop(k_cross + 1)
+                    continue
+
+                cur_e["text"] = cand_t0
+                nxt_e["text"] = cand_t1
                 cw = list(cur_e.get("words") or [])
                 nw = list(nxt_e.get("words") or [])
                 if nw and str(nw[0].get("word") or "")[:1] == ch_mv:
@@ -1884,12 +2000,26 @@ def run_step5(
                         cur_e["end_sec"] = round(float(mv_w["end_sec"]), 4)
                     if nw and nw[0].get("start_sec") is not None:
                         nxt_e["start_sec"] = round(float(nw[0]["start_sec"]), 4)
+                _merge_sids(cur_e, nxt_e)
                 bb0, dy0 = _compute_authoritative_subtitle_bbox(cur_e["text"], tpl, font_path, [], keywords=cur_e.get("keywords"), terms=prot_terms)
                 cur_e["bbox"] = cur_e["final_bbox"] = bb0
                 cur_e["face_avoid_dy"] = int(dy0)
                 cur_e["safe_zone_ok"], cur_e["safe_msg"] = check_bbox_in_safe_zone(bb0)
                 if not nxt_e["text"].strip():
                     cur_e["end_sec"] = max(float(cur_e["end_sec"]), float(nxt_e["end_sec"]))
+                    entries.pop(k_cross + 1)
+                    continue
+                if merge_into_next2:
+                    n2 = entries[k_cross + 2]
+                    n2["text"] = nxt_e["text"] + str(n2.get("text") or "")
+                    n2["start_sec"] = min(float(nxt_e["start_sec"]), float(n2["start_sec"]))
+                    n2["words"] = list(nxt_e.get("words") or []) + list(n2.get("words") or [])
+                    n2["keywords"] = list(dict.fromkeys(list(nxt_e.get("keywords") or []) + list(n2.get("keywords") or [])))
+                    _merge_sids(n2, nxt_e)
+                    bb2, dy2 = _compute_authoritative_subtitle_bbox(n2["text"], tpl, font_path, [], keywords=n2.get("keywords"), terms=prot_terms)
+                    n2["bbox"] = n2["final_bbox"] = bb2
+                    n2["face_avoid_dy"] = int(dy2)
+                    n2["safe_zone_ok"], n2["safe_msg"] = check_bbox_in_safe_zone(bb2)
                     entries.pop(k_cross + 1)
                     continue
                 bb1, dy1 = _compute_authoritative_subtitle_bbox(nxt_e["text"], tpl, font_path, [], keywords=nxt_e.get("keywords"), terms=prot_terms)

@@ -364,7 +364,7 @@ def _flower_label_for_style(label: str, chars_max: int) -> str:
 
 
 def _display_keywords(sent: Dict[str, Any]) -> List[str]:
-    """上屏用的关键词：优先取 step3 过滤好的 `display_keywords`（只在正文里出现过的词），并自动还原被上游截断的数字单位（「六百→六百平」）。"""
+    """上屏用的关键词：优先取 step3 过滤好的 `display_keywords`（只在正文里出现过的自然完整实词），自动剔除跨词截断碎片并还原数字单位。"""
     txt = str(sent.get("text") or "")
     got = sent.get("display_keywords")
     raw_list = (
@@ -372,15 +372,41 @@ def _display_keywords(sent: Dict[str, Any]) -> List[str]:
         if isinstance(got, list)
         else [str(k) for k in (sent.get("keywords") or []) if str(k).strip() and str(k) in txt]
     )
+    _stop_kws = {
+        "一个", "一些", "这种", "那个", "这个", "什么", "怎么", "两个", "一次", "下来", "出来",
+        "印出来", "么活", "干分", "拜师仪", "法找他", "二一组",
+    }
+    _bad_head = set("的了呢吗吧啊呀么嘅啲喺唔把被从跟比和与括")
+    _bad_tail = set("的了呢吗吧啊呀么嘅啲喺从跟比和与改")
+    _valid_bounds: Optional[set] = None
+    if txt:
+        try:
+            import jieba as _jb_dk  # type: ignore
+            _jb_dk.setLogLevel(60)
+            _toks_dk = [re.sub(r"[^\u4e00-\u9fffA-Za-z0-9+]+", "", t) for t in _jb_dk.lcut(txt)]
+            _toks_dk = [t for t in _toks_dk if t]
+            _vb: set = set()
+            for _i_d in range(len(_toks_dk)):
+                _vb.add(_toks_dk[_i_d])
+                if _i_d + 1 < len(_toks_dk):
+                    _vb.add(_toks_dk[_i_d] + _toks_dk[_i_d + 1])
+                if _i_d + 2 < len(_toks_dk):
+                    _vb.add(_toks_dk[_i_d] + _toks_dk[_i_d + 1] + _toks_dk[_i_d + 2])
+            _valid_bounds = _vb
+        except Exception:
+            _valid_bounds = None
     out: List[str] = []
     for k in raw_list:
         ks = re.sub(r"\s+", "", k)
-        if ks in ("一个", "一些", "这种", "那个", "这个"):
+        if not ks or ks in _stop_kws or ks[0] in _bad_head or ks[-1] in _bad_tail:
             continue
         if ks in txt and re.fullmatch(r"[零〇一二两三四五六七八九十百千万亿0-9]+分?", ks):
             m_u = re.search(re.escape(ks) + r"(?:分之[一二三四五六七八九十]+(?![百千万亿])|[平平米个间张条倍万亿块元]?)", txt)
             if m_u and len(m_u.group(0)) > len(ks):
                 ks = m_u.group(0)
+        if _valid_bounds is not None and ks in txt and len(ks) >= 2 and not re.search(r"\d", ks):
+            if ks not in _valid_bounds:
+                continue
         if ks and ks not in out:
             out.append(ks)
     return out
@@ -446,14 +472,14 @@ def _enhance_sfx_presence(arr: np.ndarray, sr: int = SR) -> np.ndarray:
         sos_hp = sp_sig.butter(2, min(115.0, float(sr) * 0.25), btype="highpass", fs=float(sr), output="sos")
         out = np.column_stack([sp_sig.sosfiltfilt(sos_hp, arr[:, ch].astype(np.float64)) for ch in range(arr.shape[1])])
         hp_hf_rms = float(np.sqrt(np.mean(sp_sig.sosfiltfilt(sos, out.mean(axis=1)) ** 2) + 1e-12))
-        target_hf = max(hp_hf_rms, full_rms * 0.48)
-        alpha = min(7.0, max(0.0, (target_hf - hp_hf_rms) / max(1e-5, hp_hf_rms)))
+        target_hf = max(hp_hf_rms, full_rms * 0.78)
+        alpha = min(18.0, max(0.0, (target_hf - hp_hf_rms) / max(1e-5, hp_hf_rms)))
         if alpha > 0.0:
             out[:, 0] += alpha * sp_sig.sosfiltfilt(sos, out[:, 0])
             out[:, 1] += alpha * sp_sig.sosfiltfilt(sos, out[:, 1])
         pk = float(np.max(np.abs(out)))
-        if pk > 0.72:
-            out = np.tanh(out / 0.72) * 0.68
+        if pk > 0.86:
+            out = np.tanh(out / 0.86) * 0.84
         return out.astype(np.float32)
     except Exception:
         return arr
@@ -1045,34 +1071,104 @@ def run_step6(
             ne["final_bbox"] = fb
             visual_elements.append(ne)
     else:
-        # 1. 若风格启用「顶部常驻标题栏」(如 style_05/06/08/09/12/14/22)，严格落在安全区 y=162；suppress_top_dup 严禁顶部常驻重复条
-        if use_top_bar and not suppress_top_dup and total_dur >= 3.2 and not overlaps_code(0, top_ef):
-            top_label = f"{hook_badge_text[:10]}"
-            top_w = _measure_pkg_badge_width(top_label, pkg_font_path, SUBTITLE_SYMMETRIC_MAX_W, target_fs=34, min_w=280)
-            top_bb = {"x": SUBTITLE_CENTER_X - top_w // 2, "y": 162, "w": top_w, "h": 58}
+        # 1. 若风格启用「顶部常驻标题栏」(如 style_03/06/08/12 真母本全片常驻双行标)，严格落在安全区 y>=162
+        import style_visual_truth as svt_pkg
+        _tb_truth = (
+            svt_pkg.get_persistent_top_bar_spec(style_id)
+            if (total_dur >= 20.0 or (pipeline_dir / "03b_director_plan.json").is_file())
+            else None
+        )
+        _emit_top_bar = bool(_tb_truth) or (use_top_bar and not suppress_top_dup)
+        if _emit_top_bar and total_dur >= 3.2 and not overlaps_code(0, top_ef):
+            if _tb_truth:
+                _dp_p6 = pipeline_dir / "03b_director_plan.json"
+                _dp_doc6 = read_json(_dp_p6) if _dp_p6.is_file() else None
+                _tb_l1, _tb_l2 = svt_pkg.extract_top_bar_two_lines(
+                    audio_events.get("sentences") or [], director_plan=_dp_doc6, fallback_hook=hook_badge_text,
+                )
+                top_label = _tb_l1
+                top_sub = _tb_l2
+                top_end_f = total_frames if _tb_truth.get("full_duration") else top_ef
+                top_y_pos = max(SAFE_ZONE["y_min"], int(_tb_truth.get("y") or 168))
+                top_w = min(SUBTITLE_SYMMETRIC_MAX_W, 640)
+                top_x_pos = 72 if _tb_truth.get("mode") == "s08_slash_dual_top_left" else (SUBTITLE_CENTER_X - top_w // 2)
+                top_bb = {"x": top_x_pos, "y": top_y_pos, "w": top_w, "h": 150}
+            else:
+                top_label = f"{hook_badge_text[:10]}"
+                top_sub = ""
+                top_end_f = top_ef
+                top_w = _measure_pkg_badge_width(top_label, pkg_font_path, SUBTITLE_SYMMETRIC_MAX_W, target_fs=34, min_w=280)
+                top_bb = {"x": SUBTITLE_CENTER_X - top_w // 2, "y": 162, "w": top_w, "h": 58}
             ok_top, _ = check_bbox_in_safe_zone(top_bb)
-            visual_elements.append({
-                "id": f"pkg_{len(visual_elements)+1:03d}",
-                "kind": "persistent_top_bar",
-                "overlay_mode": "top_bar",
-                "fg_hex": _safe_readable_fg(flower_spec.get("center_burst_color"), "#FFF589"),
-                "stroke_hex": "#000000",
-                "text_or_asset": top_label,
-                "start_frame": 0,
-                "end_frame": top_ef,
-                "read_hold_sec": round(top_ef / float(fps), 2),
-                "aligned_sfx_or_accent_frame": 0,
-                "alignment_error_frames": 0,
-                "bbox": top_bb,
-                "final_bbox": top_bb,
-                "safe_zone_ok": ok_top,
-                "jianying_anim_name": str(_pair_for_slot(len(visual_elements)).get("jianying_anim_name") or default_jy_anim),
-                "anim_duration_ms": int(_pair_for_slot(len(visual_elements)).get("anim_duration_ms", 400)),
-                "paired_jianying_sfx": str(_pair_for_slot(len(visual_elements)).get("jianying_sfx_name", "提示音")),
-                "trigger": "hook",
-                "policy": f"{style_id} 顶部常驻标语（源草稿 packaging 结构件，按整条停留，不受花字密度约束）",
-                "reason": f"{style_id} 顶部常驻主题标语栏",
-            })
+            # 常驻顶栏遇 code_broll 代码数据卡自动礼貌分段退让，严格满足 0 代码卡碰撞与 >=1.4s 阅读停留
+            _tb_segs: List[Tuple[int, int]] = [(0, top_end_f)]
+            for _cs_c, _ce_c in sorted(code_ranges):
+                _next_segs: List[Tuple[int, int]] = []
+                for _sa, _sb in _tb_segs:
+                    if _sb <= _cs_c or _sa >= _ce_c:
+                        _next_segs.append((_sa, _sb))
+                    else:
+                        if _sa < _cs_c:
+                            _next_segs.append((_sa, _cs_c))
+                        if _ce_c < _sb:
+                            _next_segs.append((_ce_c, _sb))
+                _tb_segs = _next_segs
+            _min_tb_f = int(math.ceil(1.4 * fps))
+            _tb_segs = [(a_t, b_t) for a_t, b_t in _tb_segs if b_t - a_t >= _min_tb_f]
+            for _sa_t, _sb_t in _tb_segs:
+                visual_elements.append({
+                    "id": f"pkg_{len(visual_elements)+1:03d}",
+                    "kind": "persistent_top_bar",
+                    "overlay_mode": "top_bar",
+                    "top_bar_mode": str((_tb_truth or {}).get("mode") or ""),
+                    "fg_hex": _safe_readable_fg((_tb_truth or {}).get("fg_top") or flower_spec.get("center_burst_color"), "#FFF589"),
+                    "stroke_hex": "#000000",
+                    "text_or_asset": top_label,
+                    "subtext": top_sub,
+                    "start_frame": _sa_t,
+                    "end_frame": _sb_t,
+                    "read_hold_sec": round((_sb_t - _sa_t) / float(fps), 2),
+                    "aligned_sfx_or_accent_frame": _sa_t,
+                    "alignment_error_frames": 0,
+                    "bbox": top_bb,
+                    "final_bbox": top_bb,
+                    "safe_zone_ok": ok_top,
+                    "jianying_anim_name": str(_pair_for_slot(len(visual_elements)).get("jianying_anim_name") or default_jy_anim),
+                    "anim_duration_ms": int(_pair_for_slot(len(visual_elements)).get("anim_duration_ms", 400)),
+                    "paired_jianying_sfx": str(_pair_for_slot(len(visual_elements)).get("jianying_sfx_name", "提示音")),
+                    "trigger": "hook",
+                    "policy": f"{style_id} 顶部常驻标语（源草稿 packaging 结构件，遇代码数据卡自动退让）",
+                    "reason": f"{style_id} 顶部常驻主题标语栏",
+                })
+            # style_06 真母本开场左侧人设头衔名片
+            if svt_pkg.get_visual_truth(style_id).get("opening_profile_card") and total_dur >= 12.0:
+                prof_sf = int(0.4 * fps)
+                prof_ef = min(total_frames, int(4.4 * fps))
+                if not overlaps_code(prof_sf, prof_ef):
+                    prof_bb = {"x": 76, "y": 960, "w": 380, "h": 92}
+                    visual_elements.append({
+                        "id": f"pkg_{len(visual_elements)+1:03d}",
+                        "kind": "opening_profile_card",
+                        "overlay_mode": "borderless",
+                        "fg_hex": "#FFFDF5",
+                        "stroke_hex": "#181612",
+                        "text_or_asset": "一线主理人",
+                        "subtext": "真实经验实拍复盘",
+                        "start_frame": prof_sf,
+                        "end_frame": prof_ef,
+                        "read_hold_sec": round((prof_ef - prof_sf) / float(fps), 2),
+                        "aligned_sfx_or_accent_frame": prof_sf,
+                        "alignment_error_frames": 0,
+                        "bbox": prof_bb,
+                        "final_bbox": prof_bb,
+                        "safe_zone_ok": check_bbox_in_safe_zone(prof_bb)[0],
+                        "jianying_anim_name": "渐显",
+                        "anim_duration_ms": 350,
+                        "paired_jianying_sfx": "",
+                        "trigger": "hook",
+                        "policy": f"{style_id} 开场人设名片",
+                        "reason": f"{style_id} 真母本开场左侧人设头衔",
+                    })
 
         # 2. 开场重点大字 / 门店三拍综艺斜标冲击
         is_opening_poster_burst = bool(
@@ -1944,7 +2040,12 @@ def run_step6(
         onset_sec = max(0.0, float(cue["time_sec"]) - peak_off)
         cue["onset_time_sec"] = round(onset_sec, 4)
         cue["peak_time_sec"] = round(onset_sec + peak_off, 4)
-        gain = 10.0 ** (min(-3.0, float(cue["gain_db"])) / 20.0)
+        eff_gain_db = float(cue["gain_db"])
+        if len(sfx_cues) <= 3:
+            # 极稀疏点睛音效（如 style_01 全片仅 1 处敲锣）给足 2–8kHz 存在感，避免被浓密口播彻底淹没
+            eff_gain_db = min(0.0, eff_gain_db + 6.5)
+            cue["gain_db"] = round(eff_gain_db, 1)
+        gain = 10.0 ** (min(0.0, eff_gain_db) / 20.0)
         start_idx = max(0, int(round(onset_sec * SR)))
         end_idx = min(total_samples, start_idx + len(arr))
         if end_idx > start_idx:
