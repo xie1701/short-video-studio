@@ -903,6 +903,109 @@ def inspect_video(
             "0 处跨句序数粘连、0 处核心专名/固定词组跨行腰斩",
         ))
 
+        # 11h. 双层复读叠字率检测（高光大字在屏时，下面不得叠着同义/第二层底字幕）
+        def _merge_spans(spans: List[Tuple[float, float]]) -> List[Tuple[float, float]]:
+            out_s: List[Tuple[float, float]] = []
+            for a_s, b_s in sorted(spans):
+                if b_s <= a_s:
+                    continue
+                if out_s and a_s <= out_s[-1][1] + 1e-4:
+                    out_s[-1] = (out_s[-1][0], max(out_s[-1][1], b_s))
+                else:
+                    out_s.append((a_s, b_s))
+            return out_s
+
+        def _spans_len(spans: List[Tuple[float, float]]) -> float:
+            return sum(b - a for a, b in spans)
+
+        fg_hi_spans = _merge_spans([
+            (float(it.get("start_sec") or 0.0), float(it.get("end_sec") or 0.0))
+            for it in ks_items_all
+            if not it.get("base_caption")
+            and it.get("variant") not in {"bridge_bar", "editorial_ticker", "pillar_badge"}
+            and it.get("z_layer", "foreground") == "foreground"
+        ])
+        base_cap_spans = _merge_spans(
+            [
+                (float(it.get("start_sec") or 0.0), float(it.get("end_sec") or 0.0))
+                for it in ks_items_all
+                if it.get("base_caption") or it.get("variant") == "bridge_bar"
+            ]
+            + [
+                (float(e.get("start_sec") or 0.0), float(e.get("end_sec") or 0.0))
+                for e in (subs.get("entries") or [])
+                if str(e.get("text") or "").strip() and not e.get("suppressed")
+            ]
+        )
+        fg_total_sec = _spans_len(fg_hi_spans)
+        ov_cap_sec = 0.0
+        for fa, fb in fg_hi_spans:
+            for ba, bb in base_cap_spans:
+                ov_cap_sec += max(0.0, min(fb, bb) - max(fa, ba))
+        ov_cap_ratio = (ov_cap_sec / fg_total_sec) if fg_total_sec > 0.05 else 0.0
+        cur_theme = str(ks_block.get("theme_profile") or "")
+        dup_limit = 0.01 if cur_theme == "style_02_unified" else 0.05
+        if ks_block.get("enabled") and fg_total_sec > 0.05:
+            checks.append(_mk_check(
+                "double_caption_overlap",
+                "高光与底字幕双层复读重叠率",
+                "PASS" if ov_cap_ratio <= dup_limit else "FAIL",
+                f"重叠 {ov_cap_sec:.2f}s / {fg_total_sec:.2f}s ({ov_cap_ratio:.1%})",
+                f"<= {dup_limit:.0%}（单层一体化舞台禁止高光下叠字幕）",
+            ))
+
+        # 11i. 统一字体/色阶血统检查（style_02_unified 绝不混入暗金小盒或宋体）
+        if ks_block.get("enabled") and cur_theme == "style_02_unified":
+            typo_issues: List[str] = []
+            bridge_pxs = []
+            hero_pxs = []
+            for it in ks_items_all:
+                var = str(it.get("variant") or "")
+                if var in {"concept_card", "semantic_diagram_card", "editorial_ticker"}:
+                    typo_issues.append(f"混入旧暗金卡片变体 {var}")
+                cands = list(it.get("font_candidates") or [])
+                if cands and "serif" in str(cands[0]).lower():
+                    typo_issues.append(f"首选字体混用衬线宋体 {cands[0]}")
+                px_v = float(it.get("font_size_px") or 0.0)
+                if var == "bridge_bar" and px_v > 0:
+                    bridge_pxs.append(px_v)
+                elif var in {"hero_lime", "hero_white", "red_slam", "red_pill"} and px_v > 0:
+                    hero_pxs.append(px_v)
+            if bridge_pxs and min(bridge_pxs) < 60.0:
+                typo_issues.append(f"桥接字号过小 ({min(bridge_pxs):.0f}px < 60px)")
+            if bridge_pxs and hero_pxs and max(hero_pxs) < max(bridge_pxs) * 1.25:
+                typo_issues.append("大字与桥接句字阶对比不足 1.25×")
+            checks.append(_mk_check(
+                "style_typography_unity",
+                "统一粗黑体与三级字号血统一致性",
+                "PASS" if not typo_issues else "FAIL",
+                "0 处血统污染（统一无衬线粗黑体 + L1/L2/L3 标尺）" if not typo_issues else "；".join(typo_issues[:3]),
+                "0 旧暗金卡/宋体混入，L1>=60px 且阶梯比>=1.25×",
+            ))
+
+        # 11j. 导演运镜真实落地校验（非 steady_hold A-roll 必须实际挂载 vf_extra）
+        d_acts = list(ks_block.get("director_acts") or [])
+        non_steady_acts = [a for a in d_acts if str(a.get("camera_intent") or "steady_hold") != "steady_hold"]
+        if non_steady_acts:
+            expected_aroll = 0
+            realized_aroll = 0
+            for c_row in edl.get("clips", []):
+                if c_row.get("track_role") != "a_roll" or c_row.get("pip_layout"):
+                    continue
+                cs_t, ce_t = float(c_row.get("timeline_in_sec") or 0.0), float(c_row.get("timeline_out_sec") or 0.0)
+                if any(min(ce_t, float(a["end_sec"])) - max(cs_t, float(a["start_sec"])) > 0.1 for a in non_steady_acts):
+                    expected_aroll += 1
+                    if str(c_row.get("vf_extra") or "").strip():
+                        realized_aroll += 1
+            if expected_aroll > 0:
+                checks.append(_mk_check(
+                    "camera_intent_realized",
+                    "导演运镜在口播镜头真实落地",
+                    "PASS" if realized_aroll > 0 else "FAIL",
+                    f"{realized_aroll}/{expected_aroll} 个口播镜头真实挂载运镜 vf_extra",
+                    "存在非 steady_hold 口播幕时 >=1 镜实际挂载运镜",
+                ))
+
         # 12–22. 独立黑盒外部验收（复用 audio_ctx，严格 Fail-Closed 三态）
         dialect = _effective_dialect(pipeline_dir, dialect)
         bb_res = run_blackbox_verification(
@@ -1062,6 +1165,9 @@ def inspect_video(
         "ending_complete": "片尾收住了，观众知道下一步做什么",
         "overlay_cross_act_overlap": "花字不跨幕打架叠字",
         "subtitle_segmentation_clean": "字幕分词自然不破词",
+        "double_caption_overlap": "重点大字下面不叠第二层复读小字幕",
+        "style_typography_unity": "全片字体家族、字号阶梯与色彩高度统一",
+        "camera_intent_realized": "导演规划的推拉与特写运镜真实落地到口播镜头",
         "bb_audio_master": "成品声音饱满清晰、无爆音无穿帮",
         "bb_ocr_av_loop": "成片字幕实测正中对齐、字句准确",
         "bb_pixel_readability": "字幕不挡脸且对比清晰好认",

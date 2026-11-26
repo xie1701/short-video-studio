@@ -802,6 +802,8 @@ _SKIN_PALETTE_DEFAULTS: Dict[str, Dict[str, str]] = {
 
 def kinetic_item_paint(elem: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Shared paint for V6 sprites and editable native text."""
+    if elem.get("theme_profile") == "style_02_unified":
+        return None
     variant = elem.get("variant")
     editorial = elem.get("theme_profile") == "business_editorial"
     if not editorial and variant not in V6_CARD_VARIANTS and variant != TICKER_VARIANT:
@@ -1016,10 +1018,12 @@ def render_kinetic_stage_item_png(
     if not text:
         return None
     variant = str(elem.get("variant") or "hero_white")
+    is_unified = elem.get("theme_profile") == "style_02_unified"
     font_px = max(30, int(elem.get("font_size_px") or 88))
-    cands = font_candidates or ["SourceHanSerifCN-Bold.otf", "AlimamaShuHeiTi-Bold.otf", "SourceHanSansCN-Bold.otf"]
-    serif_f = find_commercial_font(cands)
-    sans_f = find_commercial_font(["SourceHanSansCN-Bold.otf", "AlimamaShuHeiTi-Bold.otf"]) or serif_f
+    sans_pref = ["SourceHanSansCN-Bold.otf", "NotoSansSC-Bold.ttf", "AlimamaShuHeiTi-Bold.otf"]
+    cands = font_candidates or (sans_pref if is_unified else ["SourceHanSerifCN-Bold.otf", "AlimamaShuHeiTi-Bold.otf", "SourceHanSansCN-Bold.otf"])
+    sans_f = find_commercial_font(font_candidates or sans_pref) or find_commercial_font()
+    base_f = sans_f if is_unified else (find_commercial_font(cands) or sans_f)
     paint = kinetic_item_paint(elem)
     if paint is not None:
         return _render_v6_kinetic_sprite(elem, text, sans_f, font_px, paint)
@@ -1031,18 +1035,18 @@ def render_kinetic_stage_item_png(
             if not pt:
                 continue
             p_rgb = _hex_rgb(part.get("color") or "#FFFFFF")
-            p_fs = max(36, int(round(float(part.get("size_units") or 16.0) * 5.4)))
+            p_fs = max(38, int(round(float(part.get("size_units") or 14.0) * 6.0)))
             sp = _draw_kinetic_line_sprite(
-                pt, serif_f, p_fs, (*p_rgb, 255),
+                pt, base_f, p_fs, (*p_rgb, 255),
                 stroke_rgba=(0, 0, 0, 235), stroke_w=3,
                 shadow_rgba=(0, 0, 0, 175), shadow_dx=3, shadow_dy=4, shadow_blur=2.0,
-                max_w=540,
+                max_w=880,
             )
             if sp is not None:
                 parts_imgs.append(sp)
         if not parts_imgs:
             return None
-        gap = 8
+        gap = 10
         tw = sum(im.width for im in parts_imgs) + gap * max(0, len(parts_imgs) - 1)
         th = max(im.height for im in parts_imgs)
         if tw > 940:
@@ -1053,76 +1057,82 @@ def render_kinetic_stage_item_png(
             ]
             tw = sum(im.width for im in parts_imgs) + gap * max(0, len(parts_imgs) - 1)
             th = max(im.height for im in parts_imgs)
-        cv = Image.new("RGBA", (tw + 4, th + 4), (0, 0, 0, 0))
-        x_cur = 2
+        cv = Image.new("RGBA", (tw + 16, th + 12), (0, 0, 0, 0))
+        x_cur = 8
         for im in parts_imgs:
-            cv.alpha_composite(im, dest=(x_cur, th - im.height + 2))
+            cv.alpha_composite(im, dest=(x_cur, th - im.height + 6))
             x_cur += im.width + gap
         box = cv.getbbox()
-        return cv.crop(box) if box else cv
+        if not box:
+            return cv
+        return cv.crop((max(0, box[0] - 2), max(0, box[1] - 2), min(cv.width, box[2] + 4), min(cv.height, box[3] + 2)))
 
     if variant == "red_pill":
+        pill_fs = min(108, max(54, int(font_px))) if is_unified else min(72, max(44, int(font_px * 0.72)))
         sp = _draw_kinetic_line_sprite(
-            text, serif_f, min(72, max(44, int(font_px * 0.72))),
+            text, base_f, pill_fs,
             (183, 28, 28, 255),
             stroke_rgba=None, stroke_w=0, shadow_rgba=None,
-            max_w=820,
+            max_w=900,
         )
         if sp is None:
             return None
-        px_pad, py_pad = 24, 12
+        px_pad, py_pad = (28, 14) if is_unified else (24, 12)
         pw, ph = sp.width + px_pad * 2, sp.height + py_pad * 2
         card = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
         d = ImageDraw.Draw(card)
-        d.rounded_rectangle([(0, 0), (pw - 1, ph - 1)], radius=10, fill=(255, 255, 255, 248))
+        d.rounded_rectangle([(0, 0), (pw - 1, ph - 1)], radius=8 if is_unified else 10, fill=(255, 255, 255, 248))
         card.alpha_composite(sp, dest=(px_pad, py_pad))
         return card
 
     if variant == "bridge_bar":
+        bridge_fs = min(80, max(56, int(font_px))) if is_unified else min(68, max(42, int(font_px * 0.64)))
         sp = _draw_kinetic_line_sprite(
-            text, serif_f, min(68, max(42, int(font_px * 0.64))),
+            text, base_f, bridge_fs,
             (255, 255, 255, 255),
             stroke_rgba=(0, 0, 0, 180), stroke_w=1,
             shadow_rgba=(0, 0, 0, 110), shadow_dx=2, shadow_dy=2, shadow_blur=1.0,
-            max_w=800,
+            max_w=920,
         )
         if sp is None:
             return None
-        px_pad, py_pad = 22, 11
+        px_pad, py_pad = (24, 12) if is_unified else (22, 11)
         pw, ph = sp.width + px_pad * 2, sp.height + py_pad * 2
         card = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
         d = ImageDraw.Draw(card)
-        d.rounded_rectangle([(0, 0), (pw - 1, ph - 1)], radius=8, fill=(0, 0, 0, 178))
+        d.rounded_rectangle([(0, 0), (pw - 1, ph - 1)], radius=6 if is_unified else 8, fill=(0, 0, 0, 180))
         card.alpha_composite(sp, dest=(px_pad, py_pad))
         return card
 
     if variant == "red_slam":
+        slam_fs = min(144, max(88, int(font_px))) if is_unified else min(144, max(82, int(font_px * 0.90)))
         return _draw_kinetic_line_sprite(
-            text, serif_f, min(144, max(82, int(font_px * 0.90))),
-            (196, 26, 26, 255),
+            text, base_f, slam_fs,
+            (183, 28, 28, 255) if is_unified else (196, 26, 26, 255),
             stroke_rgba=(255, 255, 255, 245), stroke_w=6,
             shadow_rgba=(0, 0, 0, 210), shadow_dx=4, shadow_dy=6, shadow_blur=3.0,
-            max_w=880,
+            max_w=920,
         )
 
     if variant == "danmaku_line":
+        dm_fs = min(76, max(54, int(font_px))) if is_unified else min(72, max(46, int(font_px * 0.66)))
         return _draw_kinetic_line_sprite(
-            text, sans_f, min(72, max(46, int(font_px * 0.66))),
+            text, sans_f, dm_fs,
             (255, 255, 255, 250),
             stroke_rgba=(0, 0, 0, 240), stroke_w=3,
             shadow_rgba=(0, 0, 0, 180), shadow_dx=2, shadow_dy=3, shadow_blur=1.5,
-            max_w=780,
+            max_w=820,
         )
 
     # hero_white / hero_lime
     fg_rgb = _hex_rgb(elem.get("fg_hex") or ("#BCFF00" if variant == "hero_lime" else "#FFFFFF"))
-    eff_fs = min(140, max(54, int(font_px * 0.86)))
+    eff_fs = min(144, max(54, int(font_px))) if is_unified else min(140, max(54, int(font_px * 0.86)))
     return _draw_kinetic_line_sprite(
-        text, serif_f, eff_fs,
+        text, base_f, eff_fs,
         (*fg_rgb, 255),
         stroke_rgba=(0, 0, 0, 235), stroke_w=4,
         shadow_rgba=(0, 0, 0, 195), shadow_dx=4, shadow_dy=5, shadow_blur=2.4,
-        max_w=880,
+        max_w=920,
     )
 
 
@@ -2160,14 +2170,22 @@ def _number_roll_layout(
         return None
     prefix, digits, suffix = text[:match.start()], match.group(1), text[match.end():]
     value = int(digits)
-    size = min(max(30, int(elem.get("font_size_px") or 100)), 112)
+    is_unified = elem.get("theme_profile") == "style_02_unified"
+    max_sz = 140 if is_unified else 112
+    size = min(max(30, int(elem.get("font_size_px") or 100)), max_sz)
     color = _hex_rgb(paint["accent_hex"] if elem.get("variant") == "hero_lime" else paint["fg_hex"])
     sprites, shown_values = [], []
     for step in _ROLL_STEPS:
         shown = int(round(value * step))
         shown_values.append(shown)
-        sprite = _draw_kinetic_line_sprite(f"{prefix}{shown}{suffix}", font, size, (*color, 255),
-                                           max_w=680, min_fs=20)
+        sprite = _draw_kinetic_line_sprite(
+            f"{prefix}{shown}{suffix}", font, size, (*color, 255),
+            stroke_rgba=(0, 0, 0, 235) if is_unified else None,
+            stroke_w=4 if is_unified else 0,
+            shadow_rgba=(0, 0, 0, 195) if is_unified else None,
+            shadow_dx=4, shadow_dy=5, shadow_blur=2.4,
+            max_w=860 if is_unified else 680, min_fs=20,
+        )
         if sprite is None:
             return None
         sprites.append(sprite)
@@ -2346,11 +2364,15 @@ def _semantic_diagram_layout(
 def _element_layout(
     elem: Dict[str, Any], choreo: str, font_candidates: Optional[List[str]], duration: float,
 ) -> Optional[Dict[str, Any]]:
-    paint = kinetic_item_paint(elem)
+    is_unified_roll = elem.get("theme_profile") == "style_02_unified" and choreo == "number_roll"
+    paint = (
+        {"fg_hex": "#FFFFFF", "accent_hex": "#BCFF00", "marker_hex": "#B71C1C"}
+        if is_unified_roll else kinetic_item_paint(elem)
+    )
     if paint is None:
         return None
     font = find_commercial_font(
-        font_candidates or ["SourceHanSansCN-Bold.otf", "AlimamaShuHeiTi-Bold.otf"],
+        font_candidates or elem.get("font_candidates") or ["SourceHanSansCN-Bold.otf", "NotoSansSC-Bold.ttf", "AlimamaShuHeiTi-Bold.otf"],
     ) or find_commercial_font()
     builders = {
         "strike_slash": lambda: _strike_slash_layout(elem, font, paint, duration),

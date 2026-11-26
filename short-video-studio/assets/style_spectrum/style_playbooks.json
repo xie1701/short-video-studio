@@ -1,0 +1,3727 @@
+{
+  "version": "8.0.0",
+  "generated_at": "2026-11-26T11:14:45Z",
+  "n_styles": 24,
+  "n_rea_backed": 24,
+  "styles": {
+    "style_01": {
+      "style_id": "style_01",
+      "label_cn": "门店原生爆款风 · 综艺分拍斜标开场（默认）",
+      "archetype_id": "arch_04_punch_talking_head",
+      "typography_and_palette": {
+        "font_family": "Alimama ShuHeiTi",
+        "font_candidates": [
+          "AlimamaShuHeiTi-Bold.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ],
+        "font_purity_rule": "以 `Alimama ShuHeiTi` 为主字体族保持视觉连贯，粤语生僻字按同字族优先原则安全回退。",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFE28A",
+        "danger_color": "#DC2626",
+        "stroke_color": "#000000",
+        "bg_slab": "rgba(0,0,0,0.65)"
+      },
+      "three_tier_ruler": {
+        "mode": "dual_or_multi_tier",
+        "L1": {
+          "units": 12.0,
+          "px_1080p": 72,
+          "height_pct": 3.05,
+          "usage": "常规口播字幕/桥接句"
+        },
+        "L2": {
+          "units": 13.6,
+          "px_1080p": 82,
+          "height_pct": 4.3,
+          "usage": "章节标注、副重点、小清单"
+        },
+        "L3": {
+          "units": 15.0,
+          "px_1080p": 90,
+          "height_pct": 9.3,
+          "usage": "开场钩子、数字、大情绪结论"
+        },
+        "ratio_L1_L2_L3": "1.00 : 1.13 : 1.25"
+      },
+      "subtitle_stage_architecture": {
+        "stage_mode": "dual_layer_subtitle_plus_flower",
+        "single_stage_unified": false,
+        "recommended_theme_profile": "store_vibrant",
+        "sub_y_ratio": 0.682,
+        "max_chars_per_line": 12,
+        "cut_text_align_ratio": 0.826,
+        "causality_summary": "base 轨（track [4]）共 49 段，覆盖片长 100%；相邻段无缝率 100%（Δ≤1 帧，按整轨顺序算）；其中 48 段是普通字号字幕（其余 1 段被升级）；y 中位 0.682×H；字幕起点 42% 落在主轨切点 ±2 帧内（到最近切点中位 0.73s）——由语音断句驱动，不跟切点",
+        "double_caption_rule": "常规口播在安全底栏呈现字幕，重点短词（<=7字）作为前景视觉锚点弹出，不堆叠整句复读卡片。",
+        "supported_primitives": []
+      },
+      "editing_and_broll_rhythm": {
+        "median_shot_sec": 1.87,
+        "p10_sec": 0.7769,
+        "p90_sec": 5.4499,
+        "fast_cut_lt1s_ratio": 0.167,
+        "opening_cuts_3s": 2,
+        "kf_per_min": 0.0,
+        "broll_target_ratio": 0.572,
+        "broll_band": [
+          0.42,
+          0.77
+        ]
+      },
+      "packaging_and_visual_grammar": {
+        "transition_style": "none",
+        "ai_matting_count": 3,
+        "cutout_rule": "抠像的因果是「这一镜要同时看到人和另一层画面」：人从背景提出来 → 下面垫一条不同源的副镜 → 叠加轨（render_index>0）出画。本套 3 段抠像里 3 段在叠加轨、2 段仍是全屏 scale=1（人满屏叠在满屏副镜上，抠不...",
+        "pip_mode": "geometry_pip_window",
+        "effect_summary": "无额外全局花哨滤镜，保持干净原片质感"
+      },
+      "audio_and_sfx_design": {
+        "integrated_lufs": -14.0,
+        "voice_bgm_snr_db": 11.0,
+        "whitebox_bpm": 89.1,
+        "dual_bgm": true,
+        "sfx_per_min": 0.9,
+        "trigger_share": {
+          "cut": 1.0,
+          "flower": 0.0,
+          "line": 0.0,
+          "beat": 0.0,
+          "free": 0.0
+        },
+        "min_gap_sec": 0.6
+      },
+      "blackbox_rea_summary": {
+        "available": true,
+        "duration_sec": 68.6,
+        "shots_detected": 34,
+        "avg_shot_s": 2.02,
+        "overlay_kinds": [
+          "animated_sticker",
+          "huazi",
+          "label",
+          "static_graphic",
+          "subtitle",
+          "title"
+        ],
+        "production_mix": [
+          {
+            "label": "live_action",
+            "ratio": 0.812
+          },
+          {
+            "label": "ai_video",
+            "ratio": 0.1477
+          },
+          {
+            "label": "code_render",
+            "ratio": 0.0403
+          }
+        ],
+        "audio_voice_ratio": 0.671,
+        "audio_music_bpm": null,
+        "cuts_on_onset_ratio": 1.0,
+        "cuts_on_beat_ratio": null,
+        "packaging_counts": {
+          "text": {
+            "label": 88,
+            "subtitle": 49,
+            "scene": 11,
+            "huazi": 6
+          },
+          "stickers": 1
+        },
+        "text_height_pct_tiers": {
+          "L1_p15_pct": 3.05,
+          "L2_median_pct": 4.3,
+          "L3_p90_pct": 9.3,
+          "sample_count": 154
+        },
+        "text_band_distribution": {
+          "top": 45,
+          "middle": 95,
+          "bottom": 14
+        },
+        "text_anim_in_distribution": {
+          "cut": 117,
+          "fade": 24,
+          "pop": 5,
+          "reveal": 4,
+          "slide": 4
+        },
+        "text_box_count": 14,
+        "sfx_anchored_count": 25,
+        "sfx_type_distribution": {
+          "pop": 10,
+          "hit": 6,
+          "ding": 6,
+          "whoosh": 3
+        },
+        "sfx_anchor_targets": {
+          "文字标注": 24,
+          "花字": 1
+        }
+      }
+    },
+    "style_02": {
+      "style_id": "style_02",
+      "label_cn": "极速跳剪避坑 · 通宽暗灰底框荧光绿风",
+      "archetype_id": "arch_04_punch_talking_head",
+      "typography_and_palette": {
+        "font_family": "Source Han Sans CN / Alimama ShuHeiTi",
+        "font_candidates": [
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansSC-Bold.ttf",
+          "AlimamaShuHeiTi-Bold.otf"
+        ],
+        "font_purity_rule": "全片（开场、高光、桥接、人后弹幕、清单）100% 使用现代无衬线粗黑体，严禁与宋体混穿。",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#BCFF00",
+        "danger_color": "#B71C1C",
+        "stroke_color": "#000000",
+        "bg_slab": "rgba(0,0,0,0.70) 紧凑方底(bridge_bar) / #FFFFFF 白底胶囊(red_pill)"
+      },
+      "three_tier_ruler": {
+        "mode": "unified_3_tier",
+        "L1": {
+          "units": 11.5,
+          "px_1080p": 69,
+          "height_pct": 5.3,
+          "usage": "bridge_bar（单行紧凑过渡短句）及辅助角标"
+        },
+        "L2": {
+          "units": 16.5,
+          "px_1080p": 99,
+          "height_pct": 7.5,
+          "usage": "主高光行、清单条目、red_pill 白底红字胶囊、inline_rich 焦点词"
+        },
+        "L3": {
+          "units": 22.5,
+          "px_1080p": 135,
+          "height_pct": 10.5,
+          "usage": "red_slam 痛点巨字、hero_lime 荧光绿焦点词、大数字主视觉"
+        },
+        "ratio_L1_L2_L3": "1.00 : 1.43 : 1.96"
+      },
+      "subtitle_stage_architecture": {
+        "stage_mode": "unified_single_stage",
+        "single_stage_unified": true,
+        "recommended_theme_profile": "style_02_unified",
+        "sub_y_ratio": 0.76,
+        "max_chars_per_line": 8,
+        "cut_text_align_ratio": 0.667,
+        "causality_summary": "base 轨（track [5]）共 22 段，覆盖片长 98%；相邻段无缝率 95%（Δ≤1 帧，按整轨顺序算）；其中 12 段是普通字号字幕（其余 10 段被升级）；y 中位 0.76×H；字幕起点 75% 落在主轨切点 ±2 帧内（到最近切点中位 0.0s）——这套是切点驱动的重剪风格，字幕起句跟着镜头切",
+        "double_caption_rule": "0 复读铁律：高光大字直接承担台词表达，禁止在同时间窗底端叠加第二层小字幕；仅过渡/呼吸句显示 L1 紧凑 bridge_bar。",
+        "supported_primitives": [
+          "opening_triad",
+          "left_right_punch",
+          "giant_anchor_sub",
+          "pain_slam_danmaku",
+          "stacked_dual_color",
+          "list_gather_depth",
+          "number_burst_pair",
+          "inline_highlight_cta"
+        ]
+      },
+      "editing_and_broll_rhythm": {
+        "median_shot_sec": 1.13,
+        "p10_sec": 0.7268,
+        "p90_sec": 1.7002,
+        "fast_cut_lt1s_ratio": 0.28,
+        "opening_cuts_3s": 2,
+        "kf_per_min": 0.0,
+        "broll_target_ratio": 0.112,
+        "broll_band": [
+          0.0,
+          0.55
+        ]
+      },
+      "packaging_and_visual_grammar": {
+        "transition_style": "none",
+        "ai_matting_count": 3,
+        "cutout_rule": "抠像的因果是「这一镜要同时看到人和另一层画面」：人从背景提出来 → 下面垫一条不同源的副镜 → 叠加轨（render_index>0）出画。本套 3 段抠像里 3 段在叠加轨、3 段仍是全屏 scale=1（人满屏叠在满屏副镜上，抠不...",
+        "pip_mode": "geometry_pip_window",
+        "effect_summary": "无额外全局花哨滤镜，保持干净原片质感"
+      },
+      "audio_and_sfx_design": {
+        "integrated_lufs": -14.0,
+        "voice_bgm_snr_db": 11.5,
+        "whitebox_bpm": 99.38,
+        "dual_bgm": false,
+        "sfx_per_min": 40.7,
+        "trigger_share": {
+          "cut": 0.6,
+          "flower": 0.3,
+          "line": 0.1,
+          "beat": 0.0,
+          "free": 0.0
+        },
+        "min_gap_sec": 0.6
+      },
+      "blackbox_rea_summary": {
+        "available": true,
+        "duration_sec": 29.47,
+        "shots_detected": 3,
+        "avg_shot_s": 9.82,
+        "overlay_kinds": [
+          "huazi",
+          "label",
+          "static_graphic",
+          "static_sticker",
+          "subtitle",
+          "title"
+        ],
+        "production_mix": [
+          {
+            "label": "ai_video",
+            "ratio": 1.0
+          }
+        ],
+        "audio_voice_ratio": 0.577,
+        "audio_music_bpm": 79.5,
+        "cuts_on_onset_ratio": 0.5,
+        "cuts_on_beat_ratio": 0.0,
+        "packaging_counts": {
+          "text": {
+            "label": 20,
+            "subtitle": 15,
+            "huazi": 3
+          },
+          "stickers": 3
+        },
+        "text_height_pct_tiers": {
+          "L1_p15_pct": 5.08,
+          "L2_median_pct": 5.47,
+          "L3_p90_pct": 10.0,
+          "sample_count": 38
+        },
+        "text_band_distribution": {
+          "middle": 10,
+          "bottom": 26,
+          "top": 2
+        },
+        "text_anim_in_distribution": {
+          "cut": 28,
+          "slide": 3,
+          "reveal": 3,
+          "fade": 3,
+          "pop": 1
+        },
+        "text_box_count": 2,
+        "sfx_anchored_count": 10,
+        "sfx_type_distribution": {
+          "pop": 3,
+          "ding": 5,
+          "hit": 2
+        },
+        "sfx_anchor_targets": {
+          "文字标注": 8,
+          "花字": 1,
+          "贴纸": 1
+        }
+      }
+    },
+    "style_03": {
+      "style_id": "style_03",
+      "label_cn": "暗调深度口播 · 顶栏引语卡+巨型浅黄大字风",
+      "archetype_id": "arch_02_high_contrast_story",
+      "typography_and_palette": {
+        "font_family": "Source Han Serif CN",
+        "font_candidates": [
+          "SourceHanSerifCN-Heavy.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ],
+        "font_purity_rule": "以 `Source Han Serif CN` 为主字体族保持视觉连贯，粤语生僻字按同字族优先原则安全回退。",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFF589",
+        "danger_color": "#DC2626",
+        "stroke_color": "#000000",
+        "bg_slab": "#B91C1C"
+      },
+      "three_tier_ruler": {
+        "mode": "dual_or_multi_tier",
+        "L1": {
+          "units": 10.0,
+          "px_1080p": 60,
+          "height_pct": 1.4,
+          "usage": "常规口播字幕/桥接句"
+        },
+        "L2": {
+          "units": 27.0,
+          "px_1080p": 162,
+          "height_pct": 3.2,
+          "usage": "章节标注、副重点、小清单"
+        },
+        "L3": {
+          "units": 70.0,
+          "px_1080p": 420,
+          "height_pct": 5.86,
+          "usage": "开场钩子、数字、大情绪结论"
+        },
+        "ratio_L1_L2_L3": "1.00 : 2.70 : 7.00"
+      },
+      "subtitle_stage_architecture": {
+        "stage_mode": "dual_layer_subtitle_plus_flower",
+        "single_stage_unified": false,
+        "recommended_theme_profile": "business_editorial",
+        "sub_y_ratio": 0.78,
+        "max_chars_per_line": 12,
+        "cut_text_align_ratio": 0.812,
+        "causality_summary": "base 轨（track [5]）共 82 段，覆盖片长 92%；相邻段无缝率 96%（Δ≤1 帧，按整轨顺序算）；其中 60 段是普通字号字幕（其余 22 段被升级）；y 中位 0.78×H；字幕起点 48% 落在主轨切点 ±2 帧内（到最近切点中位 0.67s）——由语音断句驱动，不跟切点",
+        "double_caption_rule": "常规口播在安全底栏呈现字幕，重点短词（<=7字）作为前景视觉锚点弹出，不堆叠整句复读卡片。",
+        "supported_primitives": []
+      },
+      "editing_and_broll_rhythm": {
+        "median_shot_sec": 2.63,
+        "p10_sec": 0.8102,
+        "p90_sec": 4.3666,
+        "fast_cut_lt1s_ratio": 0.143,
+        "opening_cuts_3s": 3,
+        "kf_per_min": 20.8,
+        "broll_target_ratio": 0.097,
+        "broll_band": [
+          0.0,
+          0.3
+        ]
+      },
+      "packaging_and_visual_grammar": {
+        "transition_style": "none",
+        "ai_matting_count": 6,
+        "cutout_rule": "抠像的因果是「这一镜要同时看到人和另一层画面」：人从背景提出来 → 下面垫一条不同源的副镜 → 叠加轨（render_index>0）出画。本套 6 段抠像里 6 段在叠加轨、2 段仍是全屏 scale=1（人满屏叠在满屏副镜上，抠不...",
+        "pip_mode": "geometry_pip_window",
+        "effect_summary": "无额外全局花哨滤镜，保持干净原片质感"
+      },
+      "audio_and_sfx_design": {
+        "integrated_lufs": -14.0,
+        "voice_bgm_snr_db": 11.5,
+        "whitebox_bpm": 172.27,
+        "dual_bgm": false,
+        "sfx_per_min": 25.1,
+        "trigger_share": {
+          "cut": 0.358,
+          "flower": 0.528,
+          "line": 0.113,
+          "beat": 0.0,
+          "free": 0.0
+        },
+        "min_gap_sec": 0.6
+      },
+      "blackbox_rea_summary": {
+        "available": true,
+        "duration_sec": 126.87,
+        "shots_detected": 33,
+        "avg_shot_s": 3.84,
+        "overlay_kinds": [
+          "huazi",
+          "label",
+          "static_graphic",
+          "subtitle",
+          "title"
+        ],
+        "production_mix": [
+          {
+            "label": "ai_video",
+            "ratio": 0.9661
+          },
+          {
+            "label": "cg_3d",
+            "ratio": 0.0339
+          }
+        ],
+        "audio_voice_ratio": 0.548,
+        "audio_music_bpm": null,
+        "cuts_on_onset_ratio": 0.969,
+        "cuts_on_beat_ratio": null,
+        "packaging_counts": {
+          "text": {
+            "label": 117,
+            "subtitle": 103,
+            "scene": 3,
+            "huazi": 8,
+            "title": 2
+          },
+          "stickers": 0
+        },
+        "text_height_pct_tiers": {
+          "L1_p15_pct": 1.4,
+          "L2_median_pct": 3.2,
+          "L3_p90_pct": 5.86,
+          "sample_count": 233
+        },
+        "text_band_distribution": {
+          "bottom": 189,
+          "middle": 16,
+          "top": 28
+        },
+        "text_anim_in_distribution": {
+          "cut": 172,
+          "pop": 25,
+          "reveal": 14,
+          "slide": 12,
+          "fade": 10
+        },
+        "text_box_count": 7,
+        "sfx_anchored_count": 45,
+        "sfx_type_distribution": {
+          "whoosh": 23,
+          "pop": 11,
+          "ding": 9,
+          "hit": 2
+        },
+        "sfx_anchor_targets": {
+          "文字标注": 42,
+          "花字": 3
+        }
+      }
+    },
+    "style_04": {
+      "style_id": "style_04",
+      "label_cn": "清冷奶油高光 · 极简轻描边宋体风",
+      "archetype_id": "arch_03_editorial_matte_depth",
+      "typography_and_palette": {
+        "font_family": "Source Han Serif CN",
+        "font_candidates": [
+          "SourceHanSerifCN-Heavy.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ],
+        "font_purity_rule": "以 `Source Han Serif CN` 为主字体族保持视觉连贯，粤语生僻字按同字族优先原则安全回退。",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFF589",
+        "danger_color": "#DC2626",
+        "stroke_color": "#000000",
+        "bg_slab": "rgba(0,0,0,0.65)"
+      },
+      "three_tier_ruler": {
+        "mode": "dual_or_multi_tier",
+        "L1": {
+          "units": 9.0,
+          "px_1080p": 54,
+          "height_pct": 4.14,
+          "usage": "常规口播字幕/桥接句"
+        },
+        "L2": {
+          "units": 22.0,
+          "px_1080p": 132,
+          "height_pct": 6.09,
+          "usage": "章节标注、副重点、小清单"
+        },
+        "L3": {
+          "units": 71.9,
+          "px_1080p": 432,
+          "height_pct": 27.69,
+          "usage": "开场钩子、数字、大情绪结论"
+        },
+        "ratio_L1_L2_L3": "1.00 : 2.44 : 7.99"
+      },
+      "subtitle_stage_architecture": {
+        "stage_mode": "dual_layer_subtitle_plus_flower",
+        "single_stage_unified": false,
+        "recommended_theme_profile": "store_vibrant",
+        "sub_y_ratio": 0.695,
+        "max_chars_per_line": 7,
+        "cut_text_align_ratio": 1.0,
+        "causality_summary": "base 轨（track [4]）共 17 段，覆盖片长 95%；相邻段无缝率 94%（Δ≤1 帧，按整轨顺序算）；其中 11 段是普通字号字幕（其余 6 段被升级）；y 中位 0.695×H；字幕起点 36% 落在主轨切点 ±2 帧内（到最近切点中位 1.27s）——由语音断句驱动，不跟切点",
+        "double_caption_rule": "常规口播在安全底栏呈现字幕，重点短词（<=7字）作为前景视觉锚点弹出，不堆叠整句复读卡片。",
+        "supported_primitives": []
+      },
+      "editing_and_broll_rhythm": {
+        "median_shot_sec": 3.6,
+        "p10_sec": 0.783,
+        "p90_sec": 5.367,
+        "fast_cut_lt1s_ratio": 0.167,
+        "opening_cuts_3s": 0,
+        "kf_per_min": 86.2,
+        "broll_target_ratio": 0.226,
+        "broll_band": [
+          0.08,
+          0.43
+        ]
+      },
+      "packaging_and_visual_grammar": {
+        "transition_style": "none",
+        "ai_matting_count": 1,
+        "cutout_rule": "这套处理画面不靠「把人抠出来叠到别处」：人物直接满屏，换画面靠硬切 + 花字+画面特效。所以任何一镜都不该出现抠像层。",
+        "pip_mode": "geometry_pip_window",
+        "effect_summary": "无额外全局花哨滤镜，保持干净原片质感"
+      },
+      "audio_and_sfx_design": {
+        "integrated_lufs": -14.0,
+        "voice_bgm_snr_db": 11.5,
+        "whitebox_bpm": 60.09,
+        "dual_bgm": false,
+        "sfx_per_min": 40.0,
+        "trigger_share": {
+          "cut": 0.231,
+          "flower": 0.462,
+          "line": 0.308,
+          "beat": 0.0,
+          "free": 0.0
+        },
+        "min_gap_sec": 0.433
+      },
+      "blackbox_rea_summary": {
+        "available": true,
+        "duration_sec": 19.5,
+        "shots_detected": 7,
+        "avg_shot_s": 2.79,
+        "overlay_kinds": [
+          "huazi",
+          "label",
+          "static_graphic",
+          "subtitle",
+          "title"
+        ],
+        "production_mix": [
+          {
+            "label": "ai_video",
+            "ratio": 0.559
+          },
+          {
+            "label": "cg_3d",
+            "ratio": 0.3829
+          },
+          {
+            "label": "code_render",
+            "ratio": 0.0581
+          }
+        ],
+        "audio_voice_ratio": 0.898,
+        "audio_music_bpm": null,
+        "cuts_on_onset_ratio": 1.0,
+        "cuts_on_beat_ratio": null,
+        "packaging_counts": {
+          "text": {
+            "subtitle": 10,
+            "label": 12,
+            "huazi": 4
+          },
+          "stickers": 0
+        },
+        "text_height_pct_tiers": {
+          "L1_p15_pct": 4.14,
+          "L2_median_pct": 6.09,
+          "L3_p90_pct": 27.69,
+          "sample_count": 26
+        },
+        "text_band_distribution": {
+          "middle": 16,
+          "bottom": 7,
+          "top": 3
+        },
+        "text_anim_in_distribution": {
+          "cut": 20,
+          "fade": 2,
+          "reveal": 2,
+          "pop": 2
+        },
+        "text_box_count": 1,
+        "sfx_anchored_count": 10,
+        "sfx_type_distribution": {
+          "whoosh": 5,
+          "ding": 3,
+          "pop": 1,
+          "hit": 1
+        },
+        "sfx_anchor_targets": {
+          "文字标注": 7,
+          "花字": 3
+        }
+      }
+    },
+    "style_05": {
+      "style_id": "style_05",
+      "label_cn": "人像前景压巨字 · 三层海报景深风",
+      "archetype_id": "arch_03_editorial_matte_depth",
+      "typography_and_palette": {
+        "font_family": "Smiley Sans",
+        "font_candidates": [
+          "AlimamaShuHeiTi-Bold.otf",
+          "SmileySans-Oblique.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ],
+        "font_purity_rule": "以 `Smiley Sans` 为主字体族保持视觉连贯，粤语生僻字按同字族优先原则安全回退。",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FE5252",
+        "danger_color": "#DC2626",
+        "stroke_color": "#000000",
+        "bg_slab": "rgba(0,0,0,0.65)"
+      },
+      "three_tier_ruler": {
+        "mode": "dual_or_multi_tier",
+        "L1": {
+          "units": 12.0,
+          "px_1080p": 72,
+          "height_pct": 4.3,
+          "usage": "常规口播字幕/桥接句"
+        },
+        "L2": {
+          "units": 28.0,
+          "px_1080p": 168,
+          "height_pct": 7.19,
+          "usage": "章节标注、副重点、小清单"
+        },
+        "L3": {
+          "units": 47.6,
+          "px_1080p": 285,
+          "height_pct": 9.76,
+          "usage": "开场钩子、数字、大情绪结论"
+        },
+        "ratio_L1_L2_L3": "1.00 : 2.33 : 3.96"
+      },
+      "subtitle_stage_architecture": {
+        "stage_mode": "dual_layer_subtitle_plus_flower",
+        "single_stage_unified": false,
+        "recommended_theme_profile": "store_vibrant",
+        "sub_y_ratio": 0.721,
+        "max_chars_per_line": 10,
+        "cut_text_align_ratio": 0.8,
+        "causality_summary": "base 轨（track [4]）共 18 段，覆盖片长 100%；相邻段无缝率 100%（Δ≤1 帧，按整轨顺序算）；其中 7 段是普通字号字幕（其余 11 段被升级）；y 中位 0.721×H；字幕起点 71% 落在主轨切点 ±2 帧内（到最近切点中位 0.0s）——这套是切点驱动的重剪风格，字幕起句跟着镜头切",
+        "double_caption_rule": "常规口播在安全底栏呈现字幕，重点短词（<=7字）作为前景视觉锚点弹出，不堆叠整句复读卡片。",
+        "supported_primitives": []
+      },
+      "editing_and_broll_rhythm": {
+        "median_shot_sec": 1.43,
+        "p10_sec": 0.6165,
+        "p90_sec": 2.125,
+        "fast_cut_lt1s_ratio": 0.25,
+        "opening_cuts_3s": 3,
+        "kf_per_min": 26.7,
+        "broll_target_ratio": 0.272,
+        "broll_band": [
+          0.12,
+          0.47
+        ]
+      },
+      "packaging_and_visual_grammar": {
+        "transition_style": "none",
+        "ai_matting_count": 3,
+        "cutout_rule": "抠像的因果是「这一镜要同时看到人和另一层画面」：人从背景提出来 → 下面垫一条不同源的副镜 → 叠加轨（render_index>0）出画。本套 4 段抠像里 3 段在叠加轨、0 段仍是全屏 scale=1（人满屏叠在满屏副镜上，抠不...",
+        "pip_mode": "geometry_pip_window",
+        "effect_summary": "无额外全局花哨滤镜，保持干净原片质感"
+      },
+      "audio_and_sfx_design": {
+        "integrated_lufs": -10.9,
+        "voice_bgm_snr_db": 11.5,
+        "whitebox_bpm": 60.09,
+        "dual_bgm": false,
+        "sfx_per_min": 26.7,
+        "trigger_share": {
+          "cut": 0.8,
+          "flower": 0.2,
+          "line": 0.0,
+          "beat": 0.0,
+          "free": 0.0
+        },
+        "min_gap_sec": 0.5
+      },
+      "blackbox_rea_summary": {
+        "available": true,
+        "duration_sec": 22.47,
+        "shots_detected": 8,
+        "avg_shot_s": 2.81,
+        "overlay_kinds": [
+          "animated_sticker",
+          "huazi",
+          "label",
+          "static_graphic",
+          "static_sticker",
+          "subtitle",
+          "title"
+        ],
+        "production_mix": [
+          {
+            "label": "ai_video",
+            "ratio": 0.8917
+          },
+          {
+            "label": "cg_3d",
+            "ratio": 0.1083
+          }
+        ],
+        "audio_voice_ratio": 0.935,
+        "audio_music_bpm": 80.7,
+        "cuts_on_onset_ratio": 1.0,
+        "cuts_on_beat_ratio": 0.143,
+        "packaging_counts": {
+          "text": {
+            "label": 9,
+            "subtitle": 8,
+            "scene": 2,
+            "huazi": 2
+          },
+          "stickers": 2
+        },
+        "text_height_pct_tiers": {
+          "L1_p15_pct": 4.3,
+          "L2_median_pct": 7.19,
+          "L3_p90_pct": 9.76,
+          "sample_count": 21
+        },
+        "text_band_distribution": {
+          "middle": 8,
+          "bottom": 11,
+          "top": 2
+        },
+        "text_anim_in_distribution": {
+          "cut": 15,
+          "fade": 1,
+          "pop": 3,
+          "reveal": 2
+        },
+        "text_box_count": 0,
+        "sfx_anchored_count": 7,
+        "sfx_type_distribution": {
+          "whoosh": 4,
+          "ding": 1,
+          "hit": 1,
+          "pop": 1
+        },
+        "sfx_anchor_targets": {
+          "文字标注": 6,
+          "花字": 1
+        }
+      }
+    },
+    "style_06": {
+      "style_id": "style_06",
+      "label_cn": "黑底拍立得相框 · 顶部毛笔手写金句风",
+      "archetype_id": "arch_05_cinema_slow_space",
+      "typography_and_palette": {
+        "font_family": "Alimama ShuHeiTi",
+        "font_candidates": [
+          "SourceHanSerifCN-Bold.otf",
+          "AlimamaShuHeiTi-Bold.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ],
+        "font_purity_rule": "以 `Alimama ShuHeiTi` 为主字体族保持视觉连贯，粤语生僻字按同字族优先原则安全回退。",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFF589",
+        "danger_color": "#DC2626",
+        "stroke_color": "#000000",
+        "bg_slab": "rgba(0,0,0,0.65)"
+      },
+      "three_tier_ruler": {
+        "mode": "dual_or_multi_tier",
+        "L1": {
+          "units": 8.0,
+          "px_1080p": 48,
+          "height_pct": 3.95,
+          "usage": "常规口播字幕/桥接句"
+        },
+        "L2": {
+          "units": 15.0,
+          "px_1080p": 90,
+          "height_pct": 4.53,
+          "usage": "章节标注、副重点、小清单"
+        },
+        "L3": {
+          "units": 20.0,
+          "px_1080p": 120,
+          "height_pct": 6.45,
+          "usage": "开场钩子、数字、大情绪结论"
+        },
+        "ratio_L1_L2_L3": "1.00 : 1.88 : 2.50"
+      },
+      "subtitle_stage_architecture": {
+        "stage_mode": "dual_layer_subtitle_plus_flower",
+        "single_stage_unified": false,
+        "recommended_theme_profile": "store_vibrant",
+        "sub_y_ratio": 0.693,
+        "max_chars_per_line": 9,
+        "cut_text_align_ratio": 1.0,
+        "causality_summary": "base 轨（track [4]）共 10 段，覆盖片长 93%；相邻段无缝率 78%（Δ≤1 帧，按整轨顺序算）；其中 9 段是普通字号字幕（其余 1 段被升级）；y 中位 0.693×H；字幕起点 22% 落在主轨切点 ±2 帧内（到最近切点中位 3.4s）——由语音断句驱动，不跟切点",
+        "double_caption_rule": "常规口播在安全底栏呈现字幕，重点短词（<=7字）作为前景视觉锚点弹出，不堆叠整句复读卡片。",
+        "supported_primitives": []
+      },
+      "editing_and_broll_rhythm": {
+        "median_shot_sec": 3.13,
+        "p10_sec": 0.843,
+        "p90_sec": 11.8168,
+        "fast_cut_lt1s_ratio": 0.25,
+        "opening_cuts_3s": 2,
+        "kf_per_min": 0.0,
+        "broll_target_ratio": 0.998,
+        "broll_band": [
+          0.85,
+          0.85
+        ]
+      },
+      "packaging_and_visual_grammar": {
+        "transition_style": "none",
+        "ai_matting_count": 0,
+        "cutout_rule": "这套处理画面不靠「把人抠出来叠到别处」：人物直接满屏，换画面靠硬切 + 花字。所以任何一镜都不该出现抠像层。",
+        "pip_mode": "geometry_pip_window",
+        "effect_summary": "无额外全局花哨滤镜，保持干净原片质感"
+      },
+      "audio_and_sfx_design": {
+        "integrated_lufs": -14.0,
+        "voice_bgm_snr_db": 11.5,
+        "whitebox_bpm": 66.26,
+        "dual_bgm": false,
+        "sfx_per_min": 36.0,
+        "trigger_share": {
+          "cut": 0.077,
+          "flower": 0.538,
+          "line": 0.385,
+          "beat": 0.0,
+          "free": 0.0
+        },
+        "min_gap_sec": 0.767
+      },
+      "blackbox_rea_summary": {
+        "available": true,
+        "duration_sec": 21.67,
+        "shots_detected": 1,
+        "avg_shot_s": 21.67,
+        "overlay_kinds": [
+          "huazi",
+          "label",
+          "subtitle"
+        ],
+        "production_mix": [
+          {
+            "label": "ai_video",
+            "ratio": 1.0
+          }
+        ],
+        "audio_voice_ratio": 0.877,
+        "audio_music_bpm": 143.6,
+        "cuts_on_onset_ratio": null,
+        "cuts_on_beat_ratio": null,
+        "packaging_counts": {
+          "text": {
+            "title": 1,
+            "label": 9,
+            "subtitle": 11,
+            "huazi": 6
+          },
+          "stickers": 0
+        },
+        "text_height_pct_tiers": {
+          "L1_p15_pct": 3.95,
+          "L2_median_pct": 4.53,
+          "L3_p90_pct": 6.45,
+          "sample_count": 27
+        },
+        "text_band_distribution": {
+          "top": 5,
+          "middle": 13,
+          "bottom": 9
+        },
+        "text_anim_in_distribution": {
+          "cut": 22,
+          "slide": 2,
+          "fade": 2,
+          "reveal": 1
+        },
+        "text_box_count": 1,
+        "sfx_anchored_count": 9,
+        "sfx_type_distribution": {
+          "whoosh": 1,
+          "pop": 6,
+          "ding": 2
+        },
+        "sfx_anchor_targets": {
+          "文字标注": 5,
+          "花字": 4
+        }
+      }
+    },
+    "style_07": {
+      "style_id": "style_07",
+      "label_cn": "人像真轮廓白边抠像 · 虚化展厅避坑风",
+      "archetype_id": "arch_04_punch_talking_head",
+      "typography_and_palette": {
+        "font_family": "Alimama ShuHeiTi",
+        "font_candidates": [
+          "AlimamaShuHeiTi-Bold.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ],
+        "font_purity_rule": "以 `Alimama ShuHeiTi` 为主字体族保持视觉连贯，粤语生僻字按同字族优先原则安全回退。",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFBF17",
+        "danger_color": "#DC2626",
+        "stroke_color": "#000000",
+        "bg_slab": "rgba(0,0,0,0.65)"
+      },
+      "three_tier_ruler": {
+        "mode": "dual_or_multi_tier",
+        "L1": {
+          "units": 10.0,
+          "px_1080p": 60,
+          "height_pct": 3.52,
+          "usage": "常规口播字幕/桥接句"
+        },
+        "L2": {
+          "units": 28.4,
+          "px_1080p": 170,
+          "height_pct": 4.26,
+          "usage": "章节标注、副重点、小清单"
+        },
+        "L3": {
+          "units": 55.8,
+          "px_1080p": 335,
+          "height_pct": 13.28,
+          "usage": "开场钩子、数字、大情绪结论"
+        },
+        "ratio_L1_L2_L3": "1.00 : 2.84 : 5.58"
+      },
+      "subtitle_stage_architecture": {
+        "stage_mode": "dual_layer_subtitle_plus_flower",
+        "single_stage_unified": false,
+        "recommended_theme_profile": "store_vibrant",
+        "sub_y_ratio": 0.643,
+        "max_chars_per_line": 10,
+        "cut_text_align_ratio": 0.812,
+        "causality_summary": "base 轨（track [6]）共 20 段，覆盖片长 90%；相邻段无缝率 89%（Δ≤1 帧，按整轨顺序算）；其中 18 段是普通字号字幕（其余 2 段被升级）；y 中位 0.643×H；字幕起点 67% 落在主轨切点 ±2 帧内（到最近切点中位 0.0s）——这套是切点驱动的重剪风格，字幕起句跟着镜头切",
+        "double_caption_rule": "常规口播在安全底栏呈现字幕，重点短词（<=7字）作为前景视觉锚点弹出，不堆叠整句复读卡片。",
+        "supported_primitives": []
+      },
+      "editing_and_broll_rhythm": {
+        "median_shot_sec": 1.4,
+        "p10_sec": 0.7102,
+        "p90_sec": 2.8966,
+        "fast_cut_lt1s_ratio": 0.353,
+        "opening_cuts_3s": 0,
+        "kf_per_min": 34.1,
+        "broll_target_ratio": 0.598,
+        "broll_band": [
+          0.45,
+          0.8
+        ]
+      },
+      "packaging_and_visual_grammar": {
+        "transition_style": "none",
+        "ai_matting_count": 4,
+        "cutout_rule": "抠像的因果是「这一镜要同时看到人和另一层画面」：人从背景提出来 → 下面垫一条不同源的副镜 → 叠加轨（render_index>0）出画。本套 4 段抠像里 4 段在叠加轨、1 段仍是全屏 scale=1（人满屏叠在满屏副镜上，抠不...",
+        "pip_mode": "geometry_pip_window",
+        "effect_summary": "无额外全局花哨滤镜，保持干净原片质感"
+      },
+      "audio_and_sfx_design": {
+        "integrated_lufs": -14.0,
+        "voice_bgm_snr_db": 11.5,
+        "whitebox_bpm": 60.09,
+        "dual_bgm": false,
+        "sfx_per_min": 42.7,
+        "trigger_share": {
+          "cut": 0.6,
+          "flower": 0.2,
+          "line": 0.0,
+          "beat": 0.05,
+          "free": 0.15
+        },
+        "min_gap_sec": 0.6
+      },
+      "blackbox_rea_summary": {
+        "available": true,
+        "duration_sec": 28.13,
+        "shots_detected": 13,
+        "avg_shot_s": 2.16,
+        "overlay_kinds": [
+          "animated_sticker",
+          "huazi",
+          "label",
+          "subtitle",
+          "title"
+        ],
+        "production_mix": [
+          {
+            "label": "ai_video",
+            "ratio": 0.6356
+          },
+          {
+            "label": "code_render",
+            "ratio": 0.2014
+          },
+          {
+            "label": "cg_3d",
+            "ratio": 0.1629
+          }
+        ],
+        "audio_voice_ratio": 0.871,
+        "audio_music_bpm": 117.5,
+        "cuts_on_onset_ratio": 1.0,
+        "cuts_on_beat_ratio": 0.25,
+        "packaging_counts": {
+          "text": {
+            "label": 13,
+            "subtitle": 17,
+            "scene": 2,
+            "huazi": 3
+          },
+          "stickers": 4
+        },
+        "text_height_pct_tiers": {
+          "L1_p15_pct": 3.52,
+          "L2_median_pct": 4.26,
+          "L3_p90_pct": 13.28,
+          "sample_count": 35
+        },
+        "text_band_distribution": {
+          "top": 2,
+          "middle": 31,
+          "bottom": 2
+        },
+        "text_anim_in_distribution": {
+          "cut": 27,
+          "fade": 4,
+          "reveal": 1,
+          "pop": 2,
+          "slide": 1
+        },
+        "text_box_count": 6,
+        "sfx_anchored_count": 4,
+        "sfx_type_distribution": {
+          "whoosh": 2,
+          "ding": 2
+        },
+        "sfx_anchor_targets": {
+          "文字标注": 3,
+          "花字": 1
+        }
+      }
+    },
+    "style_08": {
+      "style_id": "style_08",
+      "label_cn": "专家长镜 · 左上角斜杠双色大标风",
+      "archetype_id": "arch_02_high_contrast_story",
+      "typography_and_palette": {
+        "font_family": "Alimama ShuHeiTi",
+        "font_candidates": [
+          "SmileySans-Oblique.ttf",
+          "AlimamaShuHeiTi-Bold.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ],
+        "font_purity_rule": "以 `Alimama ShuHeiTi` 为主字体族保持视觉连贯，粤语生僻字按同字族优先原则安全回退。",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFDE00",
+        "danger_color": "#DC2626",
+        "stroke_color": "#000000",
+        "bg_slab": "rgba(0,0,0,0.65)"
+      },
+      "three_tier_ruler": {
+        "mode": "dual_or_multi_tier",
+        "L1": {
+          "units": 12.0,
+          "px_1080p": 72,
+          "height_pct": 1.09,
+          "usage": "常规口播字幕/桥接句"
+        },
+        "L2": {
+          "units": 24.0,
+          "px_1080p": 144,
+          "height_pct": 3.91,
+          "usage": "章节标注、副重点、小清单"
+        },
+        "L3": {
+          "units": 68.2,
+          "px_1080p": 409,
+          "height_pct": 8.75,
+          "usage": "开场钩子、数字、大情绪结论"
+        },
+        "ratio_L1_L2_L3": "1.00 : 2.00 : 5.68"
+      },
+      "subtitle_stage_architecture": {
+        "stage_mode": "dual_layer_subtitle_plus_flower",
+        "single_stage_unified": false,
+        "recommended_theme_profile": "store_vibrant",
+        "sub_y_ratio": 0.693,
+        "max_chars_per_line": 11,
+        "cut_text_align_ratio": 1.0,
+        "causality_summary": "base 轨（track [8]）共 37 段，覆盖片长 70%；相邻段无缝率 83%（Δ≤1 帧，按整轨顺序算）；其中 37 段是普通字号字幕（其余 0 段被升级）；y 中位 0.693×H；字幕起点 3% 落在主轨切点 ±2 帧内（到最近切点中位 9.8s）——由语音断句驱动，不跟切点",
+        "double_caption_rule": "常规口播在安全底栏呈现字幕，重点短词（<=7字）作为前景视觉锚点弹出，不堆叠整句复读卡片。",
+        "supported_primitives": []
+      },
+      "editing_and_broll_rhythm": {
+        "median_shot_sec": 29.23,
+        "p10_sec": 13.1003,
+        "p90_sec": 45.3667,
+        "fast_cut_lt1s_ratio": 0.0,
+        "opening_cuts_3s": 0,
+        "kf_per_min": 34.9,
+        "broll_target_ratio": 0.0,
+        "broll_band": [
+          0.0,
+          0.2
+        ]
+      },
+      "packaging_and_visual_grammar": {
+        "transition_style": "none",
+        "ai_matting_count": 0,
+        "cutout_rule": "这套处理画面不靠「把人抠出来叠到别处」：人物直接满屏，换画面靠硬切 + 贴纸+画面特效。所以任何一镜都不该出现抠像层。",
+        "pip_mode": "geometry_pip_main_shrunk",
+        "effect_summary": "无额外全局花哨滤镜，保持干净原片质感"
+      },
+      "audio_and_sfx_design": {
+        "integrated_lufs": -14.0,
+        "voice_bgm_snr_db": 11.5,
+        "whitebox_bpm": 69.84,
+        "dual_bgm": false,
+        "sfx_per_min": 29.8,
+        "trigger_share": {
+          "cut": 0.034,
+          "flower": 0.828,
+          "line": 0.138,
+          "beat": 0.0,
+          "free": 0.0
+        },
+        "min_gap_sec": 0.434
+      },
+      "blackbox_rea_summary": {
+        "available": true,
+        "duration_sec": 58.47,
+        "shots_detected": 12,
+        "avg_shot_s": 4.87,
+        "overlay_kinds": [
+          "label",
+          "subtitle",
+          "title"
+        ],
+        "production_mix": [
+          {
+            "label": "live_action",
+            "ratio": 1.0
+          }
+        ],
+        "audio_voice_ratio": 0.334,
+        "audio_music_bpm": 139.7,
+        "cuts_on_onset_ratio": 1.0,
+        "cuts_on_beat_ratio": 0.0,
+        "packaging_counts": {
+          "text": {
+            "title": 3,
+            "label": 41,
+            "subtitle": 36
+          },
+          "stickers": 0
+        },
+        "text_height_pct_tiers": {
+          "L1_p15_pct": 1.09,
+          "L2_median_pct": 3.91,
+          "L3_p90_pct": 8.75,
+          "sample_count": 80
+        },
+        "text_band_distribution": {
+          "top": 3,
+          "middle": 71,
+          "bottom": 6
+        },
+        "text_anim_in_distribution": {
+          "cut": 69,
+          "pop": 3,
+          "fade": 4,
+          "reveal": 3,
+          "slide": 1
+        },
+        "text_box_count": 22,
+        "sfx_anchored_count": 18,
+        "sfx_type_distribution": {
+          "whoosh": 4,
+          "ding": 2,
+          "pop": 12
+        },
+        "sfx_anchor_targets": {
+          "文字标注": 18
+        }
+      }
+    },
+    "style_09": {
+      "style_id": "style_09",
+      "label_cn": "纯黑纪实面板 · 多重圆窗头像+长句纪实字幕风",
+      "archetype_id": "arch_01_tech_ui_console",
+      "typography_and_palette": {
+        "font_family": "Smiley Sans",
+        "font_candidates": [
+          "SmileySans-Oblique.ttf",
+          "SmileySans-Oblique.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ],
+        "font_purity_rule": "以 `Smiley Sans` 为主字体族保持视觉连贯，粤语生僻字按同字族优先原则安全回退。",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FF1837",
+        "danger_color": "#DC2626",
+        "stroke_color": "#000000",
+        "bg_slab": "rgba(0,0,0,0.65)"
+      },
+      "three_tier_ruler": {
+        "mode": "dual_or_multi_tier",
+        "L1": {
+          "units": 7.0,
+          "px_1080p": 42,
+          "height_pct": 3.36,
+          "usage": "常规口播字幕/桥接句"
+        },
+        "L2": {
+          "units": 15.0,
+          "px_1080p": 90,
+          "height_pct": 4.38,
+          "usage": "章节标注、副重点、小清单"
+        },
+        "L3": {
+          "units": 36.1,
+          "px_1080p": 217,
+          "height_pct": 6.72,
+          "usage": "开场钩子、数字、大情绪结论"
+        },
+        "ratio_L1_L2_L3": "1.00 : 2.14 : 5.16"
+      },
+      "subtitle_stage_architecture": {
+        "stage_mode": "dual_layer_subtitle_plus_flower",
+        "single_stage_unified": false,
+        "recommended_theme_profile": "store_vibrant",
+        "sub_y_ratio": 0.669,
+        "max_chars_per_line": 14,
+        "cut_text_align_ratio": 0.846,
+        "causality_summary": "base 轨（track [1]）共 27 段，覆盖片长 98%；相邻段无缝率 96%（Δ≤1 帧，按整轨顺序算）；其中 26 段是普通字号字幕（其余 1 段被升级）；y 中位 0.669×H；字幕起点 88% 落在主轨切点 ±2 帧内（到最近切点中位 0.0s）——这套是切点驱动的重剪风格，字幕起句跟着镜头切",
+        "double_caption_rule": "常规口播在安全底栏呈现字幕，重点短词（<=7字）作为前景视觉锚点弹出，不堆叠整句复读卡片。",
+        "supported_primitives": []
+      },
+      "editing_and_broll_rhythm": {
+        "median_shot_sec": 1.5,
+        "p10_sec": 0.8498,
+        "p90_sec": 2.463,
+        "fast_cut_lt1s_ratio": 0.259,
+        "opening_cuts_3s": 2,
+        "kf_per_min": 11.3,
+        "broll_target_ratio": 0.334,
+        "broll_band": [
+          0.18,
+          0.53
+        ]
+      },
+      "packaging_and_visual_grammar": {
+        "transition_style": "none",
+        "ai_matting_count": 0,
+        "cutout_rule": "抠像的因果是「这一镜要同时看到人和另一层画面」：人从背景提出来 → 下面垫一条不同源的副镜 → 叠加轨（render_index>0）出画。本套 1 段抠像里 1 段在叠加轨、0 段仍是全屏 scale=1（人满屏叠在满屏副镜上，抠不...",
+        "pip_mode": "geometry_pip_main_shrunk",
+        "effect_summary": "无额外全局花哨滤镜，保持干净原片质感"
+      },
+      "audio_and_sfx_design": {
+        "integrated_lufs": -14.0,
+        "voice_bgm_snr_db": 11.5,
+        "whitebox_bpm": 172.27,
+        "dual_bgm": false,
+        "sfx_per_min": 24.0,
+        "trigger_share": {
+          "cut": 0.765,
+          "flower": 0.176,
+          "line": 0.059,
+          "beat": 0.0,
+          "free": 0.0
+        },
+        "min_gap_sec": 0.65
+      },
+      "blackbox_rea_summary": {
+        "available": true,
+        "duration_sec": 42.5,
+        "shots_detected": 14,
+        "avg_shot_s": 3.04,
+        "overlay_kinds": [
+          "huazi",
+          "label",
+          "subtitle",
+          "title"
+        ],
+        "production_mix": [
+          {
+            "label": "code_render",
+            "ratio": 0.5416
+          },
+          {
+            "label": "ai_video",
+            "ratio": 0.4157
+          },
+          {
+            "label": "cg_3d",
+            "ratio": 0.0428
+          }
+        ],
+        "audio_voice_ratio": 0.953,
+        "audio_music_bpm": null,
+        "cuts_on_onset_ratio": 1.0,
+        "cuts_on_beat_ratio": null,
+        "packaging_counts": {
+          "text": {
+            "label": 18,
+            "subtitle": 42,
+            "scene": 16,
+            "huazi": 1
+          },
+          "stickers": 0
+        },
+        "text_height_pct_tiers": {
+          "L1_p15_pct": 3.36,
+          "L2_median_pct": 4.38,
+          "L3_p90_pct": 6.72,
+          "sample_count": 77
+        },
+        "text_band_distribution": {
+          "middle": 64,
+          "bottom": 6,
+          "top": 7
+        },
+        "text_anim_in_distribution": {
+          "cut": 58,
+          "fade": 5,
+          "pop": 9,
+          "reveal": 5
+        },
+        "text_box_count": 1,
+        "sfx_anchored_count": 13,
+        "sfx_type_distribution": {
+          "ding": 6,
+          "whoosh": 4,
+          "pop": 3
+        },
+        "sfx_anchor_targets": {
+          "文字标注": 12,
+          "花字": 1
+        }
+      }
+    },
+    "style_10": {
+      "style_id": "style_10",
+      "label_cn": "高频推拉微距 · 极净全屏职场干货风",
+      "archetype_id": "arch_01_tech_ui_console",
+      "typography_and_palette": {
+        "font_family": "Smiley Sans",
+        "font_candidates": [
+          "SmileySans-Oblique.ttf",
+          "SmileySans-Oblique.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ],
+        "font_purity_rule": "以 `Smiley Sans` 为主字体族保持视觉连贯，粤语生僻字按同字族优先原则安全回退。",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFBF17",
+        "danger_color": "#DC2626",
+        "stroke_color": "#000000",
+        "bg_slab": "rgba(0,0,0,0.65)"
+      },
+      "three_tier_ruler": {
+        "mode": "dual_or_multi_tier",
+        "L1": {
+          "units": 12.0,
+          "px_1080p": 72,
+          "height_pct": 4.06,
+          "usage": "常规口播字幕/桥接句"
+        },
+        "L2": {
+          "units": 31.6,
+          "px_1080p": 189,
+          "height_pct": 7.42,
+          "usage": "章节标注、副重点、小清单"
+        },
+        "L3": {
+          "units": 63.6,
+          "px_1080p": 381,
+          "height_pct": 19.84,
+          "usage": "开场钩子、数字、大情绪结论"
+        },
+        "ratio_L1_L2_L3": "1.00 : 2.63 : 5.30"
+      },
+      "subtitle_stage_architecture": {
+        "stage_mode": "dual_layer_subtitle_plus_flower",
+        "single_stage_unified": false,
+        "recommended_theme_profile": "store_vibrant",
+        "sub_y_ratio": 0.629,
+        "max_chars_per_line": 8,
+        "cut_text_align_ratio": 0.571,
+        "causality_summary": "base 轨（track [6]）共 10 段，覆盖片长 64%；相邻段无缝率 44%（Δ≤1 帧，按整轨顺序算）；其中 6 段是普通字号字幕（其余 4 段被升级）；y 中位 0.721×H；字幕起点 67% 落在主轨切点 ±2 帧内（到最近切点中位 0.0s）——这套是切点驱动的重剪风格，字幕起句跟着镜头切",
+        "double_caption_rule": "常规口播在安全底栏呈现字幕，重点短词（<=7字）作为前景视觉锚点弹出，不堆叠整句复读卡片。",
+        "supported_primitives": []
+      },
+      "editing_and_broll_rhythm": {
+        "median_shot_sec": 1.12,
+        "p10_sec": 0.7966,
+        "p90_sec": 1.95,
+        "fast_cut_lt1s_ratio": 0.333,
+        "opening_cuts_3s": 2,
+        "kf_per_min": 190.3,
+        "broll_target_ratio": 0.574,
+        "broll_band": [
+          0.42,
+          0.77
+        ]
+      },
+      "packaging_and_visual_grammar": {
+        "transition_style": "none",
+        "ai_matting_count": 8,
+        "cutout_rule": "抠像的因果是「这一镜要同时看到人和另一层画面」：人从背景提出来 → 下面垫一条不同源的副镜 → 叠加轨（render_index>0）出画。本套 8 段抠像里 8 段在叠加轨、0 段仍是全屏 scale=1（人满屏叠在满屏副镜上，抠不...",
+        "pip_mode": "geometry_pip_window",
+        "effect_summary": "无额外全局花哨滤镜，保持干净原片质感"
+      },
+      "audio_and_sfx_design": {
+        "integrated_lufs": -14.0,
+        "voice_bgm_snr_db": 11.5,
+        "whitebox_bpm": 112.35,
+        "dual_bgm": false,
+        "sfx_per_min": 47.6,
+        "trigger_share": {
+          "cut": 0.733,
+          "flower": 0.267,
+          "line": 0.0,
+          "beat": 0.0,
+          "free": 0.0
+        },
+        "min_gap_sec": 0.4
+      },
+      "blackbox_rea_summary": {
+        "available": true,
+        "duration_sec": 18.92,
+        "shots_detected": 9,
+        "avg_shot_s": 2.1,
+        "overlay_kinds": [
+          "animated_sticker",
+          "huazi",
+          "label",
+          "subtitle",
+          "title"
+        ],
+        "production_mix": [
+          {
+            "label": "cg_3d",
+            "ratio": 0.4749
+          },
+          {
+            "label": "code_render",
+            "ratio": 0.2696
+          },
+          {
+            "label": "ai_video",
+            "ratio": 0.2555
+          }
+        ],
+        "audio_voice_ratio": 0.873,
+        "audio_music_bpm": 105.5,
+        "cuts_on_onset_ratio": 1.0,
+        "cuts_on_beat_ratio": 0.0,
+        "packaging_counts": {
+          "text": {
+            "label": 13,
+            "subtitle": 7,
+            "huazi": 4,
+            "scene": 2
+          },
+          "stickers": 1
+        },
+        "text_height_pct_tiers": {
+          "L1_p15_pct": 4.06,
+          "L2_median_pct": 7.42,
+          "L3_p90_pct": 19.84,
+          "sample_count": 26
+        },
+        "text_band_distribution": {
+          "top": 10,
+          "bottom": 10,
+          "middle": 6
+        },
+        "text_anim_in_distribution": {
+          "cut": 17,
+          "reveal": 5,
+          "fade": 2,
+          "pop": 2
+        },
+        "text_box_count": 3,
+        "sfx_anchored_count": 9,
+        "sfx_type_distribution": {
+          "pop": 3,
+          "ding": 4,
+          "whoosh": 2
+        },
+        "sfx_anchor_targets": {
+          "文字标注": 6,
+          "花字": 2,
+          "贴纸": 1
+        }
+      }
+    },
+    "style_11": {
+      "style_id": "style_11",
+      "label_cn": "清亮知性干货 · 无底框通透大字风（博主默认）",
+      "archetype_id": "arch_03_editorial_matte_depth",
+      "typography_and_palette": {
+        "font_family": "Smiley Sans",
+        "font_candidates": [
+          "SmileySans-Oblique.ttf",
+          "SmileySans-Oblique.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ],
+        "font_purity_rule": "以 `Smiley Sans` 为主字体族保持视觉连贯，粤语生僻字按同字族优先原则安全回退。",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#B71C1C",
+        "danger_color": "#DC2626",
+        "stroke_color": "#000000",
+        "bg_slab": "rgba(0,0,0,0.65)"
+      },
+      "three_tier_ruler": {
+        "mode": "dual_or_multi_tier",
+        "L1": {
+          "units": 12.0,
+          "px_1080p": 72,
+          "height_pct": 4.06,
+          "usage": "常规口播字幕/桥接句"
+        },
+        "L2": {
+          "units": 35.8,
+          "px_1080p": 215,
+          "height_pct": 4.53,
+          "usage": "章节标注、副重点、小清单"
+        },
+        "L3": {
+          "units": 42.0,
+          "px_1080p": 252,
+          "height_pct": 17.62,
+          "usage": "开场钩子、数字、大情绪结论"
+        },
+        "ratio_L1_L2_L3": "1.00 : 2.99 : 3.50"
+      },
+      "subtitle_stage_architecture": {
+        "stage_mode": "dual_layer_subtitle_plus_flower",
+        "single_stage_unified": false,
+        "recommended_theme_profile": "store_vibrant",
+        "sub_y_ratio": 0.695,
+        "max_chars_per_line": 10,
+        "cut_text_align_ratio": 0.833,
+        "causality_summary": "base 轨（track [7]）共 21 段，覆盖片长 91%；相邻段无缝率 90%（Δ≤1 帧，按整轨顺序算）；其中 15 段是普通字号字幕（其余 6 段被升级）；y 中位 0.695×H；字幕起点 80% 落在主轨切点 ±2 帧内（到最近切点中位 0.0s）——这套是切点驱动的重剪风格，字幕起句跟着镜头切",
+        "double_caption_rule": "常规口播在安全底栏呈现字幕，重点短词（<=7字）作为前景视觉锚点弹出，不堆叠整句复读卡片。",
+        "supported_primitives": []
+      },
+      "editing_and_broll_rhythm": {
+        "median_shot_sec": 1.32,
+        "p10_sec": 0.5434,
+        "p90_sec": 2.3198,
+        "fast_cut_lt1s_ratio": 0.316,
+        "opening_cuts_3s": 1,
+        "kf_per_min": 54.5,
+        "broll_target_ratio": 0.343,
+        "broll_band": [
+          0.19,
+          0.54
+        ]
+      },
+      "packaging_and_visual_grammar": {
+        "transition_style": "none",
+        "ai_matting_count": 4,
+        "cutout_rule": "抠像的因果是「这一镜要同时看到人和另一层画面」：人从背景提出来 → 下面垫一条不同源的副镜 → 叠加轨（render_index>0）出画。本套 7 段抠像里 6 段在叠加轨、0 段仍是全屏 scale=1（人满屏叠在满屏副镜上，抠不...",
+        "pip_mode": "geometry_pip_window",
+        "effect_summary": "无额外全局花哨滤镜，保持干净原片质感"
+      },
+      "audio_and_sfx_design": {
+        "integrated_lufs": -14.0,
+        "voice_bgm_snr_db": 11.5,
+        "whitebox_bpm": 60.09,
+        "dual_bgm": true,
+        "sfx_per_min": 29.5,
+        "trigger_share": {
+          "cut": 0.692,
+          "flower": 0.154,
+          "line": 0.154,
+          "beat": 0.0,
+          "free": 0.0
+        },
+        "min_gap_sec": 0.6
+      },
+      "blackbox_rea_summary": {
+        "available": true,
+        "duration_sec": 26.4,
+        "shots_detected": 8,
+        "avg_shot_s": 3.3,
+        "overlay_kinds": [
+          "huazi",
+          "label",
+          "static_graphic",
+          "subtitle",
+          "title"
+        ],
+        "production_mix": [
+          {
+            "label": "ai_video",
+            "ratio": 0.7791
+          },
+          {
+            "label": "code_render",
+            "ratio": 0.1294
+          },
+          {
+            "label": "cg_3d",
+            "ratio": 0.0915
+          }
+        ],
+        "audio_voice_ratio": 0.758,
+        "audio_music_bpm": 120.2,
+        "cuts_on_onset_ratio": 1.0,
+        "cuts_on_beat_ratio": 0.429,
+        "packaging_counts": {
+          "text": {
+            "label": 10,
+            "subtitle": 16,
+            "huazi": 2,
+            "scene": 1
+          },
+          "stickers": 0
+        },
+        "text_height_pct_tiers": {
+          "L1_p15_pct": 4.06,
+          "L2_median_pct": 4.53,
+          "L3_p90_pct": 17.62,
+          "sample_count": 29
+        },
+        "text_band_distribution": {
+          "top": 5,
+          "middle": 22,
+          "bottom": 2
+        },
+        "text_anim_in_distribution": {
+          "cut": 23,
+          "pop": 3,
+          "slide": 1,
+          "reveal": 2
+        },
+        "text_box_count": 1,
+        "sfx_anchored_count": 7,
+        "sfx_type_distribution": {
+          "whoosh": 4,
+          "hit": 1,
+          "pop": 1,
+          "ding": 1
+        },
+        "sfx_anchor_targets": {
+          "文字标注": 6,
+          "花字": 1
+        }
+      }
+    },
+    "style_12": {
+      "style_id": "style_12",
+      "label_cn": "顶置双色悬念标 · 干货对比口播风",
+      "archetype_id": "arch_04_punch_talking_head",
+      "typography_and_palette": {
+        "font_family": "Alimama ShuHeiTi",
+        "font_candidates": [
+          "SmileySans-Oblique.ttf",
+          "AlimamaShuHeiTi-Bold.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ],
+        "font_purity_rule": "以 `Alimama ShuHeiTi` 为主字体族保持视觉连贯，粤语生僻字按同字族优先原则安全回退。",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFA800",
+        "danger_color": "#DC2626",
+        "stroke_color": "#000000",
+        "bg_slab": "rgba(0,0,0,0.65)"
+      },
+      "three_tier_ruler": {
+        "mode": "dual_or_multi_tier",
+        "L1": {
+          "units": 12.0,
+          "px_1080p": 72,
+          "height_pct": 4.06,
+          "usage": "常规口播字幕/桥接句"
+        },
+        "L2": {
+          "units": 17.0,
+          "px_1080p": 102,
+          "height_pct": 5.16,
+          "usage": "章节标注、副重点、小清单"
+        },
+        "L3": {
+          "units": 41.5,
+          "px_1080p": 249,
+          "height_pct": 6.09,
+          "usage": "开场钩子、数字、大情绪结论"
+        },
+        "ratio_L1_L2_L3": "1.00 : 1.42 : 3.46"
+      },
+      "subtitle_stage_architecture": {
+        "stage_mode": "dual_layer_subtitle_plus_flower",
+        "single_stage_unified": false,
+        "recommended_theme_profile": "store_vibrant",
+        "sub_y_ratio": 0.669,
+        "max_chars_per_line": 12,
+        "cut_text_align_ratio": 0.833,
+        "causality_summary": "base 轨（track [3]）共 20 段，覆盖片长 91%；相邻段无缝率 95%（Δ≤1 帧，按整轨顺序算）；其中 15 段是普通字号字幕（其余 5 段被升级）；y 中位 0.669×H；字幕起点 60% 落在主轨切点 ±2 帧内（到最近切点中位 0.0s）——这套是切点驱动的重剪风格，字幕起句跟着镜头切",
+        "double_caption_rule": "常规口播在安全底栏呈现字幕，重点短词（<=7字）作为前景视觉锚点弹出，不堆叠整句复读卡片。",
+        "supported_primitives": []
+      },
+      "editing_and_broll_rhythm": {
+        "median_shot_sec": 1.9,
+        "p10_sec": 0.973,
+        "p90_sec": 3.2798,
+        "fast_cut_lt1s_ratio": 0.154,
+        "opening_cuts_3s": 1,
+        "kf_per_min": 31.9,
+        "broll_target_ratio": 0.051,
+        "broll_band": [
+          0.0,
+          0.25
+        ]
+      },
+      "packaging_and_visual_grammar": {
+        "transition_style": "none",
+        "ai_matting_count": 1,
+        "cutout_rule": "抠像的因果是「这一镜要同时看到人和另一层画面」：人从背景提出来 → 下面垫一条不同源的副镜 → 叠加轨（render_index>0）出画。本套 1 段抠像里 1 段在叠加轨、0 段仍是全屏 scale=1（人满屏叠在满屏副镜上，抠不...",
+        "pip_mode": "geometry_pip_window",
+        "effect_summary": "无额外全局花哨滤镜，保持干净原片质感"
+      },
+      "audio_and_sfx_design": {
+        "integrated_lufs": -14.5,
+        "voice_bgm_snr_db": 11.5,
+        "whitebox_bpm": 172.27,
+        "dual_bgm": false,
+        "sfx_per_min": 36.5,
+        "trigger_share": {
+          "cut": 0.625,
+          "flower": 0.062,
+          "line": 0.312,
+          "beat": 0.0,
+          "free": 0.0
+        },
+        "min_gap_sec": 0.6
+      },
+      "blackbox_rea_summary": {
+        "available": true,
+        "duration_sec": 26.3,
+        "shots_detected": 10,
+        "avg_shot_s": 2.63,
+        "overlay_kinds": [
+          "huazi",
+          "label",
+          "static_graphic",
+          "static_sticker",
+          "subtitle",
+          "title"
+        ],
+        "production_mix": [
+          {
+            "label": "ai_video",
+            "ratio": 0.8479
+          },
+          {
+            "label": "code_render",
+            "ratio": 0.1242
+          },
+          {
+            "label": "cg_3d",
+            "ratio": 0.0279
+          }
+        ],
+        "audio_voice_ratio": 0.913,
+        "audio_music_bpm": null,
+        "cuts_on_onset_ratio": 1.0,
+        "cuts_on_beat_ratio": null,
+        "packaging_counts": {
+          "text": {
+            "title": 1,
+            "subtitle": 16,
+            "label": 12,
+            "huazi": 4
+          },
+          "stickers": 3
+        },
+        "text_height_pct_tiers": {
+          "L1_p15_pct": 4.06,
+          "L2_median_pct": 5.16,
+          "L3_p90_pct": 6.09,
+          "sample_count": 33
+        },
+        "text_band_distribution": {
+          "top": 10,
+          "middle": 23
+        },
+        "text_anim_in_distribution": {
+          "cut": 29,
+          "pop": 3,
+          "fade": 1
+        },
+        "text_box_count": 0,
+        "sfx_anchored_count": 11,
+        "sfx_type_distribution": {
+          "whoosh": 3,
+          "ding": 5,
+          "pop": 3
+        },
+        "sfx_anchor_targets": {
+          "文字标注": 6,
+          "花字": 4,
+          "贴纸": 1
+        }
+      }
+    },
+    "style_13": {
+      "style_id": "style_13",
+      "label_cn": "上白圆角画框 · 下纯黑宽幕沉浸风",
+      "archetype_id": "arch_05_cinema_slow_space",
+      "typography_and_palette": {
+        "font_family": "Smiley Sans",
+        "font_candidates": [
+          "SourceHanSerifCN-Bold.otf",
+          "SmileySans-Oblique.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ],
+        "font_purity_rule": "以 `Smiley Sans` 为主字体族保持视觉连贯，粤语生僻字按同字族优先原则安全回退。",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFBF17",
+        "danger_color": "#DC2626",
+        "stroke_color": "#000000",
+        "bg_slab": "rgba(0,0,0,0.65)"
+      },
+      "three_tier_ruler": {
+        "mode": "dual_or_multi_tier",
+        "L1": {
+          "units": 6.0,
+          "px_1080p": 36,
+          "height_pct": 2.97,
+          "usage": "常规口播字幕/桥接句"
+        },
+        "L2": {
+          "units": 15.0,
+          "px_1080p": 90,
+          "height_pct": 4.38,
+          "usage": "章节标注、副重点、小清单"
+        },
+        "L3": {
+          "units": 38.6,
+          "px_1080p": 232,
+          "height_pct": 14.65,
+          "usage": "开场钩子、数字、大情绪结论"
+        },
+        "ratio_L1_L2_L3": "1.00 : 2.50 : 6.43"
+      },
+      "subtitle_stage_architecture": {
+        "stage_mode": "dual_layer_subtitle_plus_flower",
+        "single_stage_unified": false,
+        "recommended_theme_profile": "store_vibrant",
+        "sub_y_ratio": 0.695,
+        "max_chars_per_line": 11,
+        "cut_text_align_ratio": 0.882,
+        "causality_summary": "base 轨（track [3]）共 21 段，覆盖片长 95%；相邻段无缝率 90%（Δ≤1 帧，按整轨顺序算）；其中 19 段是普通字号字幕（其余 2 段被升级）；y 中位 0.695×H；字幕起点 79% 落在主轨切点 ±2 帧内（到最近切点中位 0.0s）——这套是切点驱动的重剪风格，字幕起句跟着镜头切",
+        "double_caption_rule": "常规口播在安全底栏呈现字幕，重点短词（<=7字）作为前景视觉锚点弹出，不堆叠整句复读卡片。",
+        "supported_primitives": []
+      },
+      "editing_and_broll_rhythm": {
+        "median_shot_sec": 1.46,
+        "p10_sec": 0.65,
+        "p90_sec": 2.8432,
+        "fast_cut_lt1s_ratio": 0.333,
+        "opening_cuts_3s": 1,
+        "kf_per_min": 33.8,
+        "broll_target_ratio": 0.383,
+        "broll_band": [
+          0.23,
+          0.58
+        ]
+      },
+      "packaging_and_visual_grammar": {
+        "transition_style": "none",
+        "ai_matting_count": 4,
+        "cutout_rule": "抠像的因果是「这一镜要同时看到人和另一层画面」：人从背景提出来 → 下面垫一条不同源的副镜 → 叠加轨（render_index>0）出画。本套 4 段抠像里 4 段在叠加轨、0 段仍是全屏 scale=1（人满屏叠在满屏副镜上，抠不...",
+        "pip_mode": "geometry_pip_window",
+        "effect_summary": "无额外全局花哨滤镜，保持干净原片质感"
+      },
+      "audio_and_sfx_design": {
+        "integrated_lufs": -14.9,
+        "voice_bgm_snr_db": 11.5,
+        "whitebox_bpm": 172.27,
+        "dual_bgm": false,
+        "sfx_per_min": 33.8,
+        "trigger_share": {
+          "cut": 0.412,
+          "flower": 0.294,
+          "line": 0.294,
+          "beat": 0.0,
+          "free": 0.0
+        },
+        "min_gap_sec": 0.6
+      },
+      "blackbox_rea_summary": {
+        "available": true,
+        "duration_sec": 30.22,
+        "shots_detected": 12,
+        "avg_shot_s": 2.52,
+        "overlay_kinds": [
+          "animated_sticker",
+          "huazi",
+          "label",
+          "static_graphic",
+          "subtitle",
+          "title"
+        ],
+        "production_mix": [
+          {
+            "label": "code_render",
+            "ratio": 0.406
+          },
+          {
+            "label": "ai_video",
+            "ratio": 0.4038
+          },
+          {
+            "label": "cg_3d",
+            "ratio": 0.1903
+          }
+        ],
+        "audio_voice_ratio": 0.894,
+        "audio_music_bpm": null,
+        "cuts_on_onset_ratio": 1.0,
+        "cuts_on_beat_ratio": null,
+        "packaging_counts": {
+          "text": {
+            "subtitle": 18,
+            "label": 23,
+            "huazi": 4,
+            "scene": 2
+          },
+          "stickers": 1
+        },
+        "text_height_pct_tiers": {
+          "L1_p15_pct": 2.97,
+          "L2_median_pct": 4.38,
+          "L3_p90_pct": 14.65,
+          "sample_count": 47
+        },
+        "text_band_distribution": {
+          "middle": 39,
+          "top": 8
+        },
+        "text_anim_in_distribution": {
+          "cut": 37,
+          "reveal": 3,
+          "slide": 2,
+          "pop": 4,
+          "fade": 1
+        },
+        "text_box_count": 5,
+        "sfx_anchored_count": 15,
+        "sfx_type_distribution": {
+          "whoosh": 5,
+          "ding": 4,
+          "pop": 5,
+          "hit": 1
+        },
+        "sfx_anchor_targets": {
+          "文字标注": 13,
+          "花字": 1,
+          "贴纸": 1
+        }
+      }
+    },
+    "style_14": {
+      "style_id": "style_14",
+      "label_cn": "纯黑聚光圆窗 · 极简聚焦口播风",
+      "archetype_id": "arch_01_tech_ui_console",
+      "typography_and_palette": {
+        "font_family": "Smiley Sans",
+        "font_candidates": [
+          "AlimamaShuHeiTi-Bold.otf",
+          "SmileySans-Oblique.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ],
+        "font_purity_rule": "以 `Smiley Sans` 为主字体族保持视觉连贯，粤语生僻字按同字族优先原则安全回退。",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFBF17",
+        "danger_color": "#DC2626",
+        "stroke_color": "#000000",
+        "bg_slab": "rgba(0,0,0,0.65)"
+      },
+      "three_tier_ruler": {
+        "mode": "dual_or_multi_tier",
+        "L1": {
+          "units": 12.0,
+          "px_1080p": 72,
+          "height_pct": 4.38,
+          "usage": "常规口播字幕/桥接句"
+        },
+        "L2": {
+          "units": 21.0,
+          "px_1080p": 126,
+          "height_pct": 5.23,
+          "usage": "章节标注、副重点、小清单"
+        },
+        "L3": {
+          "units": 27.9,
+          "px_1080p": 167,
+          "height_pct": 10.39,
+          "usage": "开场钩子、数字、大情绪结论"
+        },
+        "ratio_L1_L2_L3": "1.00 : 1.75 : 2.32"
+      },
+      "subtitle_stage_architecture": {
+        "stage_mode": "dual_layer_subtitle_plus_flower",
+        "single_stage_unified": false,
+        "recommended_theme_profile": "store_vibrant",
+        "sub_y_ratio": 0.721,
+        "max_chars_per_line": 9,
+        "cut_text_align_ratio": 0.7,
+        "causality_summary": "base 轨（track [3]）共 11 段，覆盖片长 89%；相邻段无缝率 80%（Δ≤1 帧，按整轨顺序算）；其中 7 段是普通字号字幕（其余 4 段被升级）；y 中位 0.721×H；字幕起点 71% 落在主轨切点 ±2 帧内（到最近切点中位 0.0s）——这套是切点驱动的重剪风格，字幕起句跟着镜头切",
+        "double_caption_rule": "常规口播在安全底栏呈现字幕，重点短词（<=7字）作为前景视觉锚点弹出，不堆叠整句复读卡片。",
+        "supported_primitives": []
+      },
+      "editing_and_broll_rhythm": {
+        "median_shot_sec": 1.78,
+        "p10_sec": 1.133,
+        "p90_sec": 2.567,
+        "fast_cut_lt1s_ratio": 0.0,
+        "opening_cuts_3s": 2,
+        "kf_per_min": 23.0,
+        "broll_target_ratio": 0.15,
+        "broll_band": [
+          0.0,
+          0.35
+        ]
+      },
+      "packaging_and_visual_grammar": {
+        "transition_style": "none",
+        "ai_matting_count": 2,
+        "cutout_rule": "抠像的因果是「这一镜要同时看到人和另一层画面」：人从背景提出来 → 下面垫一条不同源的副镜 → 叠加轨（render_index>0）出画。本套 2 段抠像里 2 段在叠加轨、2 段仍是全屏 scale=1（人满屏叠在满屏副镜上，抠不...",
+        "pip_mode": "geometry_pip_full",
+        "effect_summary": "无额外全局花哨滤镜，保持干净原片质感"
+      },
+      "audio_and_sfx_design": {
+        "integrated_lufs": -12.6,
+        "voice_bgm_snr_db": 11.5,
+        "whitebox_bpm": 83.35,
+        "dual_bgm": false,
+        "sfx_per_min": 28.7,
+        "trigger_share": {
+          "cut": 0.5,
+          "flower": 0.3,
+          "line": 0.2,
+          "beat": 0.0,
+          "free": 0.0
+        },
+        "min_gap_sec": 0.817
+      },
+      "blackbox_rea_summary": {
+        "available": true,
+        "duration_sec": 20.9,
+        "shots_detected": 5,
+        "avg_shot_s": 4.18,
+        "overlay_kinds": [
+          "label",
+          "subtitle",
+          "title"
+        ],
+        "production_mix": [
+          {
+            "label": "ai_video",
+            "ratio": 0.6148
+          },
+          {
+            "label": "live_action",
+            "ratio": 0.201
+          },
+          {
+            "label": "code_render",
+            "ratio": 0.1842
+          }
+        ],
+        "audio_voice_ratio": 0.79,
+        "audio_music_bpm": 110.0,
+        "cuts_on_onset_ratio": 1.0,
+        "cuts_on_beat_ratio": 0.0,
+        "packaging_counts": {
+          "text": {
+            "subtitle": 11,
+            "label": 8,
+            "scene": 1
+          },
+          "stickers": 0
+        },
+        "text_height_pct_tiers": {
+          "L1_p15_pct": 4.38,
+          "L2_median_pct": 5.23,
+          "L3_p90_pct": 10.39,
+          "sample_count": 20
+        },
+        "text_band_distribution": {
+          "bottom": 11,
+          "middle": 8,
+          "top": 1
+        },
+        "text_anim_in_distribution": {
+          "cut": 16,
+          "pop": 1,
+          "fade": 2,
+          "reveal": 1
+        },
+        "text_box_count": 1,
+        "sfx_anchored_count": 3,
+        "sfx_type_distribution": {
+          "whoosh": 1,
+          "ding": 1,
+          "pop": 1
+        },
+        "sfx_anchor_targets": {
+          "文字标注": 3
+        }
+      }
+    },
+    "style_15": {
+      "style_id": "style_15",
+      "label_cn": "实景访谈切片 · 弹性双色花字节奏流",
+      "archetype_id": "arch_02_high_contrast_story",
+      "typography_and_palette": {
+        "font_family": "Source Han Serif CN",
+        "font_candidates": [
+          "SourceHanSerifCN-Bold.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ],
+        "font_purity_rule": "以 `Source Han Serif CN` 为主字体族保持视觉连贯，粤语生僻字按同字族优先原则安全回退。",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFBF17",
+        "danger_color": "#DC2626",
+        "stroke_color": "#000000",
+        "bg_slab": "rgba(0,0,0,0.65)"
+      },
+      "three_tier_ruler": {
+        "mode": "dual_or_multi_tier",
+        "L1": {
+          "units": 6.0,
+          "px_1080p": 36,
+          "height_pct": 2.58,
+          "usage": "常规口播字幕/桥接句"
+        },
+        "L2": {
+          "units": 20.0,
+          "px_1080p": 120,
+          "height_pct": 5.04,
+          "usage": "章节标注、副重点、小清单"
+        },
+        "L3": {
+          "units": 56.0,
+          "px_1080p": 336,
+          "height_pct": 14.45,
+          "usage": "开场钩子、数字、大情绪结论"
+        },
+        "ratio_L1_L2_L3": "1.00 : 3.33 : 9.33"
+      },
+      "subtitle_stage_architecture": {
+        "stage_mode": "dual_layer_subtitle_plus_flower",
+        "single_stage_unified": false,
+        "recommended_theme_profile": "store_vibrant",
+        "sub_y_ratio": 0.693,
+        "max_chars_per_line": 4,
+        "cut_text_align_ratio": 0.583,
+        "causality_summary": "口播切句处分段，高光短词贴主轨切点同步入屏。",
+        "double_caption_rule": "常规口播在安全底栏呈现字幕，重点短词（<=7字）作为前景视觉锚点弹出，不堆叠整句复读卡片。",
+        "supported_primitives": []
+      },
+      "editing_and_broll_rhythm": {
+        "median_shot_sec": 2.27,
+        "p10_sec": 1.04,
+        "p90_sec": 3.313,
+        "fast_cut_lt1s_ratio": 0.077,
+        "opening_cuts_3s": 2,
+        "kf_per_min": 109.9,
+        "broll_target_ratio": 0.352,
+        "broll_band": [
+          0.2,
+          0.55
+        ]
+      },
+      "packaging_and_visual_grammar": {
+        "transition_style": "none",
+        "ai_matting_count": 0,
+        "cutout_rule": "这套处理画面不靠「把人抠出来叠到别处」：人物直接满屏，换画面靠硬切 + 贴纸+画面特效。所以任何一镜都不该出现抠像层。",
+        "pip_mode": "geometry_pip_window",
+        "effect_summary": "无额外全局花哨滤镜，保持干净原片质感"
+      },
+      "audio_and_sfx_design": {
+        "integrated_lufs": -14.0,
+        "voice_bgm_snr_db": 11.5,
+        "whitebox_bpm": 66.26,
+        "dual_bgm": true,
+        "sfx_per_min": 64.8,
+        "trigger_share": {
+          "cut": 0.242,
+          "flower": 0.485,
+          "line": 0.152,
+          "beat": 0.03,
+          "free": 0.091
+        },
+        "min_gap_sec": 0.6
+      },
+      "blackbox_rea_summary": {
+        "available": true,
+        "duration_sec": 30.57,
+        "shots_detected": 13,
+        "avg_shot_s": 2.35,
+        "overlay_kinds": [
+          "animated_sticker",
+          "huazi",
+          "label",
+          "static_graphic",
+          "static_sticker",
+          "subtitle",
+          "title"
+        ],
+        "production_mix": [
+          {
+            "label": "ai_video",
+            "ratio": 0.5878
+          },
+          {
+            "label": "code_render",
+            "ratio": 0.2323
+          },
+          {
+            "label": "cg_3d",
+            "ratio": 0.1799
+          }
+        ],
+        "audio_voice_ratio": 0.622,
+        "audio_music_bpm": 79.5,
+        "cuts_on_onset_ratio": 0.75,
+        "cuts_on_beat_ratio": 0.0,
+        "packaging_counts": {
+          "text": {
+            "subtitle": 27,
+            "label": 27,
+            "huazi": 3,
+            "scene": 1
+          },
+          "stickers": 2
+        },
+        "text_height_pct_tiers": {
+          "L1_p15_pct": 2.58,
+          "L2_median_pct": 5.04,
+          "L3_p90_pct": 14.45,
+          "sample_count": 58
+        },
+        "text_band_distribution": {
+          "middle": 54,
+          "bottom": 3,
+          "top": 1
+        },
+        "text_anim_in_distribution": {
+          "cut": 45,
+          "fade": 6,
+          "pop": 2,
+          "reveal": 3,
+          "slide": 2
+        },
+        "text_box_count": 0,
+        "sfx_anchored_count": 10,
+        "sfx_type_distribution": {
+          "whoosh": 2,
+          "ding": 5,
+          "pop": 3
+        },
+        "sfx_anchor_targets": {
+          "文字标注": 10
+        }
+      }
+    },
+    "style_16": {
+      "style_id": "style_16",
+      "label_cn": "暗黑羽化分屏 · 上窄实景下黑底书摘巨字风",
+      "archetype_id": "arch_02_high_contrast_story",
+      "typography_and_palette": {
+        "font_family": "Alimama ShuHeiTi",
+        "font_candidates": [
+          "AlimamaShuHeiTi-Bold.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ],
+        "font_purity_rule": "以 `Alimama ShuHeiTi` 为主字体族保持视觉连贯，粤语生僻字按同字族优先原则安全回退。",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFF589",
+        "danger_color": "#DC2626",
+        "stroke_color": "#000000",
+        "bg_slab": "rgba(0,0,0,0.65)"
+      },
+      "three_tier_ruler": {
+        "mode": "dual_or_multi_tier",
+        "L1": {
+          "units": 8.0,
+          "px_1080p": 48,
+          "height_pct": 2.5,
+          "usage": "常规口播字幕/桥接句"
+        },
+        "L2": {
+          "units": 45.5,
+          "px_1080p": 273,
+          "height_pct": 3.58,
+          "usage": "章节标注、副重点、小清单"
+        },
+        "L3": {
+          "units": 80.0,
+          "px_1080p": 480,
+          "height_pct": 23.17,
+          "usage": "开场钩子、数字、大情绪结论"
+        },
+        "ratio_L1_L2_L3": "1.00 : 5.69 : 10.00"
+      },
+      "subtitle_stage_architecture": {
+        "stage_mode": "dual_layer_subtitle_plus_flower",
+        "single_stage_unified": false,
+        "recommended_theme_profile": "store_vibrant",
+        "sub_y_ratio": 0.721,
+        "max_chars_per_line": 9,
+        "cut_text_align_ratio": 0.714,
+        "causality_summary": "base 轨（track [6]）共 14 段，覆盖片长 89%；相邻段无缝率 77%（Δ≤1 帧，按整轨顺序算）；其中 11 段是普通字号字幕（其余 3 段被升级）；y 中位 0.721×H；字幕起点 73% 落在主轨切点 ±2 帧内（到最近切点中位 0.0s）——这套是切点驱动的重剪风格，字幕起句跟着镜头切",
+        "double_caption_rule": "常规口播在安全底栏呈现字幕，重点短词（<=7字）作为前景视觉锚点弹出，不堆叠整句复读卡片。",
+        "supported_primitives": []
+      },
+      "editing_and_broll_rhythm": {
+        "median_shot_sec": 1.75,
+        "p10_sec": 1.287,
+        "p90_sec": 2.7566,
+        "fast_cut_lt1s_ratio": 0.0,
+        "opening_cuts_3s": 1,
+        "kf_per_min": 36.0,
+        "broll_target_ratio": 0.564,
+        "broll_band": [
+          0.41,
+          0.76
+        ]
+      },
+      "packaging_and_visual_grammar": {
+        "transition_style": "none",
+        "ai_matting_count": 5,
+        "cutout_rule": "抠像的因果是「这一镜要同时看到人和另一层画面」：人从背景提出来 → 下面垫一条不同源的副镜 → 叠加轨（render_index>0）出画。本套 5 段抠像里 5 段在叠加轨、3 段仍是全屏 scale=1（人满屏叠在满屏副镜上，抠不...",
+        "pip_mode": "geometry_pip_window",
+        "effect_summary": "无额外全局花哨滤镜，保持干净原片质感"
+      },
+      "audio_and_sfx_design": {
+        "integrated_lufs": -14.0,
+        "voice_bgm_snr_db": 11.5,
+        "whitebox_bpm": 103.36,
+        "dual_bgm": false,
+        "sfx_per_min": 27.5,
+        "trigger_share": {
+          "cut": 0.615,
+          "flower": 0.385,
+          "line": 0.0,
+          "beat": 0.0,
+          "free": 0.0
+        },
+        "min_gap_sec": 0.7
+      },
+      "blackbox_rea_summary": {
+        "available": true,
+        "duration_sec": 28.33,
+        "shots_detected": 8,
+        "avg_shot_s": 3.54,
+        "overlay_kinds": [
+          "huazi",
+          "label",
+          "subtitle"
+        ],
+        "production_mix": [
+          {
+            "label": "ai_video",
+            "ratio": 0.59
+          },
+          {
+            "label": "code_render",
+            "ratio": 0.3312
+          },
+          {
+            "label": "cg_3d",
+            "ratio": 0.0788
+          }
+        ],
+        "audio_voice_ratio": 0.582,
+        "audio_music_bpm": 130.8,
+        "cuts_on_onset_ratio": 1.0,
+        "cuts_on_beat_ratio": 0.286,
+        "packaging_counts": {
+          "text": {
+            "label": 29,
+            "subtitle": 11,
+            "huazi": 3,
+            "scene": 1
+          },
+          "stickers": 0
+        },
+        "text_height_pct_tiers": {
+          "L1_p15_pct": 2.5,
+          "L2_median_pct": 3.58,
+          "L3_p90_pct": 23.17,
+          "sample_count": 44
+        },
+        "text_band_distribution": {
+          "bottom": 14,
+          "top": 9,
+          "middle": 21
+        },
+        "text_anim_in_distribution": {
+          "cut": 28,
+          "fade": 5,
+          "reveal": 6,
+          "pop": 4,
+          "slide": 1
+        },
+        "text_box_count": 4,
+        "sfx_anchored_count": 11,
+        "sfx_type_distribution": {
+          "ding": 1,
+          "pop": 10
+        },
+        "sfx_anchor_targets": {
+          "文字标注": 11
+        }
+      }
+    },
+    "style_17": {
+      "style_id": "style_17",
+      "label_cn": "暖金强切探店 · 上下双格金线对比风",
+      "archetype_id": "arch_04_punch_talking_head",
+      "typography_and_palette": {
+        "font_family": "Source Han Serif CN",
+        "font_candidates": [
+          "SourceHanSerifCN-Heavy.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ],
+        "font_purity_rule": "以 `Source Han Serif CN` 为主字体族保持视觉连贯，粤语生僻字按同字族优先原则安全回退。",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFDE00",
+        "danger_color": "#DC2626",
+        "stroke_color": "#000000",
+        "bg_slab": "rgba(0,0,0,0.65)"
+      },
+      "three_tier_ruler": {
+        "mode": "dual_or_multi_tier",
+        "L1": {
+          "units": 8.0,
+          "px_1080p": 48,
+          "height_pct": 2.34,
+          "usage": "常规口播字幕/桥接句"
+        },
+        "L2": {
+          "units": 15.0,
+          "px_1080p": 90,
+          "height_pct": 3.98,
+          "usage": "章节标注、副重点、小清单"
+        },
+        "L3": {
+          "units": 36.0,
+          "px_1080p": 216,
+          "height_pct": 6.8,
+          "usage": "开场钩子、数字、大情绪结论"
+        },
+        "ratio_L1_L2_L3": "1.00 : 1.88 : 4.50"
+      },
+      "subtitle_stage_architecture": {
+        "stage_mode": "dual_layer_subtitle_plus_flower",
+        "single_stage_unified": false,
+        "recommended_theme_profile": "business_editorial",
+        "sub_y_ratio": 0.693,
+        "max_chars_per_line": 7,
+        "cut_text_align_ratio": 0.6,
+        "causality_summary": "base 轨（track [1]）共 12 段，覆盖片长 73%；相邻段无缝率 82%（Δ≤1 帧，按整轨顺序算）；其中 5 段是普通字号字幕（其余 7 段被升级）；y 中位 0.693×H；字幕起点 40% 落在主轨切点 ±2 帧内（到最近切点中位 0.83s）——由语音断句驱动，不跟切点",
+        "double_caption_rule": "常规口播在安全底栏呈现字幕，重点短词（<=7字）作为前景视觉锚点弹出，不堆叠整句复读卡片。",
+        "supported_primitives": []
+      },
+      "editing_and_broll_rhythm": {
+        "median_shot_sec": 1.53,
+        "p10_sec": 0.833,
+        "p90_sec": 1.833,
+        "fast_cut_lt1s_ratio": 0.273,
+        "opening_cuts_3s": 2,
+        "kf_per_min": 48.8,
+        "broll_target_ratio": 0.158,
+        "broll_band": [
+          0.01,
+          0.36
+        ]
+      },
+      "packaging_and_visual_grammar": {
+        "transition_style": "none",
+        "ai_matting_count": 0,
+        "cutout_rule": "这套处理画面不靠「把人抠出来叠到别处」：人物直接满屏，换画面靠硬切 + 贴纸+画面特效。所以任何一镜都不该出现抠像层。",
+        "pip_mode": "geometry_pip_window",
+        "effect_summary": "无额外全局花哨滤镜，保持干净原片质感"
+      },
+      "audio_and_sfx_design": {
+        "integrated_lufs": -14.0,
+        "voice_bgm_snr_db": 11.5,
+        "whitebox_bpm": 60.09,
+        "dual_bgm": false,
+        "sfx_per_min": 56.2,
+        "trigger_share": {
+          "cut": 0.533,
+          "flower": 0.333,
+          "line": 0.067,
+          "beat": 0.0,
+          "free": 0.067
+        },
+        "min_gap_sec": 0.367
+      },
+      "blackbox_rea_summary": {
+        "available": true,
+        "duration_sec": 16.0,
+        "shots_detected": 5,
+        "avg_shot_s": 3.2,
+        "overlay_kinds": [
+          "huazi",
+          "label",
+          "subtitle",
+          "title"
+        ],
+        "production_mix": [
+          {
+            "label": "cg_3d",
+            "ratio": 0.5
+          },
+          {
+            "label": "ai_video",
+            "ratio": 0.4417
+          },
+          {
+            "label": "code_render",
+            "ratio": 0.0583
+          }
+        ],
+        "audio_voice_ratio": 0.781,
+        "audio_music_bpm": null,
+        "cuts_on_onset_ratio": 1.0,
+        "cuts_on_beat_ratio": null,
+        "packaging_counts": {
+          "text": {
+            "label": 11,
+            "subtitle": 11,
+            "huazi": 4,
+            "scene": 1
+          },
+          "stickers": 0
+        },
+        "text_height_pct_tiers": {
+          "L1_p15_pct": 2.34,
+          "L2_median_pct": 3.98,
+          "L3_p90_pct": 6.8,
+          "sample_count": 27
+        },
+        "text_band_distribution": {
+          "middle": 20,
+          "bottom": 6,
+          "top": 1
+        },
+        "text_anim_in_distribution": {
+          "cut": 24,
+          "pop": 2,
+          "reveal": 1
+        },
+        "text_box_count": 3,
+        "sfx_anchored_count": 4,
+        "sfx_type_distribution": {
+          "whoosh": 2,
+          "hit": 2
+        },
+        "sfx_anchor_targets": {
+          "文字标注": 2,
+          "花字": 2
+        }
+      }
+    },
+    "style_18": {
+      "style_id": "style_18",
+      "label_cn": "户外实景探盘 · 3D 金属扫光立体大字风",
+      "archetype_id": "arch_03_editorial_matte_depth",
+      "typography_and_palette": {
+        "font_family": "Smiley Sans",
+        "font_candidates": [
+          "SmileySans-Oblique.ttf",
+          "SmileySans-Oblique.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ],
+        "font_purity_rule": "以 `Smiley Sans` 为主字体族保持视觉连贯，粤语生僻字按同字族优先原则安全回退。",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFBF17",
+        "danger_color": "#DC2626",
+        "stroke_color": "#000000",
+        "bg_slab": "rgba(0,0,0,0.65)"
+      },
+      "three_tier_ruler": {
+        "mode": "dual_or_multi_tier",
+        "L1": {
+          "units": 12.0,
+          "px_1080p": 72,
+          "height_pct": 4.06,
+          "usage": "常规口播字幕/桥接句"
+        },
+        "L2": {
+          "units": 24.0,
+          "px_1080p": 144,
+          "height_pct": 4.92,
+          "usage": "章节标注、副重点、小清单"
+        },
+        "L3": {
+          "units": 64.0,
+          "px_1080p": 384,
+          "height_pct": 27.07,
+          "usage": "开场钩子、数字、大情绪结论"
+        },
+        "ratio_L1_L2_L3": "1.00 : 2.00 : 5.33"
+      },
+      "subtitle_stage_architecture": {
+        "stage_mode": "dual_layer_subtitle_plus_flower",
+        "single_stage_unified": false,
+        "recommended_theme_profile": "store_vibrant",
+        "sub_y_ratio": 0.695,
+        "max_chars_per_line": 10,
+        "cut_text_align_ratio": 0.708,
+        "causality_summary": "base 轨（track [4]）共 26 段，覆盖片长 87%；相邻段无缝率 84%（Δ≤1 帧，按整轨顺序算）；其中 22 段是普通字号字幕（其余 4 段被升级）；y 中位 0.695×H；字幕起点 68% 落在主轨切点 ±2 帧内（到最近切点中位 0.0s）——这套是切点驱动的重剪风格，字幕起句跟着镜头切",
+        "double_caption_rule": "常规口播在安全底栏呈现字幕，重点短词（<=7字）作为前景视觉锚点弹出，不堆叠整句复读卡片。",
+        "supported_primitives": []
+      },
+      "editing_and_broll_rhythm": {
+        "median_shot_sec": 1.58,
+        "p10_sec": 0.9066,
+        "p90_sec": 2.1534,
+        "fast_cut_lt1s_ratio": 0.12,
+        "opening_cuts_3s": 1,
+        "kf_per_min": 25.1,
+        "broll_target_ratio": 0.417,
+        "broll_band": [
+          0.27,
+          0.62
+        ]
+      },
+      "packaging_and_visual_grammar": {
+        "transition_style": "none",
+        "ai_matting_count": 4,
+        "cutout_rule": "抠像的因果是「这一镜要同时看到人和另一层画面」：人从背景提出来 → 下面垫一条不同源的副镜 → 叠加轨（render_index>0）出画。本套 4 段抠像里 4 段在叠加轨、0 段仍是全屏 scale=1（人满屏叠在满屏副镜上，抠不...",
+        "pip_mode": "geometry_pip_window",
+        "effect_summary": "无额外全局花哨滤镜，保持干净原片质感"
+      },
+      "audio_and_sfx_design": {
+        "integrated_lufs": -14.0,
+        "voice_bgm_snr_db": 11.5,
+        "whitebox_bpm": 60.09,
+        "dual_bgm": false,
+        "sfx_per_min": 33.0,
+        "trigger_share": {
+          "cut": 0.571,
+          "flower": 0.286,
+          "line": 0.143,
+          "beat": 0.0,
+          "free": 0.0
+        },
+        "min_gap_sec": 0.6
+      },
+      "blackbox_rea_summary": {
+        "available": true,
+        "duration_sec": 38.2,
+        "shots_detected": 18,
+        "avg_shot_s": 2.12,
+        "overlay_kinds": [
+          "animated_sticker",
+          "huazi",
+          "label",
+          "static_graphic",
+          "static_sticker",
+          "subtitle",
+          "title"
+        ],
+        "production_mix": [
+          {
+            "label": "ai_video",
+            "ratio": 0.5131
+          },
+          {
+            "label": "cg_3d",
+            "ratio": 0.3866
+          },
+          {
+            "label": "code_render",
+            "ratio": 0.1003
+          }
+        ],
+        "audio_voice_ratio": 0.877,
+        "audio_music_bpm": 120.2,
+        "cuts_on_onset_ratio": 1.0,
+        "cuts_on_beat_ratio": 0.294,
+        "packaging_counts": {
+          "text": {
+            "label": 20,
+            "huazi": 2,
+            "subtitle": 29,
+            "scene": 2
+          },
+          "stickers": 3
+        },
+        "text_height_pct_tiers": {
+          "L1_p15_pct": 4.06,
+          "L2_median_pct": 4.92,
+          "L3_p90_pct": 27.07,
+          "sample_count": 53
+        },
+        "text_band_distribution": {
+          "middle": 43,
+          "bottom": 1,
+          "top": 9
+        },
+        "text_anim_in_distribution": {
+          "cut": 31,
+          "reveal": 5,
+          "fade": 11,
+          "pop": 5,
+          "slide": 1
+        },
+        "text_box_count": 3,
+        "sfx_anchored_count": 13,
+        "sfx_type_distribution": {
+          "whoosh": 5,
+          "pop": 1,
+          "ding": 7
+        },
+        "sfx_anchor_targets": {
+          "文字标注": 12,
+          "贴纸": 1
+        }
+      }
+    },
+    "style_19": {
+      "style_id": "style_19",
+      "label_cn": "冷峻数据新闻前景 · 人像抠像长句大字风",
+      "archetype_id": "arch_01_tech_ui_console",
+      "typography_and_palette": {
+        "font_family": "Smiley Sans",
+        "font_candidates": [
+          "SmileySans-Oblique.ttf",
+          "SmileySans-Oblique.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ],
+        "font_purity_rule": "以 `Smiley Sans` 为主字体族保持视觉连贯，粤语生僻字按同字族优先原则安全回退。",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFBF17",
+        "danger_color": "#DC2626",
+        "stroke_color": "#000000",
+        "bg_slab": "rgba(0,0,0,0.65)"
+      },
+      "three_tier_ruler": {
+        "mode": "dual_or_multi_tier",
+        "L1": {
+          "units": 8.0,
+          "px_1080p": 48,
+          "height_pct": 2.73,
+          "usage": "常规口播字幕/桥接句"
+        },
+        "L2": {
+          "units": 24.3,
+          "px_1080p": 146,
+          "height_pct": 4.14,
+          "usage": "章节标注、副重点、小清单"
+        },
+        "L3": {
+          "units": 71.8,
+          "px_1080p": 431,
+          "height_pct": 19.3,
+          "usage": "开场钩子、数字、大情绪结论"
+        },
+        "ratio_L1_L2_L3": "1.00 : 3.04 : 8.97"
+      },
+      "subtitle_stage_architecture": {
+        "stage_mode": "dual_layer_subtitle_plus_flower",
+        "single_stage_unified": false,
+        "recommended_theme_profile": "store_vibrant",
+        "sub_y_ratio": 0.721,
+        "max_chars_per_line": 12,
+        "cut_text_align_ratio": 0.905,
+        "causality_summary": "base 轨（track [5]）共 31 段，覆盖片长 97%；相邻段无缝率 97%（Δ≤1 帧，按整轨顺序算）；其中 29 段是普通字号字幕（其余 2 段被升级）；y 中位 0.721×H；字幕起点 66% 落在主轨切点 ±2 帧内（到最近切点中位 0.0s）——这套是切点驱动的重剪风格，字幕起句跟着镜头切",
+        "double_caption_rule": "常规口播在安全底栏呈现字幕，重点短词（<=7字）作为前景视觉锚点弹出，不堆叠整句复读卡片。",
+        "supported_primitives": []
+      },
+      "editing_and_broll_rhythm": {
+        "median_shot_sec": 1.45,
+        "p10_sec": 0.7397,
+        "p90_sec": 2.8697,
+        "fast_cut_lt1s_ratio": 0.227,
+        "opening_cuts_3s": 2,
+        "kf_per_min": 20.4,
+        "broll_target_ratio": 0.244,
+        "broll_band": [
+          0.09,
+          0.44
+        ]
+      },
+      "packaging_and_visual_grammar": {
+        "transition_style": "none",
+        "ai_matting_count": 5,
+        "cutout_rule": "抠像的因果是「这一镜要同时看到人和另一层画面」：人从背景提出来 → 下面垫一条不同源的副镜 → 叠加轨（render_index>0）出画。本套 5 段抠像里 5 段在叠加轨、0 段仍是全屏 scale=1（人满屏叠在满屏副镜上，抠不...",
+        "pip_mode": "geometry_pip_main_punch_in",
+        "effect_summary": "无额外全局花哨滤镜，保持干净原片质感"
+      },
+      "audio_and_sfx_design": {
+        "integrated_lufs": -14.0,
+        "voice_bgm_snr_db": 11.5,
+        "whitebox_bpm": 60.09,
+        "dual_bgm": false,
+        "sfx_per_min": 22.0,
+        "trigger_share": {
+          "cut": 0.786,
+          "flower": 0.143,
+          "line": 0.071,
+          "beat": 0.0,
+          "free": 0.0
+        },
+        "min_gap_sec": 0.6
+      },
+      "blackbox_rea_summary": {
+        "available": true,
+        "duration_sec": 38.2,
+        "shots_detected": 9,
+        "avg_shot_s": 4.24,
+        "overlay_kinds": [
+          "huazi",
+          "label",
+          "subtitle",
+          "title"
+        ],
+        "production_mix": [
+          {
+            "label": "code_render",
+            "ratio": 0.4489
+          },
+          {
+            "label": "cg_3d",
+            "ratio": 0.2622
+          },
+          {
+            "label": "ai_video",
+            "ratio": 0.2125
+          },
+          {
+            "label": "live_action",
+            "ratio": 0.0764
+          }
+        ],
+        "audio_voice_ratio": 0.759,
+        "audio_music_bpm": 120.2,
+        "cuts_on_onset_ratio": 1.0,
+        "cuts_on_beat_ratio": 0.0,
+        "packaging_counts": {
+          "text": {
+            "subtitle": 35,
+            "counter": 2,
+            "label": 20,
+            "huazi": 6,
+            "scene": 1
+          },
+          "stickers": 0
+        },
+        "text_height_pct_tiers": {
+          "L1_p15_pct": 2.73,
+          "L2_median_pct": 4.14,
+          "L3_p90_pct": 19.3,
+          "sample_count": 64
+        },
+        "text_band_distribution": {
+          "bottom": 27,
+          "top": 11,
+          "middle": 26
+        },
+        "text_anim_in_distribution": {
+          "cut": 54,
+          "fade": 5,
+          "slide": 2,
+          "pop": 1,
+          "reveal": 2
+        },
+        "text_box_count": 4,
+        "sfx_anchored_count": 12,
+        "sfx_type_distribution": {
+          "whoosh": 2,
+          "pop": 3,
+          "ding": 7
+        },
+        "sfx_anchor_targets": {
+          "文字标注": 10,
+          "花字": 1
+        }
+      }
+    },
+    "style_20": {
+      "style_id": "style_20",
+      "label_cn": "国风暖木匠心 · 古字典体大字风",
+      "archetype_id": "arch_05_cinema_slow_space",
+      "typography_and_palette": {
+        "font_family": "Alimama ShuHeiTi",
+        "font_candidates": [
+          "SourceHanSerifCN-Heavy.otf",
+          "AlimamaShuHeiTi-Bold.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ],
+        "font_purity_rule": "以 `Alimama ShuHeiTi` 为主字体族保持视觉连贯，粤语生僻字按同字族优先原则安全回退。",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFF589",
+        "danger_color": "#DC2626",
+        "stroke_color": "#000000",
+        "bg_slab": "rgba(18, 14, 12, 0.72)"
+      },
+      "three_tier_ruler": {
+        "mode": "dual_or_multi_tier",
+        "L1": {
+          "units": 6.0,
+          "px_1080p": 36,
+          "height_pct": 2.03,
+          "usage": "常规口播字幕/桥接句"
+        },
+        "L2": {
+          "units": 24.0,
+          "px_1080p": 144,
+          "height_pct": 4.96,
+          "usage": "章节标注、副重点、小清单"
+        },
+        "L3": {
+          "units": 108.4,
+          "px_1080p": 651,
+          "height_pct": 8.98,
+          "usage": "开场钩子、数字、大情绪结论"
+        },
+        "ratio_L1_L2_L3": "1.00 : 4.00 : 18.07"
+      },
+      "subtitle_stage_architecture": {
+        "stage_mode": "dual_layer_subtitle_plus_flower",
+        "single_stage_unified": false,
+        "recommended_theme_profile": "store_vibrant",
+        "sub_y_ratio": 0.693,
+        "max_chars_per_line": 8,
+        "cut_text_align_ratio": 0.467,
+        "causality_summary": "base 轨（track [9]）共 15 段，覆盖片长 55%；相邻段无缝率 57%（Δ≤1 帧，按整轨顺序算）；其中 13 段是普通字号字幕（其余 2 段被升级）；y 中位 0.693×H；字幕起点 54% 落在主轨切点 ±2 帧内（到最近切点中位 0.0s）——这套是切点驱动的重剪风格，字幕起句跟着镜头切",
+        "double_caption_rule": "常规口播在安全底栏呈现字幕，重点短词（<=7字）作为前景视觉锚点弹出，不堆叠整句复读卡片。",
+        "supported_primitives": []
+      },
+      "editing_and_broll_rhythm": {
+        "median_shot_sec": 1.83,
+        "p10_sec": 0.667,
+        "p90_sec": 4.017,
+        "fast_cut_lt1s_ratio": 0.312,
+        "opening_cuts_3s": 2,
+        "kf_per_min": 13.7,
+        "broll_target_ratio": 0.115,
+        "broll_band": [
+          0.0,
+          0.32
+        ]
+      },
+      "packaging_and_visual_grammar": {
+        "transition_style": "none",
+        "ai_matting_count": 0,
+        "cutout_rule": "这套处理画面不靠「把人抠出来叠到别处」：人物直接满屏，换画面靠硬切 + 花字+画面特效。所以任何一镜都不该出现抠像层。",
+        "pip_mode": "geometry_pip_window",
+        "effect_summary": "无额外全局花哨滤镜，保持干净原片质感"
+      },
+      "audio_and_sfx_design": {
+        "integrated_lufs": -14.0,
+        "voice_bgm_snr_db": 11.5,
+        "whitebox_bpm": 161.5,
+        "dual_bgm": true,
+        "sfx_per_min": 46.9,
+        "trigger_share": {
+          "cut": 0.375,
+          "flower": 0.417,
+          "line": 0.042,
+          "beat": 0.083,
+          "free": 0.083
+        },
+        "min_gap_sec": 0.6
+      },
+      "blackbox_rea_summary": {
+        "available": true,
+        "duration_sec": 30.7,
+        "shots_detected": 12,
+        "avg_shot_s": 2.56,
+        "overlay_kinds": [
+          "animated_sticker",
+          "huazi",
+          "label",
+          "static_graphic",
+          "subtitle"
+        ],
+        "production_mix": [
+          {
+            "label": "ai_video",
+            "ratio": 0.8882
+          },
+          {
+            "label": "cg_3d",
+            "ratio": 0.063
+          },
+          {
+            "label": "code_render",
+            "ratio": 0.0489
+          }
+        ],
+        "audio_voice_ratio": 0.668,
+        "audio_music_bpm": null,
+        "cuts_on_onset_ratio": 0.909,
+        "cuts_on_beat_ratio": null,
+        "packaging_counts": {
+          "text": {
+            "subtitle": 18,
+            "label": 21,
+            "huazi": 7
+          },
+          "stickers": 1
+        },
+        "text_height_pct_tiers": {
+          "L1_p15_pct": 2.03,
+          "L2_median_pct": 4.96,
+          "L3_p90_pct": 8.98,
+          "sample_count": 46
+        },
+        "text_band_distribution": {
+          "middle": 33,
+          "bottom": 13
+        },
+        "text_anim_in_distribution": {
+          "cut": 29,
+          "slide": 4,
+          "reveal": 4,
+          "fade": 2,
+          "pop": 7
+        },
+        "text_box_count": 5,
+        "sfx_anchored_count": 12,
+        "sfx_type_distribution": {
+          "pop": 8,
+          "whoosh": 1,
+          "ding": 2,
+          "hit": 1
+        },
+        "sfx_anchor_targets": {
+          "文字标注": 10,
+          "花字": 1,
+          "贴纸": 1
+        }
+      }
+    },
+    "style_21": {
+      "style_id": "style_21",
+      "label_cn": "门店工艺快切 · 76% 实拍特写暖黄大字风",
+      "archetype_id": "arch_04_punch_talking_head",
+      "typography_and_palette": {
+        "font_family": "Source Han Serif CN",
+        "font_candidates": [
+          "SourceHanSerifCN-Heavy.otf",
+          "AlimamaShuHeiTi-Bold.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ],
+        "font_purity_rule": "以 `Source Han Serif CN` 为主字体族保持视觉连贯，粤语生僻字按同字族优先原则安全回退。",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFF589",
+        "danger_color": "#DC2626",
+        "stroke_color": "#000000",
+        "bg_slab": "rgba(0,0,0,0.65)"
+      },
+      "three_tier_ruler": {
+        "mode": "dual_or_multi_tier",
+        "L1": {
+          "units": 12.0,
+          "px_1080p": 72,
+          "height_pct": 3.83,
+          "usage": "常规口播字幕/桥接句"
+        },
+        "L2": {
+          "units": 47.8,
+          "px_1080p": 287,
+          "height_pct": 4.69,
+          "usage": "章节标注、副重点、小清单"
+        },
+        "L3": {
+          "units": 78.2,
+          "px_1080p": 469,
+          "height_pct": 17.89,
+          "usage": "开场钩子、数字、大情绪结论"
+        },
+        "ratio_L1_L2_L3": "1.00 : 3.98 : 6.52"
+      },
+      "subtitle_stage_architecture": {
+        "stage_mode": "dual_layer_subtitle_plus_flower",
+        "single_stage_unified": false,
+        "recommended_theme_profile": "store_vibrant",
+        "sub_y_ratio": 0.695,
+        "max_chars_per_line": 10,
+        "cut_text_align_ratio": 0.917,
+        "causality_summary": "base 轨（track [9]）共 15 段，覆盖片长 100%；相邻段无缝率 100%（Δ≤1 帧，按整轨顺序算）；其中 15 段是普通字号字幕（其余 0 段被升级）；y 中位 0.695×H；字幕起点 80% 落在主轨切点 ±2 帧内（到最近切点中位 0.0s）——这套是切点驱动的重剪风格，字幕起句跟着镜头切",
+        "double_caption_rule": "常规口播在安全底栏呈现字幕，重点短词（<=7字）作为前景视觉锚点弹出，不堆叠整句复读卡片。",
+        "supported_primitives": []
+      },
+      "editing_and_broll_rhythm": {
+        "median_shot_sec": 1.15,
+        "p10_sec": 0.537,
+        "p90_sec": 1.9402,
+        "fast_cut_lt1s_ratio": 0.462,
+        "opening_cuts_3s": 3,
+        "kf_per_min": 92.2,
+        "broll_target_ratio": 0.756,
+        "broll_band": [
+          0.61,
+          0.85
+        ]
+      },
+      "packaging_and_visual_grammar": {
+        "transition_style": "none",
+        "ai_matting_count": 7,
+        "cutout_rule": "抠像的因果是「这一镜要同时看到人和另一层画面」：人从背景提出来 → 下面垫一条不同源的副镜 → 叠加轨（render_index>0）出画。本套 7 段抠像里 7 段在叠加轨、0 段仍是全屏 scale=1（人满屏叠在满屏副镜上，抠不...",
+        "pip_mode": "geometry_pip_main_punch_in",
+        "effect_summary": "无额外全局花哨滤镜，保持干净原片质感"
+      },
+      "audio_and_sfx_design": {
+        "integrated_lufs": -14.0,
+        "voice_bgm_snr_db": 11.5,
+        "whitebox_bpm": 99.38,
+        "dual_bgm": true,
+        "sfx_per_min": 46.1,
+        "trigger_share": {
+          "cut": 0.583,
+          "flower": 0.333,
+          "line": 0.083,
+          "beat": 0.0,
+          "free": 0.0
+        },
+        "min_gap_sec": 0.467
+      },
+      "blackbox_rea_summary": {
+        "available": true,
+        "duration_sec": 15.62,
+        "shots_detected": 4,
+        "avg_shot_s": 3.9,
+        "overlay_kinds": [
+          "label",
+          "subtitle",
+          "title"
+        ],
+        "production_mix": [
+          {
+            "label": "ai_video",
+            "ratio": 0.9701
+          },
+          {
+            "label": "cg_3d",
+            "ratio": 0.0299
+          }
+        ],
+        "audio_voice_ratio": 0.961,
+        "audio_music_bpm": null,
+        "cuts_on_onset_ratio": 1.0,
+        "cuts_on_beat_ratio": null,
+        "packaging_counts": {
+          "text": {
+            "subtitle": 15,
+            "label": 16
+          },
+          "stickers": 0
+        },
+        "text_height_pct_tiers": {
+          "L1_p15_pct": 3.83,
+          "L2_median_pct": 4.69,
+          "L3_p90_pct": 17.89,
+          "sample_count": 31
+        },
+        "text_band_distribution": {
+          "middle": 23,
+          "top": 8
+        },
+        "text_anim_in_distribution": {
+          "cut": 30,
+          "reveal": 1
+        },
+        "text_box_count": 3,
+        "sfx_anchored_count": 4,
+        "sfx_type_distribution": {
+          "pop": 1,
+          "ding": 2,
+          "whoosh": 1
+        },
+        "sfx_anchor_targets": {
+          "文字标注": 4
+        }
+      }
+    },
+    "style_22": {
+      "style_id": "style_22",
+      "label_cn": "例证拆解 · 案例画面轮播风",
+      "archetype_id": "arch_03_editorial_matte_depth",
+      "typography_and_palette": {
+        "font_family": "Smiley Sans",
+        "font_candidates": [
+          "SmileySans-Oblique.ttf",
+          "SmileySans-Oblique.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ],
+        "font_purity_rule": "以 `Smiley Sans` 为主字体族保持视觉连贯，粤语生僻字按同字族优先原则安全回退。",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#B71C1C",
+        "danger_color": "#DC2626",
+        "stroke_color": "#000000",
+        "bg_slab": "rgba(0,0,0,0.65)"
+      },
+      "three_tier_ruler": {
+        "mode": "dual_or_multi_tier",
+        "L1": {
+          "units": 12.0,
+          "px_1080p": 72,
+          "height_pct": 3.83,
+          "usage": "常规口播字幕/桥接句"
+        },
+        "L2": {
+          "units": 18.0,
+          "px_1080p": 108,
+          "height_pct": 4.88,
+          "usage": "章节标注、副重点、小清单"
+        },
+        "L3": {
+          "units": 75.9,
+          "px_1080p": 456,
+          "height_pct": 20.78,
+          "usage": "开场钩子、数字、大情绪结论"
+        },
+        "ratio_L1_L2_L3": "1.00 : 1.50 : 6.33"
+      },
+      "subtitle_stage_architecture": {
+        "stage_mode": "dual_layer_subtitle_plus_flower",
+        "single_stage_unified": false,
+        "recommended_theme_profile": "store_vibrant",
+        "sub_y_ratio": 0.695,
+        "max_chars_per_line": 10,
+        "cut_text_align_ratio": 1.0,
+        "causality_summary": "base 轨（track [7]）共 24 段，覆盖片长 98%；相邻段无缝率 100%（Δ≤1 帧，按整轨顺序算）；其中 21 段是普通字号字幕（其余 3 段被升级）；y 中位 0.695×H；字幕起点 71% 落在主轨切点 ±2 帧内（到最近切点中位 0.0s）——这套是切点驱动的重剪风格，字幕起句跟着镜头切",
+        "double_caption_rule": "常规口播在安全底栏呈现字幕，重点短词（<=7字）作为前景视觉锚点弹出，不堆叠整句复读卡片。",
+        "supported_primitives": []
+      },
+      "editing_and_broll_rhythm": {
+        "median_shot_sec": 1.35,
+        "p10_sec": 0.5282,
+        "p90_sec": 2.373,
+        "fast_cut_lt1s_ratio": 0.444,
+        "opening_cuts_3s": 2,
+        "kf_per_min": 46.0,
+        "broll_target_ratio": 0.41,
+        "broll_band": [
+          0.26,
+          0.61
+        ]
+      },
+      "packaging_and_visual_grammar": {
+        "transition_style": "none",
+        "ai_matting_count": 4,
+        "cutout_rule": "抠像的因果是「这一镜要同时看到人和另一层画面」：人从背景提出来 → 下面垫一条不同源的副镜 → 叠加轨（render_index>0）出画。本套 4 段抠像里 4 段在叠加轨、0 段仍是全屏 scale=1（人满屏叠在满屏副镜上，抠不...",
+        "pip_mode": "geometry_pip_window",
+        "effect_summary": "无额外全局花哨滤镜，保持干净原片质感"
+      },
+      "audio_and_sfx_design": {
+        "integrated_lufs": -14.0,
+        "voice_bgm_snr_db": 11.5,
+        "whitebox_bpm": 60.09,
+        "dual_bgm": false,
+        "sfx_per_min": 33.2,
+        "trigger_share": {
+          "cut": 0.692,
+          "flower": 0.231,
+          "line": 0.077,
+          "beat": 0.0,
+          "free": 0.0
+        },
+        "min_gap_sec": 0.517
+      },
+      "blackbox_rea_summary": {
+        "available": true,
+        "duration_sec": 23.48,
+        "shots_detected": 7,
+        "avg_shot_s": 3.35,
+        "overlay_kinds": [
+          "animated_sticker",
+          "huazi",
+          "label",
+          "subtitle"
+        ],
+        "production_mix": [
+          {
+            "label": "cg_3d",
+            "ratio": 0.682
+          },
+          {
+            "label": "code_render",
+            "ratio": 0.2207
+          },
+          {
+            "label": "ai_video",
+            "ratio": 0.0972
+          }
+        ],
+        "audio_voice_ratio": 0.788,
+        "audio_music_bpm": 117.5,
+        "cuts_on_onset_ratio": 0.833,
+        "cuts_on_beat_ratio": 0.0,
+        "packaging_counts": {
+          "text": {
+            "label": 18,
+            "subtitle": 25,
+            "huazi": 5,
+            "scene": 1
+          },
+          "stickers": 2
+        },
+        "text_height_pct_tiers": {
+          "L1_p15_pct": 3.83,
+          "L2_median_pct": 4.88,
+          "L3_p90_pct": 20.78,
+          "sample_count": 49
+        },
+        "text_band_distribution": {
+          "middle": 38,
+          "bottom": 6,
+          "top": 5
+        },
+        "text_anim_in_distribution": {
+          "cut": 36,
+          "fade": 3,
+          "slide": 3,
+          "reveal": 4,
+          "pop": 3
+        },
+        "text_box_count": 8,
+        "sfx_anchored_count": 10,
+        "sfx_type_distribution": {
+          "whoosh": 4,
+          "ding": 4,
+          "pop": 2
+        },
+        "sfx_anchor_targets": {
+          "文字标注": 7,
+          "花字": 3
+        }
+      }
+    },
+    "style_23": {
+      "style_id": "style_23",
+      "label_cn": "品牌微纪录 · 慢调空镜克制宋体风",
+      "archetype_id": "arch_05_cinema_slow_space",
+      "typography_and_palette": {
+        "font_family": "Source Han Serif CN",
+        "font_candidates": [
+          "SourceHanSerifCN-Bold.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ],
+        "font_purity_rule": "以 `Source Han Serif CN` 为主字体族保持视觉连贯，粤语生僻字按同字族优先原则安全回退。",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFBF17",
+        "danger_color": "#DC2626",
+        "stroke_color": "#000000",
+        "bg_slab": "rgba(0,0,0,0.65)"
+      },
+      "three_tier_ruler": {
+        "mode": "dual_or_multi_tier",
+        "L1": {
+          "units": 12.0,
+          "px_1080p": 72,
+          "height_pct": 3.98,
+          "usage": "常规口播字幕/桥接句"
+        },
+        "L2": {
+          "units": 24.0,
+          "px_1080p": 144,
+          "height_pct": 4.42,
+          "usage": "章节标注、副重点、小清单"
+        },
+        "L3": {
+          "units": 131.9,
+          "px_1080p": 792,
+          "height_pct": 6.21,
+          "usage": "开场钩子、数字、大情绪结论"
+        },
+        "ratio_L1_L2_L3": "1.00 : 2.00 : 10.99"
+      },
+      "subtitle_stage_architecture": {
+        "stage_mode": "dual_layer_subtitle_plus_flower",
+        "single_stage_unified": false,
+        "recommended_theme_profile": "store_vibrant",
+        "sub_y_ratio": 0.695,
+        "max_chars_per_line": 11,
+        "cut_text_align_ratio": 0.571,
+        "causality_summary": "base 轨（track [13]）共 14 段，覆盖片长 49%；相邻段无缝率 62%（Δ≤1 帧，按整轨顺序算）；其中 13 段是普通字号字幕（其余 1 段被升级）；y 中位 0.695×H；字幕起点 31% 落在主轨切点 ±2 帧内（到最近切点中位 1.43s）——由语音断句驱动，不跟切点",
+        "double_caption_rule": "常规口播在安全底栏呈现字幕，重点短词（<=7字）作为前景视觉锚点弹出，不堆叠整句复读卡片。",
+        "supported_primitives": []
+      },
+      "editing_and_broll_rhythm": {
+        "median_shot_sec": 4.08,
+        "p10_sec": 2.1232,
+        "p90_sec": 9.5099,
+        "fast_cut_lt1s_ratio": 0.0,
+        "opening_cuts_3s": 0,
+        "kf_per_min": 22.9,
+        "broll_target_ratio": 0.464,
+        "broll_band": [
+          0.31,
+          0.66
+        ]
+      },
+      "packaging_and_visual_grammar": {
+        "transition_style": "none",
+        "ai_matting_count": 2,
+        "cutout_rule": "抠像的因果是「这一镜要同时看到人和另一层画面」：人从背景提出来 → 下面垫一条不同源的副镜 → 叠加轨（render_index>0）出画。本套 1 段抠像里 1 段在叠加轨、0 段仍是全屏 scale=1（人满屏叠在满屏副镜上，抠不...",
+        "pip_mode": "geometry_pip_main_punch_in",
+        "effect_summary": "无额外全局花哨滤镜，保持干净原片质感"
+      },
+      "audio_and_sfx_design": {
+        "integrated_lufs": -14.0,
+        "voice_bgm_snr_db": 11.5,
+        "whitebox_bpm": 107.67,
+        "dual_bgm": false,
+        "sfx_per_min": 17.2,
+        "trigger_share": {
+          "cut": 0.333,
+          "flower": 0.667,
+          "line": 0.0,
+          "beat": 0.0,
+          "free": 0.0
+        },
+        "min_gap_sec": 0.8
+      },
+      "blackbox_rea_summary": {
+        "available": true,
+        "duration_sec": 41.83,
+        "shots_detected": 8,
+        "avg_shot_s": 5.23,
+        "overlay_kinds": [
+          "huazi",
+          "label",
+          "static_graphic",
+          "subtitle"
+        ],
+        "production_mix": [
+          {
+            "label": "ai_video",
+            "ratio": 0.5952
+          },
+          {
+            "label": "code_render",
+            "ratio": 0.2279
+          },
+          {
+            "label": "still_motion",
+            "ratio": 0.1235
+          },
+          {
+            "label": "cg_3d",
+            "ratio": 0.0534
+          }
+        ],
+        "audio_voice_ratio": 0.765,
+        "audio_music_bpm": 130.8,
+        "cuts_on_onset_ratio": 1.0,
+        "cuts_on_beat_ratio": 0.286,
+        "packaging_counts": {
+          "text": {
+            "subtitle": 14,
+            "label": 10,
+            "scene": 5,
+            "huazi": 2
+          },
+          "stickers": 0
+        },
+        "text_height_pct_tiers": {
+          "L1_p15_pct": 3.98,
+          "L2_median_pct": 4.42,
+          "L3_p90_pct": 6.21,
+          "sample_count": 31
+        },
+        "text_band_distribution": {
+          "middle": 27,
+          "top": 2,
+          "bottom": 2
+        },
+        "text_anim_in_distribution": {
+          "cut": 24,
+          "pop": 4,
+          "fade": 1,
+          "reveal": 2
+        },
+        "text_box_count": 0,
+        "sfx_anchored_count": 5,
+        "sfx_type_distribution": {
+          "pop": 4,
+          "ding": 1
+        },
+        "sfx_anchor_targets": {
+          "文字标注": 4,
+          "花字": 1
+        }
+      }
+    },
+    "style_24": {
+      "style_id": "style_24",
+      "label_cn": "不露脸混剪 · 炸裂金句高燃踩点风",
+      "archetype_id": "arch_02_high_contrast_story",
+      "typography_and_palette": {
+        "font_family": "Alimama ShuHeiTi",
+        "font_candidates": [
+          "SourceHanSerifCN-Heavy.otf",
+          "AlimamaShuHeiTi-Bold.otf",
+          "SourceHanSansCN-Bold.otf",
+          "NotoSansCJKsc-Bold.otf"
+        ],
+        "font_purity_rule": "以 `Alimama ShuHeiTi` 为主字体族保持视觉连贯，粤语生僻字按同字族优先原则安全回退。",
+        "primary_color": "#FFFFFF",
+        "keyword_color": "#FFBF17",
+        "danger_color": "#DC2626",
+        "stroke_color": "#000000",
+        "bg_slab": "rgba(0,0,0,0.65)"
+      },
+      "three_tier_ruler": {
+        "mode": "dual_or_multi_tier",
+        "L1": {
+          "units": 12.0,
+          "px_1080p": 72,
+          "height_pct": 1.17,
+          "usage": "常规口播字幕/桥接句"
+        },
+        "L2": {
+          "units": 24.4,
+          "px_1080p": 146,
+          "height_pct": 4.5,
+          "usage": "章节标注、副重点、小清单"
+        },
+        "L3": {
+          "units": 48.2,
+          "px_1080p": 289,
+          "height_pct": 13.59,
+          "usage": "开场钩子、数字、大情绪结论"
+        },
+        "ratio_L1_L2_L3": "1.00 : 2.03 : 4.01"
+      },
+      "subtitle_stage_architecture": {
+        "stage_mode": "dual_layer_subtitle_plus_flower",
+        "single_stage_unified": false,
+        "recommended_theme_profile": "store_vibrant",
+        "sub_y_ratio": 0.78,
+        "max_chars_per_line": 14,
+        "cut_text_align_ratio": 0.724,
+        "causality_summary": "base 轨（track [4]）共 24 段，覆盖片长 89%；相邻段无缝率 91%（Δ≤1 帧，按整轨顺序算）；其中 15 段是普通字号字幕（其余 9 段被升级）；y 中位 0.78×H；字幕起点 100% 落在主轨切点 ±2 帧内（到最近切点中位 0.0s）——这套是切点驱动的重剪风格，字幕起句跟着镜头切",
+        "double_caption_rule": "常规口播在安全底栏呈现字幕，重点短词（<=7字）作为前景视觉锚点弹出，不堆叠整句复读卡片。",
+        "supported_primitives": []
+      },
+      "editing_and_broll_rhythm": {
+        "median_shot_sec": 1.11,
+        "p10_sec": 0.7297,
+        "p90_sec": 1.7886,
+        "fast_cut_lt1s_ratio": 0.3,
+        "opening_cuts_3s": 3,
+        "kf_per_min": 16.5,
+        "broll_target_ratio": 0.548,
+        "broll_band": [
+          0.4,
+          0.75
+        ]
+      },
+      "packaging_and_visual_grammar": {
+        "transition_style": "none",
+        "ai_matting_count": 3,
+        "cutout_rule": "抠像的因果是「这一镜要同时看到人和另一层画面」：人从背景提出来 → 下面垫一条不同源的副镜 → 叠加轨（render_index>0）出画。本套 3 段抠像里 3 段在叠加轨、1 段仍是全屏 scale=1（人满屏叠在满屏副镜上，抠不...",
+        "pip_mode": "geometry_pip_window",
+        "effect_summary": "无额外全局花哨滤镜，保持干净原片质感"
+      },
+      "audio_and_sfx_design": {
+        "integrated_lufs": -14.0,
+        "voice_bgm_snr_db": 11.5,
+        "whitebox_bpm": 60.09,
+        "dual_bgm": false,
+        "sfx_per_min": 31.3,
+        "trigger_share": {
+          "cut": 0.947,
+          "flower": 0.0,
+          "line": 0.053,
+          "beat": 0.0,
+          "free": 0.0
+        },
+        "min_gap_sec": 0.7
+      },
+      "blackbox_rea_summary": {
+        "available": true,
+        "duration_sec": 36.42,
+        "shots_detected": 16,
+        "avg_shot_s": 2.28,
+        "overlay_kinds": [
+          "animated_sticker",
+          "huazi",
+          "label",
+          "subtitle",
+          "title"
+        ],
+        "production_mix": [
+          {
+            "label": "ai_video",
+            "ratio": 0.6874
+          },
+          {
+            "label": "cg_3d",
+            "ratio": 0.1487
+          },
+          {
+            "label": "still_motion",
+            "ratio": 0.0897
+          },
+          {
+            "label": "code_render",
+            "ratio": 0.0741
+          }
+        ],
+        "audio_voice_ratio": 0.948,
+        "audio_music_bpm": null,
+        "cuts_on_onset_ratio": 1.0,
+        "cuts_on_beat_ratio": null,
+        "packaging_counts": {
+          "text": {
+            "label": 25,
+            "subtitle": 15,
+            "huazi": 5,
+            "counter": 2
+          },
+          "stickers": 1
+        },
+        "text_height_pct_tiers": {
+          "L1_p15_pct": 1.17,
+          "L2_median_pct": 4.5,
+          "L3_p90_pct": 13.59,
+          "sample_count": 47
+        },
+        "text_band_distribution": {
+          "middle": 27,
+          "bottom": 19,
+          "top": 1
+        },
+        "text_anim_in_distribution": {
+          "cut": 38,
+          "slide": 3,
+          "fade": 4,
+          "reveal": 2
+        },
+        "text_box_count": 12,
+        "sfx_anchored_count": 13,
+        "sfx_type_distribution": {
+          "ding": 3,
+          "pop": 4,
+          "hit": 2,
+          "whoosh": 4
+        },
+        "sfx_anchor_targets": {
+          "文字标注": 10,
+          "花字": 2,
+          "贴纸": 1
+        }
+      }
+    }
+  }
+}

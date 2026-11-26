@@ -577,9 +577,10 @@ def _apply_director_cameras(
         eye = media.get("eye_anchor")
         if not eye and face:
             eye = {"cx": face["x"] + face["w"] / 2, "cy": face["y"] + face["h"] * 0.36}
-        if intent == "punch_closeup":
-            clip["vf_extra"] = _build_eye_locked_vf(eye, zoom=1.16, face=face)
-            clip["punch_in_zoom"] = 1.16
+        if intent in ("punch_closeup", "jump_closeup"):
+            z = 1.22 if intent == "jump_closeup" else 1.16
+            clip["vf_extra"] = _build_eye_locked_vf(eye, zoom=z, face=face)
+            clip["punch_in_zoom"] = z
             continue
         # Use the same phase after a sentence cut inside the act.
         offset = clip["timeline_in_sec"] - act["start_sec"]
@@ -961,6 +962,24 @@ def run_step4(
     def _overlaps_director_locked(t_s: float, t_e: float) -> bool:
         return any(min(t_e, g_e) - max(t_s, g_s) > 0.5 / fps for g_s, g_e in director_locked_spans)
 
+    def _director_act_for_span(t_s: float, t_e: float) -> Optional[Dict[str, Any]]:
+        if not director_acts:
+            return None
+        best = max(
+            director_acts,
+            key=lambda a: min(t_e, float(a["end_sec"])) - max(t_s, float(a["start_sec"])),
+            default=None,
+        )
+        if best and (min(t_e, float(best["end_sec"])) - max(t_s, float(best["start_sec"]))) > 0.5 / fps:
+            return best
+        return None
+
+    director_allowed_sec = sum(
+        max(0.0, float(a["end_sec"]) - float(a["start_sec"]))
+        for a in director_acts if a.get("broll_policy") == "allow_verified_broll"
+    )
+    director_allowed_ratio = (director_allowed_sec / max(total_dur, 0.1)) if director_acts else 0.0
+
     def _overlaps_kinetic_locked(t_s: float, t_e: float) -> bool:
         return _overlaps_director_locked(t_s, t_e) or any(
             min(t_e, g_e) - max(t_s, g_s) >= 0.12 for g_s, g_e in kinetic_locked_spans
@@ -986,9 +1005,14 @@ def run_step4(
         _kdna = kinetic_choreographer.get_style_dna(style_id) or {}
         _kbp = _kdna.get("broll_policy") or {}
         if has_broll_source:
-            broll_prior_ratio = float(_kbp.get("target_ratio", 0.22))
             _kband = _kbp.get("band") or (0.0, 0.30)
-            broll_band = (max(0.0, float(_kband[0])), min(0.30, float(_kband[1])))
+            if director_allowed_ratio > 0.01:
+                max_cap = max(0.30, min(0.58, director_allowed_ratio + 0.06))
+                broll_prior_ratio = max(float(_kbp.get("target_ratio", 0.22)), min(0.52, director_allowed_ratio * 0.90))
+                broll_band = (max(0.0, float(_kband[0])), max_cap)
+            else:
+                broll_prior_ratio = float(_kbp.get("target_ratio", 0.22))
+                broll_band = (max(0.0, float(_kband[0])), min(0.30, float(_kband[1])))
         else:
             broll_prior_ratio = 0.0
             broll_band = (0.0, 0.0)
@@ -1785,16 +1809,29 @@ def run_step4(
                 roles[idx_k] = "a_roll"
                 continue
             s_kws_k = [str(x) for x in (s_obj_k.get("keywords") or [])]
+            d_act_k = _director_act_for_span(t_sk, t_ek)
+            d_kws_k = [str(x) for x in (d_act_k.get("broll_keywords") or [])] if (d_act_k and d_act_k.get("broll_policy") == "allow_verified_broll") else []
+            merged_kws_k = list(dict.fromkeys([*d_kws_k, *s_kws_k]))
             best_sc_k = 0.0
             best_v_k = "none"
+            kw_explicit_hit = False
             for bm in live_b_only:
                 if _is_signboard_wall_noise(bm, s_txt_k):
                     continue
-                sc_res = broll_match.score_clip(s_txt_k, bm, used_count=0, need_sec=dur_k, keywords=s_kws_k)
-                if float(sc_res.get("score") or 0.0) > best_sc_k:
-                    best_sc_k = float(sc_res.get("score") or 0.0)
+                sc_res = broll_match.score_clip(s_txt_k, bm, used_count=0, need_sec=dur_k, keywords=merged_kws_k)
+                sc_val = float(sc_res.get("score") or 0.0)
+                if d_kws_k:
+                    m_blob = f"{bm.get('description') or ''} {' '.join(bm.get('semantic_tags') or [])} {' '.join(bm.get('manual_tags') or [])}"
+                    if any(dk in m_blob for dk in d_kws_k):
+                        sc_val = max(sc_val, 0.32)
+                        kw_explicit_hit = True
+                if sc_val > best_sc_k:
+                    best_sc_k = sc_val
                     best_v_k = str(sc_res.get("tier") or "none")
-            if best_v_k in ("hit", "weak") and best_sc_k >= 0.30:
+                    if kw_explicit_hit and best_v_k == "none":
+                        best_v_k = "weak"
+            score_floor = 0.22 if (d_act_k and d_act_k.get("broll_policy") == "allow_verified_broll") else 0.30
+            if (best_v_k in ("hit", "weak") and best_sc_k >= score_floor) or kw_explicit_hit:
                 # 若本镜当前被判为 a_roll 但其实处于可证据锚定的实体过渡窗内且语义贴合，可作为高光实拍候选
                 _b_cands_by_idx.append((best_sc_k, idx_k, dur_k))
                 roles[idx_k] = "b_roll"
@@ -1802,8 +1839,9 @@ def run_step4(
                 if source_aroll_valid[idx_k] and not audio_only_flags[idx_k]:
                     roles[idx_k] = "a_roll"
 
-        # 上限控制：动态舞台模式下 B-roll 总覆盖严格收在 [0, 30%]，各过渡句组均衡保留最高语义贴合实证镜
-        max_kinetic_b_sec = min(total_dur * 0.295, total_dur * max(0.285, broll_target_ratio + 0.07))
+        # 上限控制：动态舞台模式下无导演释放时严格收在 <=30%，有导演 allow_verified_broll 时释放到允许动态带上沿
+        cap_ratio_k = broll_band[1] if director_allowed_ratio > 0.01 else 0.295
+        max_kinetic_b_sec = min(total_dur * cap_ratio_k, total_dur * max(0.285, broll_target_ratio + 0.08))
         cur_kb_sec = sum(
             frames_to_sec((cut_points[i + 1]["raw_frame"] if i + 1 < n_segs else total_frames) - cut_points[i]["raw_frame"], fps)
             for i in range(n_segs) if roles[i] != "a_roll"
@@ -2253,7 +2291,9 @@ def run_step4(
         """这镜配哪条 B-roll：先按「这句台词讲了什么画面」排，再拿质量/时长/复用次数同分裁决。"""
         nonlocal taboo_blocked_count
         s_txt = str(sent.get("text", ""))
-        s_kws = [str(k) for k in sent.get("keywords", [])]
+        d_act_cur = _director_act_for_span(t_start, t_start + seg_dur)
+        d_kws_cur = [str(x) for x in (d_act_cur.get("broll_keywords") or [])] if (d_act_cur and d_act_cur.get("broll_policy") == "allow_verified_broll") else []
+        s_kws = list(dict.fromkeys([*d_kws_cur, *(str(k) for k in sent.get("keywords", []))]))
         is_praise = any(cue in s_txt for cue in POSITIVE_PRAISE_CUES)
         candidates = [m for m in broll_pool if not (forbid_code and m.get("role") == "code_broll")] or broll_pool
         if code_only:
@@ -2308,6 +2348,10 @@ def run_step4(
                 sem_weight = float(m_sel["rank"]) * BROLL_SEM_RANK_WEIGHT
                 if _is_signboard_wall_noise(m, s_txt):
                     sem_weight -= 20.0
+                if d_kws_cur:
+                    m_blob_d = f"{m.get('description') or ''} {' '.join(tags)} {fname_m}"
+                    d_hit_cnt = sum(1 for dk in d_kws_cur if dk and dk in m_blob_d)
+                    sem_weight += d_hit_cnt * 12.0
             # 一手原始痛点词/物证优先匹配加权
             intel_bonus = 0.0
             if raw_pain_kws and any(pk in s_txt and (pk in fname_m or any(pk in tg for tg in tags)) for pk in raw_pain_kws):
@@ -3609,9 +3653,7 @@ def run_step4(
         if shortfall > warn_threshold + SOURCE_EPSILON_SEC:
             print(f"[step4] [WARN] {c_obj['clip_id']} 的可用画面仍短 {shortfall:.2f}s，请补充可用素材")
 
-    if director_acts and not has_broll_source and (
-        kinetic_stage_plan["theme_profile"] == "business_editorial" or len(usable_arolls) == 1
-    ):
+    if director_acts:
         _comp_prof_p = pipeline_dir / "01b_composition_profile.json"
         _comp_prof = read_json(_comp_prof_p) if _comp_prof_p.is_file() else None
         _apply_director_cameras(clips, director_acts, media_by_mp4, allow_punch, composition_profile=_comp_prof)

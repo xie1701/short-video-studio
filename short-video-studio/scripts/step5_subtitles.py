@@ -1661,10 +1661,11 @@ def run_step5(
     eff_measure_fs = base_fs
     dual_banner = bool(tpl.get("dual_line_banner"))
     if _kinetic_stage_suppressed:
-        # style_02 等动态舞台商业底字幕实际渲染字号约 51–53px（8.5 units），安全区 640px 可稳放 9–10 字，不再被标称 100px 巨字卡死在 6 字。
+        # 动态舞台模式下由 kinetic_stage 承担画面渲染（如 style_02_unified L1 ~69px@max_w=920），
+        # ASS 断词尺度保持 54px/11 字以内，既保证分词整洁又不因窄带宽度切碎长短语。
         chunk_fs = min(eff_measure_fs, 54)
         chunk_px = _line_px
-        chunk_max_chars = min(tpl_char_cap, max(9, min(10, tpl_char_cap)))
+        chunk_max_chars = min(tpl_char_cap, max(9, min(11 if template_id == "style_02" else 10, tpl_char_cap)))
     else:
         chunk_fs = min(84, max(62, eff_measure_fs)) if dual_banner else eff_measure_fs
         chunk_px = int(_line_px * 1.85) if dual_banner else _line_px

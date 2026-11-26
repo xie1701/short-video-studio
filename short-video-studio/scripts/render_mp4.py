@@ -2772,7 +2772,12 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
                     or k_elem.get("beat_offsets")
                 )
             )
-            static_im = render_kinetic_stage_item_png(k_elem, font_candidates=tpl.get("font_candidates"))
+            k_font_cands = (
+                k_elem.get("font_candidates")
+                or (ks_block.get("dna") or {}).get("font_candidates")
+                or tpl.get("font_candidates")
+            )
+            static_im = render_kinetic_stage_item_png(k_elem, font_candidates=k_font_cands)
             if static_im is None:
                 continue
             pw, ph = static_im.size
@@ -2784,7 +2789,7 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
                     style_id=style_id,
                     duration_sec=max(0.35, e_t - s_t),
                     fps=fps,
-                    font_candidates=tpl.get("font_candidates"),
+                    font_candidates=k_font_cands,
                     fallback_static_img=static_im,
                 )
                 if anim_kr is not None and anim_kr[0].is_file():

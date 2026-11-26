@@ -489,13 +489,14 @@ class V7AudioFirstAndSubtitlesTests(unittest.TestCase):
             ],
         }
         profile = {"primary_stage_mode": "left_speaker_right_stage", "allow_behind_person": False, "safe_center_shift_x": -0.18}
-        plan = director_plan.generate_deterministic_director_plan(audio, "style_02", composition_profile=profile)
+        plan = director_plan.generate_deterministic_director_plan(audio, "style_03", composition_profile=profile)
         primitives = [a["primitive"] for a in plan["acts"]]
         self.assertIn("semantic_diagram_card", primitives)
         self.assertIn("inline_emphasis_cta", primitives)
 
         stage = kinetic_choreographer.plan_kinetic_stage(
-            audio, style_id="style_02", fps=30, director_plan=plan, composition_profile=profile,
+            audio, style_id="style_03", fps=30, director_plan=plan, composition_profile=profile,
+            enable_v6_director=True,
         )
         tickers = [it for it in stage["items"] if it.get("variant") == "editorial_ticker"]
         for tk in tickers:
@@ -567,9 +568,10 @@ class V7AudioFirstAndSubtitlesTests(unittest.TestCase):
             ],
         }
         profile = {"primary_stage_mode": "left_speaker_right_stage", "allow_behind_person": False, "safe_center_shift_x": -0.16}
-        plan = director_plan.generate_deterministic_director_plan(audio, "style_02", composition_profile=profile)
+        plan = director_plan.generate_deterministic_director_plan(audio, "style_03", composition_profile=profile)
         stage = kinetic_choreographer.plan_kinetic_stage(
-            audio, style_id="style_02", fps=30, director_plan=plan, composition_profile=profile,
+            audio, style_id="style_03", fps=30, director_plan=plan, composition_profile=profile,
+            enable_v6_director=True,
         )
         diag_items = [it for it in stage["items"] if it.get("variant") == "semantic_diagram_card"]
         self.assertTrue(diag_items)

@@ -518,14 +518,21 @@ def export_native_draft(pipeline_dir: Path, out_dir: Optional[Path] = None) -> D
             if not ktxt or ken <= kst:
                 continue
             lane = int(kit["track_lane"]) if kit.get("track_lane") is not None else default_lanes.get(variant, 0)
-            text_spec = {**sub_spec, "bg_radius": paint["radius_px"]} if paint else sub_spec
+            is_unified = kit.get("theme_profile") == "style_02_unified"
+            if paint:
+                text_spec = {**sub_spec, "bg_radius": paint["radius_px"]}
+            elif is_unified:
+                u_rad = 8 if variant == "red_pill" else (6 if variant == "bridge_bar" else 0)
+                text_spec = {**sub_spec, "bg_radius": u_rad, "font_family": "Source Han Sans CN"}
+            else:
+                text_spec = sub_spec
             fg = paint["fg_hex"] if paint else str(kit.get("fg_hex") or "#FFFFFF")
             bg = paint["bg_hex"] if paint else str(kit.get("bg_hex") or "#000000")
             bg_alpha = paint["bg_alpha"] if paint else float(kit.get("bg_alpha") or 0.0)
             stroke = "" if paint else str(kit.get("stroke_hex") or "")
             mat, seg = build_text_material(
                 ktxt, text_spec, start_sec=kst, end_sec=ken,
-                size_units=size, is_flower=(variant != "bridge_bar"),
+                size_units=size, is_flower=(variant not in ("bridge_bar", "red_pill")),
                 fill_hex=fg, stroke_hex=stroke, stroke_units=2.0 if stroke else 0.0,
                 x_norm=float(kit.get("x_norm") or 0.0),
                 y_norm=float(kit.get("y_norm", -0.45) if paint else (kit.get("y_norm") or -0.45)),

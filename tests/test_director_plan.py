@@ -98,15 +98,17 @@ class DirectorPlanTests(unittest.TestCase):
         self.assertEqual(packet["composition_hint"], "pending")
         self.assertEqual(packet["locked_duration_sec"], 10.0)
         self.assertEqual([row["id"] for row in packet["sentences"]], ["sent_001", "sent_002", "sent_003"])
-        self.assertEqual(packet["sentences"][0], {
-            "id": "sent_001", "text": "公司破产那年我负债两百万",
-            "start_sec": 0.0, "end_sec": 3.0, "duration_sec": 3.0, "keywords": ["负债", "两百万"],
-        })
+        self.assertEqual(packet["sentences"][0]["id"], "sent_001")
+        self.assertEqual(packet["sentences"][0]["text"], "公司破产那年我负债两百万")
+        self.assertEqual(packet["sentences"][0]["keywords"], ["负债", "两百万"])
+        self.assertIn("pause_after_sec", packet["sentences"][0])
+        self.assertIn("speech_rate_cps", packet["sentences"][0])
         self.assertEqual(packet["broll_summary"], {"has_real_broll": False, "count": 0, "clips": [], "tags_preview": []})
         self.assertEqual(packet["director_primitives"], list(DIRECTOR_PRIMITIVES))
         self.assertEqual(packet["theme_profiles"], list(THEME_PROFILES))
+        self.assertTrue((self.pipeline / "03b_director_prompt.md").is_file())
         rules = " ".join(packet["rules"])
-        for term in ("7 字", "0.35..0.55", "silence_drop", "delay_entry"):
+        for term in ("7 字", "0.50..0.85", "silence_drop", "delay_entry"):
             self.assertIn(term, rules)
         self.assertEqual(read_json(audio_path), source)
         self.assertFalse((self.pipeline / PLAN_FILENAME).exists())
@@ -141,7 +143,7 @@ class DirectorPlanTests(unittest.TestCase):
         self.assertEqual(summary["count"], 2)
         self.assertCountEqual(summary["tags_preview"], ["虾饺", "蒸笼", "大厅"])
         self.assertEqual(summary["clips"][0], {
-            "filename": "detail.mov", "description": "蒸好后掀盖展示点心",
+            "filename": "detail.mov", "duration_sec": 0.0, "description": "蒸好后掀盖展示点心",
             "tags": ["虾饺", "蒸笼"], "entities": ["蒸笼"],
         })
 
@@ -299,8 +301,14 @@ class DirectorPlanTests(unittest.TestCase):
             (29.0, 36.0, "最后由大家都来复核结果"),
         )
         profile = {"primary_stage_mode": "closeup_chest_stage", "allow_behind_person": False}
-        plan = generate_deterministic_director_plan(source, composition_profile=profile)
-        self.assertEqual(plan, generate_deterministic_director_plan(source, composition_profile=profile))
+        # 默认 style_02 进入统一单层粗黑体舞台 style_02_unified
+        unified_plan = generate_deterministic_director_plan(source, style_id="style_02", composition_profile=profile)
+        self.assertEqual(unified_plan["theme_profile"], "style_02_unified")
+        self.assertTrue(self.validate(unified_plan, source, profile)["ok"])
+
+        # style_03/显式 business_editorial 完整保留暗金框架条陈语义
+        plan = generate_deterministic_director_plan(source, style_id="style_03", composition_profile=profile)
+        self.assertEqual(plan, generate_deterministic_director_plan(source, style_id="style_03", composition_profile=profile))
         self.assertEqual(plan["source"], "fallback_deterministic")
         self.assertEqual(plan["theme_profile"], "business_editorial")
         self.assert_fallback_grounded(plan, source, profile)
@@ -338,7 +346,12 @@ class DirectorPlanTests(unittest.TestCase):
             {"filename": "steam.mov", "suggested_role": "b_roll_candidate", "description": "桑拿鸡"},
         ]}
         profile = {"primary_stage_mode": "wide_behind_person", "allow_behind_person": True}
-        plan = generate_deterministic_director_plan(source, inventory=inventory, composition_profile=profile)
+        # 默认 style_02 探店也统一进入 style_02_unified，绝不与商业分裂，且对清单句自动给 allow_verified_broll
+        unified_store = generate_deterministic_director_plan(source, style_id="style_02", inventory=inventory, composition_profile=profile)
+        self.assertEqual(unified_store["theme_profile"], "style_02_unified")
+        self.assertTrue(self.validate(unified_store, source, profile)["ok"])
+
+        plan = generate_deterministic_director_plan(source, style_id="style_01", inventory=inventory, composition_profile=profile)
         self.assertEqual(plan["theme_profile"], "store_vibrant")
         self.assert_fallback_grounded(plan, source, profile)
         selected = {planned["primitive"]: planned for planned in plan["acts"]}
@@ -351,7 +364,7 @@ class DirectorPlanTests(unittest.TestCase):
         self.assertEqual(selected["entity_stack_plus_top"]["visual_copy"]["headline"], "桑拿鸡")
         self.assertEqual(selected["list_build_gather_dim_overlay"]["broll_policy"], "allow_verified_broll")
         close_profile = {"allow_behind_person": False}
-        close = generate_deterministic_director_plan(source, inventory=inventory, composition_profile=close_profile)
+        close = generate_deterministic_director_plan(source, style_id="style_01", inventory=inventory, composition_profile=close_profile)
         self.assertNotIn("hero_anchor_plus_danmaku", [planned["primitive"] for planned in close["acts"]])
         self.assert_fallback_grounded(close, source, close_profile)
 
@@ -361,7 +374,7 @@ class DirectorPlanTests(unittest.TestCase):
             (2.2, 4.2, "而是复购。"),
             (4.5, 10.0, "用每次回款的凭证一起复核"),
         )
-        plan = generate_deterministic_director_plan(source)
+        plan = generate_deterministic_director_plan(source, style_id="style_03")
         self.assert_fallback_grounded(plan, source)
         contrast = plan["acts"][0]
         self.assertEqual(contrast["sentence_ids"], ["sent_001", "sent_002"])
@@ -374,7 +387,7 @@ class DirectorPlanTests(unittest.TestCase):
             (0.0, 4.0, "不是货不好是位置偏"),
             (4.5, 10.0, "我们复核了连续几天的进店数量"),
         )
-        plan = generate_deterministic_director_plan(source)
+        plan = generate_deterministic_director_plan(source, style_id="style_03")
         self.assert_fallback_grounded(plan, source)
         opening = plan["acts"][0]
         self.assertEqual(opening["primitive"], "negation_strike")
@@ -431,7 +444,7 @@ class DirectorPlanTests(unittest.TestCase):
             (10.05, 12.0, "第六，复核合同"),
             (12.2, 20.0, "这次复核由不同岗位一起在工作台完成"),
         )
-        plan = generate_deterministic_director_plan(source)
+        plan = generate_deterministic_director_plan(source, style_id="style_03")
         self.assert_fallback_grounded(plan, source)
         highlights = [
             i for i, planned in enumerate(plan["acts"]) if planned["primitive"] == "framework_pillar"
@@ -458,7 +471,7 @@ class DirectorPlanTests(unittest.TestCase):
                     (0.0, 0.8, heading), (2.0, 4.2, "点单先付款"),
                     (4.5, 10.0, "后台会用统一的表格核对完整的交易流程"),
                 )
-                plan = generate_deterministic_director_plan(source)
+                plan = generate_deterministic_director_plan(source, style_id="style_03")
                 self.assert_fallback_grounded(plan, source)
                 combined = plan["acts"][0]
                 self.assertEqual(combined["sentence_ids"], ["sent_001", "sent_002"])
@@ -467,7 +480,7 @@ class DirectorPlanTests(unittest.TestCase):
                 self.assertEqual(combined["visual_copy"]["accent_token"], badge)
 
                 source["sentences"][1]["start_sec"] = 2.01
-                plan = generate_deterministic_director_plan(source)
+                plan = generate_deterministic_director_plan(source, style_id="style_03")
                 self.assertEqual(plan["acts"][0]["sentence_ids"], ["sent_001"])
                 self.assertNotIn("framework_pillar", [planned["primitive"] for planned in plan["acts"]])
 
@@ -479,7 +492,7 @@ class DirectorPlanTests(unittest.TestCase):
             (9.6, 10.2, "第四"), (10.4, 12.5, "我们想事情的方式被固化了"),
             (13.0, 25.5, "接下来我再把这一年发生的那些事按时间顺序讲一遍"),
         )
-        plan = generate_deterministic_director_plan(source)
+        plan = generate_deterministic_director_plan(source, style_id="style_03")
         self.assert_fallback_grounded(plan, source)
         pillars = [planned for planned in plan["acts"] if planned["primitive"] == "framework_pillar"]
         self.assertEqual(
@@ -519,7 +532,7 @@ class DirectorPlanTests(unittest.TestCase):
                     (4.5, 10.0, "接下来要按照之前定好的方法一起核对"),
                 )
                 source["sentences"][0].update(keywords=["师傅能从"], display_keywords=["徒弟的店"])
-                plan = generate_deterministic_director_plan(source)
+                plan = generate_deterministic_director_plan(source, style_id="style_03")
                 self.assert_fallback_grounded(plan, source)
                 self.assertEqual(plan["acts"][0]["primitive"], "concept_split_card")
                 self.assertEqual(plan["acts"][0]["visual_copy"]["items"], ["✕ 师徒两个字", "✓ 分到钱"])
@@ -574,7 +587,7 @@ class DirectorPlanTests(unittest.TestCase):
                 if has_words:
                     source["sentences"][1]["words"] = [{"word": item} for item in items]
                 profile = {"theme_hint": "store_vibrant"}
-                plan = generate_deterministic_director_plan(source, composition_profile=profile)
+                plan = generate_deterministic_director_plan(source, style_id="style_01", composition_profile=profile)
                 self.assert_fallback_grounded(plan, source, profile)
                 first = plan["acts"][0]
                 self.assertEqual(first["primitive"], "list_build_gather_dim_overlay")
@@ -588,7 +601,7 @@ class DirectorPlanTests(unittest.TestCase):
                     (0.0, 4.0, f"{action}取得这次活动的详细资料"),
                     (4.5, 10.0, "这份资料由现场工作人员统一整理"),
                 )
-                plan = generate_deterministic_director_plan(source)
+                plan = generate_deterministic_director_plan(source, style_id="style_03")
                 self.assert_fallback_grounded(plan, source)
                 self.assertEqual(plan["acts"][0]["primitive"], "inline_emphasis_cta")
                 self.assertEqual(plan["acts"][0]["visual_copy"]["headline"], action)
@@ -601,7 +614,7 @@ class DirectorPlanTests(unittest.TestCase):
                     (0.0, 4.0, f"{name}的入口就在这条街的转角"),
                     (4.5, 10.0, "这家门店靠窗的位置会提前安排"),
                 )
-                plan = generate_deterministic_director_plan(source, composition_profile=profile)
+                plan = generate_deterministic_director_plan(source, style_id="style_01", composition_profile=profile)
                 self.assertEqual(plan["theme_profile"], "store_vibrant")
                 self.assertNotIn("inline_emphasis_cta", [planned["primitive"] for planned in plan["acts"]])
 
@@ -611,7 +624,7 @@ class DirectorPlanTests(unittest.TestCase):
                     (0.0, 4.0, f"这间茶楼今天有探店记录，记得{action}支持"),
                     (4.5, 10.0, "这段内容由现场同事统一整理"),
                 )
-                plan = generate_deterministic_director_plan(source, composition_profile=profile)
+                plan = generate_deterministic_director_plan(source, style_id="style_01", composition_profile=profile)
                 self.assert_fallback_grounded(plan, source, profile)
                 self.assertEqual(plan["acts"][0]["primitive"], "inline_emphasis_cta")
                 self.assertEqual(plan["acts"][0]["visual_copy"]["headline"], action)

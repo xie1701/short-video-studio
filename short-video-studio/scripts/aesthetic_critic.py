@@ -232,17 +232,17 @@ def build_aesthetic_review_package(
     return tasks
 
 
-def _overfull_acts(acts: list[Dict[str, Any]], duration: float) -> list[str]:
+def _overfull_acts(acts: list[Dict[str, Any]], duration: float, upper: float = 0.55, lower: float = 0.35) -> list[str]:
     active = [act for act in acts if act["primitive"] not in QUIET]
     low_priority = sorted(active, key=lambda a: (a.get("dramatic_role") == "hook", a.get("emotion_intensity", 0)))
     removed = []
     for act in low_priority:
         keep = [a for a in active if a is not act]
         ratio = _coverage([(a["start_sec"], a["end_sec"]) for a in keep], duration)
-        if ratio >= 0.35:
+        if ratio >= lower:
             active = keep
             removed.append(act["act_id"])
-            if ratio <= 0.55:
+            if ratio <= upper:
                 break
     return removed
 
@@ -270,7 +270,9 @@ def score_aesthetic_review(pipeline_dir: Path) -> Dict[str, Any]:
     choreo_ratio = choreo_items / len(highlights) if highlights else 0.0
     active = [(a["start_sec"], a["end_sec"]) for a in acts if a["primitive"] not in QUIET]
     coverage = _coverage(active, duration) if acts and duration else plan.get("highlight_coverage_ratio")
-    conversions = _overfull_acts(acts, duration) if coverage is not None and coverage > 0.65 else []
+    theme = plan.get("theme_profile") or stage.get("theme_profile")
+    cov_lo, cov_hi = (0.50, 0.85) if theme == "style_02_unified" else (0.35, 0.55)
+    conversions = _overfull_acts(acts, duration, upper=cov_hi, lower=cov_lo) if coverage is not None and coverage > cov_hi + 0.08 else []
     patches = [patch for patch in patches if patch["act_id"] not in conversions]
     patches.extend({"type": "convert_to_clean_breath", "act_id": aid} for aid in conversions)
 
@@ -350,8 +352,9 @@ def score_aesthetic_review(pipeline_dir: Path) -> Dict[str, Any]:
 
     theme = plan.get("theme_profile") or stage.get("theme_profile")
     matching_theme = sum(item.get("theme_profile", theme) == theme for item in highlights)
-    motion_items = sum(item.get("render_backend") == "web_spring" or bool(item.get("motion_mode")) for item in highlights)
-    coverage_gap = (max(0, 0.35 - coverage, coverage - 0.55) if coverage is not None else 0.28)
+    motion_items = sum(item.get("render_backend") == "web_spring" or bool(item.get("motion_mode")) or bool(item.get("element_choreo")) for item in highlights)
+    cov_lo, cov_hi = (0.50, 0.85) if theme == "style_02_unified" else (0.35, 0.55)
+    coverage_gap = (max(0, cov_lo - coverage, coverage - cov_hi) if coverage is not None else 0.28)
     sfx_gap = max(0, 6 - len(cues), len(cues) - 14)
     # 底字幕复读大字是信息减法与节奏呼吸的共同扣分项；元素级编舞只给商业赛道加分，
     # 探店风没有商业卡片编舞是设计使然，不能因此扣分。
@@ -373,7 +376,7 @@ def score_aesthetic_review(pipeline_dir: Path) -> Dict[str, Any]:
         )
         if highlights else 6.5,
         "theme_fit": 7.0 + 2.4 * matching_theme / len(highlights)
-        if theme in {"business_editorial", "store_vibrant"} and highlights else 7.0,
+        if theme in {"style_02_unified", "business_editorial", "store_vibrant"} and highlights else 7.0,
     }
     scores = {key: round(max(0.0, min(10.0, score)), 2) for key, score in scores.items()}
     mean, minimum = round(sum(scores.values()) / len(CRITIC_DIMENSIONS), 2), min(scores.values())

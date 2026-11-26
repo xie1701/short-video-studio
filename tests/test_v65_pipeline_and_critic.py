@@ -611,12 +611,23 @@ class V65PipelineAndCriticTests(unittest.TestCase):
         ]
         business = generate_deterministic_director_plan(
             {"sentences": contrast, "locked_duration_sec": 10.0},
+            style_id="style_03",
         )
         opening = business["acts"][0]
         self.assertEqual(opening["primitive"], "negation_strike")
         self.assertEqual(opening["visual_copy"]["headline"], "方式被固化了")
         self.assertTrue(validate_director_plan(
             business, {"sentences": contrast, "locked_duration_sec": 10.0},
+        )["ok"])
+
+        unified_s02 = generate_deterministic_director_plan(
+            {"sentences": contrast, "locked_duration_sec": 10.0},
+            style_id="style_02",
+        )
+        self.assertEqual(unified_s02["theme_profile"], "style_02_unified")
+        self.assertEqual(unified_s02["acts"][0]["primitive"], "pain_slam_danmaku")
+        self.assertTrue(validate_director_plan(
+            unified_s02, {"sentences": contrast, "locked_duration_sec": 10.0},
         )["ok"])
 
 

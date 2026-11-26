@@ -76,9 +76,9 @@ STYLE_DNA_REGISTRY: Dict[str, Dict[str, Any]] = {
             "stroke": "#000000",
         },
         "font_candidates": [
-            "SourceHanSerifCN-Bold.otf",
-            "AlimamaShuHeiTi-Bold.otf",
             "SourceHanSansCN-Bold.otf",
+            "NotoSansSC-Bold.ttf",
+            "AlimamaShuHeiTi-Bold.otf",
         ],
     },
     # Multi-style opt-in skins (--v6-director) for editorial & store tracks without altering default V5 legacy behavior.
@@ -1448,6 +1448,26 @@ def _stage_y(composition: Dict[str, Any]) -> float:
     return float(composition.get("safe_fg_y_norm", -0.46))
 
 
+def _union_face_bbox(compositions: List[Dict[str, Any]]) -> Optional[Dict[str, float]]:
+    """计算同一段时间重叠的所有镜头人脸框联合最宽/最高安全外包络，绝不因切换镜头而切耳朵半张脸。"""
+    boxes = [c.get("face_bbox") for c in compositions if isinstance(c.get("face_bbox"), dict)]
+    if not boxes:
+        return None
+    try:
+        x0 = min(float(b["x"]) for b in boxes)
+        y0 = min(float(b["y"]) for b in boxes)
+        x1 = max(float(b["x"]) + float(b["w"]) for b in boxes)
+        y1 = max(float(b["y"]) + float(b["h"]) for b in boxes)
+    except (KeyError, TypeError, ValueError):
+        return None
+    return {
+        "x": round(x0, 4),
+        "y": round(y0, 4),
+        "w": round(max(0.0, x1 - x0), 4),
+        "h": round(max(0.0, y1 - y0), 4),
+    }
+
+
 def _retarget_legacy_composition(
     stage: Dict[str, Any], sentences: List[Dict[str, Any]], profile: Dict[str, Any],
 ) -> None:
@@ -1472,17 +1492,15 @@ def _retarget_legacy_composition(
                 center_px=list(norm_to_canvas_px(0.0, yn)), font_size_px=76, font_size_units=12.7,
             )
             continue
-        # 当实测有 face_bbox 时，将人后弹幕避开头脸实体区域：优先放在头顶至 UI 下沿的留白带，
-        # 否则切至安全前景胸口区，彻底杜绝弹幕被人头拦腰挡成半截字。
-        fb = next((c.get("face_bbox") for c in shots_here if isinstance(c.get("face_bbox"), dict)), None)
+        # 使用全重叠镜头人脸联合外包络：若头顶 <= 0.19 UI 线有足够高度，上提至最严格头的上方；否则降级安全前景区
+        fb = _union_face_bbox(shots_here)
         if fb is not None:
             fy, fh = float(fb.get("y", 0.3)), float(fb.get("h", 0.2))
             iy_px = float((item.get("center_px") or norm_to_canvas_px(item["x_norm"], item["y_norm"]))[1])
             iy_norm_01 = iy_px / float(CANVAS_HEIGHT)
             if (fy - 0.04) <= iy_norm_01 <= (fy + fh + 0.04):
                 if fy >= 0.27:
-                    # 头顶至 0.19 UI 线有足够高度，上提至头顶上方
-                    target_y01 = max(0.20, min(fy - 0.05, 0.22 + (item["track_lane"] % 2) * 0.04))
+                    target_y01 = max(0.20, min(fy - 0.05, 0.215 + (item["track_lane"] % 2) * 0.035))
                     new_yn = round(1.0 - 2.0 * target_y01, 4)
                     item.update(
                         y_norm=new_yn,
@@ -1588,6 +1606,274 @@ def _locate_phrase_offset(
         return None
     rel = float(tl_clean[idx_m][1]) - ref_start
     return round(max(0.0, min(max(0.0, max_offset), rel)), 4)
+
+
+_UNIFIED_L1_U = 11.5  # ~69px（5.3% 画面高度）常规桥接 / 副标 / inline 引导
+_UNIFIED_L2_U = 16.5  # ~99px（7.5% 画面高度）主讲高光 / 清单条目 / red_pill 胶囊
+_UNIFIED_L3_U = 22.5  # ~135px（10.5% 画面高度）痛点 red_slam / 荧光绿焦点 / 大数字
+_STYLE02_UNIFIED_FONT_CANDS = list(STYLE_DNA_REGISTRY["style_02"]["font_candidates"])
+
+_UNIFIED_PRIMITIVE_ALIAS = {
+    "hero_intro_pop": "opening_triad",
+    "staged_3tier_build": "opening_triad",
+    "hero_anchor_plus_danmaku": "pain_slam_danmaku",
+    "negation_strike": "pain_slam_danmaku",
+    "concept_split_card": "left_right_punch",
+    "framework_pillar": "stacked_dual_color",
+    "semantic_diagram_card": "giant_anchor_sub",
+    "list_build_gather_dim_overlay": "list_gather_depth",
+    "num_anchor_dim_overlay": "number_burst_pair",
+    "entity_stack_plus_top": "stacked_dual_color",
+    "inline_emphasis_cta": "inline_highlight_cta",
+}
+
+
+def _unified_style02_items(
+    act: Dict[str, Any],
+    sentences: List[Dict[str, Any]],
+    composition: Dict[str, Any],
+    shot_comps: List[Dict[str, Any]],
+    ordinal: int,
+    fps: int,
+    pillar_state: Optional[Dict[str, int]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    style_02 一体化单层动态舞台（商业与探店绝对共用同一字体、三级字号标尺与唯一色盘）：
+    - 无双层底字幕复读；
+    - 完整落地 8 大复合排版原语 + 逐字声画 0ms 咬合；
+    - 全重叠镜头联合人脸包络避头防切耳。
+    """
+    primitive = act["primitive"]
+    start, end = act["start_sec"], act["end_sec"]
+    if primitive == "clean_breath":
+        return []
+
+    items: List[Dict[str, Any]] = []
+
+    def add(
+        text: str, variant: str, st: float, en: float, x: float, yn: float,
+        size_u: float, anim: str, lane: int, sfx: Optional[str] = None,
+        layer: str = "foreground", dim_after: Optional[float] = None,
+        inline_parts: Optional[List[Dict[str, Any]]] = None,
+        tier: str = "L2",
+    ) -> Optional[Dict[str, Any]]:
+        clean_t = str(text or "").strip()
+        if not clean_t or en <= st:
+            return None
+        item = _make_item(
+            item_id=f"ks_u2_{ordinal:02d}_{len(items) + 1:02d}",
+            group_id=act["group_id"],
+            text=clean_t,
+            start_sec=st,
+            end_sec=en,
+            fps=fps,
+            variant=variant,
+            x_norm=x,
+            y_norm=yn,
+            font_size_units=size_u,
+            anim_key=anim,
+            track_lane=lane,
+            z_layer=layer,
+            dim_after_sec=dim_after,
+            dim_alpha=0.42 if dim_after is not None else 1.0,
+            inline_parts=inline_parts,
+            sfx_role_override=sfx,
+        )
+        item.update(
+            act_id=act["act_id"],
+            anim_style_v6=primitive,
+            theme_profile="style_02_unified",
+            typography_tier=tier,
+            font_candidates=list(_STYLE02_UNIFIED_FONT_CANDS),
+            style_id="style_02",
+            out_anim="fade_out" if variant != "bridge_bar" else "",
+        )
+        if variant == "hero_lime" and _NUMBER_RUN.search(clean_t):
+            item["element_choreo"] = "number_roll"
+        items.append(item)
+        return item
+
+    # 收集逐字时间轴
+    timeline: List[Tuple[str, float, float]] = []
+    sentence_starts: set = set()
+    word_backed: set = set()
+    for sentence in sentences:
+        chars = [entry for entry in _extract_char_timeline(sentence) if not entry[0].isspace()]
+        s_idx = len(timeline)
+        sentence_starts.add(s_idx)
+        timeline.extend(chars)
+        if _has_word_timing(sentence):
+            word_backed.update(range(s_idx, s_idx + len(chars)))
+
+    # 过渡句：单层 L1 紧凑黑方底白字 bridge_bar（0 音效，按短语切分为 <=11 字不破词）
+    if primitive == "plain_bridge":
+        tl_clean = [(ch, st, en) for ch, st, en in timeline if ch.strip()]
+        for sent in sentences:
+            s_st, s_en = float(sent["start_sec"]), float(sent["end_sec"])
+            raw_txt = str(sent.get("text") or "").strip()
+            chunks = split_clean_phrases(raw_txt, target_min=4, target_max=11) or [clean_display_text(raw_txt)]
+            mapped = map_chunks_to_times(chunks, tl_clean, s_st, s_en)
+            for ci, (c_txt, cs, ce) in enumerate(mapped):
+                nxt_s = mapped[ci + 1][1] if ci + 1 < len(mapped) else s_en
+                add(
+                    c_txt, "bridge_bar", cs, max(cs + 0.25, nxt_s),
+                    0.0, -0.52, _UNIFIED_L1_U, "", 0, sfx=None, tier="L1",
+                )
+        return items
+
+    visual = act.get("visual_copy") or {}
+    headline = str(visual.get("headline") or "").strip()
+    lines = [str(t).strip() for t in (visual.get("items") or []) if str(t).strip() and _display_length(str(t)) <= 7]
+    if _display_length(headline) > 7:
+        headline = ""
+    accent_tok = str(visual.get("accent_token") or "").strip()
+    footnote = str(visual.get("footnote") or "").strip()
+    y_base = max(-0.44, min(-0.28, _stage_y(composition)))
+    u_prim = _UNIFIED_PRIMITIVE_ALIAS.get(primitive, primitive)
+
+    def timed_spans(texts: List[str]) -> List[Tuple[float, float]]:
+        return _director_rows(texts, timeline, start, end, fps, sentence_starts, word_backed)
+
+    if u_prim == "opening_triad":
+        rows = [r for r in [headline, *lines, footnote] if r]
+        if len(rows) == 1:
+            add(rows[0], "hero_lime", start, end, 0.0, y_base + 0.04, _UNIFIED_L3_U, "in:缩小 II", 1, "pop", tier="L3")
+        elif len(rows) == 2:
+            spans = timed_spans(rows)
+            add(rows[0], "hero_white", start, end, 0.0, y_base + 0.10, _UNIFIED_L2_U, "in:向上露出", 1, "swish", tier="L2")
+            add(rows[1], "hero_lime", spans[1][0], end, 0.0, y_base - 0.04, _UNIFIED_L3_U, "in:缩小 II", 2, "pop", tier="L3")
+        elif rows:
+            trio = rows[:3]
+            spans = timed_spans(trio)
+            add(trio[0], "hero_white", start, end, -0.06, y_base + 0.14, _UNIFIED_L2_U, "in:向上露出", 1, "swish", tier="L2")
+            add(trio[1], "hero_lime", spans[1][0], end, 0.04, y_base + 0.01, _UNIFIED_L3_U, "in:缩小 II", 2, "pop", tier="L3")
+            add(trio[2], "red_pill", spans[2][0], end, 0.0, y_base - 0.13, _UNIFIED_L2_U, "in:向下露出", 3, "pop", tier="L2")
+
+    elif u_prim == "left_right_punch":
+        pair = lines[:2] if len(lines) >= 2 else ([headline, lines[0]] if headline and lines else [])
+        if len(pair) >= 2:
+            spans = timed_spans(pair)
+            if headline and pair[0] != headline:
+                add(headline, "hero_white", start, end, 0.0, y_base + 0.15, _UNIFIED_L2_U, "in:向上露出", 1, tier="L2")
+            l_var = "red_slam" if pair[0].startswith("✕") else "hero_white"
+            r_var = "hero_lime"
+            add(pair[0].lstrip("✓ "), l_var, spans[0][0], end, -0.26, y_base + 0.02, _UNIFIED_L2_U, "in:向左露出", 2, "swish", tier="L2")
+            add(pair[1].lstrip("✕✓ "), r_var, spans[1][0], end, 0.24, y_base - 0.09, _UNIFIED_L3_U, "in:缩小 II", 3, "pop", tier="L3")
+        elif headline or lines:
+            txt = headline or lines[0]
+            add(txt, "hero_lime", start, end, 0.0, y_base + 0.02, _UNIFIED_L3_U, "in:缩小 II", 1, "pop", tier="L3")
+
+    elif u_prim == "giant_anchor_sub":
+        main_txt = headline or accent_tok or (lines[0] if lines else "")
+        sub_txt = (lines[0] if headline and lines and lines[0] != headline else "") or (footnote if footnote != main_txt else "")
+        has_num = bool(_NUMBER_RUN.search(main_txt))
+        m_var = "hero_lime" if (has_num or accent_tok) else "hero_white"
+        add(main_txt, m_var, start, end, 0.0, y_base + 0.06, _UNIFIED_L3_U, "in:缩小 II", 1, "cash_register" if has_num else "pop", tier="L3")
+        if sub_txt:
+            sub_span = timed_spans([main_txt, sub_txt])[-1][0]
+            is_pill = len(sub_txt) <= 6
+            add(sub_txt, "red_pill" if is_pill else "bridge_bar", max(start, sub_span), end,
+                0.0, y_base - 0.09, _UNIFIED_L2_U if is_pill else _UNIFIED_L1_U, "in:向下露出", 2,
+                tier="L2" if is_pill else "L1")
+
+    elif u_prim == "pain_slam_danmaku":
+        slam_txt = headline or (lines[0] if lines else "")
+        if slam_txt:
+            slam_lbl = slam_txt.lstrip("✕✓ ")
+            add(slam_lbl, "red_slam", start, end, 0.0, y_base + 0.04, _UNIFIED_L3_U, "in:震动冲击", 1, "punch", tier="L3")
+        extra_rows = [r.lstrip("✕✓ ") for r in lines if r.lstrip("✕✓ ") != (slam_txt or "").lstrip("✕✓ ")]
+        if extra_rows:
+            all_behind_ok = bool(shot_comps) and all(c.get("allow_behind_person") for c in shot_comps)
+            fb_union = _union_face_bbox(shot_comps)
+            top_head_ok = bool(fb_union is None or float(fb_union.get("y", 0.35)) >= 0.27)
+            spans = timed_spans(extra_rows)
+            for ri, (rtxt, (rs, _)) in enumerate(zip(extra_rows[:3], spans)):
+                if all_behind_ok and top_head_ok:
+                    fy_min = float(fb_union["y"]) if fb_union else 0.33
+                    target_y01 = max(0.195, min(fy_min - 0.055, 0.21 + (ri % 2) * 0.045))
+                    dn_yn = round(1.0 - 2.0 * target_y01, 4)
+                    dn_xn = round((-0.24 if ri % 2 == 0 else 0.24), 4)
+                    add(rtxt, "danmaku_line", rs, end, dn_xn, dn_yn, _UNIFIED_L1_U, "in:向右露出", 2 + ri,
+                        sfx=None, layer="behind_person", tier="L1")
+                else:
+                    fg_yn = round(max(-0.62, y_base - 0.11 - ri * 0.095), 4)
+                    add(rtxt, "hero_white", rs, end, 0.0, fg_yn, _UNIFIED_L2_U, "in:向上露出", 2 + ri,
+                        sfx=None, layer="foreground", tier="L2")
+
+    elif u_prim == "stacked_dual_color":
+        rows = [r for r in [headline, *lines] if r]
+        if len(rows) >= 2:
+            spans = timed_spans(rows[:3])
+            for ri, (rtxt, (rs, _)) in enumerate(zip(rows[:3], spans)):
+                is_focus = (ri == len(rows[:3]) - 1) or bool(_NUMBER_RUN.search(rtxt))
+                add(
+                    rtxt,
+                    "hero_lime" if is_focus else "hero_white",
+                    rs if ri > 0 else start,
+                    end,
+                    0.0,
+                    y_base + 0.11 - ri * 0.115,
+                    _UNIFIED_L3_U if is_focus else _UNIFIED_L2_U,
+                    "in:缩小 II" if is_focus else "in:向上露出",
+                    1 + ri,
+                    "pop" if ri == 0 else None,
+                    tier="L3" if is_focus else "L2",
+                )
+        elif rows:
+            add(rows[0], "hero_lime", start, end, 0.0, y_base + 0.02, _UNIFIED_L3_U, "in:缩小 II", 1, "pop", tier="L3")
+
+    elif u_prim == "list_gather_depth":
+        row_items = lines or ([headline] if headline else [])
+        has_top_lead = bool(headline and lines and headline not in lines)
+        if has_top_lead:
+            add(headline, "hero_lime", start, end, 0.0, y_base + 0.16, _UNIFIED_L2_U, "in:向上露出", 1, "pop", tier="L2")
+        spans = timed_spans(row_items)
+        max_rows = min(len(row_items), 4)
+        for idx_r in range(max_rows):
+            rtxt = row_items[idx_r]
+            rs, _ = spans[idx_r]
+            nxt_s = spans[idx_r + 1][0] if idx_r + 1 < max_rows else None
+            dim_after = round(max(0.18, nxt_s - rs), 3) if nxt_s is not None else None
+            yn_r = round(y_base + (0.04 if has_top_lead else 0.11) - idx_r * 0.105, 4)
+            add(
+                rtxt, "hero_white", rs, end, 0.0, yn_r,
+                _UNIFIED_L2_U, "in:向右露出", 2 + idx_r, "pop" if idx_r == 0 else None,
+                dim_after=dim_after, tier="L2",
+            )
+
+    elif u_prim == "number_burst_pair":
+        num_txt = headline or accent_tok or (lines[0] if lines else "")
+        note_txt = (lines[0] if headline and lines and lines[0] != headline else "") or footnote
+        if num_txt:
+            num_it = add(num_txt, "hero_lime", start, end, 0.0, y_base + 0.06, _UNIFIED_L3_U, "in:缩小 II", 1, "cash_register", tier="L3")
+            if num_it is not None:
+                num_dur = max(0.35, end - start)
+                num_it["beat_offsets"] = {"roll_start": 0.0, "roll_end": round(min(0.32, num_dur * 0.42), 4)}
+        if note_txt:
+            ns = timed_spans([num_txt, note_txt])[-1][0] if num_txt else start
+            add(note_txt, "hero_white", max(start, ns), end, 0.0, y_base - 0.09, _UNIFIED_L2_U, "in:向上露出", 2, tier="L2")
+
+    else:  # inline_highlight_cta 及回退默认
+        rows = [r for r in lines if r != headline]
+        kw = accent_tok or headline or (rows[-1] if rows else "")
+        lead = (rows[0] if rows and rows[0] != kw else (headline if headline and headline != kw else ""))
+        if lead and kw and len(clean_display_text(lead + kw)) <= 13:
+            add(
+                lead + kw, "inline_rich", start, end, 0.0, y_base - 0.02,
+                _UNIFIED_L2_U, "in:向右露出", 1, "pop",
+                inline_parts=[
+                    {"text": lead, "color": "#FFFFFF", "size_units": _UNIFIED_L1_U},
+                    {"text": kw, "color": "#BCFF00", "size_units": _UNIFIED_L2_U},
+                ],
+                tier="L2",
+            )
+        else:
+            if lead:
+                add(lead, "hero_white", start, end, 0.0, y_base + 0.09, _UNIFIED_L1_U, "in:向上露出", 1, tier="L1")
+            if kw:
+                ks = timed_spans([lead, kw])[-1][0] if lead else start
+                add(kw, "hero_lime", max(start, ks), end, 0.0, y_base - 0.03, _UNIFIED_L2_U, "in:缩小 II", 2, "pop", tier="L2")
+    return items
 
 
 def _director_items(
@@ -2113,7 +2399,7 @@ def plan_kinetic_stage(
                 pass
     if not director_eligible:
         plan, profile = None, {}
-    theme = (plan or {}).get("theme_profile", "store_vibrant")
+    theme = (plan or {}).get("theme_profile", "style_02_unified" if style_id == "style_02" else "store_vibrant")
 
     if plan is None or theme == "store_vibrant":
         stage = _plan_legacy_stage(audio_events, style_id, pipeline_dir, fps, broll_evidence_by_sent)
@@ -2126,8 +2412,12 @@ def plan_kinetic_stage(
                 if it.get("variant") == "hero_lime" and _NUMBER_RUN.search(str(it.get("text_or_asset") or "")) and not it.get("element_choreo"):
                     it["element_choreo"] = "number_roll"
     else:
+        dna_cur = dict(get_style_dna(style_id) or {})
+        if theme == "style_02_unified":
+            dna_cur["font_candidates"] = list(_STYLE02_UNIFIED_FONT_CANDS)
+            dna_cur["subtitle_stage_mode"] = "kinetic_typography_stage"
         stage = {
-            "style_id": style_id, "dna": get_style_dna(style_id), "enabled": True,
+            "style_id": style_id, "dna": dna_cur, "enabled": True,
             "groups": [], "items": [], "matting_windows": [], "stats": {},
         }
     stage["theme_profile"] = theme
@@ -2149,12 +2439,17 @@ def plan_kinetic_stage(
     }
     legacy_highlights = [item for item in stage["items"] if item["variant"] != "bridge_bar"]
     acts: List[Dict[str, Any]] = []
+    shots_comp_all = [
+        (float(s["start_sec"]), float(s["end_sec"]), composition_for_sentence(profile, s))
+        for s in audio_events["sentences"]
+    ]
     for idx, raw in enumerate(plan.get("acts", []), 1):
         sentences = [by_id[sid] for sid in raw["sentence_ids"] if sid in by_id]
         if not sentences:
             continue
         st, en = min(s["start_sec"] for s in sentences), max(s["end_sec"] for s in sentences)
         compositions = [composition_for_sentence(profile, sentence) for sentence in sentences]
+        shot_comps = [c for s_st, s_en, c in shots_comp_all if s_st < en and st < s_en] or compositions
         composition = min(compositions, key=lambda c: (c["allow_behind_person"], _stage_y(c)))
         shift = composition.get("safe_center_shift_x", 0.08)
         act = dict(
@@ -2173,12 +2468,15 @@ def plan_kinetic_stage(
         ):
             # The existing multi-layer store stage owns this beat. Keep all of its visual layers.
             continue
-        new_items = _director_items(act, sentences, composition, idx, theme, fps, pillar_state)
+        if theme == "style_02_unified":
+            new_items = _unified_style02_items(act, sentences, composition, shot_comps, idx, fps, pillar_state)
+        else:
+            new_items = _director_items(act, sentences, composition, idx, theme, fps, pillar_state)
         stage["items"].extend(new_items)
         self_matting = any(item["z_layer"] == "behind_person" for item in new_items)
         if self_matting:
             stage["matting_windows"].append({"start_sec": st, "end_sec": en, "group_id": act["group_id"]})
-        if theme == "business_editorial" or new_items:
+        if theme in ("business_editorial", "style_02_unified") or new_items:
             locked = act["broll_policy"] == "lock_aroll" or self_matting
             stage["groups"].append({
                 "group_id": act["group_id"], "sentence_ids": act["sentence_ids"],

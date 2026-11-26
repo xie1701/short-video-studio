@@ -1,0 +1,243 @@
+{
+  "version": "8.0.0",
+  "generated_at": "2026-11-26T11:14:45Z",
+  "corpus_statistics": {
+    "n_styles": 24,
+    "n_rea_available": 24,
+    "zero_transition_styles": 24,
+    "median_shot_avg_sec": 2.983,
+    "median_shot_p25": 1.4,
+    "median_shot_p75": 2.27,
+    "avg_sfx_anchored_share": 0.984
+  },
+  "teaching_grammar": {
+    "typography_four_principles": [
+      "对比（大小字阶比至少 1.5×~2.5×，主词用 L2/L3 巨字、次句用 L1，拒绝满屏同号字）",
+      "重复（全片仅用唯一无衬线粗黑体或唯一衬线字族 + 唯一主色/辅色盘，禁止宋黑混穿与多色跑偏）",
+      "对齐（居中主舞台严格居中，左右错落/偏心构图保持安全边界内对齐，绝不凌乱漂移）",
+      "亲密（主标题与紧邻副标题/胶囊成组绑定同时序入退场，呼吸间隔 >=0.35s 让观众消化）"
+    ],
+    "scale_hierarchy_ratios": {
+      "base_to_sub_highlight": "1.0x -> 1.5x (如 L1 ~69px -> L2 ~99px)",
+      "base_to_hero_impact": "1.0x -> 2.0x..2.8x (如 L1 ~69px -> L3 ~135px)"
+    },
+    "anim_to_sfx_pairs": [
+      {
+        "animation": "in:向上滑动",
+        "sfx_reference": "综艺悬疑 不对劲",
+        "cue_intent": "向上滑动"
+      },
+      {
+        "animation": "in:随机上升",
+        "sfx_reference": "纸张抖动声",
+        "cue_intent": "随机上升"
+      },
+      {
+        "animation": "in:向上露出",
+        "sfx_reference": "“呼”1",
+        "cue_intent": "向上露出"
+      },
+      {
+        "animation": "in:向上露出",
+        "sfx_reference": "“呼”的转场音效",
+        "cue_intent": "向上露出"
+      },
+      {
+        "animation": "in:模糊发光",
+        "sfx_reference": "一滴水滴声",
+        "cue_intent": "模糊发光"
+      },
+      {
+        "animation": "in:模糊发光",
+        "sfx_reference": "空灵的水滴声",
+        "cue_intent": "模糊发光"
+      },
+      {
+        "animation": "in:向下露出",
+        "sfx_reference": "嗖 转场音效",
+        "cue_intent": "向下露出"
+      },
+      {
+        "animation": "in:向下露出",
+        "sfx_reference": "回忆-刷一下",
+        "cue_intent": "向下露出"
+      },
+      {
+        "animation": "in:向右缓入",
+        "sfx_reference": "拔刀 游戏音效 宝剑出鞘",
+        "cue_intent": "向右缓入"
+      },
+      {
+        "animation": "in:冰雪飘动",
+        "sfx_reference": "仙尘音效",
+        "cue_intent": "冰雪飘动"
+      },
+      {
+        "animation": "in:冰雪飘动",
+        "sfx_reference": "高音闪光转场",
+        "cue_intent": "冰雪飘动"
+      },
+      {
+        "animation": "in:冰雪飘动",
+        "sfx_reference": "忽然出现 卡通音效",
+        "cue_intent": "冰雪飘动"
+      },
+      {
+        "animation": "in:向左模糊",
+        "sfx_reference": "旋风",
+        "cue_intent": "向左模糊"
+      },
+      {
+        "animation": "in:向左模糊",
+        "sfx_reference": "“呼”的转场音效",
+        "cue_intent": "向左模糊"
+      },
+      {
+        "animation": "in:向右模糊 II",
+        "sfx_reference": "旋风",
+        "cue_intent": "向右模糊"
+      },
+      {
+        "animation": "in:向右集合",
+        "sfx_reference": "发条转动",
+        "cue_intent": "向右集合"
+      },
+      {
+        "animation": "in:放大",
+        "sfx_reference": "卡通弹簧拉伸",
+        "cue_intent": "放大"
+      },
+      {
+        "animation": "in:放大",
+        "sfx_reference": "提示音",
+        "cue_intent": "放大"
+      },
+      {
+        "animation": "in:轻微放大",
+        "sfx_reference": "叮，提示音4",
+        "cue_intent": "轻微放大"
+      },
+      {
+        "animation": "in:轻微放大",
+        "sfx_reference": "叮3",
+        "cue_intent": "轻微放大"
+      },
+      {
+        "animation": "in:轻微放大",
+        "sfx_reference": "提示音",
+        "cue_intent": "轻微放大"
+      },
+      {
+        "animation": "in:轻微放大",
+        "sfx_reference": "卡通弹簧拉伸",
+        "cue_intent": "轻微放大"
+      },
+      {
+        "animation": "in:呐喊声波",
+        "sfx_reference": "综艺嘭字幕音效震撼出场",
+        "cue_intent": "呐喊声波"
+      },
+      {
+        "animation": "in:呐喊声波",
+        "sfx_reference": "撞击光1",
+        "cue_intent": "呐喊声波"
+      },
+      {
+        "animation": "in:呐喊声波",
+        "sfx_reference": "咚",
+        "cue_intent": "呐喊声波"
+      },
+      {
+        "animation": "in:呐喊声波",
+        "sfx_reference": "咚 重磅",
+        "cue_intent": "呐喊声波"
+      },
+      {
+        "animation": "in:呐喊声波",
+        "sfx_reference": "敲响西藏颂钵",
+        "cue_intent": "呐喊声波"
+      },
+      {
+        "animation": "in:生长",
+        "sfx_reference": "拔",
+        "cue_intent": "生长"
+      },
+      {
+        "animation": "in:生长",
+        "sfx_reference": "敲击碗 叮的一声",
+        "cue_intent": "生长"
+      },
+      {
+        "animation": "in:缩小",
+        "sfx_reference": "撞击光1",
+        "cue_intent": "缩小"
+      },
+      {
+        "animation": "in:缩小 II",
+        "sfx_reference": "悬疑咚声",
+        "cue_intent": "缩小II"
+      },
+      {
+        "animation": "in:缩小",
+        "sfx_reference": "击鼓声",
+        "cue_intent": "缩小"
+      },
+      {
+        "animation": "in:缩小",
+        "sfx_reference": "诡异的滴水声",
+        "cue_intent": "缩小"
+      },
+      {
+        "animation": "in:缩小",
+        "sfx_reference": "一声响铃",
+        "cue_intent": "缩小"
+      },
+      {
+        "animation": "in:缩小 II",
+        "sfx_reference": "刀砍下去震撼电影开始",
+        "cue_intent": "缩小"
+      },
+      {
+        "animation": "in:缩小 II",
+        "sfx_reference": "悬疑氛围 咚 长音",
+        "cue_intent": "缩小"
+      }
+    ],
+    "sound_search_categories": [
+      "搜索关键词 / “嗖/呼/风/whoosh\"",
+      "搜索关键词 / \"光效转场/光感/闪光\"",
+      "搜索关键词 / \"综艺噔噔/综艺 咚/影视 咚\"",
+      "搜索关键词 / \"高科技/机器/科幻\"",
+      "搜索关键词 / \"综艺转场/紧张转场/swoosh\"",
+      "搜索关键词 / \"超市收钱/叮 收音机提示音 / 翻页/刀子捅人/打字机/水滴音\" / 叮 、提示音",
+      "转场音效",
+      "转场"
+    ],
+    "composition_patterns": [
+      "三阶错落开场（时间/场景 + 痛点主体 + 行动断言胶囊）",
+      "左右/双色对冲（否定与肯定对比、旧认知 vs 新方案）",
+      "数字焦点锚定（大号数字居中偏下 + 简洁白字结论）",
+      "逐条聚光清单（依次弹出、前条压暗留景深、幕尾全清）",
+      "单行行内双色重音（小字白前置 + 荧光色核心关键词，绝不断字）"
+    ]
+  },
+  "director_contracts": {
+    "highlight_coverage_unified": [
+      0.5,
+      0.85
+    ],
+    "highlight_coverage_editorial": [
+      0.35,
+      0.55
+    ],
+    "double_caption_overlap_max": 0.05,
+    "camera_intents": [
+      "steady_hold",
+      "slow_push_115",
+      "slow_pull_115",
+      "side_shift_card",
+      "punch_closeup",
+      "jump_closeup"
+    ]
+  }
+}

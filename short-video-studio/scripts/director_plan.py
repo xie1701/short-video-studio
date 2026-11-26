@@ -18,23 +18,30 @@ from common import read_json, write_json
 
 TASKS_FILENAME = "03b_director_tasks.json"
 PLAN_FILENAME = "03b_director_plan.json"
+STYLE_02_UNIFIED_PRIMITIVES = (
+    "opening_triad", "left_right_punch", "giant_anchor_sub",
+    "pain_slam_danmaku", "stacked_dual_color", "list_gather_depth",
+    "number_burst_pair", "inline_highlight_cta",
+)
 DIRECTOR_PRIMITIVES = (
     "hero_intro_pop", "staged_3tier_build", "hero_anchor_plus_danmaku",
     "list_build_gather_dim_overlay", "entity_stack_plus_top", "num_anchor_dim_overlay",
     "inline_emphasis_cta", "plain_bridge", "negation_strike", "framework_pillar",
     "concept_split_card", "semantic_diagram_card", "clean_breath",
+    *STYLE_02_UNIFIED_PRIMITIVES,
 )
-THEME_PROFILES = ("store_vibrant", "business_editorial")
+THEME_PROFILES = ("style_02_unified", "store_vibrant", "business_editorial")
 
 _AUDIO_FILENAME = "03_audio_events.json"
 _COMPOSITION_FILENAME = "01b_composition_profile.json"
 _INVENTORY_FILENAME = "00_inventory.json"
-_CAMERAS = ("steady_hold", "slow_push_115", "side_shift_card", "punch_closeup", "slow_pull_115")
+_CAMERAS = ("steady_hold", "slow_push_115", "side_shift_card", "punch_closeup", "jump_closeup", "slow_pull_115")
 _ROLES = ("hook", "setup", "twist", "framework", "proof", "cta")
 _BROLL_POLICIES = ("lock_aroll", "allow_verified_broll")
 _MUSIC_CUES = ("delay_entry", "silence_drop", "section_swell")
 _QUIET_PRIMITIVES = ("plain_bridge", "clean_breath")
 _TARGET_LOW, _TARGET_HIGH = 0.35, 0.55
+_UNIFIED_TARGET_LOW, _UNIFIED_TARGET_HIGH = 0.50, 0.85
 _DISPLAY_LIMIT = 7
 _DISPLAY_DECOR = "✕✓≠→:：·"
 _EMPTY_COPY = {"headline": "", "accent_token": "", "footnote": ""}
@@ -202,6 +209,7 @@ def _broll_pool(inventory: Optional[Dict[str, Any]], visual_index: Optional[Dict
         ))
         pool.append({
             "filename": name,
+            "duration_sec": round(float(clip.get("duration_sec") or evidence.get("duration_sec") or 0.0), 2),
             "description": str(evidence.get("description") or evidence.get("summary") or clip.get("description") or ""),
             "tags": tags,
             "entities": entities,
@@ -209,30 +217,128 @@ def _broll_pool(inventory: Optional[Dict[str, Any]], visual_index: Optional[Dict
     return pool
 
 
+_UNIFIED_THEME_TARGETS = (0.50, 0.85)
+
+
+def _playbook_paths(style_id: str) -> Dict[str, Optional[Path]]:
+    scripts_dir = Path(__file__).resolve().parent
+    spectrum_dir = scripts_dir.parent / "assets" / "style_spectrum"
+    pb = spectrum_dir / "playbooks" / f"{style_id}.md"
+    cg = spectrum_dir / "common_editing_grammar.md"
+    return {
+        "playbook": pb if pb.is_file() else None,
+        "common_grammar": cg if cg.is_file() else None,
+    }
+
+
+def _render_director_prompt_md(
+    style_id: str,
+    total_dur: float,
+    sentences: List[Dict[str, Any]],
+    prosody: Dict[str, Dict[str, Any]],
+    pool: List[Dict[str, Any]],
+    profile: Optional[Dict[str, Any]],
+    pb_paths: Dict[str, Optional[Path]],
+) -> str:
+    pb_text = pb_paths["playbook"].read_text(encoding="utf-8") if pb_paths["playbook"] else ""
+    cg_text = pb_paths["common_grammar"].read_text(encoding="utf-8") if pb_paths["common_grammar"] else ""
+    pb_excerpt = "\n".join(pb_text.splitlines()[:55]) if pb_text else f"（未找到 {style_id} 独立圣经文件）"
+    cg_excerpt = "\n".join(cg_text.splitlines()[:28]) if cg_text else ""
+
+    lines = [
+        f"# 总导演编排任务包（style_id={style_id}，总时长={total_dur:.2f}s）",
+        "",
+        "请通读下方风格圣经、构图约束、逐字声学口播句表与实拍素材清单，亲自产出高质量 `03b_director_plan.json`。",
+        "",
+        "## 1. 风格圣经摘要",
+        pb_excerpt,
+        "",
+        "## 2. 跨风格共性红线摘要",
+        cg_excerpt,
+        "",
+        "## 3. 构图与人脸安全区 (`01b_composition_profile.json`)",
+        f"- `primary_stage_mode`: `{(profile or {}).get('primary_stage_mode', 'pending')}`",
+        f"- `allow_behind_person`: `{_allows_behind_person(profile, sentences)}`",
+        f"- `theme_hint`: `{(profile or {}).get('theme_hint', 'auto')}`",
+        "",
+        "## 4. 锁音逐字台词与声学韵律表（总计 " + str(len(sentences)) + " 句）",
+        "| sentence_id | 起止秒 | 时长 | 句后停顿 | 语速(字/秒) | 声学重音 | 台词原话 |",
+        "| :--- | :---: | :---: | :---: | :---: | :---: | :--- |",
+    ]
+    for s in sentences:
+        sid = str(s["id"])
+        pr = prosody.get(sid) or {}
+        st, en = float(s["start_sec"]), float(s["end_sec"])
+        lines.append(
+            f"| `{sid}` | {st:.2f}..{en:.2f} | {en-st:.2f}s | {pr.get('pause_after', 0.0):.2f}s | "
+            f"{pr.get('cps', 0.0):.1f} | {'★' if pr.get('acoustic_emphasis') else '-'} | {s.get('text', '')} |"
+        )
+    lines.extend([
+        "",
+        f"## 5. 可用实拍 B-roll 索引（共 {len(pool)} 条）",
+    ])
+    if pool:
+        for item in pool[:120]:
+            tags_str = ", ".join((item.get("tags") or [])[:8])
+            desc = str(item.get("description") or "").replace("\n", " ")[:90]
+            dur_v = float(item.get("duration_sec") or 0.0)
+            dur_lbl = f" ({dur_v:.1f}s)" if dur_v > 0 else ""
+            lines.append(
+                f"- `{item.get('filename')}`{dur_lbl} tags=[{tags_str}] {desc}"
+            )
+    else:
+        lines.append("- （无外插实拍 B-roll，全部镜头使用口播 A-roll + 复合排版舞台 + 推拉特写）")
+    lines.extend([
+        "",
+        "## 6. 目标输出 JSON 规范 (`03b_director_plan.json`)",
+        "- 必填顶层字段：`step='03b_director_plan'`, `source='agent'`, `style_id`, `theme_profile`（`style_02` 统一使用 `'style_02_unified'`）, `acts`, `music_cues`。",
+        "- 每幕 `act` 必填：`act_id`, `sentence_ids`, `dramatic_role`, `emotion_intensity`, `primitive`, `visual_copy` (`headline`/`items`/`accent_token`/`footnote`), `camera_intent`, `broll_policy`, `broll_keywords`（可选，供 allow_verified_broll 精确召回）, `sfx_budget`。",
+        "- 写完后运行 `director_plan.py apply-plan --pipeline-dir <dir>` 校验溯源与覆盖率。",
+        "",
+    ])
+    return "\n".join(lines)
+
+
 def build_director_tasks(
     pipeline_dir: Path, style_id: str = "style_02", out_path: Optional[Path] = None,
 ) -> Path:
-    """把锁定句表与已有素材依据交给写总谱的 Agent。"""
+    """把锁定句表、风格圣经与已有素材依据交给写总谱的大模型总导演。"""
     pipeline_dir = Path(pipeline_dir)
-    sentences, total = _timeline(read_json(pipeline_dir / _AUDIO_FILENAME))
+    audio_events = read_json(pipeline_dir / _AUDIO_FILENAME)
+    sentences, total = _timeline(audio_events)
+    prosody = _sentence_prosody_metrics(sentences, audio_events)
     profile = _optional_document(pipeline_dir, _COMPOSITION_FILENAME)
     pool = _broll_pool(
         _optional_document(pipeline_dir, _INVENTORY_FILENAME),
         _optional_document(pipeline_dir, "00_visual_index.json"),
     )
+    pb_paths = _playbook_paths(style_id)
+    prompt_path = pipeline_dir / "03b_director_prompt.md"
+    prompt_path.write_text(
+        _render_director_prompt_md(style_id, total, sentences, prosody, pool, profile, pb_paths),
+        encoding="utf-8",
+    )
+    target_band = _UNIFIED_THEME_TARGETS if style_id == "style_02" else (_TARGET_LOW, _TARGET_HIGH)
     return write_json(Path(out_path) if out_path is not None else pipeline_dir / TASKS_FILENAME, {
         "step": "03b_director_tasks",
         "style_id": style_id,
+        "recommended_theme_profile": "style_02_unified" if style_id == "style_02" else None,
         "locked_duration_sec": total,
+        "director_prompt_md": str(prompt_path.name),
+        "playbook_file": str(pb_paths["playbook"].relative_to(Path(__file__).resolve().parents[1])) if pb_paths["playbook"] else None,
+        "common_grammar_file": str(pb_paths["common_grammar"].relative_to(Path(__file__).resolve().parents[1])) if pb_paths["common_grammar"] else None,
         "sentences": [{
             "id": sentence["id"], "text": sentence.get("text", ""),
             "start_sec": sentence["start_sec"], "end_sec": sentence["end_sec"],
             "duration_sec": round(sentence["end_sec"] - sentence["start_sec"], 4),
+            "pause_after_sec": round(float((prosody.get(sentence["id"]) or {}).get("pause_after") or 0.0), 4),
+            "speech_rate_cps": round(float((prosody.get(sentence["id"]) or {}).get("cps") or 0.0), 2),
+            "acoustic_emphasis": bool((prosody.get(sentence["id"]) or {}).get("acoustic_emphasis")),
             "keywords": _string_list(sentence.get("keywords")),
         } for sentence in sentences],
         "broll_summary": {
             "has_real_broll": bool(pool), "count": len(pool), "clips": pool,
-            "tags_preview": list(dict.fromkeys(tag for clip in pool for tag in clip["tags"]))[:12],
+            "tags_preview": list(dict.fromkeys(tag for clip in pool for tag in clip["tags"]))[:16],
         },
         "composition_hint": {
             "primary_stage_mode": profile.get("primary_stage_mode", "pending"),
@@ -240,6 +346,7 @@ def build_director_tasks(
             "theme_hint": profile.get("theme_hint"),
         } if profile is not None else "pending",
         "director_primitives": list(DIRECTOR_PRIMITIVES),
+        "style_02_unified_primitives": list(STYLE_02_UNIFIED_PRIMITIVES),
         "theme_profiles": list(THEME_PROFILES),
         "camera_intents": list(_CAMERAS),
         "dramatic_roles": list(_ROLES),
@@ -248,15 +355,14 @@ def build_director_tasks(
         "rules": [
             "按锁定时间顺序为每句分配且只分配一幕，保留原句 ID。",
             "每行大字移除装饰符号及空白后最多 7 字。词语和数字必须可从该幕原话核对。",
-            "高光幕占锁定时长的目标范围为 0.35..0.55。用安静的过渡句给高光留出空间。",
-            "禁止把人后弹幕放在不允许人后遮挡的机位上。实拍补镜需要有对应素材依据。",
+            f"高光幕占锁定时长的目标范围为 {target_band[0]:.2f}..{target_band[1]:.2f}。用安静的过渡句给高光留出呼吸空间。",
+            "禁止把人后弹幕放在不允许人后遮挡的机位上。实拍补镜建议附上 broll_keywords。",
             "反转或高潮考虑 silence_drop，开篇考虑 delay_entry。音乐指令最长 3.5 秒。",
         ],
         "how_to_fill": (
-            f"将 theme_profile、acts、music_cues 写入 {PLAN_FILENAME}。"
+            f"阅读 {prompt_path.name} 与对应风格圣经，将 theme_profile、acts、music_cues 写入 {PLAN_FILENAME}。"
             "每幕提供 act_id、sentence_ids、dramatic_role、emotion_intensity、primitive、"
-            "visual_copy（headline、items、accent_token、footnote）、camera_intent、broll_policy、sfx_budget。"
-            "每条音乐指令提供 type、start_sec、end_sec、depth_db、fade_ms、reason。"
+            "visual_copy（headline、items、accent_token、footnote）、camera_intent、broll_policy、broll_keywords、sfx_budget。"
             "用 director_plan.py apply-plan --pipeline-dir <pipeline> 校验并保存。"
         ),
     })
@@ -563,6 +669,12 @@ def validate_director_plan(
         primitive = act["primitive"]
         visual = _validate_copy(act.get("visual_copy", {}), f"{path}.visual_copy", anchored, errors)
         act["visual_copy"] = visual
+        raw_kws = act.get("broll_keywords")
+        if raw_kws is not None:
+            if not isinstance(raw_kws, list) or not all(isinstance(x, str) for x in raw_kws):
+                errors.append(f"{path}.broll_keywords 必须是字符串列表")
+            else:
+                act["broll_keywords"] = list(dict.fromkeys(x.strip() for x in raw_kws if x.strip()))
         if primitive == "clean_breath" and (budget != 0 or any(visual.values())):
             errors.append(f"{path} clean_breath 需要留空前景大字及主动音效")
         if primitive == "hero_anchor_plus_danmaku" and not _allows_behind_person(composition_profile, anchored):
@@ -575,11 +687,14 @@ def validate_director_plan(
         errors.append(f"missing_sentence_ids 未分配锁定句：{', '.join(missing)}")
     ratio = _coverage(spans, total)
     cleaned["highlight_coverage_ratio"] = round(ratio, 4)
-    if sentences and not _TARGET_LOW <= ratio <= _TARGET_HIGH:
-        if not 0.25 <= ratio <= 0.70:
-            warnings.append(f"highlight_coverage_ratio {ratio:.2%} 超出 25%..70% 校验带")
+    is_unified = cleaned.get("theme_profile") == "style_02_unified"
+    target_lo, target_hi = (_UNIFIED_TARGET_LOW, _UNIFIED_TARGET_HIGH) if is_unified else (_TARGET_LOW, _TARGET_HIGH)
+    warn_lo, warn_hi = (0.35, 0.92) if is_unified else (0.25, 0.70)
+    if sentences and not target_lo <= ratio <= target_hi:
+        if not warn_lo <= ratio <= warn_hi:
+            warnings.append(f"highlight_coverage_ratio {ratio:.2%} 超出 {warn_lo:.0%}..{warn_hi:.0%} 校验带")
         else:
-            warnings.append(f"highlight_coverage_ratio {ratio:.2%} 偏离 35%..55% 目标带")
+            warnings.append(f"highlight_coverage_ratio {ratio:.2%} 偏离 {target_lo:.0%}..{target_hi:.0%} 目标带")
     cleaned["music_cues"] = _validate_music(plan.get("music_cues", []), total, errors, warnings)
     result["sanitized_plan"] = cleaned
     result["ok"] = not errors
@@ -1133,23 +1248,62 @@ _BREATH_GAP_SEC = 0.35
 _MAX_HIGHLIGHT_STREAK = 2
 
 
+_LEGACY_TO_UNIFIED_PRIMITIVE = {
+    "hero_intro_pop": "opening_triad",
+    "staged_3tier_build": "opening_triad",
+    "hero_anchor_plus_danmaku": "pain_slam_danmaku",
+    "negation_strike": "pain_slam_danmaku",
+    "concept_split_card": "left_right_punch",
+    "framework_pillar": "stacked_dual_color",
+    "semantic_diagram_card": "giant_anchor_sub",
+    "list_build_gather_dim_overlay": "list_gather_depth",
+    "num_anchor_dim_overlay": "number_burst_pair",
+    "entity_stack_plus_top": "stacked_dual_color",
+    "inline_emphasis_cta": "inline_highlight_cta",
+}
+
+
+def _match_broll_keywords(group: List[Dict[str, Any]], pool: List[Dict[str, Any]]) -> List[str]:
+    if not pool:
+        return []
+    text = _group_text(group)
+    s_kws = [kw for s in group for kw in _string_list(s.get("keywords"))]
+    hits: List[str] = []
+    for clip in pool:
+        tags = _string_list(clip.get("tags")) + _string_list(clip.get("semantic_tags"))
+        desc = str(clip.get("description") or "")
+        for tag in tags:
+            if len(tag) >= 2 and (tag in text or any(tag in k or k in tag for k in s_kws)):
+                hits.append(tag)
+        for kw in s_kws:
+            if len(kw) >= 2 and (kw in desc or any(kw in t for t in tags)):
+                hits.append(kw)
+    return list(dict.fromkeys(hits))[:8]
+
+
 def _choose_highlights(
     candidates: List[_Candidate], total: float, prosody: Optional[Dict[str, Dict[str, Any]]] = None,
+    target_band: tuple[float, float] = (_TARGET_LOW, _TARGET_HIGH),
 ) -> set[int]:
     if not total:
         return set()
+    t_lo, t_hi = target_band
+    t_mid = (t_lo + t_hi) / 2.0
     priorities = {
         "negation_strike": 110, "semantic_diagram_card": 108, "concept_split_card": 105,
         "framework_pillar": 58, "list_build_gather_dim_overlay": 100, "num_anchor_dim_overlay": 90,
         "entity_stack_plus_top": 35, "hero_anchor_plus_danmaku": 45, "hero_intro_pop": 20,
         "inline_emphasis_cta": 40,
+        "pain_slam_danmaku": 110, "left_right_punch": 105, "list_gather_depth": 100,
+        "number_burst_pair": 95, "giant_anchor_sub": 90, "stacked_dual_color": 65,
+        "opening_triad": 85, "inline_highlight_cta": 50,
     }
 
     def rank(state: _HighlightState) -> tuple:
         seconds, _, _, importance, selected = state
         ratio = seconds / total
-        return (max(_TARGET_LOW - ratio, ratio - _TARGET_HIGH, 0.0),
-                -importance, abs(ratio - 0.45), len(selected))
+        return (max(t_lo - ratio, ratio - t_hi, 0.0),
+                -importance, abs(ratio - t_mid), len(selected))
 
     choices: Dict[tuple[int, float, int], _HighlightState] = {(0, 0.0, 0): (0.0, 0.0, 0, 0, ())}
 
@@ -1270,10 +1424,11 @@ def generate_deterministic_director_plan(
     audio_events: Dict[str, Any], style_id: str = "style_02",
     inventory: Optional[Dict[str, Any]] = None,
     composition_profile: Optional[Dict[str, Any]] = None,
+    visual_index: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """用锁定原话、声学韵律特征、构图画像和实拍素材离线编排总谱。"""
     sentences, total = _timeline(audio_events)
-    pool = _broll_pool(inventory)
+    pool = _broll_pool(inventory, visual_index)
     store_cues = set(_STORE_TERMS.findall("，".join(s.get("text", "") for s in sentences)))
     theme_hint = (composition_profile or {}).get("theme_hint")
     store = (
@@ -1281,6 +1436,7 @@ def generate_deterministic_director_plan(
         or bool(store_cues and (len(pool) >= 2 or theme_hint == "store_vibrant"))
         or bool(len(store_cues) >= 2 and pool)
     )
+    use_unified = (style_id == "style_02") and (theme_hint not in ("business_editorial", "store_vibrant"))
     prosody = _sentence_prosody_metrics(sentences, audio_events)
 
     candidates: List[_Candidate] = []
@@ -1299,14 +1455,20 @@ def generate_deterministic_director_plan(
             visual = _validate_copy(visual, "visual_copy", group, copy_errors)
             if copy_errors:
                 primitive, visual = "plain_bridge", _visual_copy()
+        if use_unified and primitive not in _QUIET_PRIMITIVES:
+            primitive = _LEGACY_TO_UNIFIED_PRIMITIVE.get(primitive, primitive)
         candidates.append((group, primitive, visual))
         index = end
 
-    highlights = _choose_highlights(candidates, total, prosody=prosody)
+    target_band = _UNIFIED_THEME_TARGETS if use_unified else (_TARGET_LOW, _TARGET_HIGH)
+    highlights = _choose_highlights(candidates, total, prosody=prosody, target_band=target_band)
     roles = {
         "negation_strike": "twist", "concept_split_card": "twist", "semantic_diagram_card": "twist",
-        "framework_pillar": "framework", "list_build_gather_dim_overlay": "proof",
-        "num_anchor_dim_overlay": "proof", "inline_emphasis_cta": "cta",
+        "pain_slam_danmaku": "twist", "left_right_punch": "twist", "giant_anchor_sub": "twist",
+        "framework_pillar": "framework", "stacked_dual_color": "framework",
+        "list_build_gather_dim_overlay": "proof", "list_gather_depth": "proof",
+        "num_anchor_dim_overlay": "proof", "number_burst_pair": "proof",
+        "inline_emphasis_cta": "cta", "inline_highlight_cta": "cta",
     }
     acts = []
     had_breath = False
@@ -1317,15 +1479,19 @@ def generate_deterministic_director_plan(
         dur_act = max(0.1, _span(group)[1] - _span(group)[0])
         if highlight:
             role = "hook" if index == 0 else roles.get(primitive, "proof")
-            intensity = 0.92 if primitive in ("negation_strike", "concept_split_card", "semantic_diagram_card") else 0.73
+            intensity = 0.92 if primitive in (
+                "negation_strike", "concept_split_card", "semantic_diagram_card",
+                "pain_slam_danmaku", "left_right_punch", "giant_anchor_sub",
+            ) else 0.75
             if primitive == "concept_split_card":
                 camera = "side_shift_card"
                 end_zoom = 1.15
-            elif (not store and role == "twist" and prev_cam != "punch_closeup"
-                  and (index > 0 or dur_act >= 2.0) and primitive in ("negation_strike", "semantic_diagram_card")):
-                camera = "punch_closeup"
-                end_zoom = 1.16
-            elif end_zoom <= 1.02:
+            elif (role == "twist" and prev_cam not in ("punch_closeup", "jump_closeup")
+                  and (index > 0 or dur_act >= 2.0)
+                  and primitive in ("negation_strike", "semantic_diagram_card", "pain_slam_danmaku", "left_right_punch")):
+                camera = "jump_closeup" if use_unified else ("punch_closeup" if not store else "slow_push_115")
+                end_zoom = 1.22 if camera == "jump_closeup" else (1.16 if camera == "punch_closeup" else 1.15)
+            elif end_zoom <= 1.02 and prev_cam != "slow_push_115":
                 camera = "slow_push_115"
                 end_zoom = 1.15
             elif dur_act >= 1.5 and prev_cam != "slow_pull_115":
@@ -1334,7 +1500,7 @@ def generate_deterministic_director_plan(
             else:
                 camera = "steady_hold"
                 end_zoom = 1.00
-            budget = min(3, max(1, len(visual["items"]))) if primitive == "negation_strike" else 1
+            budget = min(3, max(1, len(visual["items"]))) if primitive in ("negation_strike", "pain_slam_danmaku", "opening_triad") else 1
         else:
             breath = index - 1 in highlights or not had_breath
             had_breath = had_breath or breath
@@ -1356,10 +1522,14 @@ def generate_deterministic_director_plan(
                 camera = "steady_hold"
                 end_zoom = 1.00
         prev_cam = camera
-        allows_broll = store and bool(pool) and role != "hook" and primitive not in (
-            "clean_breath", "hero_anchor_plus_danmaku", "negation_strike", "concept_split_card", "semantic_diagram_card",
-        )
-        acts.append({
+        kw_hits = _match_broll_keywords(group, pool)
+        lock_prims = {
+            "clean_breath", "hero_anchor_plus_danmaku", "pain_slam_danmaku",
+            "negation_strike", "concept_split_card", "semantic_diagram_card",
+            "opening_triad", "left_right_punch",
+        }
+        allows_broll = bool(pool) and role != "hook" and primitive not in lock_prims and (store or bool(kw_hits))
+        act_obj: Dict[str, Any] = {
             "act_id": f"act_{index + 1:02d}",
             "sentence_ids": [sentence["id"] for sentence in group],
             "dramatic_role": role,
@@ -1369,10 +1539,14 @@ def generate_deterministic_director_plan(
             "camera_intent": camera,
             "broll_policy": "allow_verified_broll" if allows_broll else "lock_aroll",
             "sfx_budget": budget,
-        })
+        }
+        if allows_broll and kw_hits:
+            act_obj["broll_keywords"] = kw_hits
+        acts.append(act_obj)
+    out_theme = "style_02_unified" if use_unified else ("store_vibrant" if store else "business_editorial")
     result = validate_director_plan({
         "step": "03b_director_plan", "source": "fallback_deterministic", "style_id": style_id,
-        "theme_profile": "store_vibrant" if store else "business_editorial",
+        "theme_profile": out_theme,
         "acts": acts, "music_cues": _music_cues(candidates, total, store, highlights),
     }, audio_events, composition_profile)
     if not result["ok"]:
@@ -1403,7 +1577,10 @@ def load_or_build_director_plan(
     if generate_fallback:
         try:
             return generate_deterministic_director_plan(
-                audio, style_id, _optional_document(pipeline_dir, _INVENTORY_FILENAME), profile,
+                audio, style_id,
+                _optional_document(pipeline_dir, _INVENTORY_FILENAME),
+                profile,
+                _optional_document(pipeline_dir, "00_visual_index.json"),
             )
         except ValueError as exc:
             print(f"[director_plan] [WARN] 无法生成离线总谱（{exc}）", file=sys.stderr)
@@ -1436,7 +1613,10 @@ def main() -> None:
             plan = read_json(args.plan if args.plan is not None else pipeline_dir / PLAN_FILENAME)
         else:
             plan = generate_deterministic_director_plan(
-                audio, args.style_id, _optional_document(pipeline_dir, _INVENTORY_FILENAME), profile,
+                audio, args.style_id,
+                _optional_document(pipeline_dir, _INVENTORY_FILENAME),
+                profile,
+                _optional_document(pipeline_dir, "00_visual_index.json"),
             )
         result = validate_director_plan(plan, audio, profile)
         if not result["ok"]:

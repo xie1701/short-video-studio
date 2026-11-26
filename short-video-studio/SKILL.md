@@ -206,6 +206,9 @@ python3 scripts/qa_inspector.py --pipeline-dir <pipeline目录> [--sync-window <
 ```
 
 ### 核心专业能力与出厂验收门禁
+- **双源风格圣经 + 大模型总导演闭环**：先阅读 `assets/style_spectrum/playbooks/<style_id>.md`（融合 24 套剪映真草稿白盒取证与成片音画黑盒拆解）及共性法则 `assets/style_spectrum/common_editing_grammar.md`。生成导演任务包：
+  - 任务包与校验：`python3 scripts/director_plan.py build-tasks --pipeline-dir <pipeline目录> --style-id <style_id>`（输出锁音口播逐字声学表与 `03b_director_prompt.md`），编排 `03b_director_plan.json` 后用 `python3 scripts/director_plan.py apply-plan` 核查零错；
+  - 带总谱出片：`python3 scripts/run_pipeline.py --director-plan <03b_director_plan.json>`。`style_02` 采用统一现代粗黑体单层一体化舞台（L1/L2/L3 标尺、0 复读、8 大复合排版原语与 `jump_closeup` 锁眼硬切特写）。
 - **真居中对称字幕铁律**：全套渲染、剪映、HyperFrames 与白盒/黑盒质检统一锁死 `X = 540px` 正中对称带 `[220, 860]`（宽 `640px`）与 `Y = 1310px` 基准（自动 7 点避脸），绝不发生左偏或右撞点赞栏。
 - **真实物理音景与现场动作声**：实拍流水线统一采用 `assets/sound_vibe/` CC0 真实录制乐段（波形校准真实起拍）与物理音效，支持开场→正文双段配乐切换、特写镜现场动作声轻混（`-10dB`）及三轨防削波总线控制（`-14.0 ±1.5 LUFS`、真峰值 `≤ -1.0 dBTP`）；知识动画与动态图解辅以 `synth_motion_sfx.py` 15 种无版权动效拟音。
 - **视觉语义与封面**：支持高动态/常见 Log 色彩还原、横转竖人脸智能居中构图、53% 特写动态配比、景别与运镜防撞墙语法、全片情绪+眼部锐度选帧封面（9:16 + 3:4 防裁切 + 180px 真实像素对比度校验 + macOS Apple Vision 可选人物前景压字）。
