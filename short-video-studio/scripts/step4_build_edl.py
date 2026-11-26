@@ -2181,11 +2181,15 @@ def run_step4(
     OPPOSING_MOTION = {("pan_left", "pan_right"), ("pan_right", "pan_left"), ("tilt_up", "tilt_down"), ("tilt_down", "tilt_up")}
 
     def sem_of_choice(m: Dict[str, Any], s: Dict[str, Any], used_count: int = 0,
-                       need_sec: Optional[float] = None) -> Dict[str, Any]:
-        """写进剪辑表的语义依据（与选片同口径）；旧口径对照时另外记一笔字面 tag 命中数。"""
+                       need_sec: Optional[float] = None,
+                       extra_keywords: Optional[List[str]] = None) -> Dict[str, Any]:
+        """写进剪辑表的语义依据（与选片同口径，自动合并当前幕导演关键词）；旧口径对照时另外记一笔字面 tag 命中数。"""
+        act_s = _director_act_for_span(float(s.get("start_sec", 0.0)), float(s.get("end_sec", 0.0)))
+        dir_kws = [str(x) for x in (act_s.get("broll_keywords") or [])] if (act_s and act_s.get("broll_policy") == "allow_verified_broll") else []
+        merged_kws = list(dict.fromkeys([*(str(k) for k in (extra_keywords or [])), *dir_kws, *(str(k) for k in (s.get("keywords") or []))]))
         sel = _score_broll(
             str(s.get("text", "")), m, used_count=used_count, need_sec=need_sec,
-            keywords=s.get("keywords") or [],
+            keywords=merged_kws,
         )
         rel = {
             "score": sel["score"],
@@ -2304,7 +2308,7 @@ def run_step4(
                 if m["role"] == "b_roll"
                 and not (set(m.get("taboo_tags") or []) & HARD_TABOO_ALWAYS or (is_praise and m.get("taboo_tags")))
                 and (not require_opening_evidence or _has_opening_broll_evidence(m, s_txt))
-                and sem_of_choice(m, sent, need_sec=seg_dur)["tier"] in ("hit", "weak")
+                and sem_of_choice(m, sent, need_sec=seg_dur, extra_keywords=d_kws_cur)["tier"] in ("hit", "weak")
             ]
         takes = {m["id"]: _broll_take(m, seg_dur) for m in candidates}
         candidates = [
@@ -2597,6 +2601,34 @@ def run_step4(
                     require_opening_evidence=fast_choreography and t_start < 3.0,
                 )
                 if broll_pick is not None:
+                    use_aroll = False
+                    roles[idx] = "b_roll"
+                    if kinetic_stage_mode:
+                        cur_kb_sec += seg_dur
+            # 若仍确认将触发冻尾 FAIL，且非强锁机位窗，允许用真实可覆盖实拍 B-roll 救场免除物理穿底
+            if (
+                use_aroll
+                and shortfall > MAX_AROLL_SHORTFALL_SEC + SOURCE_EPSILON_SEC
+                and not aroll_locked and not zero_broll_mode
+                and not (fast_choreography and t_start < 3.0 and _choreography_aroll_locked(t_start, t_end))
+                and any(m.get("role") == "b_roll" for m in broll_pool)
+            ):
+                d_act_r = _director_act_for_span(t_start, t_start + seg_dur)
+                d_kws_rescue = [str(x) for x in (d_act_r.get("broll_keywords") or [])] if d_act_r else []
+                rescue_pick = pick_best_broll(
+                    broll_sent, seg_dur, last_group, t_start, prev_mp, prev_so,
+                    prev_motion=last_motion, prev_shot_size=last_shot_size, matching_live_only=True,
+                )
+                if rescue_pick is None:
+                    cand_ctx = pick_best_broll(
+                        broll_sent, seg_dur, last_group, t_start, prev_mp, prev_so,
+                        prev_motion=last_motion, prev_shot_size=last_shot_size,
+                        forbid_code=True, matching_live_only=False, require_full=True,
+                    )
+                    if cand_ctx is not None and sem_of_choice(cand_ctx[0], broll_sent, need_sec=seg_dur, extra_keywords=d_kws_rescue)["tier"] != "none":
+                        rescue_pick = cand_ctx
+                if rescue_pick is not None:
+                    broll_pick = rescue_pick
                     use_aroll = False
                     roles[idx] = "b_roll"
                     if kinetic_stage_mode:

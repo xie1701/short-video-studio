@@ -1648,6 +1648,10 @@ def _unified_style02_items(
     if primitive == "clean_breath":
         return []
 
+    def _strip_tofu_symbols(val: Any) -> str:
+        # 统一粗黑体舞台禁用易缺失的装饰叉号/勾号，防止渲染出方框豆腐块 ☒
+        return re.sub(r"[✕✓✘✖×✔\u2715-\u2718]+", "", str(val or "")).strip()
+
     items: List[Dict[str, Any]] = []
 
     def add(
@@ -1657,7 +1661,7 @@ def _unified_style02_items(
         inline_parts: Optional[List[Dict[str, Any]]] = None,
         tier: str = "L2",
     ) -> Optional[Dict[str, Any]]:
-        clean_t = str(text or "").strip()
+        clean_t = _strip_tofu_symbols(text)
         if not clean_t or en <= st:
             return None
         item = _make_item(
@@ -1705,8 +1709,8 @@ def _unified_style02_items(
         if _has_word_timing(sentence):
             word_backed.update(range(s_idx, s_idx + len(chars)))
 
-    # 过渡句：单层 L1 紧凑黑方底白字 bridge_bar（0 音效，按短语切分为 <=11 字不破词）
-    if primitive == "plain_bridge":
+    # 过渡句/呼吸段：单层 L1 紧凑黑方底白字 bridge_bar（0 音效，按短语切分为 <=11 字不破词，绝不留哑屏）
+    if primitive in ("plain_bridge", "clean_breath"):
         tl_clean = [(ch, st, en) for ch, st, en in timeline if ch.strip()]
         for sent in sentences:
             s_st, s_en = float(sent["start_sec"]), float(sent["end_sec"])
@@ -1722,12 +1726,18 @@ def _unified_style02_items(
         return items
 
     visual = act.get("visual_copy") or {}
-    headline = str(visual.get("headline") or "").strip()
-    lines = [str(t).strip() for t in (visual.get("items") or []) if str(t).strip() and _display_length(str(t)) <= 7]
+    raw_items_list = [str(t or "").strip() for t in (visual.get("items") or []) if str(t or "").strip()]
+    neg_items = {
+        _strip_tofu_symbols(t)
+        for t in raw_items_list
+        if t.startswith(("✕", "✘", "✖")) or _strip_tofu_symbols(t).startswith(("不是", "没有", "没", "别", "不能", "不要", "雇人"))
+    }
+    headline = _strip_tofu_symbols(visual.get("headline") or "")
+    lines = [_strip_tofu_symbols(t) for t in raw_items_list if _strip_tofu_symbols(t) and _display_length(_strip_tofu_symbols(t)) <= 8]
     if _display_length(headline) > 7:
         headline = ""
-    accent_tok = str(visual.get("accent_token") or "").strip()
-    footnote = str(visual.get("footnote") or "").strip()
+    accent_tok = _strip_tofu_symbols(visual.get("accent_token") or "")
+    footnote = _strip_tofu_symbols(visual.get("footnote") or "")
     y_base = max(-0.44, min(-0.28, _stage_y(composition)))
     u_prim = _UNIFIED_PRIMITIVE_ALIAS.get(primitive, primitive)
 
@@ -1755,10 +1765,10 @@ def _unified_style02_items(
             spans = timed_spans(pair)
             if headline and pair[0] != headline:
                 add(headline, "hero_white", start, end, 0.0, y_base + 0.15, _UNIFIED_L2_U, "in:向上露出", 1, tier="L2")
-            l_var = "red_slam" if pair[0].startswith("✕") else "hero_white"
+            l_var = "red_slam" if pair[0] in neg_items else "hero_white"
             r_var = "hero_lime"
-            add(pair[0].lstrip("✓ "), l_var, spans[0][0], end, -0.26, y_base + 0.02, _UNIFIED_L2_U, "in:向左露出", 2, "swish", tier="L2")
-            add(pair[1].lstrip("✕✓ "), r_var, spans[1][0], end, 0.24, y_base - 0.09, _UNIFIED_L3_U, "in:缩小 II", 3, "pop", tier="L3")
+            add(pair[0], l_var, spans[0][0], end, -0.26, y_base + 0.02, _UNIFIED_L2_U, "in:向左露出", 2, "swish", tier="L2")
+            add(pair[1], r_var, spans[1][0], end, 0.24, y_base - 0.09, _UNIFIED_L3_U, "in:缩小 II", 3, "pop", tier="L3")
         elif headline or lines:
             txt = headline or lines[0]
             add(txt, "hero_lime", start, end, 0.0, y_base + 0.02, _UNIFIED_L3_U, "in:缩小 II", 1, "pop", tier="L3")

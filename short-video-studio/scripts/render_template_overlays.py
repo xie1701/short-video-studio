@@ -745,7 +745,7 @@ def _draw_kinetic_line_sprite(
     min_fs: int = 28,
 ) -> Optional[Image.Image]:
     """不受全局 _PAINT 限制的高精单行字幕/花字精灵（全量支持粤语字逐字回退，基线严格对齐）。"""
-    t = str(text or "").strip()
+    t = re.sub(r"[\u2713-\u2718]+", "", str(text or "")).strip()
     if not t:
         return None
     probe = Image.new("RGBA", (8, 8), (0, 0, 0, 0))

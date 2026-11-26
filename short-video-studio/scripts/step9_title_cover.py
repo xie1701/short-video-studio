@@ -853,6 +853,34 @@ def run_step9(
         cover_sub = f"实操复盘 · {(sec_kw or top_kw)[:8]}"
         hashtags = "#短视频实操 #创作复盘 #内容拆解 #经验分享 #干货"
 
+    dir_plan_p = pipeline_dir / "03b_director_plan.json"
+    dir_plan = read_json(dir_plan_p) if dir_plan_p.is_file() else {}
+    dir_acts = list(dir_plan.get("acts") or [])
+    is_unified_s02 = (eff_style == "style_02") and (
+        str(dir_plan.get("theme_profile") or "") == "style_02_unified" or dir_plan_p.is_file()
+    )
+    if is_unified_s02 and dir_acts:
+        act0 = dir_acts[0].get("visual_copy") or {}
+        act1 = dir_acts[1].get("visual_copy") or {} if len(dir_acts) > 1 else {}
+        a0_items = [str(x).strip() for x in (act0.get("items") or []) if str(x).strip()]
+        a0_hl = str(act0.get("headline") or "").strip()
+        a1_hl = str(act1.get("headline") or "").strip()
+        # 优先使用含数字/强核心的短语作封面第一主行，彻底避免旧分词截成“负债多万/六百”
+        num_item = next((x for x in [a0_hl, *a0_items] if any(ch.isdigit() for ch in x)), "")
+        cover_main_l1 = (num_item or a0_hl or cover_main_l1)[:9]
+        sub_pool = [x for x in [*a0_items, a0_hl, a1_hl] if x and x != cover_main_l1 and len(x) >= 2]
+        if track == "store" and len(a0_items) >= 2 and num_item == a0_hl:
+            # 探店开篇三元组可组合“三百万·六百平”或“点赞茶楼”
+            if any(ch.isdigit() for ch in a0_items[0]) and len(cover_main_l1 + a0_items[0]) <= 8:
+                cover_main_l1 = f"{cover_main_l1}·{a0_items[0]}"
+            sub_pool = [x for x in [*a0_items[1:], a1_hl] if x and x not in cover_main_l1 and len(x) >= 2]
+        if sub_pool:
+            cover_main_l2 = sub_pool[0][:9]
+        sec_clean = re.sub(r"^(不是|但是|而且|所以)", "", str(cover_main_l2 or "")).strip() or "核心真相"
+        cover_sub = (
+            f"粤语实拍 · {sec_clean[:7]}" if track == "store" else f"实操复盘 · {sec_clean[:7]}"
+        )
+
     titles = [str(t).rstrip("。") for t in titles]
     cover_main = f"{cover_main_l1}\n{cover_main_l2}"
     cover_path = pipeline_dir / "09_cover.jpg"
@@ -891,7 +919,9 @@ def run_step9(
     use_jianying_poster = (cover_layout_id == "jianying_poster_4zone")
     sub_spec = (style_entry or {}).get("subtitle_spec") or {}
     style_font_cands = sub_spec.get("font_candidates") or pal.get("font_candidates")
-    kw_hex_style = str(sub_spec.get("keyword_color") or pal.get("accent_hex") or "#FFBF17")
+    if is_unified_s02:
+        style_font_cands = ["SourceHanSansCN-Bold.otf", "NotoSansSC-Bold.ttf", "AlimamaShuHeiTi-Bold.otf"]
+    kw_hex_style = "#BCFF00" if is_unified_s02 else str(sub_spec.get("keyword_color") or pal.get("accent_hex") or "#FFBF17")
 
     card_x1, card_x2 = 80, SAFE_ZONE["x_max"] - 20  # [80, 860] -> w=780
     card_h = 340
