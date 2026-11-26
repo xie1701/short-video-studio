@@ -23,7 +23,7 @@ from director_plan import (
     load_or_build_director_plan,
     validate_director_plan,
 )
-from kinetic_choreographer import composition_for_sentence
+from kinetic_choreographer import composition_for_sentence, duplicate_short_captions
 
 REVIEW_TASKS_FILE = "10b_aesthetic_review_tasks.json"
 REVIEW_RESULT_FILE = "10b_aesthetic_review.json"
@@ -47,6 +47,7 @@ PATCH_GUIDE = {
     "change_primitive": {"act_id": "act_03", "primitive": "negation_strike"},
     "reduce_sfx_budget": {"max_total": 14},
     "add_silence_drop": {"act_id": "act_03"},
+    "suppress_duplicate_captions": {"note": "step6 会自动隐藏与前景大字重复的短底字幕"},
 }
 
 
@@ -152,8 +153,11 @@ def _write_contact_sheet(video: Path, path: Path, samples: list[Dict[str, Any]])
 
 
 def _highlights(stage: Dict[str, Any]) -> list[Dict[str, Any]]:
-    return [item for item in stage.get("items") or []
-            if item.get("variant") != "bridge_bar" and not item.get("base_caption")]
+    """前景高光项：底字幕、过渡条、结构徽标与小号微锚点都不算主要高光。"""
+    return [
+        item for item in stage.get("items") or []
+        if item.get("variant") not in {"bridge_bar", "editorial_ticker"} and not item.get("base_caption")
+    ]
 
 
 def _copy_lines(visual_copy: Dict[str, Any]) -> list[str]:
@@ -261,6 +265,9 @@ def score_aesthetic_review(pipeline_dir: Path) -> Dict[str, Any]:
     item_lines = [line for item in highlights
                   for line in item.get("card_lines") or str(item.get("text_or_asset") or "").splitlines()]
     max_chars = max((_display_length(line) for line in [*plan_lines, *item_lines]), default=0)
+    duplicates = duplicate_short_captions(docs["stage"].get("items") or [])
+    choreo_items = sum(1 for item in highlights if item.get("element_choreo"))
+    choreo_ratio = choreo_items / len(highlights) if highlights else 0.0
     active = [(a["start_sec"], a["end_sec"]) for a in acts if a["primitive"] not in QUIET]
     coverage = _coverage(active, duration) if acts and duration else plan.get("highlight_coverage_ratio")
     conversions = _overfull_acts(acts, duration) if coverage is not None and coverage > 0.65 else []
@@ -300,12 +307,17 @@ def score_aesthetic_review(pipeline_dir: Path) -> Dict[str, Any]:
     motion_items = sum(item.get("render_backend") == "web_spring" or bool(item.get("motion_mode")) for item in highlights)
     coverage_gap = (max(0, 0.35 - coverage, coverage - 0.55) if coverage is not None else 0.28)
     sfx_gap = max(0, 6 - len(cues), len(cues) - 14)
+    # 底字幕复读大字是信息减法与节奏呼吸的共同扣分项；元素级编舞则把动效质感拉开档位。
+    duplicate_penalty = min(1.5, 0.35 * len(duplicates))
+    if duplicates:
+        patches.append({"type": "suppress_duplicate_captions", "count": len(duplicates)})
     scores = {
-        "info_distillation": 9.4 - 0.65 * max(0, max_chars - 7) if max_chars else 6.5,
-        "rhythm_breathing": 9.4 - 13.0 * coverage_gap,
+        "info_distillation": (9.4 - 0.65 * max(0, max_chars - 7) - duplicate_penalty) if max_chars else 6.5,
+        "rhythm_breathing": 9.4 - 13.0 * coverage_gap - duplicate_penalty,
         "spatial_avoidance": (9.5 if profile else 8.2) - min(6.0, 1.7 * (stage_violation + len(bad_acts))),
         "audio_tension": 9.5 - (0 if has_breathing else 2.4) - 0.36 * sfx_gap - min(2.5, 0.30 * crowded_sfx + banned_sfx),
-        "motion_craft": 8.2 + 1.2 * motion_items / len(highlights) if highlights else 6.5,
+        "motion_craft": (8.2 + 1.2 * motion_items / len(highlights) * (0.70 + 0.30 * choreo_ratio))
+        if highlights else 6.5,
         "theme_fit": 7.0 + 2.4 * matching_theme / len(highlights)
         if theme in {"business_editorial", "store_vibrant"} and highlights else 7.0,
     }
@@ -319,6 +331,8 @@ def score_aesthetic_review(pipeline_dir: Path) -> Dict[str, Any]:
             "highlight_ratio": round(coverage, 4) if coverage is not None else None,
             "sfx_count": len(cues), "has_music_breathing": has_breathing,
             "behind_person_violations": stage_violation, "crowded_sfx": crowded_sfx,
+            "duplicate_short_captions": len(duplicates),
+            "element_choreo_ratio": round(choreo_ratio, 4),
         },
         "patch_suggestions": patches,
     }
@@ -447,14 +461,29 @@ def apply_critic_patches_to_director_plan(
         lock.rmdir()
 
 
+def apply_review_file(pipeline_dir: Path, review_file: Path) -> Dict[str, Any]:
+    """消费外部多模态大模型手写的审片结论，校验后原子落盘导演总谱。"""
+    review = _read_object(Path(review_file))
+    if not review or not isinstance(review.get("patch_suggestions"), list):
+        return {"applied": False, "reason": "invalid_review_file"}
+    return apply_critic_patches_to_director_plan(Path(pipeline_dir), review)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("package", "heuristics", "apply"))
     parser.add_argument("--pipeline-dir", required=True, type=Path)
+    parser.add_argument(
+        "--review-file", type=Path,
+        help="apply 时消费外部手写的 10b_aesthetic_review.json（经总谱校验后原子落盘）",
+    )
     args = parser.parse_args()
     actions = {"package": build_aesthetic_review_package, "heuristics": evaluate_review_heuristics,
                "apply": apply_critic_patches_to_director_plan}
-    result = actions[args.action](args.pipeline_dir)
+    if args.review_file is not None:
+        result = apply_review_file(args.pipeline_dir, args.review_file)
+    else:
+        result = actions[args.action](args.pipeline_dir)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

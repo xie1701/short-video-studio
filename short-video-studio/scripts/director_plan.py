@@ -869,6 +869,20 @@ def _framework_copy(
     return _visual_copy(title, items, number)
 
 
+def _grounded_short_copy(text: str, sentences: List[Dict[str, Any]]) -> str:
+    """先按完整短句取词；取不到再放开句尾截取，但仍必须能溯源，取不到就返回空串。"""
+    if not text:
+        return ""
+    if phrase := _short_conclusion(text, sentences, allow_tail=False):
+        return phrase
+    phrase = _short_conclusion(text, sentences, allow_tail=True)
+    if not phrase:
+        return ""
+    errors: List[str] = []
+    _validate_copy({"headline": phrase}, "visual_copy", sentences, errors)
+    return "" if errors else phrase
+
+
 def _propose(
     text: str, sentences: List[Dict[str, Any]], store: bool, opening: bool, behind: bool,
 ) -> tuple[str, Dict[str, Any]]:
@@ -892,10 +906,8 @@ def _propose(
         if negations:
             headline, accent = _numeric_focus(text)
             if not headline:
-                headline = (
-                    _short_conclusion(contrast["accepted"], sentences, allow_tail=False)
-                    if contrast else negations[0][2:]
-                )
+                # 反转幕主标题：完整短句取不到时放开句尾截取，但过了溯源才算数。
+                headline = _grounded_short_copy(contrast["accepted"], sentences) if contrast else negations[0][2:]
             return "negation_strike", _visual_copy(headline, negations, accent)
 
     ordinals = _ordinals(text)
