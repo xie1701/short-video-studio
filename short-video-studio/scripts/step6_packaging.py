@@ -649,6 +649,7 @@ def run_step6(
     style_id: str | None = None,
     no_flower_text: bool = False,
     keep_manual_texts: bool = False,
+    no_v6_director: bool = False,
 ) -> Dict[str, Any]:
     audio_events = read_json(pipeline_dir / "03_audio_events.json")
     edl = read_json(pipeline_dir / "04_edl.json")
@@ -829,6 +830,8 @@ def run_step6(
     kinetic_stage_plan: Optional[Dict[str, Any]] = (
         kinetic_choreographer.plan_kinetic_stage(
             audio_events, style_id=style_id, pipeline_dir=pipeline_dir, fps=fps,
+            # --no-v6-director 时塞入空总谱，plan_kinetic_stage 自动退回 V5 既有规则路径
+            director_plan={} if no_v6_director else None,
         )
         if (kinetic_stage_mode and not no_flower_text)
         else None
