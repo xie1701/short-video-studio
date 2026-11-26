@@ -789,7 +789,7 @@ def _draw_kinetic_line_sprite(
     return ink.crop(box) if box else None
 
 
-V6_CARD_VARIANTS = frozenset({"negation_line", "pillar_badge", "concept_card"})
+V6_CARD_VARIANTS = frozenset({"negation_line", "pillar_badge", "concept_card", "semantic_diagram_card"})
 TICKER_VARIANT = "editorial_ticker"
 
 
@@ -887,6 +887,20 @@ def _render_v6_kinetic_sprite(
     elem: Dict[str, Any], text: str, font: Optional[str], font_px: int, paint: Dict[str, Any],
 ) -> Optional[Image.Image]:
     variant = elem.get("variant")
+    if variant == "semantic_diagram_card":
+        layout = _semantic_diagram_layout(elem, font, paint, 2.0)
+        if layout is None:
+            return None
+        cw, ch = layout["canvas"]
+        state = {
+            "layers": {ly["name"]: {"alpha": 1.0, "scale": 1.0, "dx": 0.0, "dy": 0.0} for ly in layout["layers"]},
+            "vectors": {v["key"]: 1.0 for v in layout["vectors"]},
+            "vector_alpha": 1.0,
+        }
+        raw_bytes = _element_frame_bytes(layout, state)
+        im = Image.frombytes("RGBA", (cw, ch), raw_bytes)
+        ink = im.getbbox()
+        return im.crop(ink) if ink else im
     is_card = variant == "concept_card"
     is_ticker = variant == TICKER_VARIANT
     card_lines = [str(line).strip() for line in elem.get("card_lines") or [] if str(line).strip()]
@@ -1928,7 +1942,7 @@ window.READY = true;
     return None
 
 
-ELEMENT_CHOREO_MODES = frozenset({"strike_slash", "stagger_card", "number_roll", "ticker_fade"})
+ELEMENT_CHOREO_MODES = frozenset({"strike_slash", "stagger_card", "number_roll", "ticker_fade", "semantic_diagram_card"})
 _ROLL_STEPS = (0.15, 0.45, 0.72, 0.91, 1.0)
 _ELEMENT_OUT_MAX_SEC = 0.22
 _ELEMENT_OUT_RATIO = 0.25
@@ -1944,16 +1958,50 @@ def _element_out_span(elem: Dict[str, Any], duration: float) -> Optional[Tuple[f
     return (max(0.0, duration - out_sec), duration)
 
 
-def _element_beats(choreo: str, duration: float) -> Dict[str, Tuple[float, float]]:
-    """元素级动效的分拍时间表：Chrome SVG 与 Pillow 兜底共用同一份节拍。"""
+def _element_beats(choreo: str, duration: float, elem: Optional[Dict[str, Any]] = None) -> Dict[str, Tuple[float, float]]:
+    """元素级动效的分拍时间表：优先读取 03_audio_events 绑定的逐字 beat_offsets，未传则退回固定默认节拍。"""
+    bo = (elem or {}).get("beat_offsets")
+    has_bo = isinstance(bo, dict) and bool(bo)
     if choreo == "strike_slash":
+        if has_bo and "slash_start" in bo:
+            ss = max(0.06, min(max(0.10, duration - 0.28), float(bo["slash_start"])))
+            return {"card": (0.0, min(ss, 0.16)), "mark_a": (ss, min(duration - 0.14, ss + 0.09)),
+                    "mark_b": (min(duration - 0.12, ss + 0.07), min(duration - 0.06, ss + 0.16)),
+                    "slash": (ss, min(duration - 0.06, ss + 0.18))}
         return {"card": (0.0, 0.16), "mark_a": (0.16, 0.25), "mark_b": (0.25, 0.34),
                 "slash": (0.16, 0.34)}
     if choreo == "stagger_card":
+        if has_bo and ("left" in bo or "right" in bo):
+            tc = max(0.0, min(max(0.08, duration - 0.60), float(bo.get("card", 0.0))))
+            lc = max(tc + 0.10, min(max(0.20, duration - 0.45), float(bo.get("left", 0.16))))
+            rc = max(lc + 0.14, min(max(0.35, duration - 0.28), float(bo.get("right", lc + 0.26))))
+            return {
+                "card": (tc, min(lc, tc + 0.18)),
+                "left": (lc, min(duration - 0.35, lc + 0.26)),
+                "divider": (max(lc, rc - 0.06), min(duration - 0.24, rc + 0.06)),
+                "right": (rc, min(duration - 0.16, rc + 0.20)),
+            }
         return {"card": (0.0, 0.16), "left": (0.16, 0.42), "divider": (0.42, 0.52),
                 "right": (0.42, 0.58)}
     if choreo == "number_roll":
+        if has_bo and "roll_start" in bo:
+            rs = max(0.0, min(max(0.10, duration - 0.32), float(bo["roll_start"])))
+            re_t = max(rs + 0.16, min(max(0.26, duration - 0.12), float(bo.get("roll_end", rs + 0.26))))
+            return {"roll": (rs, re_t), "settle": (re_t, min(duration - 0.02, re_t + 0.10))}
         return {"roll": (0.0, 0.26), "settle": (0.26, 0.36)}
+    if choreo == "semantic_diagram_card":
+        beats: Dict[str, Tuple[float, float]] = {"card": (0.0, min(0.18, max(0.08, duration * 0.12)))}
+        nodes_off = list(bo.get("nodes") or []) if has_bo else []
+        outs_off = list(bo.get("outs") or []) if has_bo else []
+        for idx, st_off in enumerate(nodes_off):
+            s0 = max(0.02, min(max(0.12, duration - 0.45), float(st_off)))
+            beats[f"node_{idx}"] = (s0, min(duration - 0.30, s0 + 0.22))
+        for idx, st_off in enumerate(outs_off):
+            s0 = max(0.04, min(max(0.14, duration - 0.26), float(st_off)))
+            beats[f"out_{idx}"] = (s0, min(duration - 0.14, s0 + 0.22))
+        div_t = beats["out_0"][0] - 0.06 if "out_0" in beats else (beats["card"][1])
+        beats["hdiv"] = (max(0.05, div_t), min(duration - 0.20, max(0.05, div_t) + 0.16))
+        return beats
     return {"in": (0.0, 0.28), "out": (max(0.28, duration - 0.30), duration)}
 
 
@@ -2028,7 +2076,7 @@ def _strike_slash_layout(
              "p2": (ox + word_x0 + word_sprite.width, oy + center_y),
              "width": slash_pen, "rgba": (*marker, 235)},
         ],
-        "beats": _element_beats("strike_slash", duration),
+        "beats": _element_beats("strike_slash", duration, elem),
         "out": _element_out_span(elem, duration),
     }
 
@@ -2080,7 +2128,7 @@ def _stagger_card_layout(
         "layers": layers,
         "vectors": [{"kind": "vline", "key": "divider", "x": ox + divider[0], "y0": oy + divider[1],
                      "height": body_h, "width": 1, "rgba": (255, 255, 255, 96)}],
-        "beats": _element_beats("stagger_card", duration),
+        "beats": _element_beats("stagger_card", duration, elem),
         "out": _element_out_span(elem, duration),
     }
 
@@ -2119,7 +2167,7 @@ def _number_roll_layout(
         "layers": layers,
         "vectors": [],
         "roll_values": shown_values,
-        "beats": _element_beats("number_roll", duration),
+        "beats": _element_beats("number_roll", duration, elem),
         "out": _element_out_span(elem, duration),
     }
 
@@ -2142,9 +2190,138 @@ def _ticker_layout(elem: Dict[str, Any], font: Optional[str], paint: Dict[str, A
         "canvas": (cw, ch),
         "layers": [_element_layer("ticker", body, (ox, oy))],
         "vectors": [],
-        "beats": _element_beats("ticker_fade", max(0.4, duration)),
+        "beats": _element_beats("ticker_fade", max(0.4, duration), elem),
         "duration": max(0.4, duration),
         "out": _element_out_span(elem, max(0.4, duration)),
+    }
+
+
+def _semantic_diagram_layout(
+    elem: Dict[str, Any], font: Optional[str], paint: Dict[str, Any], duration: float,
+) -> Optional[Dict[str, Any]]:
+    """黑金杂志风极简动态语义图卡：支持「三元节点 + 对比结果」及「对称金句双条」。"""
+    nodes = [str(x).strip() for x in (elem.get("diagram_nodes") or []) if str(x).strip()]
+    rows = [str(x).strip() for x in (elem.get("diagram_conclusion") or []) if str(x).strip()]
+    if not nodes and not rows:
+        card_lines = [str(x).strip() for x in (elem.get("card_lines") or []) if str(x).strip()]
+        if not card_lines:
+            raw_t = str(elem.get("text_or_asset") or "").strip()
+            if not raw_t:
+                return None
+            card_lines = [raw_t]
+        if "·" in card_lines[0]:
+            nodes = [n.strip() for n in card_lines[0].split("·") if n.strip()]
+            rows = card_lines[1:]
+        else:
+            rows = card_lines
+
+    accent = _hex_rgb(paint["accent_hex"])
+    fg = _hex_rgb(paint["fg_hex"])
+    marker = _hex_rgb(paint["marker_hex"])
+    node_imgs: List[Image.Image] = []
+    for nd in nodes:
+        sp = _draw_kinetic_line_sprite(nd, font, 32, (*accent, 255), max_w=170, min_fs=20)
+        if sp is None:
+            continue
+        pw, ph = sp.width + 26, sp.height + 14
+        pill = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
+        ImageDraw.Draw(pill).rounded_rectangle(
+            (0, 0, pw - 1, ph - 1), radius=10,
+            fill=(24, 29, 40, 235), outline=(*accent, 200), width=1,
+        )
+        pill.alpha_composite(sp, dest=(13, 7))
+        node_imgs.append(pill)
+
+    out_imgs: List[Image.Image] = []
+    for rw in rows:
+        sp = _kinetic_marked_row(rw, font, 35 if node_imgs else 38, fg, 260 if node_imgs else 420, marker, accent)
+        if sp is None:
+            continue
+        if not node_imgs:
+            # 对仗金句条目左侧配 4px 黑金杂志竖线
+            bw = sp.width + 18
+            bh = max(sp.height + 6, 36)
+            bar_im = Image.new("RGBA", (bw, bh), (0, 0, 0, 0))
+            ImageDraw.Draw(bar_im).rounded_rectangle((0, 4, 5, bh - 5), radius=2, fill=(*accent, 245))
+            bar_im.alpha_composite(sp, dest=(14, (bh - sp.height) // 2))
+            out_imgs.append(bar_im)
+        else:
+            out_imgs.append(sp)
+
+    if not node_imgs and not out_imgs:
+        return None
+
+    pad_x, pad_y = 22, 14
+    node_gap, out_gap, sec_gap = 18, 24, 14
+    top_w = sum(im.width for im in node_imgs) + node_gap * max(0, len(node_imgs) - 1)
+    top_h = max((im.height for im in node_imgs), default=0)
+    if node_imgs and len(out_imgs) == 2:
+        bot_w = out_imgs[0].width + out_imgs[1].width + out_gap
+        bot_h = max(out_imgs[0].height, out_imgs[1].height)
+        bot_side_by_side = True
+    else:
+        bot_w = max((im.width for im in out_imgs), default=0)
+        bot_h = sum(im.height for im in out_imgs) + 10 * max(0, len(out_imgs) - 1)
+        bot_side_by_side = False
+
+    content_w = max(top_w, bot_w, 220)
+    width = content_w + pad_x * 2
+    div_space = sec_gap if (node_imgs and out_imgs) else 0
+    height = pad_y * 2 + top_h + div_space + bot_h
+
+    card_bg = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    d_bg = ImageDraw.Draw(card_bg)
+    d_bg.rounded_rectangle(
+        (0, 0, width - 1, height - 1), radius=14,
+        fill=(12, 15, 22, 222), outline=(*accent, 140), width=1,
+    )
+    d_bg.rounded_rectangle((18, 0, width - 19, 3), radius=1, fill=(*accent, 235))
+
+    cw, ch, ox, oy = _layout_canvas(width, height, pad=6)
+    layers = [_element_layer("card", card_bg, (ox, oy))]
+    cur_y = pad_y
+    if node_imgs:
+        cur_x = (width - top_w) // 2
+        for idx, nim in enumerate(node_imgs):
+            layers.append(_element_layer(f"node_{idx}", nim, (ox + cur_x, oy + cur_y + (top_h - nim.height) // 2)))
+            cur_x += nim.width + node_gap
+        cur_y += top_h + sec_gap // 2
+
+    vectors: List[Dict[str, Any]] = []
+    if node_imgs and out_imgs:
+        vectors.append({
+            "kind": "line", "key": "hdiv",
+            "p1": (ox + pad_x, oy + cur_y), "p2": (ox + width - pad_x, oy + cur_y),
+            "width": 1, "rgba": (*accent, 145),
+        })
+        cur_y += sec_gap - sec_gap // 2
+
+    if out_imgs:
+        if bot_side_by_side:
+            cx_b = (width - bot_w) // 2
+            layers.append(_element_layer("out_0", out_imgs[0], (ox + cx_b, oy + cur_y + (bot_h - out_imgs[0].height) // 2)))
+            layers.append(_element_layer("out_1", out_imgs[1], (ox + cx_b + out_imgs[0].width + out_gap, oy + cur_y + (bot_h - out_imgs[1].height) // 2)))
+        else:
+            for idx, oim in enumerate(out_imgs):
+                layers.append(_element_layer(f"out_{idx}", oim, (ox + (width - oim.width) // 2, oy + cur_y)))
+                cur_y += oim.height + 10
+
+    elem_copy = dict(elem)
+    bo = dict(elem_copy.get("beat_offsets") or {}) if isinstance(elem_copy.get("beat_offsets"), dict) else {}
+    if not bo.get("nodes") and node_imgs:
+        bo["nodes"] = [round(0.08 + i * 0.18, 3) for i in range(len(node_imgs))]
+    if not bo.get("outs") and out_imgs:
+        base_o = (bo["nodes"][-1] + 0.22) if bo.get("nodes") else 0.08
+        bo["outs"] = [round(base_o + i * 0.20, 3) for i in range(len(out_imgs))]
+    elem_copy["beat_offsets"] = bo
+
+    return {
+        "choreo": "semantic_diagram_card",
+        "canvas": (cw, ch),
+        "layers": layers,
+        "vectors": vectors,
+        "beats": _element_beats("semantic_diagram_card", duration, elem_copy),
+        "out": _element_out_span(elem_copy, duration),
     }
 
 
@@ -2162,6 +2339,7 @@ def _element_layout(
         "stagger_card": lambda: _stagger_card_layout(elem, font, paint, duration),
         "number_roll": lambda: _number_roll_layout(elem, font, paint, duration),
         "ticker_fade": lambda: _ticker_layout(elem, font, paint, duration),
+        "semantic_diagram_card": lambda: _semantic_diagram_layout(elem, font, paint, duration),
     }
     return builders[choreo]()
 
@@ -2193,13 +2371,35 @@ def _element_frame_state(layout: Dict[str, Any], t: float) -> Dict[str, Any]:
                               scale=0.72 + 0.28 * _ease_out_back(u_right))
         vectors["divider"] = _smooth_step(_beat_progress(t, beats["divider"]))
     elif choreo == "number_roll":
-        u_roll = _beat_progress(t, beats["roll"])
-        active = min(len(_ROLL_STEPS) - 1, int(u_roll * len(_ROLL_STEPS)))
-        for idx, name in enumerate(names):
-            state[name]["alpha"] = 1.0 if idx == active else 0.0
-        settle = _beat_progress(t, beats["settle"])
-        state[names[-1]]["scale"] = 1.0 + 0.05 * (1.0 - settle) if t >= beats["roll"][1] else 1.0
-        state[names[-1]]["alpha"] = 1.0 if t >= beats["roll"][1] else state[names[-1]]["alpha"]
+        if t < beats["roll"][0]:
+            for name in names:
+                state[name]["alpha"] = 0.0
+        else:
+            u_roll = _beat_progress(t, beats["roll"])
+            active = min(len(_ROLL_STEPS) - 1, int(u_roll * len(_ROLL_STEPS)))
+            for idx, name in enumerate(names):
+                state[name]["alpha"] = 1.0 if idx == active else 0.0
+            settle = _beat_progress(t, beats["settle"])
+            state[names[-1]]["scale"] = 1.0 + 0.05 * (1.0 - settle) if t >= beats["roll"][1] else 1.0
+            state[names[-1]]["alpha"] = 1.0 if t >= beats["roll"][1] else state[names[-1]]["alpha"]
+    elif choreo == "semantic_diagram_card":
+        card_p = spring_progress(_beat_progress(t, beats["card"]))
+        state["card"].update(alpha=_smooth_step(_beat_progress(t, beats["card"])),
+                             scale=0.95 + 0.05 * card_p)
+        for name in names:
+            if name == "card":
+                continue
+            sp_beat = beats.get(name)
+            if sp_beat is None:
+                continue
+            u_l = _beat_progress(t, sp_beat)
+            state[name].update(
+                alpha=_smooth_step(min(1.0, u_l * 2.2)),
+                scale=0.86 + 0.14 * _ease_out_back(u_l) if u_l > 0.0 else 0.86,
+                dy=8.0 * (1.0 - _smooth_step(u_l)),
+            )
+        if "hdiv" in beats:
+            vectors["hdiv"] = _smooth_step(_beat_progress(t, beats["hdiv"]))
     else:  # ticker_fade：柔和淡入淡出，无过冲弹跳
         state["ticker"].update(alpha=_smooth_step(_beat_progress(t, beats["in"])))
         if t > beats["out"][0]:

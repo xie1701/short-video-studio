@@ -33,6 +33,7 @@ from common import (  # noqa: E402
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
     DEFAULT_FPS,
+    local_assets_dir,
     read_json,
 )
 from composition_profile import PROFILE_FILENAME
@@ -275,7 +276,36 @@ def ensure_kinetic_sfx_assets(
     result: Dict[str, Path] = {}
     root_assets = Path(assets_dir) if assets_dir is not None else ASSETS_DIR
 
-    # 1. 优先复用资产库中已通过质检的高品质真实录音音效
+    # 1. 优先复用资产库中本风格真实录音音效（先随仓，再本机 local_assets/sound_vibe/sfx/<style_id>）
+    sfx_role_keywords = {
+        "punch": ("拳击", "砰"),
+        "cash_register": ("钱柜", "结账"),
+        "paper_shake": ("纸张", "空格"),
+        "boom_hollow": ("咚", "突然出现"),
+        "boom_heavy": ("震撼", "嘭"),
+        "pop": ("气泡", "轻敲"),
+        "swish": ("刷一下", "回忆"),
+        "whoosh_in": ("刷一下", "回忆"),
+        "typewriter": ("打字", "空格"),
+    }
+    search_sfx_dirs = [root_assets / "sound_vibe" / "sfx" / style_id]
+    loc_assets = local_assets_dir(root_assets)
+    if loc_assets is not None:
+        search_sfx_dirs.append(loc_assets / "sound_vibe" / "sfx" / style_id)
+    local_pool_files: List[Path] = []
+    for d_s in search_sfx_dirs:
+        if d_s.is_dir():
+            for p_s in sorted(d_s.iterdir()):
+                if p_s.is_file() and p_s.suffix.lower() in (".wav", ".mp3", ".m4a", ".aac", ".flac", ".ogg"):
+                    if not any(ban in p_s.name for ban in ("叮", "滴", "放屁", "尴尬")):
+                        local_pool_files.append(p_s.resolve())
+    for role_k, kws_k in sfx_role_keywords.items():
+        if role_k in BANNED_SFX_ROLES:
+            continue
+        hit_s = next((p_s for p_s in local_pool_files if any(kw in p_s.name for kw in kws_k)), None)
+        if hit_s is not None:
+            result[role_k] = hit_s
+
     static_sources = {
         "swish": root_assets / "sound_vibe" / "sfx" / "style_02_transition.wav",
         "tip": root_assets / "sound_vibe" / "sfx" / "style_02_ui.wav",
@@ -285,7 +315,7 @@ def ensure_kinetic_sfx_assets(
         "whoosh_in": root_assets / "sound_vibe" / "sfx" / "style_03_transition.wav",
     }
     for role, src in static_sources.items():
-        if role not in BANNED_SFX_ROLES and src.is_file():
+        if role not in BANNED_SFX_ROLES and role not in result and src.is_file():
             result[role] = src.resolve()
 
     # 2. 为其余关键动画角色按音色特征精准合成 WAV（无外网依赖、无版权风险、峰值对齐干净）
@@ -308,20 +338,21 @@ def ensure_kinetic_sfx_assets(
             write_wav_stereo(p, synthesize_sfx_waveform(kind, seed=seed))
         result[role] = p.resolve()
 
-    # 3. 专属“打字机 4 连敲”（间隔 65ms 连续机械键击），精确还原 `打字光标 ↔ 打字声`
-    tw_p = sfx_dir / f"{style_id}_typewriter.wav"
-    if not tw_p.is_file():
-        click_w = synthesize_sfx_waveform("tick", seed=11)
-        step = int(0.068 * SR)
-        total = step * 4 + len(click_w)
-        buf = np.zeros((total, 2), dtype=np.float32)
-        for k, mul in enumerate((1.0, 0.85, 0.92, 0.78)):
-            st = k * step
-            buf[st : st + len(click_w)] += click_w * mul
-        peak = float(np.max(np.abs(buf))) + 1e-9
-        buf = (buf / peak * 0.72).astype(np.float32)
-        write_wav_stereo(tw_p, buf)
-    result["typewriter"] = tw_p.resolve()
+    # 3. 专属“打字机 4 连敲”（优先真实打字音效，否则合成机械键击）
+    if "typewriter" not in result:
+        tw_p = sfx_dir / f"{style_id}_typewriter.wav"
+        if not tw_p.is_file():
+            click_w = synthesize_sfx_waveform("tick", seed=11)
+            step = int(0.068 * SR)
+            total = step * 4 + len(click_w)
+            buf = np.zeros((total, 2), dtype=np.float32)
+            for k, mul in enumerate((1.0, 0.85, 0.92, 0.78)):
+                st = k * step
+                buf[st : st + len(click_w)] += click_w * mul
+            peak = float(np.max(np.abs(buf))) + 1e-9
+            buf = (buf / peak * 0.72).astype(np.float32)
+            write_wav_stereo(tw_p, buf)
+        result["typewriter"] = tw_p.resolve()
 
     return result
 
@@ -1390,13 +1421,14 @@ def _retarget_legacy_composition(
         return
     shots = [(s["start_sec"], s["end_sec"], composition_for_sentence(profile, s)) for s in sentences]
 
-    def closeups(start: float, end: float) -> List[Dict[str, Any]]:
-        return [c for st, en, c in shots if not c["allow_behind_person"] and st < end and start < en]
+    def overlapping_shots(start: float, end: float) -> List[Dict[str, Any]]:
+        return [c for st, en, c in shots if st < end and start < en]
 
     for item in stage["items"]:
         if item["z_layer"] != "behind_person":
             continue
-        constrained = closeups(item["start_sec"], item["end_sec"])
+        shots_here = overlapping_shots(item["start_sec"], item["end_sec"])
+        constrained = [c for c in shots_here if not c["allow_behind_person"]]
         if constrained:
             y = min(_stage_y(c) for c in constrained)
             # Reserve the upper chest row for red_slam and stagger the smaller rows below it.
@@ -1405,6 +1437,30 @@ def _retarget_legacy_composition(
                 z_layer="foreground", x_norm=0.0, y_norm=yn,
                 center_px=list(norm_to_canvas_px(0.0, yn)), font_size_px=76, font_size_units=12.7,
             )
+            continue
+        # 当实测有 face_bbox 时，将人后弹幕避开头脸实体区域：优先放在头顶至 UI 下沿的留白带，
+        # 否则切至安全前景胸口区，彻底杜绝弹幕被人头拦腰挡成半截字。
+        fb = next((c.get("face_bbox") for c in shots_here if isinstance(c.get("face_bbox"), dict)), None)
+        if fb is not None:
+            fy, fh = float(fb.get("y", 0.3)), float(fb.get("h", 0.2))
+            iy_px = float((item.get("center_px") or norm_to_canvas_px(item["x_norm"], item["y_norm"]))[1])
+            iy_norm_01 = iy_px / float(CANVAS_HEIGHT)
+            if (fy - 0.04) <= iy_norm_01 <= (fy + fh + 0.04):
+                if fy >= 0.27:
+                    # 头顶至 0.19 UI 线有足够高度，上提至头顶上方
+                    target_y01 = max(0.20, min(fy - 0.05, 0.22 + (item["track_lane"] % 2) * 0.04))
+                    new_yn = round(1.0 - 2.0 * target_y01, 4)
+                    item.update(
+                        y_norm=new_yn,
+                        center_px=list(norm_to_canvas_px(item["x_norm"], new_yn)),
+                    )
+                else:
+                    fg_y = min((_stage_y(c) for c in shots_here), default=-0.46)
+                    yn = round(max(-0.65, min(-0.50, fg_y - 0.05)) - (item["track_lane"] - 3) * 0.075, 4)
+                    item.update(
+                        z_layer="foreground", x_norm=0.0, y_norm=yn,
+                        center_px=list(norm_to_canvas_px(0.0, yn)), font_size_px=76, font_size_units=12.7,
+                    )
     behind_groups = {it["group_id"] for it in stage["items"] if it["z_layer"] == "behind_person"}
     for group in stage["groups"]:
         group["self_matting"] = group["group_id"] in behind_groups
@@ -1462,6 +1518,44 @@ def _pillar_rows(visual: Dict[str, Any]) -> List[Tuple[str, str]]:
     return [(number, label) for number, label in rows if number or label]
 
 
+def _locate_phrase_offset(
+    phrase: str,
+    timeline: List[Tuple[str, float, float]],
+    ref_start: float,
+    max_offset: float,
+) -> Optional[float]:
+    """从逐字时间轴定位短语（忽略装饰符与空格）首次被说出的相对秒数偏移。"""
+    clean_p = clean_display_text(re.sub(r"[✕✓·\s+]+", "", str(phrase or "")))
+    if not clean_p or not timeline:
+        return None
+    tl_clean = [(ch, st, en) for ch, st, en in timeline if ch.strip()]
+    spoken = "".join(ch for ch, _, _ in tl_clean)
+    idx_m = spoken.find(clean_p)
+    if idx_m < 0 and len(clean_p) >= 2:
+        for sub_len in range(min(4, len(clean_p)), 1, -1):
+            for start_i in range(len(clean_p) - sub_len + 1):
+                sub = clean_p[start_i : start_i + sub_len]
+                idx_m = spoken.find(sub)
+                if idx_m >= 0:
+                    break
+            if idx_m >= 0:
+                break
+    if idx_m < 0:
+        # 对数字表达（如 200 <-> 两百）做阿拉伯数字与中文数字互查
+        m_d = re.search(r"\d+", clean_p)
+        if m_d:
+            digit_map = {"200": "两百", "300": "三百", "600": "六百", "2000": "两千"}
+            alt = digit_map.get(m_d.group(0))
+            if alt:
+                idx_m = spoken.find(alt)
+            if idx_m < 0 and alt:
+                idx_m = spoken.find(alt[:1])
+    if idx_m < 0 or idx_m >= len(tl_clean):
+        return None
+    rel = float(tl_clean[idx_m][1]) - ref_start
+    return round(max(0.0, min(max(0.0, max_offset), rel)), 4)
+
+
 def _director_items(
     act: Dict[str, Any], sentences: List[Dict[str, Any]], composition: Dict[str, Any],
     ordinal: int, theme: str, fps: int,
@@ -1487,6 +1581,7 @@ def _director_items(
         timeline.extend(chars)
         if _has_word_timing(sentence):
             word_backed.update(range(start_idx, start_idx + len(chars)))
+    any_word_timed = bool(word_backed)
     y = max(-0.43, min(-0.32, _stage_y(composition)))
     items: List[Dict[str, Any]] = []
 
@@ -1510,18 +1605,37 @@ def _director_items(
             item["element_choreo"] = "strike_slash"
         elif variant == "concept_card":
             item["element_choreo"] = "stagger_card"
+        elif variant == "semantic_diagram_card":
+            item["element_choreo"] = "semantic_diagram_card"
         elif variant == "hero_lime" and _NUMBER_RUN.search(text):
             item["element_choreo"] = "number_roll"
         items.append(item)
         return item
 
     if primitive == "negation_strike":
-        add(headline, "hero_lime", start, end, 0.0, y + 0.10, 19.0, "in:缩小 II", 1)
+        head_start = start
+        head_sfx: Optional[str] = None
+        if any_word_timed and headline and _NUMBER_RUN.search(headline):
+            dur_head = max(0.4, end - start)
+            num_rel = _locate_phrase_offset(headline, timeline, start, dur_head - 0.55)
+            if num_rel is not None and num_rel >= 0.45:
+                head_start = round(min(end - 0.55, start + max(0.0, num_rel - 0.14)), 4)
+                head_sfx = "cash_register"
+        head_item = add(headline, "hero_lime", head_start, end, 0.0, y + 0.10, 19.0, "in:缩小 II", 1, head_sfx)
+        if head_item is not None and head_item.get("element_choreo") == "number_roll":
+            head_dur = max(0.4, end - head_start)
+            head_item["beat_offsets"] = {"roll_start": 0.0, "roll_end": round(min(0.32, head_dur * 0.4), 4)}
         for line, (st, en) in zip(lines, _director_rows(
             lines, timeline, start, end, fps, sentence_starts, word_backed)):
             label = line if line.startswith("✕") else f"✕ {line}"
             # Use a separate row so a headline and the current negation can be read together.
-            add(label, "negation_line", st, en, 0.0, y, 11.5, "in:向右露出", 2, "punch")
+            neg_it = add(label, "negation_line", st, en, 0.0, y, 11.5, "in:向右露出", 2, "punch")
+            if neg_it is not None and any_word_timed:
+                core_neg = line.lstrip("✕✓ ").lstrip(_SENTENCE_LEAD_CONJUNCTIONS)
+                neg_dur = max(0.3, en - st)
+                rel_sl = _locate_phrase_offset(core_neg, timeline, st, max(0.1, neg_dur - 0.28))
+                slash_at = round(max(0.10, min(neg_dur - 0.24, rel_sl if rel_sl is not None else 0.14)), 4)
+                neg_it["beat_offsets"] = {"slash_start": slash_at}
     elif primitive == "framework_pillar":
         rows = _pillar_rows(visual)
         # 结构进度需要全片总格数：总格由 plan_kinetic_stage 提前数好，这里只按顺序领号。
@@ -1551,8 +1665,63 @@ def _director_items(
         shift = act["side_shift_x"] if act["camera_intent"] == "side_shift_card" else 0.0
         x = -0.46 if shift > 0 else (0.38 if shift < 0 else 0.0)
         if card_lines:
-            add(card_lines[0], "concept_card", start, end, x, y + 0.04, 12.0, "in:向右露出", 1, "boom_hollow")
-            items[-1].update(card_lines=card_lines, card_has_headline=bool(headline))
+            card_it = add(card_lines[0], "concept_card", start, end, x, y + 0.04, 12.0, "in:向右露出", 1, "boom_hollow")
+            if card_it is not None:
+                card_it.update(card_lines=card_lines, card_has_headline=bool(headline))
+                dur_c = max(0.6, end - start)
+                if any_word_timed and len(lines) == 2:
+                    t_left = _locate_phrase_offset(lines[0], timeline, start, dur_c - 0.50)
+                    t_right = _locate_phrase_offset(lines[1], timeline, start, dur_c - 0.30)
+                    lc = round(max(0.12, min(dur_c - 0.52, t_left if t_left is not None else 0.16)), 4)
+                    rc = round(max(lc + 0.16, min(dur_c - 0.28, t_right if t_right is not None else lc + 0.26)), 4)
+                    card_it["beat_offsets"] = {"card": 0.0, "left": lc, "right": rc}
+    elif primitive == "semantic_diagram_card":
+        diag_nodes = [n.strip() for n in headline.split("·") if n.strip()] if headline else []
+        diag_rows = list(lines)
+        card_lines = list(dict.fromkeys([*([headline] if headline else []), *diag_rows]))
+        if card_lines:
+            diag_it = add(card_lines[0], "semantic_diagram_card", start, end, 0.0, y + 0.02, 12.0, "in:渐显", 1, "paper_shake")
+            if diag_it is not None:
+                dur_d = max(0.6, end - start)
+                node_offsets: List[float] = []
+                out_offsets: List[float] = []
+                cursor_t = 0.08
+                for nd in diag_nodes:
+                    off = _locate_phrase_offset(nd, timeline, start, dur_d - 0.55) if any_word_timed else None
+                    val = round(max(cursor_t, min(dur_d - 0.55, off if off is not None else cursor_t)), 4)
+                    node_offsets.append(val)
+                    cursor_t = val + 0.16
+                for oi, rw in enumerate(diag_rows):
+                    off = _locate_phrase_offset(rw, timeline, start, dur_d - 0.30) if any_word_timed else None
+                    fallback = cursor_t if not (not diag_nodes and oi == 0) else 0.08
+                    val = round(max(cursor_t if (oi > 0 or diag_nodes) else 0.05,
+                                    min(dur_d - 0.28, off if off is not None else fallback)), 4)
+                    out_offsets.append(val)
+                    cursor_t = val + 0.18
+                diag_it.update(
+                    card_lines=card_lines,
+                    card_has_headline=bool(headline),
+                    diagram_nodes=diag_nodes,
+                    diagram_conclusion=diag_rows,
+                    beat_offsets={"card": 0.0, "nodes": node_offsets, "outs": out_offsets},
+                )
+    elif primitive == "inline_emphasis_cta":
+        rows = [line for line in lines if line != headline]
+        if rows and any_word_timed and headline:
+            dur_cta = max(0.4, end - start)
+            t_head = _locate_phrase_offset(headline, timeline, start, dur_cta - 0.35)
+            t_sub = _locate_phrase_offset(rows[0], timeline, start, dur_cta - 0.35)
+            if t_head is not None and t_sub is not None and t_head > t_sub + 0.12:
+                # 若前句为痛点条件（如「答不上来」）且 CTA 在后（「私信我」），按真实发声先后依次出字
+                sub_s = round(start + max(0.0, t_sub), 4)
+                head_s = round(min(end - 0.35, max(sub_s + 0.25, start + t_head - 0.08)), 4)
+                add(rows[0], "hero_white", sub_s, end, 0.0, y + 0.10, 14.0, "in:渐显", 1)
+                add(headline, "hero_lime", head_s, end, 0.0, y - 0.01, 18.0, "in:缩小 II", 2, "pop")
+                return items
+        add(headline, "hero_white", start, end, 0.0, y + 0.10 if rows else y, 17.0, "in:缩小 II", 1)
+        for idx, (line, (st, en)) in enumerate(zip(rows, _director_rows(
+                rows, timeline, start, end, fps, sentence_starts, word_backed))):
+            add(line, "hero_white", st, en, 0.0, y, 11.5, "in:向右露出", 2)
     else:
         variant = "hero_lime" if primitive in {"hero_intro_pop", "num_anchor_dim_overlay"} else "hero_white"
         behind = primitive == "hero_anchor_plus_danmaku" and composition["allow_behind_person"]
@@ -1662,6 +1831,7 @@ _TICKER_MAX_ITEMS = 2
 _TICKER_GENERIC_TOKENS = (
     "的人", "自己", "别人", "別人", "大家", "我们", "我們", "他们", "他們", "她们", "她們",
     "东西", "東西", "时候", "時候", "那张", "那張", "这个", "這個", "那个", "那個", "什么", "什麼",
+    "几个", "幾個", "一些", "很多", "问题", "問題", "感觉", "感覺", "地方", "这样", "那样", "一种",
 )
 
 
@@ -1715,8 +1885,10 @@ def _safe_ticker_anchor(
 
 def _ticker_copy(sentence: Dict[str, Any]) -> str:
     phrase = _short_conclusion(str(sentence.get("text") or ""), [sentence], limit=5)
-    # 结尾挂着方位/助词（共享表格里）不是真词，宁可换一句也不上屏。
+    # 结尾挂着方位/助词（共享表格里/贴上去之后）不是真信息词，宁可换一句也不上屏。
     if not (2 <= _display_length(phrase) <= 5) or phrase[-1:] in "里中上下的地得是了在":
+        return ""
+    if phrase.endswith(("之后", "以后", "之前", "以前", "时候")):
         return ""
     # 口语泛指词（大家/自己/时候…）与句首虚词开头的半截话（就能看明白）都没有信息量，宁可不出。
     if any(token in phrase for token in _TICKER_GENERIC_TOKENS):
@@ -1911,6 +2083,12 @@ def plan_kinetic_stage(
         stage = _plan_legacy_stage(audio_events, style_id, pipeline_dir, fps, broll_evidence_by_sent)
         if stage["groups"]:
             _retarget_legacy_composition(stage, audio_events["sentences"], profile)
+        if plan is not None and theme == "store_vibrant":
+            for it in stage["items"]:
+                if it.get("variant") != "bridge_bar" and not it.get("out_anim"):
+                    it["out_anim"] = "fade_out"
+                if it.get("variant") == "hero_lime" and _NUMBER_RUN.search(str(it.get("text_or_asset") or "")) and not it.get("element_choreo"):
+                    it["element_choreo"] = "number_roll"
     else:
         stage = {
             "style_id": style_id, "dna": get_style_dna(style_id), "enabled": True,

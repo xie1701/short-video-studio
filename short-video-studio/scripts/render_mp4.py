@@ -2763,7 +2763,15 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
                 continue
             ov_path_k: Optional[Path] = None
             is_vid_k = False
-            needs_mov_k = bool((not preview) and (str(k_elem.get("motion_mode") or "").strip() or k_elem.get("dim_after_sec") is not None))
+            needs_mov_k = bool(
+                (not preview)
+                and (
+                    str(k_elem.get("motion_mode") or "").strip()
+                    or k_elem.get("dim_after_sec") is not None
+                    or k_elem.get("element_choreo")
+                    or k_elem.get("beat_offsets")
+                )
+            )
             static_im = render_kinetic_stage_item_png(k_elem, font_candidates=tpl.get("font_candidates"))
             if static_im is None:
                 continue

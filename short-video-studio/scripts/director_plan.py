@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import statistics
 import sys
 import unicodedata
 from difflib import SequenceMatcher
@@ -21,14 +22,14 @@ DIRECTOR_PRIMITIVES = (
     "hero_intro_pop", "staged_3tier_build", "hero_anchor_plus_danmaku",
     "list_build_gather_dim_overlay", "entity_stack_plus_top", "num_anchor_dim_overlay",
     "inline_emphasis_cta", "plain_bridge", "negation_strike", "framework_pillar",
-    "concept_split_card", "clean_breath",
+    "concept_split_card", "semantic_diagram_card", "clean_breath",
 )
 THEME_PROFILES = ("store_vibrant", "business_editorial")
 
 _AUDIO_FILENAME = "03_audio_events.json"
 _COMPOSITION_FILENAME = "01b_composition_profile.json"
 _INVENTORY_FILENAME = "00_inventory.json"
-_CAMERAS = ("steady_hold", "slow_push_115", "side_shift_card")
+_CAMERAS = ("steady_hold", "slow_push_115", "side_shift_card", "punch_closeup", "slow_pull_115")
 _ROLES = ("hook", "setup", "twist", "framework", "proof", "cta")
 _BROLL_POLICIES = ("lock_aroll", "allow_verified_broll")
 _MUSIC_CUES = ("delay_entry", "silence_drop", "section_swell")
@@ -883,9 +884,192 @@ def _grounded_short_copy(text: str, sentences: List[Dict[str, Any]]) -> str:
     return "" if errors else phrase
 
 
+def _sentence_prosody_metrics(
+    sentences: List[Dict[str, Any]], audio_events: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """计算每句相对语速减速比、句内声学大停顿与能量/重音事件密度，实现真·以音定画。"""
+    cps_list: List[float] = []
+    raw_info: Dict[str, Dict[str, Any]] = {}
+    events = (audio_events or {}).get("events") or []
+    events_by_sid: Dict[str, int] = {}
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        if ev.get("type") in ("stress", "energy_peak", "emphasis"):
+            sid_e = str(ev.get("sentence_id") or "")
+            if sid_e:
+                events_by_sid[sid_e] = events_by_sid.get(sid_e, 0) + 1
+
+    for s in sentences:
+        sid = str(s.get("id") or "")
+        plain = re.sub(r"[\s,，。！？!?、；;：:「」『』“”]+", "", str(s.get("text") or ""))
+        dur = max(0.12, float(s.get("end_sec", 0.0)) - float(s.get("start_sec", 0.0)))
+        cps = len(plain) / dur if plain else 0.0
+        if len(plain) >= 5:
+            cps_list.append(cps)
+        ws = [w for w in (s.get("words") or []) if isinstance(w, dict)]
+        max_gap = max(
+            (float(ws[i + 1].get("start_sec", 0.0)) - float(ws[i].get("end_sec", 0.0)) for i in range(len(ws) - 1)),
+            default=0.0,
+        )
+        raw_info[sid] = {
+            "clean_len": len(plain),
+            "dur": dur,
+            "cps": cps,
+            "max_gap": max(0.0, max_gap),
+            "pause_after": max(0.0, float(s.get("pause_after_sec") or 0.0)),
+            "stress_count": events_by_sid.get(sid, 0),
+        }
+
+    median_cps = statistics.median(cps_list) if cps_list else 5.0
+    for info in raw_info.values():
+        slow_ratio = info["cps"] / max(1.0, median_cps) if info["clean_len"] >= 5 else 1.0
+        info["slowdown_ratio"] = round(slow_ratio, 3)
+        info["acoustic_emphasis"] = bool(
+            (slow_ratio <= 0.82 and info["clean_len"] >= 6)
+            or info["max_gap"] >= 0.28
+            or (info["stress_count"] >= 3 and slow_ratio <= 0.90)
+        )
+    return raw_info
+
+
+def _group_prosody(group: List[Dict[str, Any]], prosody: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    rows = [prosody.get(str(s.get("id") or ""), {}) for s in group]
+    return {
+        "slowdown_ratio": min((r.get("slowdown_ratio", 1.0) for r in rows), default=1.0),
+        "max_gap": max((r.get("max_gap", 0.0) for r in rows), default=0.0),
+        "stress_count": sum(int(r.get("stress_count", 0)) for r in rows),
+        "acoustic_emphasis": any(r.get("acoustic_emphasis", False) for r in rows),
+    }
+
+
+def _extract_trio_diagram(
+    text: str, sentences: List[Dict[str, Any]], gp: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """捕获「三元并列 + 反转结果」结构（如 `分工·计酬·监督` -> `一雇人 / ✕ 三样全碎`）。"""
+    clean = re.sub(r"[，。！？、；：,.!?;:\s]+", "", text)
+    if len(clean) < 10 or _NEGATION.search(text) or _ordinals(text):
+        return None
+    has_collapse = bool(re.search(r"(?:全碎|全无|全乱|崩|失灵|没了|瓦解|全毁|乱套)", clean))
+    if not (has_collapse or (gp.get("max_gap", 0.0) >= 0.30 and gp.get("slowdown_ratio", 1.0) <= 0.85)):
+        return None
+
+    trio: Optional[tuple[str, str, str]] = None
+    trio_end_in_clean = -1
+    m_punct = re.search(r"([\u4e00-\u9fff]{2})[、,，]\s*([\u4e00-\u9fff]{2})[、,，]\s*([\u4e00-\u9fff]{2})", text)
+    if m_punct:
+        trio = (m_punct.group(1), m_punct.group(2), m_punct.group(3))
+        trio_end_in_clean = clean.find("".join(trio)) + 6
+    else:
+        toks = [tk for tk in _offline_tokenizer()(clean) if tk.strip()]
+        bad_toks = {"我们", "你们", "他们", "自己", "大家", "什么", "这样", "那样", "天然", "就有", "就是", "因为", "所以", "两个", "三个"}
+        for i in range(len(toks) - 2):
+            a, b, c = toks[i], toks[i + 1], toks[i + 2]
+            if (len(a) == 2 and len(b) == 2 and len(c) == 2
+                    and all(_HAN.fullmatch(x) and x not in bad_toks for x in (a, b, c))
+                    and not any(ch in _CONNECTIVES for x in (a, b, c) for ch in x)):
+                idx_pos = clean.find(a + b + c)
+                if idx_pos >= 0:
+                    trio = (a, b, c)
+                    trio_end_in_clean = idx_pos + 6
+                    break
+    if not trio or trio_end_in_clean < 0:
+        return None
+
+    headline = f"{trio[0]}·{trio[1]}·{trio[2]}"
+    tail = clean[trio_end_in_clean:]
+    m_break = re.search(r"(一[\u4e00-\u9fff]{1,3}?)(三样[\u4e00-\u9fff]{1,3}|全[\u4e00-\u9fff]{1,3}|都[\u4e00-\u9fff]{1,3}|全碎|没了|乱套)", tail)
+    items: tuple[str, ...]
+    if m_break:
+        act_part = m_break.group(1).strip(_TRIM)
+        res_part = m_break.group(2).rstrip("了的嘅").strip(_TRIM)
+        items = (act_part, f"✕ {res_part}")
+    else:
+        short_res = _grounded_short_copy(tail, sentences)
+        items = (f"✕ {short_res}",) if short_res else ()
+    if not items or any(_display_length(x) > _DISPLAY_LIMIT for x in (headline, *items)):
+        return None
+    errs: List[str] = []
+    vis = _validate_copy(_visual_copy(headline, items, ""), "visual_copy", sentences, errs)
+    return None if errs else vis
+
+
+def _extract_couplet_diagram(
+    text: str, sentences: List[Dict[str, Any]], gp: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """捕获对称节奏双短句金句（如 `招人找能人 / 管人抄制度`），在无标点或有停顿口播中自动拆成双栏图卡。"""
+    if _NEGATION.search(text) or _CONTRAST.search(text) or _ordinals(text) or _CTA.search(text):
+        return None
+    clauses = [c.strip(_TRIM) for c in _CLAUSE.split(text) if c.strip(_TRIM)]
+    if len(clauses) == 2:
+        a, b = clauses
+        if (4 <= _display_length(a) <= 6 and 4 <= _display_length(b) <= 6
+                and abs(_display_length(a) - _display_length(b)) <= 1
+                and _HAN.fullmatch(a) and _HAN.fullmatch(b)):
+            anchor_match = any(
+                k < len(a) and k < len(b) and a[k] == b[k] and a[k] not in _CONNECTIVES
+                for k in range(min(3, len(a), len(b)))
+            )
+            if anchor_match or gp.get("acoustic_emphasis"):
+                errs: List[str] = []
+                vis = _validate_copy(_visual_copy("", (a, b), ""), "visual_copy", sentences, errs)
+                if not errs:
+                    return vis
+    elif len(clauses) == 1:
+        plain = clauses[0]
+        if 8 <= len(plain) <= 12 and _HAN.fullmatch(plain) and (gp.get("slowdown_ratio", 1.0) <= 0.84 or gp.get("acoustic_emphasis")):
+            toks = [tk for tk in _offline_tokenizer()(plain) if tk.strip()]
+            bounds = []
+            acc = 0
+            for tk in toks[:-1]:
+                acc += len(tk)
+                bounds.append(acc)
+            mid = len(plain) // 2
+            cands = sorted(
+                (k for k in bounds if 4 <= k <= 6 and 4 <= len(plain) - k <= 6),
+                key=lambda k: abs(k - mid),
+            )
+            for k in cands:
+                a, b = plain[:k], plain[k:]
+                anchor_match = any(
+                    idx_c < len(a) and idx_c < len(b) and a[idx_c] == b[idx_c] and a[idx_c] not in _CONNECTIVES
+                    for idx_c in range(min(3, len(a), len(b)))
+                )
+                if anchor_match:
+                    errs = []
+                    vis = _validate_copy(_visual_copy("", (a, b), ""), "visual_copy", sentences, errs)
+                    if not errs:
+                        return vis
+    return None
+
+
+def _extract_cta_copy(text: str, call: re.Match[str], sentences: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """提取带动作感与针对性的 CTA 文案（如 `私信我` + `答不上来`，告别孤零零二字 `私信`）。"""
+    raw = text[call.start():].split("，", 1)[0].split("。", 1)[0].strip(_TRIM)
+    cta_head = call[0]
+    m_ext = re.match(rf"{re.escape(cta_head)}(?:我|你|见|吧|领|聊|讲下?|扣\d+)?", raw)
+    if m_ext and 2 <= _display_length(m_ext.group(0)) <= _DISPLAY_LIMIT:
+        cta_head = m_ext.group(0)
+    pre_clause = text[:call.start()].strip(_TRIM)
+    sub = ""
+    m_trigger = re.search(r"(答不上来|搞不定|看不懂|记不住|不会做|没思路|拿不准)", pre_clause)
+    if m_trigger:
+        sub = m_trigger.group(1)
+    elif pre_clause and not re.search(r"(?:唔知道|不知道|如果|只要)", pre_clause[-6:]):
+        cand_sub = _short_conclusion(pre_clause, sentences, limit=_DISPLAY_LIMIT, allow_tail=True)
+        if cand_sub and cand_sub != cta_head and 2 <= _display_length(cand_sub) <= 5 and cand_sub[-1:] not in "的嘅了我":
+            sub = cand_sub
+    items = (sub,) if sub else ()
+    errs: List[str] = []
+    vis = _validate_copy(_visual_copy(cta_head, items, ""), "visual_copy", sentences, errs)
+    return _visual_copy(call[0]) if errs else vis
+
+
 def _propose(
     text: str, sentences: List[Dict[str, Any]], store: bool, opening: bool, behind: bool,
+    gp: Optional[Dict[str, Any]] = None,
 ) -> tuple[str, Dict[str, Any]]:
+    gp_info = gp or {}
     contrast = _CONTRAST.search(text)
     if "≠" in text or (contrast and contrast["core"]):
         if "≠" in text:
@@ -916,6 +1100,12 @@ def _propose(
         if visual["headline"]:
             return "framework_pillar", visual
 
+    if not store:
+        if trio_vis := _extract_trio_diagram(text, sentences, gp_info):
+            return "semantic_diagram_card", trio_vis
+        if couplet_vis := _extract_couplet_diagram(text, sentences, gp_info):
+            return "semantic_diagram_card", couplet_vis
+
     if store:
         lead = _LIST_LEAD.search(text)
         if lead and (items := _list_items(text[lead.end():], sentences, lead)):
@@ -927,7 +1117,7 @@ def _propose(
         if showcase and (title := _phrase(text[showcase.end():])):
             return "entity_stack_plus_top", _visual_copy(title)
     if call := _CTA.search(text):
-        return "inline_emphasis_cta", _visual_copy(call[0])
+        return "inline_emphasis_cta", _extract_cta_copy(text, call, sentences)
     if opening and store and (cue := _STORE_INTRO.search(text)):
         primitive = "hero_anchor_plus_danmaku" if behind else "hero_intro_pop"
         return primitive, _visual_copy(cue[0])
@@ -943,13 +1133,16 @@ _BREATH_GAP_SEC = 0.35
 _MAX_HIGHLIGHT_STREAK = 2
 
 
-def _choose_highlights(candidates: List[_Candidate], total: float) -> set[int]:
+def _choose_highlights(
+    candidates: List[_Candidate], total: float, prosody: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> set[int]:
     if not total:
         return set()
     priorities = {
-        "negation_strike": 110, "concept_split_card": 105, "framework_pillar": 58,
-        "list_build_gather_dim_overlay": 100, "num_anchor_dim_overlay": 90, "entity_stack_plus_top": 35,
-        "hero_anchor_plus_danmaku": 45, "hero_intro_pop": 20, "inline_emphasis_cta": 24,
+        "negation_strike": 110, "semantic_diagram_card": 108, "concept_split_card": 105,
+        "framework_pillar": 58, "list_build_gather_dim_overlay": 100, "num_anchor_dim_overlay": 90,
+        "entity_stack_plus_top": 35, "hero_anchor_plus_danmaku": 45, "hero_intro_pop": 20,
+        "inline_emphasis_cta": 40,
     }
 
     def rank(state: _HighlightState) -> tuple:
@@ -968,13 +1161,16 @@ def _choose_highlights(candidates: List[_Candidate], total: float) -> set[int]:
             choices[bucket] = state
 
     seen: Dict[str, int] = {}
+    p_map = prosody or {}
     for index, (sentences, primitive, visual) in enumerate(candidates):
         if primitive in _QUIET_PRIMITIVES or not (visual["headline"] or visual["items"] or visual["accent_token"]):
             continue
         start, end = _span(sentences)
         repetitions = seen.get(primitive, 0)
         seen[primitive] = repetitions + 1
-        priority = priorities.get(primitive, 0) // min(3, repetitions + 1)
+        gp = _group_prosody(sentences, p_map) if p_map else {}
+        acoustic_bonus = 18 if gp.get("acoustic_emphasis") else 0
+        priority = priorities.get(primitive, 0) // min(3, repetitions + 1) + acoustic_bonus
         previous_choices = choices.values()
         choices = {}
         for seconds, previous_end, streak, importance, selected in previous_choices:
@@ -1075,7 +1271,7 @@ def generate_deterministic_director_plan(
     inventory: Optional[Dict[str, Any]] = None,
     composition_profile: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """用锁定原话、构图画像和实拍素材离线编排总谱。"""
+    """用锁定原话、声学韵律特征、构图画像和实拍素材离线编排总谱。"""
     sentences, total = _timeline(audio_events)
     pool = _broll_pool(inventory)
     store_cues = set(_STORE_TERMS.findall("，".join(s.get("text", "") for s in sentences)))
@@ -1085,6 +1281,7 @@ def generate_deterministic_director_plan(
         or bool(store_cues and (len(pool) >= 2 or theme_hint == "store_vibrant"))
         or bool(len(store_cues) >= 2 and pool)
     )
+    prosody = _sentence_prosody_metrics(sentences, audio_events)
 
     candidates: List[_Candidate] = []
     index = 0
@@ -1092,7 +1289,10 @@ def generate_deterministic_director_plan(
         end = _group_end(sentences, index, store)
         group = sentences[index:end]
         text = _group_text(group)
-        primitive, visual = _propose(text, group, store, not index, _allows_behind_person(composition_profile, group))
+        gp = _group_prosody(group, prosody)
+        primitive, visual = _propose(
+            text, group, store, not index, _allows_behind_person(composition_profile, group), gp=gp,
+        )
         if visual["headline"] or visual["items"] or visual["accent_token"]:
             # 摘词候选仍需按同一套溯源规则过一遍，避免数字在截取时失掉单位或词义。
             copy_errors: List[str] = []
@@ -1102,19 +1302,38 @@ def generate_deterministic_director_plan(
         candidates.append((group, primitive, visual))
         index = end
 
-    highlights = _choose_highlights(candidates, total)
+    highlights = _choose_highlights(candidates, total, prosody=prosody)
     roles = {
-        "negation_strike": "twist", "concept_split_card": "twist", "framework_pillar": "framework",
-        "list_build_gather_dim_overlay": "proof", "num_anchor_dim_overlay": "proof", "inline_emphasis_cta": "cta",
+        "negation_strike": "twist", "concept_split_card": "twist", "semantic_diagram_card": "twist",
+        "framework_pillar": "framework", "list_build_gather_dim_overlay": "proof",
+        "num_anchor_dim_overlay": "proof", "inline_emphasis_cta": "cta",
     }
     acts = []
     had_breath = False
+    end_zoom = 1.0
+    prev_cam = "steady_hold"
     for index, (group, primitive, visual) in enumerate(candidates):
         highlight = index in highlights
+        dur_act = max(0.1, _span(group)[1] - _span(group)[0])
         if highlight:
             role = "hook" if index == 0 else roles.get(primitive, "proof")
-            intensity = 0.92 if primitive in ("negation_strike", "concept_split_card") else 0.73
-            camera = "side_shift_card" if primitive == "concept_split_card" else "slow_push_115"
+            intensity = 0.92 if primitive in ("negation_strike", "concept_split_card", "semantic_diagram_card") else 0.73
+            if primitive == "concept_split_card":
+                camera = "side_shift_card"
+                end_zoom = 1.15
+            elif (not store and role == "twist" and prev_cam != "punch_closeup"
+                  and (index > 0 or dur_act >= 2.0) and primitive in ("negation_strike", "semantic_diagram_card")):
+                camera = "punch_closeup"
+                end_zoom = 1.16
+            elif end_zoom <= 1.02:
+                camera = "slow_push_115"
+                end_zoom = 1.15
+            elif dur_act >= 1.5 and prev_cam != "slow_pull_115":
+                camera = "slow_pull_115"
+                end_zoom = 1.00
+            else:
+                camera = "steady_hold"
+                end_zoom = 1.00
             budget = min(3, max(1, len(visual["items"]))) if primitive == "negation_strike" else 1
         else:
             breath = index - 1 in highlights or not had_breath
@@ -1122,9 +1341,23 @@ def generate_deterministic_director_plan(
             primitive = "clean_breath" if breath else "plain_bridge"
             visual, role, budget = _visual_copy(), "setup", 0
             intensity = 0.18 if breath else 0.31
-            camera = "slow_push_115" if breath else "steady_hold"
+            if breath:
+                if end_zoom > 1.02:
+                    camera = "slow_pull_115"
+                    end_zoom = 1.00
+                elif index + 1 < len(candidates) and (index + 1) in highlights:
+                    # 下一幕马上要推近或侧移，呼吸幕先稳住等上一拍完全收稳，绝不连续连推弹回
+                    camera = "steady_hold"
+                    end_zoom = 1.00
+                else:
+                    camera = "slow_push_115"
+                    end_zoom = 1.15
+            else:
+                camera = "steady_hold"
+                end_zoom = 1.00
+        prev_cam = camera
         allows_broll = store and bool(pool) and role != "hook" and primitive not in (
-            "clean_breath", "hero_anchor_plus_danmaku", "negation_strike", "concept_split_card",
+            "clean_breath", "hero_anchor_plus_danmaku", "negation_strike", "concept_split_card", "semantic_diagram_card",
         )
         acts.append({
             "act_id": f"act_{index + 1:02d}",

@@ -1270,6 +1270,24 @@ def split_sentence_into_chunks(
     else:
         raw_kws = [str(k) for k in (sent.get("keywords") or []) if str(k).strip()]
     sent_kws = _clean_display_keywords(raw_kws, raw_sent_text)
+    if words and sent_kws:
+        # 若上游塞入跨越真实声学气口 (>=0.10s) 的碎词（如「公司名|改」中间停顿 0.18s），绝不让其充当保护词锁死断句
+        clean_sent_str = "".join(str(w.get("word") or "") for w in words)
+        word_end_gaps: List[Tuple[int, float]] = []
+        acc_c = 0
+        for wa, wb in zip(words, words[1:]):
+            acc_c += len(str(wa.get("word") or ""))
+            g_w = float(wb.get("start_sec", 0.0)) - float(wa.get("end_sec", 0.0))
+            if g_w >= 0.10:
+                word_end_gaps.append((acc_c, g_w))
+        if word_end_gaps and clean_sent_str:
+            filtered_kws: List[str] = []
+            for kw in sent_kws:
+                kw_pos = clean_sent_str.find(kw)
+                if kw_pos >= 0 and any(kw_pos < gp < kw_pos + len(kw) for gp, _ in word_end_gaps):
+                    continue
+                filtered_kws.append(kw)
+            sent_kws = filtered_kws
     if words:
         if any(w.get("is_keyword") for w in words) and sent_kws == raw_kws:
             pass

@@ -544,9 +544,17 @@ def _build_eye_locked_vf(
 def _apply_director_cameras(
     clips: List[Dict[str, Any]], acts: List[Dict[str, Any]],
     media_by_mp4: Dict[str, Dict[str, Any]], allow_punch: bool,
+    composition_profile: Optional[Dict[str, Any]] = None,
 ) -> None:
     def overlap(clip: Dict[str, Any], act: Dict[str, Any]) -> float:
         return min(clip["timeline_out_sec"], act["end_sec"]) - max(clip["timeline_in_sec"], act["start_sec"])
+
+    profile_faces: Dict[str, Dict[str, float]] = {}
+    for row in (composition_profile or {}).get("aroll_profiles") or []:
+        if isinstance(row, dict) and isinstance(row.get("face_bbox"), dict):
+            mp = str(row.get("media_path") or "")
+            if mp:
+                profile_faces[Path(mp).name] = row["face_bbox"]
 
     for clip in clips:
         if clip["track_role"] != "a_roll" or clip.get("pip_layout"):
@@ -562,18 +570,30 @@ def _apply_director_cameras(
 
         media = media_by_mp4.get(str(clip["media_path"])) or {}
         face = _first_face_bbox(media.get("faces"))
+        if face is None:
+            cand_fb = profile_faces.get(Path(str(clip["media_path"])).name)
+            if cand_fb:
+                face = cand_fb
         eye = media.get("eye_anchor")
         if not eye and face:
             eye = {"cx": face["x"] + face["w"] / 2, "cy": face["y"] + face["h"] * 0.36}
+        if intent == "punch_closeup":
+            clip["vf_extra"] = _build_eye_locked_vf(eye, zoom=1.16, face=face)
+            clip["punch_in_zoom"] = 1.16
+            continue
         # Use the same phase after a sentence cut inside the act.
         offset = clip["timeline_in_sec"] - act["start_sec"]
         duration = max(0.1, act["end_sec"] - act["start_sec"])
         u = f"clip((t+({offset:.6f}))/{duration:.6f},0,1)"
         smooth = f"({u}*{u}*(3-2*{u}))"
-        shift = act["side_shift_x"] if intent == "side_shift_card" else 0.0
-        clip["vf_extra"] = _build_eye_locked_vf(eye, progress=smooth, shift_x=shift, face=face)
+        if intent == "slow_pull_115":
+            rev_smooth = f"(1-{smooth})"
+            clip["vf_extra"] = _build_eye_locked_vf(eye, progress=rev_smooth, shift_x=0.0, face=face)
+        else:
+            shift = act["side_shift_x"] if intent == "side_shift_card" else 0.0
+            clip["vf_extra"] = _build_eye_locked_vf(eye, progress=smooth, shift_x=shift, face=face)
         # The legacy jump-cut zoom remains disabled for zero-keyframe style templates.
-        if allow_punch:
+        if allow_punch and intent != "slow_pull_115":
             clip["punch_in_zoom"] = 1.15
 
 
@@ -3588,7 +3608,9 @@ def run_step4(
     if director_acts and not has_broll_source and (
         kinetic_stage_plan["theme_profile"] == "business_editorial" or len(usable_arolls) == 1
     ):
-        _apply_director_cameras(clips, director_acts, media_by_mp4, allow_punch)
+        _comp_prof_p = pipeline_dir / "01b_composition_profile.json"
+        _comp_prof = read_json(_comp_prof_p) if _comp_prof_p.is_file() else None
+        _apply_director_cameras(clips, director_acts, media_by_mp4, allow_punch, composition_profile=_comp_prof)
 
     # 转场 / 叠加层 / 画面特效：step4 不铺它们（铺在套用端），但要把「这一片一处都没套」和为什么记下来，
     # 否则报告里看不出到底是「没这个能力」还是「按条件拒绝了」。

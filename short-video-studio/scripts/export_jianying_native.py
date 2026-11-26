@@ -495,7 +495,7 @@ def export_native_draft(pipeline_dir: Path, out_dir: Optional[Path] = None) -> D
     if ks_block.get("enabled") and ks_block.get("items"):
         from render_template_overlays import kinetic_item_paint
 
-        default_lanes = {"negation_line": 2, "pillar_badge": 1, "concept_card": 1, "editorial_ticker": 4}
+        default_lanes = {"negation_line": 2, "pillar_badge": 1, "concept_card": 1, "semantic_diagram_card": 1, "editorial_ticker": 4}
         for kit in ks_block.get("items") or []:
             variant = kit.get("variant")
             ktxt = str(kit.get("text_or_asset") or "").strip()
@@ -503,7 +503,7 @@ def export_native_draft(pipeline_dir: Path, out_dir: Optional[Path] = None) -> D
             parts = kit.get("inline_parts")
             paint = kinetic_item_paint(kit)
             size = float(kit.get("font_size_units") or 16.0)
-            if variant == "concept_card" and card_lines:
+            if variant in ("concept_card", "semantic_diagram_card") and card_lines:
                 ktxt = "\n".join(card_lines)
                 parts = [
                     {"text": ("\n" if idx else "") + line,
@@ -533,10 +533,10 @@ def export_native_draft(pipeline_dir: Path, out_dir: Optional[Path] = None) -> D
             )
             if paint:
                 mat["background_width"] = {
-                    "pillar_badge": 0.19, "concept_card": 0.46, "editorial_ticker": 0.22,
+                    "pillar_badge": 0.19, "concept_card": 0.46, "semantic_diagram_card": 0.56, "editorial_ticker": 0.22,
                 }.get(variant, 0.62)
                 mat["background_height"] = {
-                    "pillar_badge": 0.05, "concept_card": 0.14, "editorial_ticker": 0.035,
+                    "pillar_badge": 0.05, "concept_card": 0.14, "semantic_diagram_card": 0.18, "editorial_ticker": 0.035,
                 }.get(variant, 0.075)
             texts.append(mat)
             ks_lanes_segs.setdefault(lane, []).append(seg)
