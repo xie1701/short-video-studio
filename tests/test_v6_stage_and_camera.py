@@ -9,7 +9,7 @@ sys.path.insert(0, str(SCRIPTS))
 
 from common import find_bin, write_json
 from director_plan import validate_director_plan
-from kinetic_choreographer import plan_kinetic_stage
+from kinetic_choreographer import _director_sfx, plan_kinetic_stage
 from step4_build_edl import run_step4
 from step5_subtitles import run_step5
 from step6_packaging import run_step6
@@ -192,6 +192,72 @@ class V6StageAndCameraTests(unittest.TestCase):
         self.assertEqual(len(stage["matting_windows"]), 1)
         self.assertFalse(any(it["sfx_role"] for it in stage["items"]))
 
+
+    def test_director_sfx_keeps_highlights_at_subframe_act_starts(self):
+        starts = (18.905, 39.445, 48.815, 60.049, 74.636)
+        for has_act_id in (True, False):
+            with self.subTest(has_act_id=has_act_id):
+                acts, items = [], []
+                for index, start in enumerate(starts):
+                    frame = round(start * FPS)
+                    self.assertLess(frame / FPS, start)
+                    highlight = act(index + 1, [], "hero_intro_pop", budget=1)
+                    if has_act_id:
+                        # An explicit act must win even if the stored timestamp lands in the previous act.
+                        previous = act(index + 1 + len(starts), [], "clean_breath")
+                        acts.append(dict(previous, start_sec=start - 1, end_sec=start))
+                    acts.append(dict(highlight, start_sec=start, end_sec=start + 1))
+                    item = {
+                        "start_frame": frame, "start_sec": start - 0.001 if index == 0 else start, "variant": "hero_lime",
+                        "sfx_role": "punch", "jianying_anim_key": "in:缩小 II",
+                    }
+                    if has_act_id:
+                        item["act_id"] = highlight["act_id"]
+                    items.append(item)
+
+                _director_sfx(items, acts, 78.0, FPS)
+
+                self.assertEqual([item["sfx_role"] for item in items], ["punch"] * len(starts))
+                self.assertEqual([item["start_frame"] for item in items], [round(t * FPS) for t in starts])
+
+    def test_store_fills_sparse_director_budget_from_retained_highlight_text(self):
+        sentences = make_sentences(Path("store.mp4"), [
+            "今日带大家行下呢间茶楼", "街坊早上过来饮一壶热茶",
+            "好多人觉得饮茶太贵不想入来", "招牌虾饺一笼卖二十六元",
+            "楼上坐得舒服窗边有自然光", "最难做到的是皮薄馅足",
+            "师傅每日现包三十笼点心", "等两分钟就可以出炉",
+            "好多人觉得自己在家难做", "这边是后厨出餐的位置",
+            "当天的叉烧要烤三次才入味", "呢档蒸排骨的味道好香",
+            "最怕茶底泡得太淡没有香味", "你最想试边样留言话我知",
+        ], seconds=4.0)
+        audio = {"sentences": sentences, "locked_duration_sec": 58.0}
+        highlights = {0: "带大家行下", 3: "招牌虾饺", 11: "蒸排骨"}
+        acts = [
+            act(i + 1, [sentence["id"]], "hero_intro_pop", highlights[i], budget=1)
+            if i in highlights else act(i + 1, [sentence["id"]], "clean_breath" if i == 2 else "plain_bridge")
+            for i, sentence in enumerate(sentences)
+        ]
+        plan = {"theme_profile": "store_vibrant", "source": "fallback_deterministic", "acts": acts}
+        validated = validate_director_plan(plan, audio)
+        self.assertTrue(validated["ok"], validated["errors"])
+        legacy_by_id = {item["id"]: item for item in plan_kinetic_stage(audio)["items"]}
+        self.assertTrue(any(item["sfx_role"] and 8.0 <= item["start_sec"] < 12.0 for item in legacy_by_id.values()))
+
+        stage = plan_kinetic_stage(audio, director_plan=validated["sanitized_plan"])
+        cues = sorted((item for item in stage["items"] if item["sfx_role"]), key=lambda item: item["start_frame"])
+        self.assertEqual(stage["sfx_budget"], 12)
+        self.assertLessEqual(6, len(cues))
+        self.assertLessEqual(len(cues), stage["sfx_budget"])
+        self.assertTrue(all(b["start_frame"] - a["start_frame"] >= 36 for a, b in zip(cues, cues[1:])))
+        for i in highlights:
+            self.assertEqual(sum(sentences[i]["start_sec"] <= cue["start_sec"] < sentences[i]["end_sec"]
+                                 for cue in cues), 1)
+        for cue in cues:
+            self.assertNotIn(cue["sfx_role"], {"ding", "chime"})
+            self.assertNotEqual(cue["variant"], "bridge_bar")
+            self.assertFalse(8.0 <= cue["start_sec"] < 12.0)
+            if not any(sentences[i]["start_sec"] <= cue["start_sec"] < sentences[i]["end_sec"] for i in highlights):
+                self.assertEqual(cue["sfx_role"], legacy_by_id[cue["id"]]["sfx_role"])
 
     def test_store_keeps_verified_cutaway_only_in_an_allowed_act(self):
         with tempfile.TemporaryDirectory() as directory:

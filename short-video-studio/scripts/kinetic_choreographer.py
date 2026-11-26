@@ -1499,45 +1499,68 @@ def _director_items(
 
 def _director_sfx(
     items: List[Dict[str, Any]], acts: List[Dict[str, Any]], duration: float, fps: int,
+    *, theme: str = "business_editorial",
 ) -> int:
-    # Prefer high-information accents. Retry earliest-first if priorities would leave a sparse cut.
+    act_by_id = {act["act_id"]: act for act in acts}
+    half_frame_sec = 0.5 / fps
     candidates = []
+    retained_candidates = []
     for item in items:
-        frame = item["start_frame"]
-        time = frame / fps
-        act = next((a for a in acts if a["start_sec"] <= time < a["end_sec"]), None)
         role = item["sfx_role"]
-        if act and act["primitive"] not in _QUIET_STAGE_PRIMITIVES and act["sfx_budget"] > 0 and role:
-            if role not in BANNED_SFX_ROLES:
-                priority = (
-                    act["dramatic_role"] == "hook",
-                    role in {"punch", "boom_heavy", "boom_hollow", "cash_register", "pop"},
-                    act["emotion_intensity"],
-                )
-                candidates.append((priority, frame, act["act_id"], item, role))
         item.update(sfx_role=None, paired_jianying_sfx="")
+        if not role or role in BANNED_SFX_ROLES or item.get("variant") == "bridge_bar":
+            continue
+
+        item_act_id = item.get("act_id")
+        act = act_by_id.get(item_act_id)
+        if not item_act_id:
+            # Match legacy items on their timeline time. Quantized frames are for cue spacing.
+            time = item["start_sec"]
+            act = next((a for a in acts if a["start_sec"] - half_frame_sec <= time < a["end_sec"]), None)
+        if act is None:
+            continue
+
+        priority = (
+            act["dramatic_role"] == "hook",
+            role in {"punch", "boom_heavy", "boom_hollow", "cash_register", "pop"},
+            act["emotion_intensity"],
+        )
+        candidate = (priority, item["start_frame"], act["act_id"], item, role)
+        if act["primitive"] not in _QUIET_STAGE_PRIMITIVES and act["sfx_budget"] > 0:
+            candidates.append(candidate)
+        elif theme == "store_vibrant" and not item_act_id and act["primitive"] == "plain_bridge":
+            retained_candidates.append(candidate)
 
     budgets = {act["act_id"]: act["sfx_budget"] for act in acts}
     gap_frames = math.ceil(_DIRECTOR_SFX_GAP_SEC * fps)
     limit = max(6, min(14, math.ceil(duration / 5.0)))
+
+    def has_gap(frame: int, selected: List[tuple]) -> bool:
+        return all(abs(frame - row[1]) >= gap_frames for row in selected)
 
     def choose(ordered: List[tuple]) -> List[tuple]:
         available = budgets.copy()
         selected: List[tuple] = []
         for row in ordered:
             _, frame, act_id, _, _ = row
-            if available[act_id] > 0 and all(abs(frame - other[1]) >= gap_frames for other in selected):
+            if available[act_id] > 0 and has_gap(frame, selected):
                 selected.append(row)
                 available[act_id] -= 1
                 if len(selected) == limit:
                     break
         return selected
 
+    # Prefer high-information accents, then retry earliest-first if priorities leave a sparse cut.
     selected = choose(sorted(candidates, key=lambda row: (row[0], -row[1]), reverse=True))
     if len(selected) < limit:
         earliest = choose(sorted(candidates, key=lambda row: row[1]))
         if len(earliest) > len(selected):
             selected = earliest
+    for row in sorted(retained_candidates, key=lambda row: row[1]):
+        if len(selected) >= limit:
+            break
+        if has_gap(row[1], selected):
+            selected.append(row)
     for _, _, _, item, role in selected:
         item["sfx_role"] = role
         anim = ANIM_SFX_BINDING_TABLE.get(item["jianying_anim_key"]) or {}
@@ -1655,7 +1678,7 @@ def plan_kinetic_stage(
             })
 
     duration = float(audio_events.get("locked_duration_sec") or max((a["end_sec"] for a in acts), default=0.0))
-    limit = _director_sfx(stage["items"], acts, duration, fps)
+    limit = _director_sfx(stage["items"], acts, duration, fps, theme=theme)
     groups = stage["groups"]
     quiet = sum(g["pattern"] in _QUIET_STAGE_PRIMITIVES for g in groups)
     locked_spans = [(g["start_sec"], g["end_sec"]) for g in groups if g["a_roll_locked"]]
