@@ -1644,7 +1644,8 @@ def run_step5(
     _kinetic_stage_suppressed = False
     try:
         from kinetic_choreographer import is_kinetic_stage_style
-        _kinetic_stage_suppressed = bool(is_kinetic_stage_style(template_id))
+        _has_dir_plan = (Path(pipeline_dir) / "03b_director_plan.json").is_file()
+        _kinetic_stage_suppressed = bool(is_kinetic_stage_style(template_id, enable_v6_director=_has_dir_plan))
     except Exception:
         _kinetic_stage_suppressed = False
 

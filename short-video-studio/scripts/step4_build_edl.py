@@ -814,6 +814,7 @@ def run_step4(
     grammar: str = "style",
     allow_broll_mismatch: bool = False,
     enforce_broll_gate: bool = False,
+    enable_v6_director: bool = False,
 ) -> Dict[str, Any]:
     raw_jc = int(j_cut_frames)
     j_cut_frames = 0 if raw_jc <= 0 else max(2, min(4, raw_jc))
@@ -841,10 +842,13 @@ def run_step4(
     else:
         print("[step4] [WARN] 没有可用的画面描述（00_inventory/00_visual_index 缺 description），"
               "B-roll 只能按质量轮转，对位会大面积记 none")
-    kinetic_stage_mode = bool(style_id and kinetic_choreographer.is_kinetic_stage_style(style_id))
+    kinetic_stage_mode = bool(
+        style_id and kinetic_choreographer.is_kinetic_stage_style(style_id, enable_v6_director=enable_v6_director)
+    )
     kinetic_stage_plan: Dict[str, Any] = (
         kinetic_choreographer.plan_kinetic_stage(
             audio_events, style_id=style_id, pipeline_dir=pipeline_dir, fps=fps,
+            enable_v6_director=enable_v6_director,
         )
         if kinetic_stage_mode
         else {"enabled": False, "groups": [], "items": [], "matting_windows": [], "stats": {}}

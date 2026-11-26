@@ -1045,6 +1045,25 @@ def _enforce_style_lock(pipeline_dir: Path, allow_deviation: bool = False) -> No
     sys.exit(3)
 
 
+def _v6_style_active(
+    style_id: Optional[str],
+    v6_director: bool = False,
+    no_v6_director: bool = False,
+    director_plan: Optional[str] = None,
+) -> bool:
+    """判断本次运行是否启用 V6/V7 导演与动态花字：style_02 默认启用，其他受支持风格需显式开启。"""
+    if no_v6_director:
+        return False
+    sid = str(style_id or "").strip()
+    if sid == "style_02":
+        return True
+    if not (v6_director or director_plan):
+        return False
+    from kinetic_choreographer import DIRECTOR_ENABLED_STYLES
+
+    return sid in DIRECTOR_ENABLED_STYLES
+
+
 def _v6_director_enabled(pipeline_dir: Path, v6_director: bool, style_id: Optional[str] = None) -> bool:
     """V6 是否接管画面：显式开启、已落盘导演总谱，或 style_02 的动态舞台已开启。"""
     if v6_director or (pipeline_dir / "03b_director_plan.json").is_file():
@@ -1236,6 +1255,7 @@ def run_visual_to_delivery(
     agent: Optional[str] = None,
     allow_style_deviation: bool = False,
     allow_broll_mismatch: bool = False,
+    v6_director: bool = False,
     no_v6_director: bool = False,
     director_plan: Optional[str] = None,
     director_review_pause: bool = False,
@@ -1260,8 +1280,9 @@ def run_visual_to_delivery(
         print(f"[pipeline] [WARN] 口播干净度复核未执行（{_ce}）")
 
     edl_p = pipeline_dir / "04_edl.json"
+    v6_active = _v6_style_active(style_id, v6_director, no_v6_director, director_plan)
     v6_ready = False
-    if style_id == "style_02" and not no_v6_director and (pipeline_dir / "03_audio_events.json").is_file():
+    if v6_active and (pipeline_dir / "03_audio_events.json").is_file():
         v6_info = _prepare_v6_director(
             pipeline_dir, style_id, director_plan, director_review_pause, keep_edl,
         )
@@ -1270,7 +1291,7 @@ def run_visual_to_delivery(
         v6_ready = True
     elif director_plan:
         raise RuntimeError(
-            "--director-plan 需要 style_02 且 03_audio_events.json 已锁定，并且没有加 --no-v6-director"
+            "--director-plan 需要 style_01/style_02/style_03/style_17 且 03_audio_events.json 已锁定，并且没有加 --no-v6-director"
         )
 
     def _rebuild_visuals(keep_existing_edl: bool) -> None:
@@ -1290,8 +1311,7 @@ def run_visual_to_delivery(
                 write_json(edl_p, edl_existing)
             print("[pipeline] --keep-edl 已启用：保留已有分镜选镜，仅刷新字幕/花字/调色/封面视觉层。")
         else:
-            run_step4(
-                pipeline_dir,
+            step4_kwargs: Dict[str, Any] = dict(
                 track=track,
                 j_cut_frames=j_cut_frames,
                 prefer_broll_only=prefer_broll_only,
@@ -1302,12 +1322,18 @@ def run_visual_to_delivery(
                 enforce_broll_gate=True,
                 allow_broll_mismatch=allow_broll_mismatch,
             )
+            if v6_ready and style_id != "style_02":
+                step4_kwargs["enable_v6_director"] = True
+            run_step4(pipeline_dir, **step4_kwargs)
         _record_cli_style_choices(pipeline_dir, style_id, subtitle_template, lut_name)
         run_step5(pipeline_dir, track=track, template_id=subtitle_template)
-        run_step6(
-            pipeline_dir, style_id=style_id, no_flower_text=no_flower_text,
+        step6_kwargs: Dict[str, Any] = dict(
+            style_id=style_id, no_flower_text=no_flower_text,
             keep_manual_texts=keep_existing_edl and keep_edl, no_v6_director=no_v6_director,
         )
+        if v6_ready and style_id != "style_02":
+            step6_kwargs["enable_v6_director"] = True
+        run_step6(pipeline_dir, **step6_kwargs)
         write_source_review(pipeline_dir)
         run_step7(pipeline_dir, track=track, lut_name=lut_name, style_id=style_id)
         _enforce_style_lock(pipeline_dir, allow_deviation=allow_style_deviation)
@@ -1346,7 +1372,7 @@ def run_visual_to_delivery(
         )
 
     result = _render_and_verify()
-    if not (auto_critic_revise and style_id == "style_02" and not no_v6_director):
+    if not (auto_critic_revise and v6_active):
         return result
     return _revise_once_with_critic(pipeline_dir, result, _rebuild_visuals, _render_and_verify)
 
@@ -1457,6 +1483,10 @@ def main() -> None:
     g_visual.add_argument("--licenses-json", help="可选：外部资产商用授权清单 licenses.json 路径")
     g_visual.add_argument("--exports", choices=EXPORT_CHOICES, help="auto 尝试两种工程并允许 MP4 降级，显式选择的工程进入必检")
     g_visual.add_argument("--agent", help="可选：显式指定当前运行智能体标识（如 cola 自动联动内置封面技能）")
+    g_visual.add_argument(
+        "--v6-director", action="store_true",
+        help="显式启用 V6/V7 先音后画导演与动态花字舞台（默认 style_02 开启，传此参数可解锁 style_01/03/17）",
+    )
     g_visual.add_argument(
         "--no-v6-director", action="store_true",
         help="显式关闭 V6 构图/导演阶段，强制退回 V5 既有规则路径（仅影响 style_02）",
@@ -1735,7 +1765,7 @@ def main() -> None:
             ws=ws,
             sync_window=args.sync_window,
             style_id=active_style_id,
-            v6_director=bool(active_style_id == "style_02" and not args.no_v6_director),
+            v6_director=_v6_style_active(active_style_id, args.v6_director, args.no_v6_director, args.director_plan),
             v6_disabled=args.no_v6_director,
         )
     elif args.mode == "knowledge-animation":
@@ -1956,6 +1986,7 @@ def main() -> None:
             keep_edl=args.keep_edl,
             no_flower_text=args.no_flower_text,
             agent=args.agent,
+            v6_director=args.v6_director,
             no_v6_director=args.no_v6_director,
             director_plan=args.director_plan,
             director_review_pause=args.director_review_pause,
@@ -2035,6 +2066,7 @@ def main() -> None:
             keep_edl=args.keep_edl,
             no_flower_text=args.no_flower_text,
             agent=args.agent,
+            v6_director=args.v6_director,
             no_v6_director=args.no_v6_director,
             director_plan=args.director_plan,
             director_review_pause=args.director_review_pause,
@@ -2148,6 +2180,7 @@ def main() -> None:
             keep_edl=args.keep_edl,
             no_flower_text=args.no_flower_text,
             agent=args.agent,
+            v6_director=args.v6_director,
             no_v6_director=args.no_v6_director,
             director_plan=args.director_plan,
             director_review_pause=args.director_review_pause,

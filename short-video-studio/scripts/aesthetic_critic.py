@@ -62,7 +62,7 @@ def _read_object(path: Path) -> Dict[str, Any]:
 def _read_edit(pipeline_dir: Path) -> Dict[str, Any]:
     files = {
         "plan": PLAN_FILENAME, "profile": PROFILE_FILENAME, "audio": "03_audio_events.json",
-        "package": "06_packaging.json", "mix": "08_mix_metrics.json", "qa": "10_qa_report.json",
+        "subtitles": "05_subtitles.json", "package": "06_packaging.json", "mix": "08_mix_metrics.json", "qa": "10_qa_report.json",
     }
     documents = {key: _read_object(pipeline_dir / name) for key, name in files.items()}
     documents["stage"] = documents["package"].get("kinetic_stage") or {}
@@ -302,6 +302,52 @@ def score_aesthetic_review(pipeline_dir: Path) -> Dict[str, Any]:
         if top is not None:
             patches.append({"type": "add_silence_drop", "act_id": top["act_id"]})
 
+    # V7 审片去水分诊断：跨幕花字重叠、相邻连推弹回、字幕破词/跨句序数吞并、音画逐字咬合率
+    fg_items = [
+        it for it in highlights
+        if it.get("z_layer", "foreground") == "foreground"
+        and it.get("variant") not in {"bridge_bar", "editorial_ticker", "pillar_badge"}
+    ]
+    cross_overlaps = 0
+    for i_a, ia in enumerate(fg_items):
+        ga = str(ia.get("group_id") or ia.get("act_id") or "")
+        if not ga:
+            continue
+        sa, ea = float(ia.get("start_sec") or 0.0), float(ia.get("end_sec") or 0.0)
+        ya = float(ia.get("y_norm") or 0.0)
+        for ib in fg_items[i_a + 1 :]:
+            gb = str(ib.get("group_id") or ib.get("act_id") or "")
+            if not gb or gb == ga:
+                continue
+            sb, eb = float(ib.get("start_sec") or 0.0), float(ib.get("end_sec") or 0.0)
+            if (min(ea, eb) - max(sa, sb)) > 0.15 and abs(ya - float(ib.get("y_norm") or 0.0)) < 0.14:
+                cross_overlaps += 1
+
+    act_rows = list(plan.get("acts") or [])
+    camera_snapbacks = sum(
+        1 for a, b in zip(act_rows, act_rows[1:])
+        if a.get("camera_intent") == "slow_push_115" and b.get("camera_intent") == "slow_push_115"
+    )
+    sub_entries = [
+        e for e in (docs.get("subtitles", {}).get("entries") or [])
+        if str(e.get("text") or "").strip() and (not e.get("suppressed") or e.get("suppress_reason") == "kinetic_typography_stage")
+    ]
+    sub_break_issues = 0
+    for idx_s, se in enumerate(sub_entries):
+        ptxt = str(se.get("text") or "").replace(" ", "")
+        if len(ptxt) >= 6 and ptxt.endswith(("第一", "第二", "第三", "第四")):
+            sub_break_issues += 1
+        if idx_s + 1 < len(sub_entries):
+            ntxt = str(sub_entries[idx_s + 1].get("text") or "").replace(" ", "")
+            joint = ptxt[-4:] + ntxt[:4]
+            cut_i = len(ptxt[-4:])
+            for term_p in ("百度文库", "管理制度", "第一反应", "哪一环", "发给", "别人", "喺𠮶度"):
+                p_idx = joint.find(term_p)
+                if p_idx >= 0 and p_idx < cut_i < p_idx + len(term_p):
+                    sub_break_issues += 1
+    beat_synced = sum(1 for item in highlights if item.get("beat_offsets"))
+    beat_sync_ratio = round(beat_synced / choreo_items, 4) if choreo_items else None
+
     theme = plan.get("theme_profile") or stage.get("theme_profile")
     matching_theme = sum(item.get("theme_profile", theme) == theme for item in highlights)
     motion_items = sum(item.get("render_backend") == "web_spring" or bool(item.get("motion_mode")) for item in highlights)
@@ -314,11 +360,17 @@ def score_aesthetic_review(pipeline_dir: Path) -> Dict[str, Any]:
     if duplicates:
         patches.append({"type": "suppress_duplicate_captions", "count": len(duplicates)})
     scores = {
-        "info_distillation": (9.4 - 0.65 * max(0, max_chars - 7) - duplicate_penalty) if max_chars else 6.5,
+        "info_distillation": (
+            9.4 - 0.65 * max(0, max_chars - 7) - duplicate_penalty - min(1.6, 0.45 * sub_break_issues)
+        ) if max_chars else 6.5,
         "rhythm_breathing": 9.4 - 13.0 * coverage_gap - duplicate_penalty,
-        "spatial_avoidance": (9.5 if profile else 8.2) - min(6.0, 1.7 * (stage_violation + len(bad_acts))),
+        "spatial_avoidance": (
+            (9.5 if profile else 8.2) - min(6.0, 1.7 * (stage_violation + len(bad_acts))) - min(2.0, 0.8 * cross_overlaps)
+        ),
         "audio_tension": 9.5 - (0 if has_breathing else 2.4) - 0.36 * sfx_gap - min(2.5, 0.30 * crowded_sfx + banned_sfx),
-        "motion_craft": (8.2 + 1.2 * motion_items / len(highlights) * choreo_weight)
+        "motion_craft": (
+            max(0.0, (8.2 + 1.2 * motion_items / len(highlights) * choreo_weight) - min(1.5, 0.45 * camera_snapbacks))
+        )
         if highlights else 6.5,
         "theme_fit": 7.0 + 2.4 * matching_theme / len(highlights)
         if theme in {"business_editorial", "store_vibrant"} and highlights else 7.0,
@@ -335,6 +387,10 @@ def score_aesthetic_review(pipeline_dir: Path) -> Dict[str, Any]:
             "behind_person_violations": stage_violation, "crowded_sfx": crowded_sfx,
             "duplicate_short_captions": len(duplicates),
             "element_choreo_ratio": round(choreo_ratio, 4),
+            "cross_act_overlaps": cross_overlaps,
+            "camera_snapbacks": camera_snapbacks,
+            "subtitle_seg_issues": sub_break_issues,
+            "beat_sync_ratio": beat_sync_ratio,
         },
         "patch_suggestions": patches,
     }

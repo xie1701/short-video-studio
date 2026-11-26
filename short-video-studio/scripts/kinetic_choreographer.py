@@ -80,17 +80,51 @@ STYLE_DNA_REGISTRY: Dict[str, Dict[str, Any]] = {
             "AlimamaShuHeiTi-Bold.otf",
             "SourceHanSansCN-Bold.otf",
         ],
-    }
+    },
+    # Multi-style opt-in skins (--v6-director) for editorial & store tracks without altering default V5 legacy behavior.
+    "style_01": {
+        "style_id": "style_01",
+        "video_topology": "talking_head_with_evidence_broll",
+        "matting_role": "self_matting_behind_text",
+        "subtitle_stage_mode": "inline_highlight_track",
+        "broll_policy": {"strategy": "evidence_anchored", "target_ratio": 0.35, "band": (0.15, 0.55), "min_semantic_score": 0.25},
+        "palette": {"white": "#FFFDF7", "lime": "#D4F542", "red": "#DC2626", "pill_bg": "#FFFDF7", "bridge_bg": "#18181BB8", "stroke": "#0A0A0A"},
+        "font_candidates": ["AlimamaShuHeiTi-Bold.otf", "SourceHanSansCN-Bold.otf"],
+    },
+    "style_03": {
+        "style_id": "style_03",
+        "video_topology": "pure_talking_head",
+        "matting_role": "none",
+        "subtitle_stage_mode": "inline_highlight_track",
+        "broll_policy": {"strategy": "evidence_anchored", "target_ratio": 0.12, "band": (0.0, 0.25), "min_semantic_score": 0.35},
+        "palette": {"white": "#F8FAFC", "lime": "#F59E0B", "red": "#EF4444", "pill_bg": "#0F172A", "bridge_bg": "#0C0F16CC", "stroke": "#000000"},
+        "font_candidates": ["SourceHanSerifCN-Bold.otf", "NotoSansCJKsc-Bold.otf"],
+    },
+    "style_17": {
+        "style_id": "style_17",
+        "video_topology": "pure_talking_head",
+        "matting_role": "none",
+        "subtitle_stage_mode": "inline_highlight_track",
+        "broll_policy": {"strategy": "evidence_anchored", "target_ratio": 0.15, "band": (0.0, 0.30), "min_semantic_score": 0.30},
+        "palette": {"white": "#FAF8F5", "lime": "#CA8A04", "red": "#B91C1C", "pill_bg": "#1C1917", "bridge_bg": "#1C1917CC", "stroke": "#0C0A09"},
+        "font_candidates": ["SourceHanSerifCN-Bold.otf", "SourceHanSansCN-Bold.otf"],
+    },
 }
+
+
+DIRECTOR_ENABLED_STYLES = frozenset({"style_02", "style_01", "style_03", "style_17"})
 
 
 def get_style_dna(style_id: str) -> Optional[Dict[str, Any]]:
     return STYLE_DNA_REGISTRY.get(str(style_id or "").strip())
 
 
-def is_kinetic_stage_style(style_id: str) -> bool:
-    dna = get_style_dna(style_id)
-    return bool(dna and dna.get("subtitle_stage_mode") == "kinetic_typography_stage")
+def is_kinetic_stage_style(style_id: str, enable_v6_director: bool = False) -> bool:
+    sid = str(style_id or "").strip()
+    dna = get_style_dna(sid)
+    if dna and dna.get("subtitle_stage_mode") == "kinetic_typography_stage":
+        return True
+    return bool(enable_v6_director and sid in DIRECTOR_ENABLED_STYLES)
 
 
 # ── 2. 动画原语 ↔ 0ms 音效映射字典（常用文字动画与音效搭配） ──
@@ -2060,14 +2094,16 @@ def plan_kinetic_stage(
     *,
     director_plan: Optional[Dict[str, Any]] = None,
     composition_profile: Optional[Dict[str, Any]] = None,
+    enable_v6_director: bool = False,
 ) -> Dict[str, Any]:
-    """Keep the original stage for unprofiled jobs and layer the director's decisions over V6 jobs."""
+    """Keep the original stage for unprofiled jobs and layer the director's decisions over V6/V7 jobs."""
     profile = composition_profile
     if profile is None and pipeline_dir is not None:
         profile = _read_optional_json(Path(pipeline_dir) / PROFILE_FILENAME)
     profile = profile or {}
     plan = director_plan
-    if style_id == "style_02" and plan is None:
+    director_eligible = (style_id == "style_02") or (enable_v6_director and style_id in DIRECTOR_ENABLED_STYLES)
+    if director_eligible and plan is None:
         if pipeline_dir is not None and (profile or (Path(pipeline_dir) / PLAN_FILENAME).is_file()):
             plan = load_or_build_director_plan(pipeline_dir, style_id)
         if plan is None and profile:
@@ -2075,7 +2111,7 @@ def plan_kinetic_stage(
                 plan = generate_deterministic_director_plan(audio_events, style_id, composition_profile=profile)
             except ValueError:
                 pass
-    if style_id != "style_02":
+    if not director_eligible:
         plan, profile = None, {}
     theme = (plan or {}).get("theme_profile", "store_vibrant")
 
@@ -2151,6 +2187,13 @@ def plan_kinetic_stage(
                 "a_roll_locked": locked, "self_matting": self_matting,
                 "allow_broll_evidence": not locked, "item_count": len(new_items),
             })
+
+    if director_eligible and style_id and style_id != "style_02":
+        skin_palette = dict((get_style_dna(style_id) or {}).get("palette") or {})
+        for it in stage["items"]:
+            it.setdefault("style_id", style_id)
+            if skin_palette:
+                it.setdefault("style_palette", dict(skin_palette))
 
     duration = float(audio_events.get("locked_duration_sec") or max((a["end_sec"] for a in acts), default=0.0))
     ticker_items = _editorial_ticker_items(acts, audio_events["sentences"], profile, fps, theme)

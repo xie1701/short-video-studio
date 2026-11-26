@@ -793,27 +793,42 @@ V6_CARD_VARIANTS = frozenset({"negation_line", "pillar_badge", "concept_card", "
 TICKER_VARIANT = "editorial_ticker"
 
 
+_SKIN_PALETTE_DEFAULTS: Dict[str, Dict[str, str]] = {
+    "style_01": {"white": "#FFFDF7", "lime": "#D4F542", "red": "#DC2626", "pill_bg": "#18181B"},
+    "style_03": {"white": "#F8FAFC", "lime": "#F59E0B", "red": "#EF4444", "pill_bg": "#0F172A"},
+    "style_17": {"white": "#FAF8F5", "lime": "#CA8A04", "red": "#B91C1C", "pill_bg": "#1C1917"},
+}
+
+
 def kinetic_item_paint(elem: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Shared paint for V6 sprites and editable native text."""
     variant = elem.get("variant")
     editorial = elem.get("theme_profile") == "business_editorial"
     if not editorial and variant not in V6_CARD_VARIANTS and variant != TICKER_VARIANT:
         return None
+    skin_id = str(elem.get("style_id") or "").strip()
+    skin_pal = elem.get("style_palette") if isinstance(elem.get("style_palette"), dict) else _SKIN_PALETTE_DEFAULTS.get(skin_id)
+    if skin_id == "style_02":
+        skin_pal = None
+    accent = str(skin_pal.get("lime")) if (skin_pal and skin_pal.get("lime")) else ("#EAB308" if editorial else "#BCFF00")
+    ink = str(skin_pal.get("white")) if (skin_pal and skin_pal.get("white")) else ("#F8FAFC" if editorial else "#FFFFFF")
+    dark = "#0C0F16" if editorial else "#1C201E"
+    if skin_pal and str(skin_pal.get("pill_bg") or "").upper() not in ("#FFFFFF", "#FFFDF7"):
+        dark = str(skin_pal["pill_bg"])
+    marker = str(skin_pal.get("red")) if (skin_pal and skin_pal.get("red")) else ("#DC2626" if editorial else "#B71C1C")
     if variant == TICKER_VARIANT:
         return {
-            "fg_hex": "#E2E8F0", "bg_hex": "#0C0F16", "bg_alpha": 0.74, "accent_hex": "#EAB308",
-            "marker_hex": "#DC2626", "radius_px": 11, "outline_px": 1,
+            "fg_hex": "#E2E8F0", "bg_hex": dark, "bg_alpha": 0.74, "accent_hex": accent,
+            "marker_hex": marker, "radius_px": 11, "outline_px": 1,
         }
-    accent = "#EAB308" if editorial else "#BCFF00"
-    ink = "#F8FAFC" if editorial else "#FFFFFF"
-    dark = "#0C0F16" if editorial else "#1C201E"
     badge = variant == "pillar_badge"
+    badge_fg = "#0C0F16" if skin_pal else dark
     return {
-        "fg_hex": dark if badge else (accent if variant == "hero_lime" else ink),
+        "fg_hex": badge_fg if badge else (accent if variant == "hero_lime" else ink),
         "bg_hex": accent if badge else dark,
         "bg_alpha": 0.97 if badge else 0.80,
         "accent_hex": accent,
-        "marker_hex": "#DC2626" if editorial else "#B71C1C",
+        "marker_hex": marker,
         "radius_px": 19 if badge else (15 if editorial else 10),
         "outline_px": 1 if editorial else 2,
     }
