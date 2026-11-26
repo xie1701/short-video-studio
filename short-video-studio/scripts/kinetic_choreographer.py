@@ -1420,9 +1420,24 @@ def _director_rows(
     return list(zip(starts, [*starts[1:], end]))
 
 
+def _pillar_rows(visual: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """一条结构幕里的全部条陈：(序号, 短结论)。序号为空表示没有编号。"""
+    badge = str(visual.get("accent_token") or "")
+    headline = str(visual.get("headline") or "").strip()
+    rows: List[Tuple[str, str]] = [(badge if badge.isdecimal() else "", headline)]
+    for raw in visual.get("items", []) or []:
+        line = str(raw).strip()
+        if not line or _display_length(line) > 7:
+            continue
+        number = re.fullmatch(r"(\d+)(?:[\s·.:：]+(.+))?", line)
+        rows.append((number[1], number[2] or "") if number else ("", line))
+    return [(number, label) for number, label in rows if number or label]
+
+
 def _director_items(
     act: Dict[str, Any], sentences: List[Dict[str, Any]], composition: Dict[str, Any],
     ordinal: int, theme: str, fps: int,
+    pillar_state: Optional[Dict[str, int]] = None,
 ) -> List[Dict[str, Any]]:
     primitive = act["primitive"]
     if primitive in _QUIET_STAGE_PRIMITIVES:
@@ -1441,9 +1456,9 @@ def _director_items(
     def add(
         text: str, variant: str, st: float, en: float, x: float, yn: float, size: float,
         anim: str, lane: int, sfx: Optional[str] = None, layer: str = "foreground",
-    ) -> None:
+    ) -> Optional[Dict[str, Any]]:
         if not text or en <= st:
-            return
+            return None
         item = _make_item(
             item_id=f"ks_v6_{ordinal:02d}_{len(items) + 1:02d}", group_id=act["group_id"],
             text=text, start_sec=st, end_sec=en, fps=fps, variant=variant,
@@ -1454,7 +1469,14 @@ def _director_items(
             act_id=act["act_id"], anim_style_v6=primitive, theme_profile=theme,
             render_backend="web_spring", out_anim="fade_out",
         )
+        if variant == "negation_line":
+            item["element_choreo"] = "strike_slash"
+        elif variant == "concept_card":
+            item["element_choreo"] = "stagger_card"
+        elif variant == "hero_lime" and _NUMBER_RUN.search(text):
+            item["element_choreo"] = "number_roll"
         items.append(item)
+        return item
 
     if primitive == "negation_strike":
         add(headline, "hero_lime", start, end, 0.0, y + 0.10, 19.0, "in:缩小 II", 1)
@@ -1463,20 +1485,29 @@ def _director_items(
             # Use a separate row so a headline and the current negation can be read together.
             add(label, "negation_line", st, en, 0.0, y, 11.5, "in:向右露出", 2, "punch")
     elif primitive == "framework_pillar":
-        badge = str(visual.get("accent_token") or "")
-        rows = [(badge if badge.isdecimal() else "", headline)]
-        for line in lines:
-            number = re.fullmatch(r"(\d+)(?:[\s·.:：]+(.+))?", line)
-            rows.append((number[1], number[2] or "") if number else ("", line))
-        rows = [(number, label) for number, label in rows if number or label]
+        rows = _pillar_rows(visual)
+        # 结构进度需要全片总格数：总格由 plan_kinetic_stage 提前数好，这里只按顺序领号。
+        pillar_total = int((pillar_state or {}).get("total", 0))
         row_spans = _director_rows([label or number for number, label in rows], timeline, start, end, fps)
         for idx, ((number, label), (st, en)) in enumerate(zip(rows, row_spans)):
             if idx == 0:
                 st = start
-            add(number.zfill(2) if number else "", "pillar_badge", st, en, -0.55 if label else 0.0, y,
-                11.5, "in:缩小 II", 1, "pop")
-            add(label, "hero_white", st, en, 0.08 if number else 0.0, y,
-                12.5, "in:渐显", 2, None if number else "pop")
+            progress: Dict[str, Any] = {}
+            if number and pillar_total >= 2 and pillar_state is not None:
+                pillar_state["index"] = int(pillar_state.get("index", 0)) + 1
+                progress = {
+                    "element_choreo": "pillar_progress",
+                    "pillar_index": pillar_state["index"],
+                    "pillar_total": pillar_total,
+                }
+            badge_item = add(number.zfill(2) if number else "", "pillar_badge", st, en, -0.55 if label else 0.0, y,
+                             11.5, "in:缩小 II", 1, "pop")
+            if badge_item is not None:
+                badge_item.update(progress)
+            label_item = add(label, "hero_white", st, en, 0.08 if number else 0.0, y,
+                             12.5, "in:渐显", 2, None if number else "pop")
+            if progress and label_item is not None:
+                label_item.update(progress)
     elif primitive == "concept_split_card":
         card_lines = list(dict.fromkeys([*([headline] if headline else []), *lines]))
         shift = act["side_shift_x"] if act["camera_intent"] == "side_shift_card" else 0.0
@@ -1569,13 +1600,88 @@ def _director_sfx(
     return limit
 
 
+_DUPLICATE_CAPTION_MAX = 7
+_NUMBER_RUN = re.compile(r"\d{2,}")
+_DUPLICATE_CAPTION_OVERLAP = 0.50
+_DUPLICATE_TEXT_RATIO = 0.85
+_DUPLICATE_COVER_TOLERANCE = 0.02
+_DUPLICATE_DECOR = "✕✓≠→:：·"
+_DUPLICATE_SOFT_LEADS = "也都就还并而又但可"
+_DUPLICATE_EXCLUDED_VARIANTS = frozenset({"bridge_bar", "pillar_badge", "editorial_ticker"})
+
+
+def _caption_key(text: str) -> str:
+    """底字幕去重比对用的实词串：去掉装饰符号、标点、空白与句首虚词。"""
+    plain = "".join(ch for ch in str(text or "") if ch not in _DUPLICATE_DECOR and not ch.isspace())
+    plain = re.sub(r"[，。！？、；：,.!?;:·]+", "", plain)
+    return plain.lstrip(_DUPLICATE_SOFT_LEADS)
+
+
+def _caption_overlap_ratio(short_key: str, long_key: str) -> float:
+    """短串能覆盖主串的字符比例：短串只是主串的一部分时不算复读。"""
+    if not short_key or not long_key:
+        return 0.0
+    return sum(1 for ch in set(short_key) if ch in long_key) / float(len(set(long_key)))
+
+
+def is_duplicate_short_caption(
+    caption: Dict[str, Any], highlights: List[Dict[str, Any]],
+) -> bool:
+    """短底字幕只是同段前景大字的复读、且大字完整罩住它的时段时返回 True。
+
+    安全保底：超过 7 字的长句底字幕一律保留；大字没有完整覆盖底字幕窗口（头尾会留空）
+    时也一律保留，宁可多一行底字幕，也不让口播出现没有文字的空档。
+    """
+    text = str(caption.get("text_or_asset") or "")
+    if _display_length(text) > _DUPLICATE_CAPTION_MAX:
+        return False
+    key = _caption_key(text)
+    if len(key) < 2:
+        return False
+    start, end = float(caption.get("start_sec") or 0.0), float(caption.get("end_sec") or 0.0)
+    span = end - start
+    if span <= 0:
+        return False
+    for item in highlights:
+        if item.get("base_caption") or item.get("variant") in _DUPLICATE_EXCLUDED_VARIANTS:
+            continue
+        if not (str(item.get("motion_mode") or "").strip() or item.get("element_choreo")):
+            continue
+        h_start = float(item.get("start_sec") or 0.0)
+        h_end = float(item.get("end_sec") or 0.0)
+        if h_start > start + _DUPLICATE_COVER_TOLERANCE or h_end < end - _DUPLICATE_COVER_TOLERANCE:
+            continue
+        if (min(end, h_end) - max(start, h_start)) / span < _DUPLICATE_CAPTION_OVERLAP:
+            continue
+        main_key = _caption_key(item.get("text_or_asset") or "")
+        if not main_key:
+            continue
+        short_key, long_key = sorted((key, main_key), key=len)
+        if short_key == long_key or _caption_overlap_ratio(short_key, long_key) >= _DUPLICATE_TEXT_RATIO:
+            return True
+    return False
+
+
+def duplicate_short_captions(stage_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """商业模式下仍然和前景大字重复的多余底字幕（供审片扣分与建议使用）。"""
+    highlights = [item for item in stage_items if not item.get("base_caption")]
+    return [
+        item for item in stage_items
+        if item.get("base_caption") and is_duplicate_short_caption(item, highlights)
+    ]
+
+
 def business_caption_items(
     audio_events: Dict[str, Any], subtitles: List[Dict[str, Any]], fps: int,
+    highlight_items: Optional[List[Dict[str, Any]]] = None,
+    out_stats: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Use the ordinary subtitle text in the stage that owns style_02's on-screen text."""
     if not subtitles:
         subtitles = [line for sentence in audio_events["sentences"] for line in split_sentence_into_chunks(sentence)]
+    highlights = list(highlight_items or [])
     items = []
+    suppressed = 0
     for idx, line in enumerate(subtitles, 1):
         if line.get("suppressed") and line.get("suppress_reason") != "kinetic_typography_stage":
             continue
@@ -1588,7 +1694,12 @@ def business_caption_items(
             x_norm=0.0, y_norm=-0.51, font_size_units=8.5, track_lane=0, trigger="subtitle",
         )
         item.update(theme_profile="business_editorial", base_caption=True)
+        if highlights and is_duplicate_short_caption(item, highlights):
+            suppressed += 1
+            continue
         items.append(item)
+    if out_stats is not None:
+        out_stats["suppressed_duplicate_captions"] = suppressed
     return items
 
 
@@ -1636,6 +1747,16 @@ def plan_kinetic_stage(
         return stage
 
     by_id = {s["id"]: s for s in audio_events["sentences"]}
+    # 结构进度格要跨幕连续：先数清全片 framework_pillar 的条陈总数，再逐幕领号。
+    pillar_state: Dict[str, int] = {
+        "index": 0,
+        "total": sum(
+            sum(1 for number, _label in _pillar_rows(raw.get("visual_copy") or {}) if number)
+            for raw in plan.get("acts", [])
+            if raw.get("primitive") == "framework_pillar"
+            and any(str(sid) in by_id for sid in raw.get("sentence_ids") or [])
+        ),
+    }
     legacy_highlights = [item for item in stage["items"] if item["variant"] != "bridge_bar"]
     acts: List[Dict[str, Any]] = []
     for idx, raw in enumerate(plan.get("acts", []), 1):
@@ -1662,7 +1783,7 @@ def plan_kinetic_stage(
         ):
             # The existing multi-layer store stage owns this beat. Keep all of its visual layers.
             continue
-        new_items = _director_items(act, sentences, composition, idx, theme, fps)
+        new_items = _director_items(act, sentences, composition, idx, theme, fps, pillar_state)
         stage["items"].extend(new_items)
         self_matting = any(item["z_layer"] == "behind_person" for item in new_items)
         if self_matting:

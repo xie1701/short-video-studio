@@ -27,6 +27,7 @@ import json
 import math
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -789,14 +790,20 @@ def _draw_kinetic_line_sprite(
 
 
 V6_CARD_VARIANTS = frozenset({"negation_line", "pillar_badge", "concept_card"})
+TICKER_VARIANT = "editorial_ticker"
 
 
 def kinetic_item_paint(elem: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Shared paint for V6 sprites and editable native text."""
     variant = elem.get("variant")
     editorial = elem.get("theme_profile") == "business_editorial"
-    if not editorial and variant not in V6_CARD_VARIANTS:
+    if not editorial and variant not in V6_CARD_VARIANTS and variant != TICKER_VARIANT:
         return None
+    if variant == TICKER_VARIANT:
+        return {
+            "fg_hex": "#E2E8F0", "bg_hex": "#0C0F16", "bg_alpha": 0.74, "accent_hex": "#EAB308",
+            "marker_hex": "#DC2626", "radius_px": 11, "outline_px": 1,
+        }
     accent = "#EAB308" if editorial else "#BCFF00"
     ink = "#F8FAFC" if editorial else "#FFFFFF"
     dark = "#0C0F16" if editorial else "#1C201E"
@@ -812,11 +819,71 @@ def kinetic_item_paint(elem: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     }
 
 
+def _pillar_progress(elem: Dict[str, Any]) -> Optional[tuple[int, int]]:
+    """结构进度格：(当前第几格, 总格数)；不足 2 格时不画。"""
+    if str(elem.get("variant") or "") != "pillar_badge":
+        return None
+    total, index = elem.get("pillar_total"), elem.get("pillar_index")
+    if type(total) is not int or type(index) is not int or total < 2:
+        return None
+    return max(1, min(total, index)), total
+
+
+def _pillar_progress_layer(
+    width: int, body_h: int, index: int, total: int, accent: Tuple[int, int, int],
+) -> Image.Image:
+    """在胶囊紧下方铺 total 个细格：已走完的格用赛道主色，其余用 28% 白。"""
+    gap, inset, bar_h = 3, 6, 3
+    area_h = bar_h + 4
+    layer = Image.new("RGBA", (width, area_h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    usable = max(6.0, float(width - inset * 2))
+    cell_w = max(2.0, (usable - gap * (total - 1)) / float(total))
+    for cell in range(total):
+        x0 = inset + cell * (cell_w + gap)
+        x1 = min(float(width - inset), x0 + cell_w)
+        if x1 <= x0:
+            continue
+        fill = (*accent, 255) if cell < index else (255, 255, 255, 72)
+        draw.rounded_rectangle((x0, 0, x1, bar_h), radius=1, fill=fill)
+    return layer
+
+
+def _kinetic_marked_row(
+    label: str, font: Optional[str], size: int, color: Tuple[int, int, int], limit: int,
+    marker: Tuple[int, int, int], accent: Tuple[int, int, int], force_mark: bool = False,
+) -> Optional[Image.Image]:
+    """单行带 ✕/✓ 记号的花字精灵；字身与记号共用同一套几何，动效层也复用。"""
+    prefix = label[:1] if label[:1] in {"✕", "✓"} else ""
+    if not prefix and force_mark:
+        prefix = "✕"
+    words = label[1:].strip() if label[:1] in {"✕", "✓"} else label
+    mark = max(16, round(size * 0.55)) if prefix else 0
+    gap = mark // 2
+    sprite = _draw_kinetic_line_sprite(words, font, size, (*color, 255),
+                                       max_w=limit - mark - gap, min_fs=20)
+    if not prefix or sprite is None:
+        return sprite
+    row = Image.new("RGBA", (mark + gap + sprite.width, max(mark, sprite.height)))
+    row.alpha_composite(sprite, dest=(mark + gap, (row.height - sprite.height) // 2))
+    center_y = row.height // 2
+    draw = ImageDraw.Draw(row)
+    pen = max(3, round(mark * 0.17))
+    if prefix == "✕":
+        draw.line(((2, center_y - mark // 3), (mark - 2, center_y + mark // 3)), fill=(*marker, 255), width=pen)
+        draw.line(((2, center_y + mark // 3), (mark - 2, center_y - mark // 3)), fill=(*marker, 255), width=pen)
+    else:
+        draw.line(((2, center_y), (mark // 3, center_y + mark // 4), (mark - 2, center_y - mark // 3)),
+                  fill=(*accent, 255), width=pen, joint="curve")
+    return row
+
+
 def _render_v6_kinetic_sprite(
     elem: Dict[str, Any], text: str, font: Optional[str], font_px: int, paint: Dict[str, Any],
 ) -> Optional[Image.Image]:
     variant = elem.get("variant")
     is_card = variant == "concept_card"
+    is_ticker = variant == TICKER_VARIANT
     card_lines = [str(line).strip() for line in elem.get("card_lines") or [] if str(line).strip()]
     heading = bool(is_card and elem.get("card_has_headline") and card_lines)
     lines = card_lines if is_card and card_lines else text.splitlines()
@@ -826,28 +893,9 @@ def _render_v6_kinetic_sprite(
     marker = _hex_rgb(paint["marker_hex"])
 
     def draw_line(label: str, size: int, color: Tuple[int, int, int], limit: int) -> Optional[Image.Image]:
-        prefix = label[:1] if label[:1] in {"✕", "✓"} else ""
-        if not prefix and variant == "negation_line":
-            prefix = "✕"
-        words = label[1:].strip() if label[:1] in {"✕", "✓"} else label
-        mark = max(16, round(size * 0.55)) if prefix else 0
-        gap = mark // 2
-        sprite = _draw_kinetic_line_sprite(words, font, size, (*color, 255),
-                                           max_w=limit - mark - gap, min_fs=20)
-        if not prefix or sprite is None:
-            return sprite
-        row = Image.new("RGBA", (mark + gap + sprite.width, max(mark, sprite.height)))
-        row.alpha_composite(sprite, dest=(mark + gap, (row.height - sprite.height) // 2))
-        center_y = row.height // 2
-        draw = ImageDraw.Draw(row)
-        pen = max(3, round(mark * 0.17))
-        if prefix == "✕":
-            draw.line(((2, center_y - mark // 3), (mark - 2, center_y + mark // 3)), fill=(*marker, 255), width=pen)
-            draw.line(((2, center_y + mark // 3), (mark - 2, center_y - mark // 3)), fill=(*marker, 255), width=pen)
-        else:
-            draw.line(((2, center_y), (mark // 3, center_y + mark // 4), (mark - 2, center_y - mark // 3)),
-                      fill=(*accent, 255), width=pen, joint="curve")
-        return row
+        return _kinetic_marked_row(
+            label, font, size, color, limit, marker, accent, force_mark=variant == "negation_line",
+        )
 
     rendered = []
     for idx, line in enumerate(lines):
@@ -855,6 +903,9 @@ def _render_v6_kinetic_sprite(
         if is_card:
             size = min(font_px, 49 if header_line else (36 if columns else 44))
             limit = 182 if columns and not header_line else 398
+        elif is_ticker:
+            size = min(font_px, 30)
+            limit = 300
         elif variant in {"bridge_bar", "pillar_badge", "negation_line"}:
             size = min(font_px, 36 if elem.get("base_caption") else 54)
             limit = 600
@@ -867,7 +918,9 @@ def _render_v6_kinetic_sprite(
     if not rendered:
         return None
 
-    pad_x, pad_y, gap_y = (15, 10, 10) if is_card else (16, 8, 5)
+    pad_x, pad_y, gap_y = (15, 10, 10) if is_card else ((12, 6, 4) if is_ticker else (16, 8, 5))
+    progress = _pillar_progress(elem)
+    bar_area = 7 if progress else 0
     detail_gap = 22
     preceding = rendered[:1] if heading else []
     details = rendered[len(preceding):]
@@ -882,13 +935,14 @@ def _render_v6_kinetic_sprite(
     title_h = preceding[0].height if preceding else 0
     gap_title = gap_y if title_h and body_h else 0
     width = max(body_w, preceding[0].width if preceding else 0) + 2 * pad_x
-    height = title_h + gap_title + body_h + 2 * pad_y
-    card = Image.new("RGBA", (width, height))
+    body_height = title_h + gap_title + body_h + 2 * pad_y
+    card = Image.new("RGBA", (width, body_height + bar_area))
     draw = ImageDraw.Draw(card)
+    radius = paint["radius_px"]
     draw.rounded_rectangle(
-        (0, 0, width - 1, height - 1), radius=paint["radius_px"],
+        (0, 0, width - 1, body_height - 1), radius=radius,
         fill=(*_hex_rgb(paint["bg_hex"]), round(255 * paint["bg_alpha"])),
-        outline=(255, 255, 255, 48), width=paint["outline_px"],
+        outline=(255, 255, 255, 48 if not is_ticker else 78), width=paint["outline_px"],
     )
     if preceding:
         card.alpha_composite(preceding[0], dest=((width - preceding[0].width) // 2, pad_y))
@@ -903,6 +957,10 @@ def _render_v6_kinetic_sprite(
         for sprite in details:
             card.alpha_composite(sprite, dest=((width - sprite.width) // 2, y))
             y += sprite.height + gap_y
+    if progress is not None:
+        index, total = progress
+        card.alpha_composite(_pillar_progress_layer(width, body_height, index, total, accent),
+                             dest=(0, body_height))
     return card
 
 
@@ -1865,6 +1923,420 @@ window.READY = true;
     return None
 
 
+ELEMENT_CHOREO_MODES = frozenset({"strike_slash", "stagger_card", "number_roll", "ticker_fade"})
+_ROLL_STEPS = (0.15, 0.45, 0.72, 0.91, 1.0)
+
+
+def _element_beats(choreo: str, duration: float) -> Dict[str, Tuple[float, float]]:
+    """元素级动效的分拍时间表：Chrome SVG 与 Pillow 兜底共用同一份节拍。"""
+    if choreo == "strike_slash":
+        return {"card": (0.0, 0.16), "mark_a": (0.16, 0.25), "mark_b": (0.25, 0.34),
+                "slash": (0.16, 0.34)}
+    if choreo == "stagger_card":
+        return {"card": (0.0, 0.16), "left": (0.16, 0.42), "divider": (0.42, 0.52),
+                "right": (0.42, 0.58)}
+    if choreo == "number_roll":
+        return {"roll": (0.0, 0.26), "settle": (0.26, 0.36)}
+    return {"in": (0.0, 0.28), "out": (max(0.28, duration - 0.30), duration)}
+
+
+def _beat_progress(t: float, span: Tuple[float, float]) -> float:
+    start, end = span
+    if end <= start:
+        return 1.0 if t >= end else 0.0
+    return max(0.0, min(1.0, (t - start) / (end - start)))
+
+
+def _element_layer(
+    name: str, img: Image.Image, pos: Tuple[int, int],
+) -> Dict[str, Any]:
+    return {"name": name, "img": img, "pos": (int(pos[0]), int(pos[1]))}
+
+
+def _layout_canvas(width: int, height: int, pad: int = 6) -> Tuple[int, int, int, int]:
+    cw = (width + pad * 2 + 1) & ~1
+    ch = (height + pad * 2 + 1) & ~1
+    return cw, ch, (cw - width) // 2, (ch - height) // 2
+
+
+def _capsule_image(
+    width: int, height: int, paint: Dict[str, Any], outline_alpha: int = 48,
+) -> Image.Image:
+    capsule = Image.new("RGBA", (max(2, width), max(2, height)), (0, 0, 0, 0))
+    ImageDraw.Draw(capsule).rounded_rectangle(
+        (0, 0, width - 1, height - 1), radius=paint["radius_px"],
+        fill=(*_hex_rgb(paint["bg_hex"]), round(255 * paint["bg_alpha"])),
+        outline=(255, 255, 255, outline_alpha), width=paint["outline_px"],
+    )
+    return capsule
+
+
+def _strike_slash_layout(elem: Dict[str, Any], font: Optional[str], paint: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    label = str(elem.get("text_or_asset") or "").strip()
+    words = label[1:].strip() if label[:1] in {"✕", "✓"} else label
+    size = min(max(30, int(elem.get("font_size_px") or 69)), 54)
+    mark = max(16, round(size * 0.55))
+    gap = mark // 2
+    word_sprite = _draw_kinetic_line_sprite(words, font, size, (*_hex_rgb(paint["fg_hex"]), 255),
+                                            max_w=600 - mark - gap, min_fs=20)
+    if word_sprite is None:
+        return None
+    pad_x, pad_y = 16, 8
+    width = pad_x * 2 + mark + gap + word_sprite.width
+    height = pad_y * 2 + max(mark, word_sprite.height)
+    body = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    body.alpha_composite(_capsule_image(width, height, paint))
+    body.alpha_composite(word_sprite, dest=(pad_x + mark + gap,
+                                            (height - word_sprite.height) // 2))
+    center_y = height // 2
+    pen = max(3, round(mark * 0.17))
+    marker = _hex_rgb(paint["marker_hex"])
+    left = pad_x + 2
+    right = pad_x + mark - 2
+    cw, ch, ox, oy = _layout_canvas(width, height)
+    word_x0 = pad_x + mark + gap
+    return {
+        "choreo": "strike_slash",
+        "canvas": (cw, ch),
+        "layers": [_element_layer("card", body, (ox, oy))],
+        "vectors": [
+            {"kind": "line", "key": "mark_a", "p1": (ox + left, oy + center_y - mark // 3),
+             "p2": (ox + right, oy + center_y + mark // 3), "width": pen, "rgba": (*marker, 255)},
+            {"kind": "line", "key": "mark_b", "p1": (ox + left, oy + center_y + mark // 3),
+             "p2": (ox + right, oy + center_y - mark // 3), "width": pen, "rgba": (*marker, 255)},
+            {"kind": "line", "key": "slash", "p1": (ox + word_x0, oy + center_y),
+             "p2": (ox + word_x0 + word_sprite.width, oy + center_y),
+             "width": max(2, round(size * 0.05)), "rgba": (*marker, 217)},
+        ],
+        "beats": _element_beats("strike_slash", 1.0),
+    }
+
+
+def _stagger_card_layout(elem: Dict[str, Any], font: Optional[str], paint: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    card_lines = [str(line).strip() for line in elem.get("card_lines") or [] if str(line).strip()]
+    if not card_lines:
+        return None
+    font_px = max(30, int(elem.get("font_size_px") or 72))
+    heading = bool(elem.get("card_has_headline"))
+    accent, fg = _hex_rgb(paint["accent_hex"]), _hex_rgb(paint["fg_hex"])
+    if heading:
+        title_label, details = card_lines[0], card_lines[1:]
+        title = _kinetic_marked_row(title_label, font, min(font_px, 49), accent, 398,
+                                    _hex_rgb(paint["marker_hex"]), accent)
+    else:
+        title, details = None, card_lines
+    if len(details) != 2:
+        return None
+    columns = [
+        _kinetic_marked_row(label, font, min(font_px, 36), fg, 182,
+                            _hex_rgb(paint["marker_hex"]), accent)
+        for label in details
+    ]
+    if any(sprite is None for sprite in columns) or (heading and title is None):
+        return None
+    left, right = columns
+    pad_x, pad_y, gap_y, gap_detail = 15, 10, 10, 22
+    body_w = left.width + right.width + gap_detail
+    body_h = max(left.height, right.height)
+    title_h = title.height if title is not None else 0
+    width = max(body_w, title.width if title is not None else 0) + pad_x * 2
+    height = title_h + (gap_y if title_h else 0) + body_h + pad_y * 2
+    divider = ((width - body_w) // 2 + left.width + gap_detail // 2,
+               pad_y + title_h + (gap_y if title_h else 0))
+    cw, ch, ox, oy = _layout_canvas(width, height)
+    layers = [_element_layer("card", _capsule_image(width, height, paint), (ox, oy))]
+    if title is not None:
+        layers.append(_element_layer("title", title, (ox + (width - title.width) // 2, oy + pad_y)))
+    layers.append(_element_layer("left", left, (ox + (width - body_w) // 2,
+                                                oy + divider[1] + (body_h - left.height) // 2)))
+    layers.append(_element_layer("right", right, (ox + (width - body_w) // 2 + left.width + gap_detail,
+                                                  oy + divider[1] + (body_h - right.height) // 2)))
+    return {
+        "choreo": "stagger_card",
+        "canvas": (cw, ch),
+        "layers": layers,
+        "vectors": [{"kind": "vline", "key": "divider", "x": ox + divider[0], "y0": oy + divider[1],
+                     "height": body_h, "width": 1, "rgba": (255, 255, 255, 48)}],
+        "beats": _element_beats("stagger_card", 1.0),
+    }
+
+
+def _number_roll_layout(elem: Dict[str, Any], font: Optional[str], paint: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    text = str(elem.get("text_or_asset") or "").strip()
+    match = re.search(r"(\d{2,})", text)
+    if not match:
+        return None
+    prefix, digits, suffix = text[:match.start()], match.group(1), text[match.end():]
+    value = int(digits)
+    size = min(max(30, int(elem.get("font_size_px") or 100)), 112)
+    color = _hex_rgb(paint["accent_hex"] if elem.get("variant") == "hero_lime" else paint["fg_hex"])
+    sprites, shown_values = [], []
+    for step in _ROLL_STEPS:
+        shown = int(round(value * step))
+        shown_values.append(shown)
+        sprite = _draw_kinetic_line_sprite(f"{prefix}{shown}{suffix}", font, size, (*color, 255),
+                                           max_w=680, min_fs=20)
+        if sprite is None:
+            return None
+        sprites.append(sprite)
+    width = max(sprite.width for sprite in sprites)
+    height = max(sprite.height for sprite in sprites)
+    cw, ch, ox, oy = _layout_canvas(width, height, pad=8)
+    layers = [
+        _element_layer(f"roll_{idx}", sprite,
+                       (ox + (width - sprite.width) // 2, oy + height - sprite.height))
+        for idx, sprite in enumerate(sprites)
+    ]
+    return {
+        "choreo": "number_roll",
+        "canvas": (cw, ch),
+        "layers": layers,
+        "vectors": [],
+        "roll_values": shown_values,
+        "beats": _element_beats("number_roll", 1.0),
+    }
+
+
+def _ticker_layout(elem: Dict[str, Any], font: Optional[str], paint: Dict[str, Any],
+                   duration: float) -> Optional[Dict[str, Any]]:
+    text = str(elem.get("text_or_asset") or "").strip()
+    sprite = _draw_kinetic_line_sprite(text, font, min(max(20, int(elem.get("font_size_px") or 31)), 30),
+                                       (*_hex_rgb(paint["fg_hex"]), 255), max_w=300, min_fs=18)
+    if sprite is None:
+        return None
+    pad_x, pad_y = 12, 6
+    width, height = sprite.width + pad_x * 2, sprite.height + pad_y * 2
+    body = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    body.alpha_composite(_capsule_image(width, height, paint, outline_alpha=78))
+    body.alpha_composite(sprite, dest=(pad_x, pad_y))
+    cw, ch, ox, oy = _layout_canvas(width, height, pad=4)
+    return {
+        "choreo": "ticker_fade",
+        "canvas": (cw, ch),
+        "layers": [_element_layer("ticker", body, (ox, oy))],
+        "vectors": [],
+        "beats": _element_beats("ticker_fade", max(0.4, duration)),
+        "duration": max(0.4, duration),
+    }
+
+
+def _element_layout(
+    elem: Dict[str, Any], choreo: str, font_candidates: Optional[List[str]], duration: float,
+) -> Optional[Dict[str, Any]]:
+    paint = kinetic_item_paint(elem)
+    if paint is None:
+        return None
+    font = find_commercial_font(
+        font_candidates or ["SourceHanSansCN-Bold.otf", "AlimamaShuHeiTi-Bold.otf"],
+    ) or find_commercial_font()
+    builders = {
+        "strike_slash": lambda: _strike_slash_layout(elem, font, paint),
+        "stagger_card": lambda: _stagger_card_layout(elem, font, paint),
+        "number_roll": lambda: _number_roll_layout(elem, font, paint),
+        "ticker_fade": lambda: _ticker_layout(elem, font, paint, duration),
+    }
+    return builders[choreo]()
+
+
+def _element_frame_state(layout: Dict[str, Any], t: float) -> Dict[str, Any]:
+    """某一时刻每个图层的位移/缩放/透明度与矢量绘制进度。"""
+    choreo = layout["choreo"]
+    beats = layout["beats"]
+    names = [layer["name"] for layer in layout["layers"]]
+    state: Dict[str, Any] = {name: {"alpha": 1.0, "scale": 1.0, "dx": 0.0, "dy": 0.0} for name in names}
+    vectors: Dict[str, float] = {}
+
+    if choreo == "strike_slash":
+        card = spring_progress(_beat_progress(t, beats["card"]))
+        state["card"].update(alpha=0.34 + 0.66 * _smooth_step(_beat_progress(t, beats["card"])),
+                             scale=0.94 + 0.06 * card)
+        for key in ("mark_a", "mark_b", "slash"):
+            vectors[key] = _smooth_step(_beat_progress(t, beats[key]))
+    elif choreo == "stagger_card":
+        card = spring_progress(_beat_progress(t, beats["card"]))
+        card_alpha = 0.34 + 0.66 * _smooth_step(_beat_progress(t, beats["card"]))
+        state["card"].update(alpha=card_alpha, scale=0.94 + 0.06 * card)
+        if "title" in state:
+            state["title"].update(alpha=card_alpha, scale=0.90 + 0.10 * card)
+        u_left = _beat_progress(t, beats["left"])
+        state["left"].update(alpha=_smooth_step(min(1.0, u_left * 2.4)), dx=-26.0 * (1.0 - u_left))
+        u_right = _beat_progress(t, beats["right"])
+        state["right"].update(alpha=_smooth_step(min(1.0, u_right * 2.4)),
+                              scale=0.72 + 0.28 * _ease_out_back(u_right))
+        vectors["divider"] = _smooth_step(_beat_progress(t, beats["divider"]))
+    elif choreo == "number_roll":
+        u_roll = _beat_progress(t, beats["roll"])
+        active = min(len(_ROLL_STEPS) - 1, int(u_roll * len(_ROLL_STEPS)))
+        for idx, name in enumerate(names):
+            state[name]["alpha"] = 1.0 if idx == active else 0.0
+        settle = _beat_progress(t, beats["settle"])
+        state[names[-1]]["scale"] = 1.0 + 0.05 * (1.0 - settle) if t >= beats["roll"][1] else 1.0
+        state[names[-1]]["alpha"] = 1.0 if t >= beats["roll"][1] else state[names[-1]]["alpha"]
+    else:  # ticker_fade：柔和淡入淡出，无过冲弹跳
+        state["ticker"].update(alpha=_smooth_step(_beat_progress(t, beats["in"])))
+        if t > beats["out"][0]:
+            state["ticker"]["alpha"] *= 1.0 - _smooth_step(_beat_progress(t, beats["out"]))
+    return {"layers": state, "vectors": vectors}
+
+
+def _element_frames(layout: Dict[str, Any], fps: int, n_frames: int) -> List[Dict[str, Any]]:
+    return [_element_frame_state(layout, frame / float(fps)) for frame in range(n_frames)]
+
+
+def _draw_vector(draw: Any, vector: Dict[str, Any], progress: float) -> None:
+    if progress <= 0.001:
+        return
+    if vector["kind"] == "line":
+        (x0, y0), (x1, y1) = vector["p1"], vector["p2"]
+        draw.line(((x0, y0), (x0 + (x1 - x0) * progress, y0 + (y1 - y0) * progress)),
+                  fill=vector["rgba"], width=vector["width"])
+    else:
+        draw.rectangle((vector["x"], vector["y0"], vector["x"] + vector["width"],
+                        vector["y0"] + max(1.0, vector["height"] * progress)), fill=vector["rgba"])
+
+
+def _element_frame_bytes(layout: Dict[str, Any], state: Dict[str, Any]) -> bytes:
+    cw, ch = layout["canvas"]
+    frame = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+    for layer in layout["layers"]:
+        transform = state["layers"].get(layer["name"]) or {}
+        alpha = float(transform.get("alpha", 1.0))
+        if alpha <= 0.004:
+            continue
+        scale = float(transform.get("scale", 1.0))
+        img = layer["img"] if abs(scale - 1.0) < 0.002 else _scale_layer_centered(layer["img"], scale, alpha_mul=1.0)
+        if alpha < 0.996:
+            img = _scale_layer_centered(img, 1.0, alpha_mul=alpha)
+        x = int(round(layer["pos"][0] + float(transform.get("dx", 0.0)) + (layer["img"].width - img.width) / 2))
+        y = int(round(layer["pos"][1] + float(transform.get("dy", 0.0)) + (layer["img"].height - img.height) / 2))
+        box = (max(0, x), max(0, y),
+               min(cw, x + img.width), min(ch, y + img.height))
+        if box[2] <= box[0] or box[3] <= box[1]:
+            continue
+        frame.alpha_composite(img.crop((box[0] - x, box[1] - y, box[2] - x, box[3] - y)),
+                              dest=(box[0], box[1]))
+    draw = ImageDraw.Draw(frame)
+    for vector in layout["vectors"]:
+        _draw_vector(draw, vector, float(state["vectors"].get(vector["key"], 0.0)))
+    return frame.tobytes()
+
+
+def _element_html(layout: Dict[str, Any], frames: List[Dict[str, Any]], fps: int) -> str:
+    cw, ch = layout["canvas"]
+    parts = [f'<!doctype html><meta charset="utf-8">'
+             f'<style>html,body{{margin:0;background:transparent;overflow:hidden}}</style>',
+             f'<svg width="{cw}" height="{ch}" xmlns="http://www.w3.org/2000/svg">']
+    for idx, layer in enumerate(layout["layers"]):
+        buffer = io.BytesIO()
+        layer["img"].save(buffer, format="PNG")
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        x, y = layer["pos"]
+        parts.append(
+            f'<image id="L{idx}" x="{x}" y="{y}" width="{layer["img"].width}" '
+            f'height="{layer["img"].height}" href="data:image/png;base64,{encoded}"/>'
+        )
+    for idx, vector in enumerate(layout["vectors"]):
+        rgba = vector["rgba"]
+        stroke = f'rgba({rgba[0]},{rgba[1]},{rgba[2]},{rgba[3] / 255.0:.3f})'
+        if vector["kind"] == "line":
+            parts.append(
+                f'<line id="V{idx}" x1="{vector["p1"][0]}" y1="{vector["p1"][1]}" '
+                f'x2="{vector["p2"][0]}" y2="{vector["p2"][1]}" stroke="{stroke}" '
+                f'stroke-width="{vector["width"]}" stroke-linecap="round"/>'
+            )
+        else:
+            parts.append(
+                f'<rect id="V{idx}" x="{vector["x"]}" y="{vector["y0"]}" width="{vector["width"]}" '
+                f'height="0" fill="{stroke}"/>'
+            )
+    parts.append("</svg><script>")
+    parts.append(f"const FPS={fps};")
+    parts.append(f"const FRAMES={json.dumps(frames, separators=(',', ':'))};")
+    parts.append(
+        "const META=" + json.dumps(
+            [{"name": layer["name"], "x": layer["pos"][0], "y": layer["pos"][1],
+              "w": layer["img"].width, "h": layer["img"].height} for layer in layout["layers"]],
+            separators=(",", ":"),
+        ) + ";"
+    )
+    parts.append(
+        "const VEC=" + json.dumps(
+            [{key: vector.get(key) for key in ("kind", "height")} for vector in layout["vectors"]],
+            separators=(",", ":"),
+        ) + ";"
+    )
+    parts.append(f"const VKEYS={json.dumps([vector['key'] for vector in layout['vectors']])};")
+    parts.append("""
+window.seek = function(t) {
+  const state = FRAMES[Math.min(FRAMES.length - 1, Math.max(0, Math.round(t * FPS)))];
+  META.forEach(function(meta, idx) {
+    const el = document.getElementById("L" + idx);
+    const tr = state.layers[meta.name] || {};
+    const scale = tr.scale === undefined ? 1 : tr.scale;
+    const dx = tr.dx === undefined ? 0 : tr.dx;
+    const dy = tr.dy === undefined ? 0 : tr.dy;
+    const alpha = tr.alpha === undefined ? 1 : tr.alpha;
+    const cx = meta.x + meta.w / 2, cy = meta.y + meta.h / 2;
+    el.setAttribute("transform", "translate(" + dx + " " + dy + ") translate(" + cx + " " + cy + ") scale(" + scale + ") translate(" + (-cx) + " " + (-cy) + ")");
+    el.setAttribute("opacity", alpha);
+  });
+  VKEYS.forEach(function(key, idx) {
+    const el = document.getElementById("V" + idx);
+    if (!el) return;
+    const progress = (state.vectors[key] === undefined) ? 0 : state.vectors[key];
+    el.style.opacity = progress > 0.001 ? 1 : 0;
+    if (VEC[idx].kind === "line") {
+      const len = el.getTotalLength();
+      el.setAttribute("stroke-dasharray", len);
+      el.setAttribute("stroke-dashoffset", len * (1 - progress));
+    } else {
+      el.setAttribute("height", VEC[idx].height * progress);
+    }
+  });
+};
+window.READY = true;
+""")
+    parts.append("</script>")
+    return "".join(parts)
+
+
+def _render_element_choreo(
+    elem: Dict[str, Any], choreo: str, out_mov: Path, ffmpeg_bin: str, fps: int,
+    n_frames: int, duration: float, font_candidates: Optional[List[str]],
+) -> Optional[Tuple[Path, int, int]]:
+    layout = _element_layout(elem, choreo, font_candidates, duration)
+    if layout is None:
+        return None
+    cw, ch = layout["canvas"]
+    frames = _element_frames(layout, fps, n_frames)
+    out_mov = Path(out_mov)
+    out_mov.parent.mkdir(parents=True, exist_ok=True)
+    renderer = detect_browser_renderer()
+    with tempfile.TemporaryDirectory(prefix="choreo-", dir=out_mov.parent) as directory:
+        temporary = Path(directory).resolve()
+        rendered = temporary / "overlay.mov"
+        if renderer.get("available"):
+            html = _element_html(layout, frames, fps)
+            key = hashlib.sha256(html.encode("utf-8")).hexdigest()
+            cache = out_mov.parent / f".web-element-{key}.mov"
+            if cache.is_file():
+                shutil.copyfile(cache, rendered)
+                rendered.replace(out_mov)
+                return out_mov, cw, ch
+            if _capture_spring_alpha(renderer, ffmpeg_bin, html, temporary, rendered, cw, ch, fps, n_frames):
+                shutil.copyfile(rendered, cache)
+                rendered.replace(out_mov)
+                return out_mov, cw, ch
+
+        def pillow_frame(frame: int) -> bytes:
+            return _element_frame_bytes(layout, frames[frame])
+
+        if _encode_overlay_mov(ffmpeg_bin, rendered, cw, ch, fps, n_frames, pillow_frame):
+            rendered.replace(out_mov)
+            return out_mov, cw, ch
+    return None
+
+
 def render_animated_overlay_mov(
     elem: Dict[str, Any],
     out_mov: Path,
@@ -1915,6 +2387,15 @@ def render_animated_overlay_mov(
     out_mov.parent.mkdir(parents=True, exist_ok=True)
     dur = max(0.35, float(duration_sec))
     n_frames = max(10, int(round(dur * fps)))
+
+    # 元素级物理编舞：同一份分拍与几何同时供 Chrome SVG 与 Pillow 兜底使用。
+    choreo = str(elem.get("element_choreo") or "").strip()
+    if choreo in ELEMENT_CHOREO_MODES:
+        built = _render_element_choreo(
+            elem, choreo, out_mov, ffmpeg_bin, fps, n_frames, dur, font_candidates,
+        )
+        if built is not None:
+            return built
 
     if elem.get("variant") in V6_CARD_VARIANTS or (
         elem.get("render_backend") == "web_spring" and elem.get("variant") != "bridge_bar"

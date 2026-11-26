@@ -844,10 +844,15 @@ def run_step6(
     if business_stage:
         subtitle_file = pipeline_dir / "05_subtitles.json"
         subtitles = read_json(subtitle_file).get("entries", []) if subtitle_file.is_file() else []
-        captions = kinetic_choreographer.business_caption_items(audio_events, subtitles, fps)
+        caption_stats: Dict[str, Any] = {}
+        captions = kinetic_choreographer.business_caption_items(
+            audio_events, subtitles, fps,
+            highlight_items=kinetic_stage_plan["items"], out_stats=caption_stats,
+        )
         kinetic_stage_plan["items"] = captions + kinetic_stage_plan["items"]
         kinetic_stage_plan["stats"].update(
             caption_items=len(captions), total_items=len(kinetic_stage_plan["items"]),
+            suppressed_duplicate_captions=int(caption_stats.get("suppressed_duplicate_captions", 0)),
         )
 
     _allow_flower = element_rules.is_present(style_id, "flower", default=True)
