@@ -20,11 +20,17 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import io
 import json
 import math
+import os
 import platform
+import shutil
 import subprocess
 import sys
+import tempfile
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -38,6 +44,7 @@ from common import (
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
     DEFAULT_FPS,
+    detect_browser_renderer,
     find_bin,
     find_commercial_font,
     get_cached_font,
@@ -781,6 +788,124 @@ def _draw_kinetic_line_sprite(
     return ink.crop(box) if box else None
 
 
+V6_CARD_VARIANTS = frozenset({"negation_line", "pillar_badge", "concept_card"})
+
+
+def kinetic_item_paint(elem: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Shared paint for V6 sprites and editable native text."""
+    variant = elem.get("variant")
+    editorial = elem.get("theme_profile") == "business_editorial"
+    if not editorial and variant not in V6_CARD_VARIANTS:
+        return None
+    accent = "#EAB308" if editorial else "#BCFF00"
+    ink = "#F8FAFC" if editorial else "#FFFFFF"
+    dark = "#0C0F16" if editorial else "#1C201E"
+    badge = variant == "pillar_badge"
+    return {
+        "fg_hex": dark if badge else (accent if variant == "hero_lime" else ink),
+        "bg_hex": accent if badge else dark,
+        "bg_alpha": 0.97 if badge else 0.80,
+        "accent_hex": accent,
+        "marker_hex": "#DC2626" if editorial else "#B71C1C",
+        "radius_px": 19 if badge else (15 if editorial else 10),
+        "outline_px": 1 if editorial else 2,
+    }
+
+
+def _render_v6_kinetic_sprite(
+    elem: Dict[str, Any], text: str, font: Optional[str], font_px: int, paint: Dict[str, Any],
+) -> Optional[Image.Image]:
+    variant = elem.get("variant")
+    is_card = variant == "concept_card"
+    card_lines = [str(line).strip() for line in elem.get("card_lines") or [] if str(line).strip()]
+    heading = bool(is_card and elem.get("card_has_headline") and card_lines)
+    lines = card_lines if is_card and card_lines else text.splitlines()
+    columns = is_card and len(lines) - int(heading) == 2
+    fg = _hex_rgb(paint["fg_hex"])
+    accent = _hex_rgb(paint["accent_hex"])
+    marker = _hex_rgb(paint["marker_hex"])
+
+    def draw_line(label: str, size: int, color: Tuple[int, int, int], limit: int) -> Optional[Image.Image]:
+        prefix = label[:1] if label[:1] in {"✕", "✓"} else ""
+        if not prefix and variant == "negation_line":
+            prefix = "✕"
+        words = label[1:].strip() if label[:1] in {"✕", "✓"} else label
+        mark = max(16, round(size * 0.55)) if prefix else 0
+        gap = mark // 2
+        sprite = _draw_kinetic_line_sprite(words, font, size, (*color, 255),
+                                           max_w=limit - mark - gap, min_fs=20)
+        if not prefix or sprite is None:
+            return sprite
+        row = Image.new("RGBA", (mark + gap + sprite.width, max(mark, sprite.height)))
+        row.alpha_composite(sprite, dest=(mark + gap, (row.height - sprite.height) // 2))
+        center_y = row.height // 2
+        draw = ImageDraw.Draw(row)
+        pen = max(3, round(mark * 0.17))
+        if prefix == "✕":
+            draw.line(((2, center_y - mark // 3), (mark - 2, center_y + mark // 3)), fill=(*marker, 255), width=pen)
+            draw.line(((2, center_y + mark // 3), (mark - 2, center_y - mark // 3)), fill=(*marker, 255), width=pen)
+        else:
+            draw.line(((2, center_y), (mark // 3, center_y + mark // 4), (mark - 2, center_y - mark // 3)),
+                      fill=(*accent, 255), width=pen, joint="curve")
+        return row
+
+    rendered = []
+    for idx, line in enumerate(lines):
+        header_line = heading and idx == 0
+        if is_card:
+            size = min(font_px, 49 if header_line else (36 if columns else 44))
+            limit = 182 if columns and not header_line else 398
+        elif variant in {"bridge_bar", "pillar_badge", "negation_line"}:
+            size = min(font_px, 36 if elem.get("base_caption") else 54)
+            limit = 600
+        else:
+            size = min(font_px, 112)
+            limit = 680
+        sprite = draw_line(line, size, accent if header_line else fg, limit)
+        if sprite:
+            rendered.append(sprite)
+    if not rendered:
+        return None
+
+    pad_x, pad_y, gap_y = (15, 10, 10) if is_card else (16, 8, 5)
+    detail_gap = 22
+    preceding = rendered[:1] if heading else []
+    details = rendered[len(preceding):]
+    use_columns = columns and len(details) == 2
+    if use_columns:
+        left, right = details
+        body_w = left.width + right.width + detail_gap
+        body_h = max(left.height, right.height)
+    else:
+        body_w = max((sprite.width for sprite in details), default=0)
+        body_h = sum(sprite.height for sprite in details) + gap_y * max(0, len(details) - 1)
+    title_h = preceding[0].height if preceding else 0
+    gap_title = gap_y if title_h and body_h else 0
+    width = max(body_w, preceding[0].width if preceding else 0) + 2 * pad_x
+    height = title_h + gap_title + body_h + 2 * pad_y
+    card = Image.new("RGBA", (width, height))
+    draw = ImageDraw.Draw(card)
+    draw.rounded_rectangle(
+        (0, 0, width - 1, height - 1), radius=paint["radius_px"],
+        fill=(*_hex_rgb(paint["bg_hex"]), round(255 * paint["bg_alpha"])),
+        outline=(255, 255, 255, 48), width=paint["outline_px"],
+    )
+    if preceding:
+        card.alpha_composite(preceding[0], dest=((width - preceding[0].width) // 2, pad_y))
+    y = pad_y + title_h + gap_title
+    if use_columns:
+        x = (width - body_w) // 2
+        divider = x + left.width + detail_gap // 2
+        draw.line((divider, y + 1, divider, y + body_h - 1), fill=(255, 255, 255, 48))
+        card.alpha_composite(left, dest=(x, y + (body_h - left.height) // 2))
+        card.alpha_composite(right, dest=(x + left.width + detail_gap, y + (body_h - right.height) // 2))
+    else:
+        for sprite in details:
+            card.alpha_composite(sprite, dest=((width - sprite.width) // 2, y))
+            y += sprite.height + gap_y
+    return card
+
+
 def render_kinetic_stage_item_png(
     elem: Dict[str, Any],
     font_candidates: Optional[List[str]] = None,
@@ -803,6 +928,9 @@ def render_kinetic_stage_item_png(
     cands = font_candidates or ["SourceHanSerifCN-Bold.otf", "AlimamaShuHeiTi-Bold.otf", "SourceHanSansCN-Bold.otf"]
     serif_f = find_commercial_font(cands)
     sans_f = find_commercial_font(["SourceHanSansCN-Bold.otf", "AlimamaShuHeiTi-Bold.otf"]) or serif_f
+    paint = kinetic_item_paint(elem)
+    if paint is not None:
+        return _render_v6_kinetic_sprite(elem, text, sans_f, font_px, paint)
 
     if variant == "inline_rich" and isinstance(elem.get("inline_parts"), list) and elem["inline_parts"]:
         parts_imgs: List[Image.Image] = []
@@ -1604,6 +1732,139 @@ def _apply_diagonal_shimmer(base_rgba: Image.Image, progress: float) -> Image.Im
     return Image.fromarray(arr.astype(np.uint8), mode="RGBA")
 
 
+def spring_progress(progress: float) -> float:
+    """Unit step response of a damped spring, with a small overshoot."""
+    u = max(0.0, min(1.0, progress))
+    damping, frequency = 6.0, 12.0
+    residual = math.exp(-damping * u) * (math.cos(frequency * u) + damping / frequency * math.sin(frequency * u))
+    return 1.0 - residual * (1.0 - u ** 4)
+
+
+def _smooth_step(progress: float) -> float:
+    u = max(0.0, min(1.0, progress))
+    return u * u * (3.0 - 2.0 * u)
+
+
+def _spring_frames(elem: Dict[str, Any], fps: int, n_frames: int) -> List[Tuple[float, float, float, float]]:
+    duration = n_frames / fps
+    enter_sec = min(duration * 0.48, max(0.23, float(elem.get("anim_duration_ms") or 380) / 1000))
+    out_sec = min(0.23, duration * 0.28)
+    direction = elem.get("direction")
+    dx = 38 if direction == "left" else (-38 if direction == "right" else 0)
+    dy = -17 if direction == "down" else 17
+    dim_after = elem.get("dim_after_sec")
+    dim_alpha = float(elem.get("dim_alpha") if elem.get("dim_alpha") is not None else 1.0)
+    frames = []
+    for frame in range(n_frames):
+        at = frame / fps
+        settle = spring_progress(at / enter_sec)
+        alpha = 0.34 + 0.66 * _smooth_step(at / (0.55 * enter_sec))
+        if dim_after is not None:
+            alpha *= 1.0 + (dim_alpha - 1.0) * _smooth_step((at - float(dim_after)) / 0.18)
+        if elem.get("out_anim"):
+            alpha *= 1.0 - _smooth_step((at - (duration - 1 / fps - out_sec)) / out_sec)
+        frames.append((dx * (1.0 - settle), dy * (1.0 - settle), 0.94 + 0.06 * settle, alpha))
+    return frames
+
+
+def _encode_overlay_mov(ffmpeg_bin: str, out_mov: Path, cw: int, ch: int, fps: int, n_frames: int, frame_fn: Any) -> bool:
+    cmd = [
+        ffmpeg_bin, "-y",
+        "-f", "rawvideo", "-vcodec", "rawvideo",
+        "-pix_fmt", "rgba", "-s", f"{cw}x{ch}", "-r", str(fps),
+        "-i", "pipe:0",
+        "-an", "-c:v", "qtrle", "-pix_fmt", "argb",
+        str(out_mov),
+    ]
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        with proc.stdin as stream:
+            for fi in range(n_frames):
+                stream.write(frame_fn(fi))
+    except BrokenPipeError:
+        pass
+    finally:
+        proc.wait()
+    return proc.returncode == 0 and out_mov.is_file()
+
+
+def _capture_spring_alpha(
+    renderer: Dict[str, Any], ffmpeg_bin: str, html: str, temporary: Path,
+    out_mov: Path, cw: int, ch: int, fps: int, n_frames: int,
+) -> bool:
+    (temporary / "index.html").write_text(html, encoding="utf-8")
+    env = {**os.environ, "FFMPEG_BIN": ffmpeg_bin, "SVS_CHROME_PATH": renderer["chrome_bin"],
+           "SVS_PLAYWRIGHT_DIR": str(Path(renderer["playwright_core"]).parent.parent)}
+    try:
+        result = subprocess.run(
+            [renderer["node_bin"], renderer["bridge_script"], str(temporary), "--alpha",
+             "--out", str(out_mov), "--size", f"{cw}x{ch}", "--fps", str(fps), "--frames", str(n_frames)],
+            env=env, capture_output=True, timeout=min(45, max(10, 5 + n_frames / 7)),
+        )
+        return result.returncode == 0 and out_mov.is_file() and out_mov.stat().st_size > 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _render_spring_overlay(
+    elem: Dict[str, Any], base: Image.Image, out_mov: Path,
+    ffmpeg_bin: str, fps: int, n_frames: int,
+) -> Optional[Tuple[Path, int, int]]:
+    base = base.convert("RGBA")
+    pad_x = max(4, min(50, (CANVAS_WIDTH - base.width) // 2))
+    cw = (base.width + 2 * pad_x + 1) & ~1
+    ch = (base.height + 57) & ~1
+    transforms = _spring_frames(elem, fps, n_frames)
+    renderer = detect_browser_renderer()
+    with tempfile.TemporaryDirectory(prefix="spring-", dir=out_mov.parent) as directory:
+        temporary = Path(directory).resolve()
+        rendered = temporary / "overlay.mov"
+        if renderer.get("available"):
+            image_buffer = io.BytesIO()
+            base.save(image_buffer, format="PNG")
+            encoded = base64.b64encode(image_buffer.getvalue()).decode("ascii")
+            # Use the existing glyph fallback to shape the local sprite, then transform it in the SVG.
+            html = f"""<!doctype html><meta charset="utf-8">
+<style>html,body{{margin:0;background:transparent;overflow:hidden}}</style>
+<svg width="{cw}" height="{ch}" xmlns="http://www.w3.org/2000/svg">
+<image id="sprite" x="{-base.width / 2}" y="{-base.height / 2}"
+ width="{base.width}" height="{base.height}" href="data:image/png;base64,{encoded}"/>
+</svg>
+<script>
+const sprite = document.getElementById("sprite");
+const frames = {json.dumps(transforms, separators=(",", ":"))};
+window.seek = function(t) {{
+  const [x, y, scale, alpha] = frames[Math.min(frames.length - 1, Math.max(0, Math.round(t * {fps})))];
+  sprite.setAttribute("transform", "translate(" + ({cw / 2} + x) + " " + ({ch / 2} + y) + ") scale(" + scale + ")");
+  sprite.setAttribute("opacity", alpha);
+}};
+window.READY = true;
+</script>"""
+            key = hashlib.sha256(html.encode("utf-8")).hexdigest()
+            cache = out_mov.parent / f".web-spring-{key}.mov"
+            if cache.is_file():
+                shutil.copyfile(cache, rendered)
+                rendered.replace(out_mov)
+                return out_mov, cw, ch
+            if _capture_spring_alpha(renderer, ffmpeg_bin, html, temporary, rendered, cw, ch, fps, n_frames):
+                rendered.replace(cache)
+                shutil.copyfile(cache, rendered)
+                rendered.replace(out_mov)
+                return out_mov, cw, ch
+
+        def pillow_frame(frame: int) -> bytes:
+            dx, dy, scale, alpha = transforms[frame]
+            sprite = _scale_layer_centered(base, scale, alpha_mul=alpha)
+            composed = Image.new("RGBA", (cw, ch))
+            composed.alpha_composite(sprite, (round((cw - sprite.width) / 2 + dx), round((ch - sprite.height) / 2 + dy)))
+            return composed.tobytes()
+
+        if _encode_overlay_mov(ffmpeg_bin, rendered, cw, ch, fps, n_frames, pillow_frame):
+            rendered.replace(out_mov)
+            return out_mov, cw, ch
+    return None
+
+
 def render_animated_overlay_mov(
     elem: Dict[str, Any],
     out_mov: Path,
@@ -1654,6 +1915,16 @@ def render_animated_overlay_mov(
     out_mov.parent.mkdir(parents=True, exist_ok=True)
     dur = max(0.35, float(duration_sec))
     n_frames = max(10, int(round(dur * fps)))
+
+    if elem.get("variant") in V6_CARD_VARIANTS or (
+        elem.get("render_backend") == "web_spring" and elem.get("variant") != "bridge_bar"
+    ):
+        base = fallback_static_img
+        if base is None:
+            base = render_kinetic_stage_item_png(elem, font_candidates=font_candidates)
+        if base is not None:
+            return _render_spring_overlay(elem, base, out_mov, ffmpeg_bin, fps, n_frames)
+        return None
 
     # 1. style_01 专属三拍分步砸屏（仅开场海报/花字触发，片尾卡/贴纸走各自专用组件）
     if anim_mode == "store_stagger_burst" and family == "store_poster_burst" and _ek not in ("end_card_cta", "indicator_sticker"):
@@ -1912,24 +2183,6 @@ def render_animated_overlay_mov(
 
         frame_fn = _with_out_anim
 
-    cmd = [
-        ffmpeg_bin, "-y",
-        "-f", "rawvideo", "-vcodec", "rawvideo",
-        "-pix_fmt", "rgba", "-s", f"{cw}x{ch}", "-r", str(fps),
-        "-i", "pipe:0",
-        "-an", "-c:v", "qtrle", "-pix_fmt", "argb",
-        str(out_mov),
-    ]
-    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    try:
-        for fi in range(n_frames):
-            if proc.stdin:
-                proc.stdin.write(frame_fn(fi))
-    finally:
-        if proc.stdin:
-            proc.stdin.close()
-        proc.wait()
-
-    if proc.returncode != 0 or not out_mov.is_file():
+    if not _encode_overlay_mov(ffmpeg_bin, out_mov, cw, ch, fps, n_frames, frame_fn):
         return None
     return out_mov, cw, ch
