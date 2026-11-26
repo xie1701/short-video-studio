@@ -20,6 +20,7 @@ from director_plan import (
     THEME_PROFILES,
     _amount,
     _numeric_focus,
+    _short_conclusion,
     build_director_tasks,
     generate_deterministic_director_plan,
     load_or_build_director_plan,
@@ -470,6 +471,36 @@ class DirectorPlanTests(unittest.TestCase):
                 self.assertEqual(plan["acts"][0]["sentence_ids"], ["sent_001"])
                 self.assertNotIn("framework_pillar", [planned["primitive"] for planned in plan["acts"]])
 
+    def test_standalone_ordinals_keep_long_conclusions_along_word_boundaries(self):
+        source = audio(
+            (0.0, 0.6, "第一"), (0.8, 2.6, "先答清楚你自己的生意"),
+            (3.2, 3.8, "第二"), (4.0, 5.6, "看到做法先找他的前提"),
+            (6.2, 6.8, "第三"), (7.0, 9.0, "过了夫妻店那条线规矩只能自己长"),
+            (9.6, 10.2, "第四"), (10.4, 12.5, "我们想事情的方式被固化了"),
+            (13.0, 25.5, "接下来我再把这一年发生的那些事按时间顺序讲一遍"),
+        )
+        plan = generate_deterministic_director_plan(source)
+        self.assert_fallback_grounded(plan, source)
+        pillars = [planned for planned in plan["acts"] if planned["primitive"] == "framework_pillar"]
+        self.assertEqual(
+            [
+                (planned["sentence_ids"], planned["visual_copy"]["accent_token"], planned["visual_copy"]["headline"])
+                for planned in pillars
+            ],
+            [
+                (["sent_001", "sent_002"], "01", "自己的生意"),
+                (["sent_003", "sent_004"], "02", "先找他的前提"),
+                (["sent_005", "sent_006"], "03", "只能自己长"),
+                (["sent_007", "sent_008"], "04", "方式被固化了"),
+            ],
+        )
+
+    def test_conclusion_tail_rejects_cut_amount_before_selecting_the_next_suffix(self):
+        text = "今年预付一百二十万开展业务"
+        words = ["今年", "预付", "一百二十", "万", "开展", "业务"]
+        sentences = [{"text": text, "words": [{"word": word} for word in words]}]
+        self.assertEqual(_short_conclusion(text, sentences, limit=6), "开展业务")
+
     def test_ordinal_collocations_do_not_produce_pillars(self):
         for phrase in (
             "第一反应是复核", "第一时间看通知", "第一眼先看价格", "第一次来柜台",
@@ -559,6 +590,29 @@ class DirectorPlanTests(unittest.TestCase):
                 )
                 plan = generate_deterministic_director_plan(source)
                 self.assert_fallback_grounded(plan, source)
+                self.assertEqual(plan["acts"][0]["primitive"], "inline_emphasis_cta")
+                self.assertEqual(plan["acts"][0]["visual_copy"]["headline"], action)
+
+    def test_likes_in_store_names_do_not_trigger_cta(self):
+        profile = {"theme_hint": "store_vibrant"}
+        for name in ("点赞茶楼", "點讚茶樓", "點讚 餐廳", "点赞门店", "点赞店"):
+            with self.subTest(name=name):
+                source = audio(
+                    (0.0, 4.0, f"{name}的入口就在这条街的转角"),
+                    (4.5, 10.0, "这家门店靠窗的位置会提前安排"),
+                )
+                plan = generate_deterministic_director_plan(source, composition_profile=profile)
+                self.assertEqual(plan["theme_profile"], "store_vibrant")
+                self.assertNotIn("inline_emphasis_cta", [planned["primitive"] for planned in plan["acts"]])
+
+        for action in ("点赞", "點讚"):
+            with self.subTest(action=action):
+                source = audio(
+                    (0.0, 4.0, f"这间茶楼今天有探店记录，记得{action}支持"),
+                    (4.5, 10.0, "这段内容由现场同事统一整理"),
+                )
+                plan = generate_deterministic_director_plan(source, composition_profile=profile)
+                self.assert_fallback_grounded(plan, source, profile)
                 self.assertEqual(plan["acts"][0]["primitive"], "inline_emphasis_cta")
                 self.assertEqual(plan["acts"][0]["visual_copy"]["headline"], action)
 

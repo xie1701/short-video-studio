@@ -17,10 +17,15 @@
 4. 「三分之一两百平」拆为分数和面积。「一两百」等概数保留原样。数字高光优先选择面积、金额或比例等有明确量纲的信息。
 5. 门店清单按原句分隔和词级边界切分，兼顾无标点列表。补上私信、主页、预约、领取和点击五种引导语。人后弹幕按幕匹配镜头画像，未匹配的镜头使用全片构图设定。
 
+## 复审收口
+
+1. 长结论的序数卡会从句尾按完整词回取最长可用短语，跳过开头的孤立虚词，再核对原句。四条结论样句均保留合幕，测试时间轴高光覆盖率为 41.96%。对比卡两侧仍按明确的短句或语义边界取词。
+2. 「点赞」或「點讚」后面紧接茶楼、餐厅、门店等店名词时按店名识别。繁简写法、带空格的写法和独立的点赞指令均有回归覆盖。
+
 ## 改动文件清单（对照 allowed_files）
 
 - `short-video-studio/scripts/director_plan.py` 实现任务清单、总谱校验、离线生成、只读加载和命令行。
-- `tests/test_director_plan.py` 保留原有 19 项测试，新增 11 项复测用例，覆盖截断词、留白、序数、双边对比、数字、门店列表、引导语和逐镜构图。
+- `tests/test_director_plan.py` 保留前两轮 30 项测试，新增 3 项复审用例，覆盖长结论合幕、截断金额溯源和店名误触发引导语。
 - `TEAM/reports/T007_codex.md` 记录交付接口、实测结果和已知边界。
 
 ## 闸门与测试实测输出
@@ -28,16 +33,16 @@
 执行命令 `"$HOME/.short-video-studio/venv/bin/python" dev_tools/team_ctl.py gate T007`
 
 ```text
-Ran 30 tests in 0.459s
+Ran 33 tests in 0.408s
 OK
-Ran 9 tests in 2.795s
+Ran 9 tests in 2.661s
 OK
 [gate] 分支校验通过: agent/codex/T007
 [gate] 变更白名单通过 (3 个文件): ['TEAM/reports/T007_codex.md', 'short-video-studio/scripts/director_plan.py', 'tests/test_director_plan.py']
 === GATE PASS: T007 ===
 ```
 
-屏蔽 `jieba` 后，导演总谱的 30 项测试在同一进程内复跑通过，耗时 0.275 秒。
+屏蔽 `jieba` 后，导演总谱的 33 项测试在同一进程内复跑通过，耗时 0.196 秒。
 
 ## 接口对齐与遗留风险说明
 

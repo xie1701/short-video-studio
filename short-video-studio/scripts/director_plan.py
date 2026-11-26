@@ -98,6 +98,7 @@ _CONCLUSION_BOUNDARIES = frozenset((
     "之后", "之後", "以后", "以後", "才能", "才会", "才會", "从而", "從而", "就能", "能够", "能夠",
     "可以", "需要", "必须", "必須", "逐步", "最终", "最終",
 ))
+_CONCLUSION_WEAK_START = frozenset("的地得了是在把他你我她它您咱着著过過和与與及向将將嘅")
 _LIST_LEAD = re.compile(r"(?P<count>[二两兩三四五六七八九2-9])大(?:天王|招牌|特色|单品|單品|品类|品類|款式)"
                         r"|主要有|包括|分为|分為")
 _LIST_JOIN = re.compile(r"[,，、；;：:]|同埋|以及|还有|還有|加埋")
@@ -106,7 +107,10 @@ _STORE_TERMS = re.compile(r"探店|实体店|實體店|门店|門店|店铺|店�
                           r"四大天王|[百千0-9]平")
 _STORE_INTRO = re.compile(r"探店|(?:带|帶)大家(?:逛|睇|看)|走[进進]")
 _SHOWCASE = re.compile(r"(?:招牌|主打|特色)(?:菜|产品|產品|项目|項目)?(?:\s*(?:就)?[是系係]|[：:])")
-_CTA = re.compile(r"评论区|評論區|留言|关注|關注|点赞|點讚|收藏|私信|主页|主頁|预约|預約|领取|領取|点击|點擊")
+_CTA = re.compile(
+    r"评论区|評論區|留言|关注|關注|(?:点赞|點讚)(?!\s*(?:茶[楼樓]|餐[厅廳]|[门門]店|店))"
+    r"|收藏|私信|主页|主頁|预约|預約|领取|領取|点击|點擊"
+)
 
 
 def _finite_number(value: Any) -> bool:
@@ -607,8 +611,9 @@ def _offline_tokenizer() -> Callable[[str], List[str]]:
     except ImportError:
         from step5_subtitles import tokenize_semantic_words
 
-        terms = sorted(word for word in _CONCLUSION_BOUNDARIES if len(word) > 1)
-        return partial(tokenize_semantic_words, terms=terms)
+        terms = {word for word in _CONCLUSION_BOUNDARIES if len(word) > 1}
+        terms.update(("自己", "我们", "我們", "你们", "你們", "他们", "他們", "她们", "她們", "咱们", "咱們"))
+        return partial(tokenize_semantic_words, terms=sorted(terms))
     # 使用独立词典，避免在导入字幕或其他风格时改动公共分词状态。
     return partial(Tokenizer().lcut, HMM=False)
 
@@ -648,18 +653,47 @@ def _word_sequences(text: str, sentences: List[Dict[str, Any]]) -> Iterator[tupl
         yield words
 
 
-def _short_conclusion(text: str, sentences: List[Dict[str, Any]], limit: int = _DISPLAY_LIMIT) -> str:
+def _conclusion_tail(words: tuple[str, ...], sentences: List[Dict[str, Any]], limit: int) -> str:
+    starts = []
+    length = 0
+    for i in range(len(words) - 1, -1, -1):
+        word = words[i]
+        length += _display_length(word)
+        if length > limit:
+            break
+        if length >= 2 and word.strip(_TRIM) and word not in _CONCLUSION_WEAK_START:
+            starts.append(i)
+
+    for i in reversed(starts):
+        suffix = "".join(words[i:])
+        if _is_short_phrase(suffix, limit):
+            errors: List[str] = []
+            _validate_copy({"headline": suffix}, "visual_copy", sentences, errors)
+            if not errors:
+                return suffix
+    return ""
+
+
+def _short_conclusion(
+    text: str, sentences: List[Dict[str, Any]], limit: int = _DISPLAY_LIMIT, *, allow_tail: bool = True,
+) -> str:
     if phrase := _phrase(text, limit):
         return phrase
-    for clause in (part.strip(_TRIM) for part in _CLAUSE.split(text)):
-        if not clause:
-            continue
+    clauses = [part.strip(_TRIM) for part in _CLAUSE.split(text) if part.strip(_TRIM)]
+    tail_words = []
+    for index, clause in enumerate(clauses):
         for words in _word_sequences(clause, sentences):
             for i in range(len(words) - 2, -1, -1):
                 if words[i] in _CONCLUSION_BOUNDARIES:
                     suffix = "".join(words[i + 1:])
                     if _is_short_phrase(suffix, limit) and suffix not in _CONCLUSION_BOUNDARIES:
                         return suffix
+            if allow_tail and index == len(clauses) - 1:
+                tail_words.append(words)
+
+    for words in tail_words:
+        if suffix := _conclusion_tail(words, sentences or [{"text": text}], limit):
+            return suffix
     return ""
 
 
@@ -846,8 +880,8 @@ def _propose(
         else:
             left, right = contrast["rejected"], contrast["accepted"]
             subject = _phrase(text[:contrast.start()].rstrip("的嘅 "))
-        rejected = _short_conclusion(left, sentences)
-        accepted = _short_conclusion(right, sentences)
+        rejected = _short_conclusion(left, sentences, allow_tail=False)
+        accepted = _short_conclusion(right, sentences, allow_tail=False)
         if rejected and accepted:
             sides = (f"✕ {rejected}", f"✓ {accepted}")
             return "concept_split_card", _visual_copy(subject or accepted, sides, accepted)
@@ -858,7 +892,10 @@ def _propose(
         if negations:
             headline, accent = _numeric_focus(text)
             if not headline:
-                headline = _short_conclusion(contrast["accepted"], sentences) if contrast else negations[0][2:]
+                headline = (
+                    _short_conclusion(contrast["accepted"], sentences, allow_tail=False)
+                    if contrast else negations[0][2:]
+                )
             return "negation_strike", _visual_copy(headline, negations, accent)
 
     ordinals = _ordinals(text)
@@ -883,7 +920,7 @@ def _propose(
         primitive = "hero_anchor_plus_danmaku" if behind else "hero_intro_pop"
         return primitive, _visual_copy(cue[0])
     if opening and (turn := _TURN.search(text)):
-        if title := _short_conclusion(text[turn.end():], sentences):
+        if title := _short_conclusion(text[turn.end():], sentences, allow_tail=False):
             return "hero_intro_pop", _visual_copy(title)
     return "plain_bridge", _visual_copy()
 
