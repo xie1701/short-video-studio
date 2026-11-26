@@ -585,7 +585,7 @@ def split_clean_phrases(
     raw_chunks: List[str] = []
     # 介词/冠词（如「在/把/一间」）不能悬在行尾；
     # 结构/动态助词（「的/地/得/了/着/过/嘅/之」）绝不允许当下一行行首（否则劈成「还有种 / 的踏实感」）。
-    _no_hang_tail = set("只在把被从向和跟与同") | {
+    _no_hang_tail = set("只在把被从向和跟与同是") | {
         "一间", "一个", "一家", "一套", "一份", "一种",
         "这间", "那间", "呢间", "𠮶间", "这种", "那种", "呢种", "𠮶种", "这个", "那个", "呢个", "𠮶个",
         "也不",
@@ -1905,14 +1905,17 @@ def _unified_style02_items(
 
     elif u_prim == "pain_slam_danmaku":
         slam_txt = headline or (lines[0] if lines else "")
+        slam_start = start
         slam_end = end
         if slam_txt:
             slam_lbl = slam_txt.lstrip("✕✓ ")
-            if (end - start) >= 3.8:
-                sl_off = _locate_phrase_offset(slam_lbl, timeline, start, max(0.2, end - start - 1.8))
-                if sl_off is not None and (start + sl_off + len(slam_lbl) * 0.25) <= end - 2.0:
-                    slam_end = round(min(end, max(start + 1.85, start + sl_off + len(slam_lbl) * 0.25 + 0.35)), 4)
-            add(slam_lbl, "red_slam", start, slam_end, 0.0, y_base + 0.04, _UNIFIED_L3_U, "in:震动冲击", 1, "punch", tier="L3")
+            sl_off = _locate_phrase_offset(slam_lbl, timeline, start, max(0.2, end - start - 1.0))
+            if sl_off is not None:
+                if sl_off >= 0.90 and (end - (start + sl_off)) >= 1.35:
+                    slam_start = round(max(start, min(end - 1.50, start + sl_off - 0.15)), 4)
+                if (end - slam_start) >= 3.2 and (start + sl_off + len(slam_lbl) * 0.25) <= end - 1.6:
+                    slam_end = round(min(end, max(slam_start + 1.15, start + sl_off + len(slam_lbl) * 0.25 + 0.20)), 4)
+            add(slam_lbl, "red_slam", slam_start, slam_end, 0.0, y_base + 0.04, _UNIFIED_L3_U, "in:震动冲击", 1, "punch", tier="L3")
         extra_rows = [r.lstrip("✕✓ ") for r in lines if r.lstrip("✕✓ ") != (slam_txt or "").lstrip("✕✓ ")]
         if extra_rows:
             all_behind_ok = bool(shot_comps) and all(c.get("allow_behind_person") for c in shot_comps)
@@ -1935,16 +1938,48 @@ def _unified_style02_items(
     elif u_prim == "stacked_dual_color":
         rows = [r for r in [headline, *lines] if r]
         if len(rows) >= 2:
-            spans = timed_spans(rows[:3])
-            for ri, (rtxt, (rs, _)) in enumerate(zip(rows[:3], spans)):
-                is_focus = (ri == len(rows[:3]) - 1) or bool(_NUMBER_RUN.search(rtxt))
+            # 将短截词（<=5字且不含数字，含主标与辅行）在原话存在 <=9 字完整分句时舒展为完整短句
+            raw_clauses = [clean_display_text(p) for s in sentences for p in re.split(r"[，。！？、；：,.!?;:]+", str(s.get("text") or "")) if clean_display_text(p)]
+            expanded_rows = []
+            for rtxt in rows[:3]:
+                if len(rtxt) <= 5 and not _NUMBER_RUN.search(rtxt):
+                    hit_cl = next((c for c in raw_clauses if rtxt in c and len(c) <= 9 and len(c) > len(rtxt)), None)
+                    expanded_rows.append(hit_cl or rtxt)
+                else:
+                    expanded_rows.append(rtxt)
+            spans = timed_spans(expanded_rows)
+            r0_start = start
+            if (end - start) >= 2.6:
+                r0_off = _locate_phrase_offset(expanded_rows[0], timeline, start, max(0.2, end - start - 0.85))
+                if r0_off is not None and r0_off >= 0.95 and (end - (start + r0_off)) >= 1.25:
+                    r0_start = round(max(start, min(end - 1.40, start + r0_off - 0.15)), 4)
+            for ri, (rtxt, (rs, _)) in enumerate(zip(expanded_rows, spans)):
+                is_focus = (ri == len(expanded_rows) - 1) or bool(_NUMBER_RUN.search(rtxt))
+                st_r = max(r0_start, rs) if ri > 0 else r0_start
+                yn_row = max(-0.46, y_base + 0.10 - ri * 0.105)
+                if ri == 1 and len(expanded_rows[0]) <= 3 and (st_r - r0_start) >= 1.25:
+                    s_chunks = [
+                        (ct, cs, ce) for ct, cs, ce in _build_act_speech_chunks(target_min=3, target_max=8)
+                        if cs < st_r - 0.15 and ce > r0_start + 0.15
+                    ]
+                    h_c = _norm_cov(expanded_rows[0])
+                    mid_ps = [
+                        (ct[len(expanded_rows[0]):].strip() if ct.startswith(expanded_rows[0]) else ct, cs)
+                        for ct, cs, _ in s_chunks
+                        if _norm_cov(ct) not in h_c and len(clean_display_text(ct)) >= 3
+                    ]
+                    if mid_ps:
+                        m_txt = mid_ps[0][0][:8]
+                        m_cs = max(r0_start + 0.25, min(mid_ps[0][1], st_r - 0.65))
+                        if _norm_cov(m_txt) and st_r - m_cs >= 0.55:
+                            add(m_txt, "hero_white", m_cs, st_r, 0.0, yn_row, _UNIFIED_L2_U, "in:向上露出", 1, sfx=None, tier="L2")
                 add(
                     rtxt,
                     "hero_lime" if is_focus else "hero_white",
-                    rs if ri > 0 else start,
+                    st_r,
                     end,
                     0.0,
-                    max(-0.46, y_base + 0.10 - ri * 0.105),
+                    yn_row,
                     _UNIFIED_L3_U if is_focus else _UNIFIED_L2_U,
                     "in:缩小 II" if is_focus else "in:向上露出",
                     1 + ri,
@@ -1966,7 +2001,7 @@ def _unified_style02_items(
         if has_top_lead:
             add(headline, "hero_lime", start, end, 0.0, top_yn, 13.5 if compact_4 else _UNIFIED_L2_U, "in:向上露出", 1, "pop", tier="L2")
         spans = timed_spans(row_items)
-        # 若首行列表延迟 >=1.25s（如先说「第一·先答清楚」「过了夫妻店那条线规矩」），在首行空档插入纯前景过渡行，Row 1 入场时淡出
+        # 若首行列表延迟 >=1.25s（如先说「先答清楚」「过了夫妻店那条线」），在首行空档插入 track_lane=1 纯前景过渡行，Row 1 入场时淡出
         if has_top_lead and spans and (spans[0][0] - start) >= 1.25:
             lead_end = spans[0][0]
             lead_chunks = [
@@ -1974,12 +2009,27 @@ def _unified_style02_items(
                 if cs < lead_end - 0.25 and ce > start + 0.25
             ]
             head_clean = _norm_cov(headline)
-            lead_pieces = [ct for ct, _, _ in lead_chunks if _norm_cov(ct) not in head_clean and len(clean_display_text(ct)) >= 3]
+            lead_pieces: List[str] = []
+            for ct, _, _ in lead_chunks:
+                ct_trim = ct[len(headline):].strip() if ct.startswith(headline) else ct
+                if _norm_cov(ct_trim) and _norm_cov(ct_trim) not in head_clean and len(clean_display_text(ct_trim)) >= 3:
+                    lead_pieces.append(ct_trim)
             if lead_pieces:
-                lead_txt = "".join(lead_pieces)[:9]
+                lead_txt = ""
+                for lp in lead_pieces:
+                    if not lead_txt and len(lp) <= 9:
+                        lead_txt = lp
+                    elif lead_txt and len(lead_txt) + len(lp) <= 9:
+                        lead_txt += lp
+                    else:
+                        if not lead_txt:
+                            lead_txt = lp[:8]
+                        elif len(lp) <= 3 and len(lead_txt) + 1 <= 9 and lp.startswith("那条"):
+                            lead_txt = (lead_txt + "那条线")[:9]
+                        break
                 lead_cs = max(start + 0.30, min(lead_chunks[0][1], lead_end - 0.85))
-                if lead_end - lead_cs >= 0.70:
-                    add(lead_txt, "hero_white", lead_cs, lead_end, 0.0, first_row_yn, row_u, "in:向上露出", 2, sfx=None, tier="L2")
+                if lead_txt and lead_end - lead_cs >= 0.70:
+                    add(lead_txt, "hero_white", lead_cs, lead_end, 0.0, first_row_yn, row_u, "in:向上露出", 1, sfx=None, tier="L2")
         for idx_r in range(max_rows):
             rtxt = row_items[idx_r]
             rs, _ = spans[idx_r]
@@ -1995,22 +2045,38 @@ def _unified_style02_items(
     elif u_prim == "number_burst_pair":
         num_txt = headline or accent_tok or (lines[0] if lines else "")
         note_txt = (lines[0] if headline and lines and lines[0] != headline else "") or footnote
+        num_s = start
+        if num_txt and (end - start) >= 2.0:
+            tl_str = "".join(c for c, _, _ in timeline)
+            num_key = num_txt
+            if num_key not in tl_str:
+                for k_zh, k_dig in (("两百", "200"), ("三百", "300"), ("六百", "600")):
+                    if k_dig in num_key and k_zh in tl_str:
+                        num_key = num_key.replace(k_dig, k_zh)
+                        break
+            n_off = _locate_phrase_offset(num_key, timeline, start, max(0.2, end - start - 0.65))
+            if n_off is not None and n_off >= 0.90 and (end - (start + n_off)) >= 0.95:
+                num_s = round(max(start, min(end - 1.05, start + n_off - 0.15)), 4)
         if num_txt:
-            num_it = add(num_txt, "hero_lime", start, end, 0.0, y_base + 0.06, _UNIFIED_L3_U, "in:缩小 II", 1, "cash_register", tier="L3")
+            num_it = add(num_txt, "hero_lime", num_s, end, 0.0, y_base + 0.06, _UNIFIED_L3_U, "in:缩小 II", 1, "cash_register", tier="L3")
             if num_it is not None:
-                num_dur = max(0.35, end - start)
+                num_dur = max(0.35, end - num_s)
                 num_it["beat_offsets"] = {"roll_start": 0.0, "roll_end": round(min(0.32, num_dur * 0.42), 4)}
         if note_txt:
-            ns = timed_spans([num_txt, note_txt])[-1][0] if num_txt else start
-            add(note_txt, "hero_white", max(start, ns), end, 0.0, max(-0.46, y_base - 0.09), _UNIFIED_L2_U, "in:向上露出", 2, tier="L2")
+            ns = timed_spans([num_txt, note_txt])[-1][0] if num_txt else num_s
+            add(note_txt, "hero_white", max(num_s, ns), end, 0.0, max(-0.46, y_base - 0.09), _UNIFIED_L2_U, "in:向上露出", 2, tier="L2")
 
     else:  # inline_highlight_cta 及回退默认
         rows = [r for r in lines if r != headline]
         kw = accent_tok or headline or (rows[-1] if rows else "")
         lead = (rows[0] if rows and rows[0] != kw else (headline if headline and headline != kw else ""))
         if lead and kw and len(clean_display_text(lead + kw)) <= 13:
+            in_s = start
+            in_off = _locate_phrase_offset(lead or kw, timeline, start, max(0.2, end - start - 1.0))
+            if in_off is not None and in_off >= 0.42 and (end - (start + in_off)) >= 1.35:
+                in_s = round(max(start, min(end - 1.35, start + in_off - 0.06)), 4)
             add(
-                lead + kw, "inline_rich", start, end, 0.0, y_base - 0.02,
+                lead + kw, "inline_rich", in_s, end, 0.0, y_base - 0.02,
                 _UNIFIED_L2_U, "in:向右露出", 1, "pop",
                 inline_parts=[
                     {"text": lead, "color": "#FFFFFF", "size_units": _UNIFIED_L1_U},
@@ -2025,63 +2091,102 @@ def _unified_style02_items(
                 ks = timed_spans([lead, kw])[-1][0] if lead else start
                 add(kw, "hero_lime", max(start, ks), end, 0.0, max(-0.46, y_base - 0.04), _UNIFIED_L2_U, "in:缩小 II", 2, "pop", tier="L2")
 
-    # ── 单层绝对零重叠时间分区 + 完整补全（先按语段边界收束滞留大字，再以差集填入非重叠 bridge_bar）──
-    act_chunks = _build_act_speech_chunks(target_min=4, target_max=9)
+    # ── 字符级未覆盖区段精准时间释放 + 绝对零重叠单层 bridge_bar 补全 ──
     fg_hi_items = [it for it in items if it.get("z_layer", "foreground") == "foreground" and it.get("variant") != "bridge_bar"]
-    if act_chunks and fg_hi_items:
-        # 1) 识别连续 >=1.15s 未被同期前台文字覆盖的语块，若覆盖它们的先前大字已说完，提前收束于 gap_s
-        def _chunk_cov(ct: str, cs: float, ce: float) -> float:
-            nc = _norm_cov(ct)
-            c_alnum = [ch for ch in nc if ("\u4e00" <= ch <= "\u9fff" or ch.isalnum()) and ch not in set("的嘅了我你佢吧呢啊嘛")]
-            if len(c_alnum) < 2:
-                return 1.0
-            ov_blob = _norm_cov("".join(
+    full_tl: List[Tuple[str, float, float]] = [
+        (ch, cs_c, ce_c) for ch, cs_c, ce_c in timeline if ch.strip()
+    ]
+    _filler_chars = set("的嘅了我你佢吧呢啊嘛也喺在")
+
+    def _uncovered_char_runs() -> List[Tuple[str, float, float, List[Tuple[str, float, float]]]]:
+        if not full_tl:
+            return []
+        flags: List[bool] = []
+        for idx_c, (ch, cs_c, ce_c) in enumerate(full_tl):
+            mid = 0.5 * (cs_c + ce_c)
+            active_its = [
                 str(it.get("text_or_asset") or "")
                 for it in fg_hi_items
-                if float(it["start_sec"]) < ce - 0.10 and float(it["end_sec"]) > cs + 0.10
-            ))
-            return sum(1 for ch in c_alnum if ch in ov_blob) / float(len(c_alnum))
-
-        raw_gaps: List[Tuple[float, float]] = []
-        for c_txt, cs, ce in act_chunks:
-            if _chunk_cov(c_txt, cs, ce) < 0.60:
-                if raw_gaps and abs(cs - raw_gaps[-1][1]) <= 0.12:
-                    raw_gaps[-1] = (raw_gaps[-1][0], max(raw_gaps[-1][1], ce))
-                else:
-                    raw_gaps.append((cs, ce))
-        for gs, ge in raw_gaps:
-            if (ge - gs) < 1.15:
+                if float(it["start_sec"]) - 0.05 <= mid <= float(it["end_sec"]) + 0.05
+            ]
+            ov_norm_list = [_norm_cov(x) for x in active_its if x]
+            ov_n = "".join(ov_norm_list)
+            ch_n = _norm_cov(ch)
+            prev_ch = _norm_cov(full_tl[idx_c - 1][0]) if idx_c > 0 else ""
+            nxt_ch = _norm_cov(full_tl[idx_c + 1][0]) if idx_c + 1 < len(full_tl) else ""
+            bg_l = (prev_ch + ch_n) if (prev_ch and ch_n) else ""
+            bg_r = (ch_n + nxt_ch) if (ch_n and nxt_ch) else ""
+            covered = bool(
+                ch_n and (
+                    any(len(it_n) <= 2 and ch_n in it_n for it_n in ov_norm_list)
+                    or (len(bg_l) >= 2 and bg_l in ov_n)
+                    or (len(bg_r) >= 2 and bg_r in ov_n)
+                )
+            )
+            if not covered and len(full_tl) >= 2:
+                gram2 = full_tl[max(0, idx_c - 1)][0] + ch + (full_tl[idx_c + 1][0] if idx_c + 1 < len(full_tl) else "")
+                gram2_n = _norm_cov(gram2)
+                if any(d_n in ov_n and d_n in gram2_n for d_n in ("200", "300", "600", "2000")):
+                    covered = True
+            flags.append(covered)
+        # 仅吸收中间孤立 1 个停顿虚词桥接（不把实义已覆盖字吃进未覆盖区）
+        runs: List[Tuple[str, float, float, List[Tuple[str, float, float]]]] = []
+        i = 0
+        n_tl = len(full_tl)
+        while i < n_tl:
+            if flags[i]:
+                i += 1
                 continue
-            ov_fg = [it for it in fg_hi_items if float(it["start_sec"]) < gs - 0.35 and float(it["end_sec"]) > gs + 0.15]
+            j = i
+            while j < n_tl:
+                if not flags[j]:
+                    j += 1
+                elif (j + 1 < n_tl and not flags[j + 1] and full_tl[j][0] in _filler_chars):
+                    j += 1
+                else:
+                    break
+            seg_tl = full_tl[i:j]
+            raw_u = "".join(c for c, _, _ in seg_tl)
+            u_s = max(start, float(seg_tl[0][1]))
+            u_e = min(end, float(seg_tl[-1][2]))
+            eff_n = [c for c in raw_u if c not in _filler_chars]
+            if len(eff_n) >= 3 and (u_e - u_s) >= 0.72:
+                runs.append((raw_u, u_s, u_e, seg_tl))
+            i = j
+        return runs
+
+    # 1) 在非 list_gather_depth 幕里，若连续未覆盖区段持续 >=0.75s，先把已经说完的先期大字收束到 u_s
+    if fg_hi_items and u_prim != "list_gather_depth":
+        for raw_u, u_s, u_e, _ in _uncovered_char_runs():
+            nxt_fg_s = min(
+                (float(it["start_sec"]) for it in fg_hi_items if u_s + 0.30 < float(it["start_sec"]) < u_e),
+                default=u_e,
+            )
+            eff_ue = min(u_e, nxt_fg_s)
+            if (eff_ue - u_s) < 0.75:
+                continue
+            ov_fg = [it for it in fg_hi_items if float(it["start_sec"]) < u_s - 0.25 and float(it["end_sec"]) > u_s + 0.12]
             if not ov_fg:
                 continue
-            # 检查所有跨入 gap 的先前大字：它们的字不能主要落在 gap 之后，且在 gs 收束后可保留 >=1.10s 时长
+            later_text = "".join(ch for ch, cs_c, _ in full_tl if eff_ue - 0.10 <= cs_c <= u_e + 0.12)
+            later_norm = _norm_cov(later_text)
             can_trim = True
-            pending_adj: List[Tuple[Dict[str, Any], Optional[float], float]] = []
+            pending_adj: List[Tuple[Dict[str, Any], float]] = []
             for it in ov_fg:
                 it_txt = str(it.get("text_or_asset") or "")
-                it_s = float(it["start_sec"])
-                if (gs - it_s) < 1.05:
-                    # 仅当该条可左移 <=0.55s 且不早于 start（如「下载了一份」）才允许微调
-                    shift_s = max(start, gs - 1.25)
-                    if (gs - shift_s) >= 1.10 and (it_s - shift_s) <= 0.65:
-                        adj_s: Optional[float] = shift_s
-                    else:
-                        can_trim = False
-                        break
-                else:
-                    adj_s = None
-                later_text = "".join(ct for ct, cs2, _ in act_chunks if cs2 >= ge - 0.15)
-                in_later = sum(1 for ch in _norm_cov(it_txt) if ch in _norm_cov(later_text))
-                if len(it_txt) >= 3 and in_later >= max(3, int(len(it_txt) * 0.7)):
+                if (u_s - float(it["start_sec"])) < 0.85:
                     can_trim = False
                     break
-                pending_adj.append((it, adj_s, gs))
+                in_later = sum(1 for ch in _norm_cov(it_txt) if ch in later_norm)
+                if len(it_txt) >= 3 and eff_ue < u_e - 0.10 and in_later >= max(3, int(len(it_txt) * 0.7)):
+                    can_trim = False
+                    break
+                pending_adj.append((it, u_s))
             if can_trim:
-                for it, adj_s, new_en in pending_adj:
-                    _sync_timing(it, new_st=adj_s, new_en=new_en)
+                for it, new_en in pending_adj:
+                    _sync_timing(it, new_en=new_en)
 
-    # 2) 构建严格前景封锁区间，差集排出纯无重叠 bridge_bar
+    # 2) 构建严格前景封锁区间，对未覆盖区段逐段切短语并按差集排入纯无重叠 bridge_bar
     raw_fg_spans = sorted(
         (max(0.0, float(it["start_sec"]) - 0.02), float(it["end_sec"]) + 0.02)
         for it in items
@@ -2107,28 +2212,26 @@ def _unified_style02_items(
                     if bb < sb:
                         nxt_cur.append((bb, sb))
             cur = nxt_cur
-        return [(a, b) for a, b in cur if (b - a) >= 0.55]
+        return [(a, b) for a, b in cur if (b - a) >= 0.45]
 
     last_bb_end = 0.0
-    for c_txt, cs, ce in act_chunks:
-        nc = _norm_cov(c_txt)
-        c_alnum = [ch for ch in nc if ("\u4e00" <= ch <= "\u9fff" or ch.isalnum()) and ch not in set("的嘅了我你佢吧呢啊嘛")]
-        if len(c_alnum) < 2:
+    _lead_aux_strip = set("的地得之了着过嘅")
+    for raw_u, u_s, u_e, seg_tl in _uncovered_char_runs():
+        u_clean = raw_u.lstrip("".join(_lead_aux_strip)) or raw_u
+        if len([c for c in u_clean if c not in _filler_chars]) < 3:
             continue
-        ov_items = [
-            it for it in fg_hi_items
-            if float(it["start_sec"]) < ce - 0.10 and float(it["end_sec"]) > cs + 0.10
-        ]
-        ov_blob = _norm_cov("".join(str(it.get("text_or_asset") or "") for it in ov_items))
-        covered_n = sum(1 for ch in c_alnum if ch in ov_blob)
-        if covered_n / float(len(c_alnum)) >= 0.65:
-            continue
-        for sa, sb in _free_slices(cs, ce):
-            sa_ok = max(sa, last_bb_end)
-            if (sb - sa_ok) >= 0.55:
-                it_bb = add(c_txt, "bridge_bar", sa_ok, sb, 0.0, -0.45, _UNIFIED_L1_U, "", 0, sfx=None, tier="L1")
-                if it_bb is not None:
-                    last_bb_end = float(it_bb["end_sec"])
+        sub_chunks = split_clean_phrases(u_clean, target_min=3, target_max=9) or [u_clean[:9]]
+        mapped_u = map_chunks_to_times(sub_chunks, seg_tl, u_s, u_e)
+        for ci, (c_txt, cs, _ce) in enumerate(mapped_u):
+            c_txt = c_txt.lstrip("".join(_lead_aux_strip)) or c_txt
+            nxt_s = mapped_u[ci + 1][1] if ci + 1 < len(mapped_u) else u_e
+            ce_ok = max(cs + 0.25, min(u_e, float(nxt_s)))
+            for sa, sb in _free_slices(cs, ce_ok):
+                sa_ok = max(sa, last_bb_end)
+                if (sb - sa_ok) >= 0.45:
+                    it_bb = add(c_txt, "bridge_bar", sa_ok, sb, 0.0, -0.45, _UNIFIED_L1_U, "", 0, sfx=None, tier="L1")
+                    if it_bb is not None:
+                        last_bb_end = float(it_bb["end_sec"])
     return items
 
 

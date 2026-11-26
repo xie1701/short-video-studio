@@ -1055,7 +1055,7 @@ def render_kinetic_stage_item_png(
         gap = 10
         tw = sum(im.width for im in parts_imgs) + gap * max(0, len(parts_imgs) - 1)
         th = max(im.height for im in parts_imgs)
-        max_inline_w = safe_max_w if is_unified else 940
+        max_inline_w = max(200, safe_max_w - 16) if is_unified else 940
         if tw > max_inline_w:
             sc = float(max_inline_w) / float(tw)
             parts_imgs = [
