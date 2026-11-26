@@ -19,6 +19,7 @@ import broll_match  # noqa: E402
 import director_plan  # noqa: E402
 import independent_verifier  # noqa: E402
 import kinetic_choreographer  # noqa: E402
+import render_template_overlays  # noqa: E402
 import step5_subtitles  # noqa: E402
 
 
@@ -249,6 +250,90 @@ class V9All24DirectorAndQualityTests(unittest.TestCase):
             self.assertEqual(sub_res["status"], "PASS", sub_res)
             self.assertEqual(read_res["status"], "PASS", read_res)
             self.assertEqual(leak_res["status"], "PASS", leak_res)
+
+    def test_non_style02_director_enables_single_layer_stage_and_safe_y(self) -> None:
+        audio = {
+            "sentences": [
+                {"id": "s0", "text": "不是人的问题，而是方式被固化了", "start_sec": 0.0, "end_sec": 3.2},
+                {"id": "s1", "text": "今日带大家食呢只招牌手工鸡", "start_sec": 3.4, "end_sec": 6.6},
+            ],
+            "locked_duration_sec": 7.0,
+        }
+        profile = {"primary_stage_mode": "closeup_chest_stage", "allow_behind_person": False}
+        plan_01 = director_plan.generate_deterministic_director_plan(
+            audio, style_id="style_01", composition_profile={"theme_hint": "store_vibrant", "allow_behind_person": False},
+        )
+        stage_01 = kinetic_choreographer.plan_kinetic_stage(
+            audio, style_id="style_01", fps=30, director_plan=plan_01, composition_profile=profile, enable_v6_director=True,
+        )
+        self.assertTrue(stage_01.get("single_layer_stage"))
+        fg_01 = [it for it in stage_01["items"] if it.get("z_layer", "foreground") == "foreground"]
+        self.assertTrue(fg_01)
+        self.assertTrue(all(float(it["y_norm"]) >= -0.45 for it in fg_01), fg_01)
+        bridges = [it for it in fg_01 if it.get("variant") == "bridge_bar"]
+        highlights = [
+            it for it in fg_01
+            if it.get("variant") not in {"bridge_bar", "editorial_ticker", "pillar_badge"} and not it.get("base_caption")
+        ]
+        for b in bridges:
+            for h in highlights:
+                ov = min(float(b["end_sec"]), float(h["end_sec"])) - max(float(b["start_sec"]), float(h["start_sec"]))
+                self.assertLessEqual(ov, 0.04, f"style_01 存在同窗叠字 {b} vs {h}")
+
+        plan_03 = director_plan.generate_deterministic_director_plan(audio, style_id="style_03", composition_profile=profile)
+        stage_03 = kinetic_choreographer.plan_kinetic_stage(
+            audio, style_id="style_03", fps=30, director_plan=plan_03, composition_profile=profile, enable_v6_director=True,
+        )
+        self.assertTrue(stage_03.get("single_layer_stage"))
+        raw_caps = kinetic_choreographer.business_caption_items(
+            audio,
+            [{"id": "sub_1", "text": "方式被固化了", "start_sec": 0.0, "end_sec": 3.2}],
+            fps=30,
+            highlight_items=[],
+        )
+        clipped = kinetic_choreographer.clip_bridge_items_against_foreground(
+            raw_caps, foreground_pool=stage_03["items"], fps=30, min_slice_sec=0.45,
+        )
+        self.assertEqual(clipped, [])
+
+        # V6 向后兼容检查：style_02 无 single_layer_stage 走 store_vibrant 时保持关闭
+        stage_legacy_v6 = kinetic_choreographer.plan_kinetic_stage(
+            audio,
+            style_id="style_02",
+            fps=30,
+            director_plan={"theme_profile": "store_vibrant", "source": "agent", "acts": []},
+            composition_profile=profile,
+        )
+        self.assertFalse(stage_legacy_v6.get("single_layer_stage"))
+
+    def test_render_kinetic_stage_item_caps_centered_sprite_width_across_styles(self) -> None:
+        long_text = "方式被彻底固化了还要再看一遍"
+        for sid, theme, variant in (
+            ("style_01", "store_vibrant", "bridge_bar"),
+            ("style_03", "business_editorial", "hero_white"),
+            ("style_03", "business_editorial", "inline_rich"),
+        ):
+            elem = {
+                "id": f"test_{sid}_{variant}",
+                "style_id": sid,
+                "theme_profile": theme,
+                "variant": variant,
+                "z_layer": "foreground",
+                "text_or_asset": long_text,
+                "start_sec": 0.0,
+                "end_sec": 2.0,
+                "center_px": [540, 1392],
+                "x_norm": 0.0,
+                "font_size_px": 74,
+            }
+            if variant == "inline_rich":
+                elem["inline_parts"] = [
+                    {"text": "方式被彻底固化了", "color": "#FFFFFF", "size_units": 12.0},
+                    {"text": "还要看一遍", "color": "#F59E0B", "size_units": 14.0},
+                ]
+            im = render_template_overlays.render_kinetic_stage_item_png(elem)
+            self.assertIsNotNone(im)
+            self.assertLessEqual(im.width, 640, f"{sid}/{variant} 宽度 {im.width}px 超出 640px")
 
 
 if __name__ == "__main__":

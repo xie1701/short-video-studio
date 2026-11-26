@@ -850,14 +850,26 @@ def run_step6(
         subtitle_file = pipeline_dir / "05_subtitles.json"
         subtitles = read_json(subtitle_file).get("entries", []) if subtitle_file.is_file() else []
         caption_stats: Dict[str, Any] = {}
-        captions = kinetic_choreographer.business_caption_items(
+        raw_captions = kinetic_choreographer.business_caption_items(
             audio_events, subtitles, fps,
             highlight_items=kinetic_stage_plan["items"], out_stats=caption_stats,
         )
-        kinetic_stage_plan["items"] = captions + kinetic_stage_plan["items"]
+        if kinetic_stage_plan.get("single_layer_stage") or (style_id and style_id != "style_02"):
+            captions = kinetic_choreographer.clip_bridge_items_against_foreground(
+                raw_captions,
+                foreground_pool=kinetic_stage_plan["items"],
+                fps=fps,
+                min_slice_sec=0.45,
+            )
+            kinetic_stage_plan["items"] = captions + kinetic_stage_plan["items"]
+            kinetic_choreographer.enforce_foreground_safe_y(kinetic_stage_plan["items"], min_y=-0.45)
+        else:
+            captions = raw_captions
+            kinetic_stage_plan["items"] = captions + kinetic_stage_plan["items"]
         kinetic_stage_plan["stats"].update(
             caption_items=len(captions), total_items=len(kinetic_stage_plan["items"]),
             suppressed_duplicate_captions=int(caption_stats.get("suppressed_duplicate_captions", 0)),
+            clipped_overlap_captions=max(0, len(raw_captions) - len(captions)),
         )
 
     _allow_flower = element_rules.is_present(style_id, "flower", default=True)

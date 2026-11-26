@@ -651,10 +651,19 @@ def verify_visual_and_subtitle_blackbox(
                     ph_k = max(56, int(fpx * 1.18 + 16))
                 bx0 = max(12, min(CANVAS_WIDTH - pw_k - 12, cx - pw_k // 2))
                 by0 = max(120, min(CANVAS_HEIGHT - ph_k - 120, cy - ph_k // 2))
-                anim_lag = min(0.32, float(el.get("anim_duration_ms") or 0) / 1000.0) if (en_k - st_k) >= 0.90 else 0.0
-                eff_st = min(en_k - 0.15, st_k + anim_lag)
+                dur_k = en_k - st_k
+                anim_ms = float(el.get("anim_duration_ms") or 0.0)
+                has_in_anim = anim_ms > 0.0 or str(el.get("jianying_anim_key") or "").startswith("in:") or bool(el.get("anim_primitive"))
+                anim_lag = min(0.32, (anim_ms / 1000.0 if anim_ms > 0.0 else 0.30), dur_k * 0.30) if has_in_anim else 0.0
+                out_lag = min(0.22, dur_k * 0.25) if str(el.get("out_anim") or "") == "fade_out" else 0.0
+                eff_st = st_k + anim_lag
+                eff_en = (en_k - out_lag)
                 dim_sec = el.get("dim_after_sec")
-                eff_en = min(en_k, max(eff_st + 0.35, st_k + float(dim_sec))) if dim_sec is not None else en_k
+                if dim_sec is not None:
+                    eff_en = min(eff_en, max(eff_st + 0.12, st_k + float(dim_sec)))
+                if eff_en <= eff_st + 0.08:
+                    mid_k = 0.5 * (st_k + en_k)
+                    eff_st, eff_en = max(st_k, mid_k - 0.06), min(en_k, mid_k + 0.06)
                 ks_stage_only.append({
                     "id": str(el.get("id") or f"ks_{len(ks_stage_only):03d}"),
                     "text": txt_k,

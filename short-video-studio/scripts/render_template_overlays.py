@@ -944,10 +944,10 @@ def _render_v6_kinetic_sprite(
             limit = 300
         elif variant in {"bridge_bar", "pillar_badge", "negation_line"}:
             size = min(font_px, 36 if elem.get("base_caption") else 54)
-            limit = 600
+            limit = 590
         else:
             size = min(font_px, 112)
-            limit = 680
+            limit = 592 if abs(float(elem.get("x_norm") or 0.0)) < 0.05 else 560
         sprite = draw_line(line, size, accent if header_line else fg, limit)
         if sprite:
             rendered.append(sprite)
@@ -1021,10 +1021,7 @@ def render_kinetic_stage_item_png(
     is_unified = elem.get("theme_profile") == "style_02_unified"
     cx_elem = int((elem.get("center_px") or [540, 1400])[0])
     x_norm_elem = float(elem.get("x_norm") or 0.0)
-    safe_max_w = (
-        (640 if abs(x_norm_elem) < 0.05 else max(240, min(640, int(min(cx_elem - 65, 875 - cx_elem) * 2))))
-        if is_unified else 920
-    )
+    safe_max_w = 640 if abs(x_norm_elem) < 0.05 else max(240, min(640, int(min(cx_elem - 65, 875 - cx_elem) * 2)))
     font_px = max(30, int(elem.get("font_size_px") or 88))
     sans_pref = ["SourceHanSansCN-Bold.otf", "NotoSansSC-Bold.ttf", "AlimamaShuHeiTi-Bold.otf"]
     cands = font_candidates or (sans_pref if is_unified else ["SourceHanSerifCN-Bold.otf", "AlimamaShuHeiTi-Bold.otf", "SourceHanSansCN-Bold.otf"])
@@ -1055,7 +1052,7 @@ def render_kinetic_stage_item_png(
         gap = 10
         tw = sum(im.width for im in parts_imgs) + gap * max(0, len(parts_imgs) - 1)
         th = max(im.height for im in parts_imgs)
-        max_inline_w = max(200, safe_max_w - 16) if is_unified else 940
+        max_inline_w = max(200, safe_max_w - 16)
         if tw > max_inline_w:
             sc = float(max_inline_w) / float(tw)
             parts_imgs = [
@@ -1081,7 +1078,7 @@ def render_kinetic_stage_item_png(
             text, base_f, pill_fs,
             (183, 28, 28, 255),
             stroke_rgba=None, stroke_w=0, shadow_rgba=None,
-            max_w=(safe_max_w - px_pad * 2) if is_unified else 900,
+            max_w=max(180, safe_max_w - px_pad * 2),
         )
         if sp is None:
             return None
@@ -1103,16 +1100,16 @@ def render_kinetic_stage_item_png(
                 shadow_rgba=(0, 0, 0, 205), shadow_dx=3, shadow_dy=4, shadow_blur=2.2,
                 max_w=safe_max_w,
             )
+        px_pad, py_pad = 22, 11
         sp = _draw_kinetic_line_sprite(
             text, base_f, bridge_fs,
             (255, 255, 255, 255),
             stroke_rgba=(0, 0, 0, 180), stroke_w=1,
             shadow_rgba=(0, 0, 0, 110), shadow_dx=2, shadow_dy=2, shadow_blur=1.0,
-            max_w=920,
+            max_w=max(200, safe_max_w - px_pad * 2),
         )
         if sp is None:
             return None
-        px_pad, py_pad = 22, 11
         pw, ph = sp.width + px_pad * 2, sp.height + py_pad * 2
         card = Image.new("RGBA", (pw, ph), (0, 0, 0, 0))
         d = ImageDraw.Draw(card)

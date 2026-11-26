@@ -2730,6 +2730,84 @@ def business_caption_items(
     return items
 
 
+def _foreground_block_spans(items: List[Dict[str, Any]], pad_sec: float = 0.02) -> List[Tuple[float, float]]:
+    """收集前景大字/图卡占用的不重叠时间并集（供非同层底字幕让路裁剪）。"""
+    raw = sorted(
+        (max(0.0, float(it.get("start_sec") or 0.0) - pad_sec), float(it.get("end_sec") or 0.0) + pad_sec)
+        for it in items
+        if it.get("z_layer", "foreground") == "foreground"
+        and not it.get("base_caption")
+        and it.get("variant") not in {"bridge_bar", "editorial_ticker", "pillar_badge"}
+    )
+    merged: List[Tuple[float, float]] = []
+    for a_s, b_s in raw:
+        if b_s <= a_s:
+            continue
+        if merged and a_s <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b_s))
+        else:
+            merged.append((a_s, b_s))
+    return merged
+
+
+def clip_bridge_items_against_foreground(
+    items: List[Dict[str, Any]],
+    foreground_pool: Optional[List[Dict[str, Any]]] = None,
+    fps: int = DEFAULT_FPS,
+    min_slice_sec: float = 0.42,
+) -> List[Dict[str, Any]]:
+    """按前景大字占用区间裁剪同窗底字幕/bridge_bar，仅保留互不叠加的自由片段，根除双层复读。"""
+    fg_spans = _foreground_block_spans(foreground_pool if foreground_pool is not None else items)
+    if not fg_spans:
+        return list(items)
+    out: List[Dict[str, Any]] = []
+    for it in items:
+        is_bridge = bool(it.get("base_caption") or it.get("variant") == "bridge_bar")
+        if foreground_pool is None and not is_bridge:
+            out.append(it)
+            continue
+        ws = float(it.get("start_sec") or 0.0)
+        we = float(it.get("end_sec") or 0.0)
+        cur = [(ws, we)]
+        for ba, bb in fg_spans:
+            nxt: List[Tuple[float, float]] = []
+            for sa, sb in cur:
+                if bb <= sa or ba >= sb:
+                    nxt.append((sa, sb))
+                else:
+                    if ba > sa:
+                        nxt.append((sa, ba))
+                    if bb < sb:
+                        nxt.append((bb, sb))
+            cur = nxt
+        kept_slices = [(a, b) for a, b in cur if (b - a) >= min_slice_sec]
+        if not kept_slices:
+            continue
+        sa0, sb0 = max(kept_slices, key=lambda pair: pair[1] - pair[0])
+        it_upd = dict(it)
+        it_upd["start_sec"] = round(sa0, 4)
+        it_upd["end_sec"] = round(sb0, 4)
+        it_upd["start_frame"] = int(round(sa0 * fps))
+        it_upd["end_frame"] = int(round(sb0 * fps))
+        it_upd["read_hold_sec"] = round(max(0.1, sb0 - sa0), 3)
+        it_upd["aligned_sfx_or_accent_frame"] = it_upd["start_frame"]
+        out.append(it_upd)
+    return out
+
+
+def enforce_foreground_safe_y(items: List[Dict[str, Any]], min_y: float = -0.45) -> None:
+    """全风格前景舞台统一底部安全区收口：确保文本下缘不超出 PLATFORM SAFE_ZONE y_max=1480px。"""
+    for it in items:
+        if it.get("z_layer", "foreground") != "foreground":
+            continue
+        yn = float(it.get("y_norm") or 0.0)
+        if yn < min_y:
+            it["y_norm"] = round(min_y, 4)
+            cpx = list(it.get("center_px") or [CANVAS_WIDTH // 2, 1392])
+            cpx[1] = int(round((1.0 - min_y) * (CANVAS_HEIGHT / 2.0)))
+            it["center_px"] = cpx
+
+
 def plan_kinetic_stage(
     audio_events: Dict[str, Any],
     style_id: str = "style_02",
@@ -2851,6 +2929,17 @@ def plan_kinetic_stage(
             it.setdefault("style_id", style_id)
             if skin_palette:
                 it.setdefault("style_palette", dict(skin_palette))
+
+    apply_v9_single_layer = bool(
+        plan and (plan.get("single_layer_stage") or (director_eligible and style_id and style_id != "style_02"))
+    )
+    if apply_v9_single_layer:
+        if theme == "store_vibrant":
+            stage["items"] = clip_bridge_items_against_foreground(stage["items"], fps=fps, min_slice_sec=0.40)
+        enforce_foreground_safe_y(stage["items"], min_y=-0.45)
+    elif theme == "style_02_unified":
+        enforce_foreground_safe_y(stage["items"], min_y=-0.47)
+    stage["single_layer_stage"] = apply_v9_single_layer
 
     duration = float(audio_events.get("locked_duration_sec") or max((a["end_sec"] for a in acts), default=0.0))
     ticker_items = _editorial_ticker_items(acts, audio_events["sentences"], profile, fps, theme)
