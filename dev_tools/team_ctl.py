@@ -149,6 +149,7 @@ def _check_privacy_leaks(cwd: Path, files: List[str]) -> List[str]:
 
 _IGNORED_LOCAL_ASSET_GLOBS = (
     "forensic/*.json",
+    "forensic/decrypted",
     "short-video-studio/assets/luts/style_*.cube",
     "short-video-studio/assets/fonts/jianying",
     "short-video-studio/assets/sound_vibe/bgm/*.mp3",
