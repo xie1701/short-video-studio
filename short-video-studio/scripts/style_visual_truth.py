@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-style_visual_truth.py · 24 套风格真母本视觉基因单一真值表（V10.0）
+style_visual_truth.py · 24 套风格真母本视觉基因单一真值表（V11.0 逐帧核验纠偏版）
 
-严格对照 24 个原版风格视频（style_01 ~ style_24）逐帧核验提炼，在不篡改
-style_spectrum_library.json 既有字段契约（确保 verify_style_parity 528 项全绿）
-的前提下，为 step4（镜面构图/圆窗/方窗/抠像压巨字/纯黑抠像/打字机/白板）、
-step6（全片常驻真母本顶栏/人设卡/拼音字/高光花字）及 render_mp4 / render_template_overlays
-提供精确、互不串味的风格视觉配方。
+严格对照 24 个原版风格视频（style_01 ~ style_24）全片等距 8 帧亲眼核验重编，
+在不篡改 style_spectrum_library.json 既有字段契约（确保 verify_style_parity 528 项全绿）
+的前提下，为 step4（30fps HTML 真动效面板/纸底大纲/杂志白板/柔和羽化圆窗/打字机/方窗/抠像压巨字）、
+step6（全片常驻真母本顶栏/人设卡/30fps 透明动态花字）及 render_mp4 / motion_html_renderer
+提供高保真、高占比、互不串味的风格视觉配方与商业图解换肤主题。
 """
 
 from __future__ import annotations
@@ -15,29 +15,20 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 
-# ── 24 套真母本完整视觉基因表 ──────────────────────────────────────────────────
-# 每个条目包含：
-# - family: 视觉家族代号 (F1..F7)
-# - label: 一句话真母本画面特征
-# - top_bar: 常驻顶栏规格（仅 style_03/06/08/12 开启，覆盖整片常规口播）
-# - overlay_override: 覆盖老蓝图中与真母本不符的前景包装渲染模式
-# - scene_beats: 按相对时长位置 (frac) 精准挂载到 A-roll/高潮镜的标志性构图列表
-#   每条 beat 为 {"frac": float, "max_dur": float, "layout": dict}
-# - subtitle_patch: 仅用于最终像素级渲染对齐的轻量覆盖（不改动 templates.json）
-
 STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
-    # ── F1 · 清爽原位高亮口播 ───────────────────────────────────────────────
+    # ── F1 · 清爽原位高亮口播（style_01） ────────────────────────────────────
     "style_01": {
         "family": "F1_clean_inline_highlight",
         "label": "极简无黑框白字 + 同句关键词原位暖黄高亮 + 开场3拍斜标 + 实拍B-roll",
         "top_bar": None,
         "overlay_override": "s01_clean_store",
+        "diagram_theme": {"light_theme": False, "accent": "#FFE14D", "accent2": "#DC2626", "font_role": "sans"},
         "scene_beats": [],
         "subtitle_patch": {
             "bg_box_color": "#00000000",
             "primary_color": "#FFFFFF",
             "keyword_color": "#FFE14D",
-            "keyword_scale": 1.15,
+            "keyword_scale": 1.16,
             "stroke_width": 4,
             "stroke_color": "#0A0A0A",
         },
@@ -48,13 +39,14 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
         "label": "单层无黑框通透白字 + 荧光绿#BCFF00大字 + 白底暗红胶囊 + 人后弹幕",
         "top_bar": None,
         "overlay_override": None,
+        "diagram_theme": {"light_theme": False, "accent": "#BCFF00", "accent2": "#DC2626", "font_role": "serif"},
         "scene_beats": [],
         "subtitle_patch": {},
     },
-    # ── F3 · 顶栏常驻标题 + 深度口播 ────────────────────────────────────────
+    # ── F3 · 顶部常驻纤细黄标 + 暗红大字 + 顶圆窗金句 + 真打字机（style_03）─
     "style_03": {
         "family": "F3_persistent_top_bar_deep",
-        "label": "顶部常驻双行亮黄无框标题 + 底部白/大红/鎏金粗字 + 纯黑白描边剪纸与打字机引语",
+        "label": "顶部常驻双行亮黄宋体标题 + 暗底顶圆窗金黄大字 + 炭墨真打字机引语 + 人像剪纸白边",
         "top_bar": {
             "mode": "s03_dual_yellow_serif",
             "y": 168,
@@ -64,10 +56,25 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
             "stroke": "#0B0B0D",
         },
         "overlay_override": "s03_gold_crimson_callout",
+        "diagram_theme": {"light_theme": False, "accent": "#FDE047", "accent2": "#DC2626", "font_role": "serif"},
         "scene_beats": [
             {
                 "frac": 0.14,
-                "max_dur": 2.8,
+                "max_dur": 3.8,
+                "layout": {
+                    "mode": "dark_circle_panel_pip",
+                    "variant": "top_large_gold",
+                    "bg_hex": "#15171E",
+                    "accent_hex": "#FDE047",
+                    "sub_hex": "#FFFFFF",
+                    "circle_cx": 540,
+                    "circle_cy": 585,
+                    "circle_r": 215,
+                },
+            },
+            {
+                "frac": 0.34,
+                "max_dur": 3.8,
                 "layout": {
                     "mode": "vision_portrait_cutout_pip",
                     "bg_mode": "dark_charcoal",
@@ -81,28 +88,28 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
                 },
             },
             {
-                "frac": 0.36,
-                "max_dur": 2.6,
-                "layout": {
-                    "mode": "dark_circle_panel_pip",
-                    "variant": "top_large_gold",
-                    "bg_hex": "#16181F",
-                    "accent_hex": "#FDE047",
-                    "sub_hex": "#FFFFFF",
-                    "circle_cx": 540,
-                    "circle_cy": 585,
-                    "circle_r": 215,
-                },
-            },
-            {
-                "frac": 0.58,
-                "max_dur": 2.6,
+                "frac": 0.56,
+                "max_dur": 4.2,
                 "layout": {
                     "mode": "dark_typewriter_card_pip",
                     "variant": "s03_black_typewriter",
                     "bg_hex": "#16181F",
                     "fg_hex": "#F8FAFC",
                     "accent_hex": "#FDE047",
+                },
+            },
+            {
+                "frac": 0.78,
+                "max_dur": 3.8,
+                "layout": {
+                    "mode": "dark_circle_panel_pip",
+                    "variant": "top_large_gold",
+                    "bg_hex": "#15171E",
+                    "accent_hex": "#FDE047",
+                    "sub_hex": "#FFFFFF",
+                    "circle_cx": 540,
+                    "circle_cy": 585,
+                    "circle_r": 215,
                 },
             },
         ],
@@ -115,16 +122,17 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
             "dual_line_banner": False,
         },
     },
-    # ── F4 · 黑屏方窗双拼/聚焦框 ────────────────────────────────────────────
+    # ── F4 · 高频黑屏圆角白边方窗 + 顶大黄字 + 人后巨字 + 聚焦方窗（style_04）
     "style_04": {
         "family": "F4_dark_box_panel",
-        "label": "明亮清透白字粗黑边 + 黑底圆角方窗顶部大黄字 + 聚焦方窗下大白字单字冲击",
+        "label": "高频黑底圆角方窗顶大黄字 + 人后亮黄粗巨字 + 聚焦小方窗下超大白字冲击",
         "top_bar": None,
         "overlay_override": "s04_clean_white_stroke",
+        "diagram_theme": {"light_theme": False, "accent": "#FFE14D", "accent2": "#E03131", "font_role": "serif"},
         "scene_beats": [
             {
-                "frac": 0.26,
-                "max_dur": 2.8,
+                "frac": 0.14,
+                "max_dur": 4.0,
                 "layout": {
                     "mode": "framed_box_pip",
                     "variant": "s04_dual_yellow_header",
@@ -133,8 +141,30 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
                 },
             },
             {
-                "frac": 0.72,
-                "max_dur": 2.5,
+                "frac": 0.36,
+                "max_dur": 4.0,
+                "layout": {
+                    "mode": "framed_box_pip",
+                    "variant": "s04_dual_yellow_header",
+                    "bg_hex": "#15171E",
+                    "accent_hex": "#FFE14D",
+                },
+            },
+            {
+                "frac": 0.58,
+                "max_dur": 3.8,
+                "layout": {
+                    "mode": "person_behind_giant_text_pip",
+                    "giant_color": "#FFE14D",
+                    "stroke_hex": "#14161D",
+                    "bg_blur": 3,
+                    "bg_darken": -0.05,
+                    "y_center": 420,
+                },
+            },
+            {
+                "frac": 0.80,
+                "max_dur": 4.0,
                 "layout": {
                     "mode": "framed_box_pip",
                     "variant": "s04_focus_giant_word",
@@ -151,35 +181,43 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
             "stroke_color": "#111318",
         },
     },
-    # ── F1/F5 · 清透知性柔红/暖金大字 + 人像压巨字 ──────────────────────────
+    # ── F1/F4 · 纠偏！胸口暗红描边立体大字 + 纯黑中间画中画 + 胸口大白字（style_05）
     "style_05": {
-        "family": "F5_person_over_giant",
-        "label": "清透无框白字配柔红/暖金描边粗大字 + AI抠像人像前景压巨字",
+        "family": "F4_dark_box_panel",
+        "label": "清透口播胸口暗红白边立体大字 + 纯黑屏居中画中画配精致白字 + 粗黑边大白字冲击",
         "top_bar": None,
         "overlay_override": "s05_warm_red_gold_callout",
+        "diagram_theme": {"light_theme": False, "accent": "#E05A47", "accent2": "#FDE047", "font_role": "serif"},
         "scene_beats": [
             {
-                "frac": 0.16,
-                "max_dur": 2.8,
+                "frac": 0.18,
+                "max_dur": 4.0,
                 "layout": {
-                    "mode": "person_behind_giant_text_pip",
-                    "giant_color": "#D9463E",
-                    "stroke_hex": "#FFFDF7",
-                    "bg_blur": 4,
-                    "bg_darken": -0.06,
-                    "y_center": 680,
+                    "mode": "framed_box_pip",
+                    "variant": "s05_center_pip",
+                    "bg_hex": "#14151A",
+                    "accent_hex": "#FFFFFF",
                 },
             },
             {
-                "frac": 0.64,
-                "max_dur": 2.8,
+                "frac": 0.52,
+                "max_dur": 4.0,
                 "layout": {
-                    "mode": "person_behind_giant_text_pip",
-                    "giant_color": "#EAB308",
-                    "stroke_hex": "#FFFDF7",
-                    "bg_blur": 4,
-                    "bg_darken": -0.06,
-                    "y_center": 720,
+                    "mode": "framed_box_pip",
+                    "variant": "s05_center_pip",
+                    "bg_hex": "#14151A",
+                    "accent_hex": "#FDE047",
+                },
+            },
+            {
+                "frac": 0.78,
+                "max_dur": 3.8,
+                "layout": {
+                    "mode": "dark_typewriter_card_pip",
+                    "variant": "s03_black_typewriter",
+                    "bg_hex": "#14151A",
+                    "fg_hex": "#F8FAFC",
+                    "accent_hex": "#E05A47",
                 },
             },
         ],
@@ -192,10 +230,10 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
             "stroke_color": "#1E1A18",
         },
     },
-    # ── F3 · 顶部半透暖金双行栏 + 人物名片 + 暖金放大金句 ───────────────────
+    # ── F3 · 顶部半透暖金双行宋体 + 人设名片 + 暖金发光金句 + 尾段竖排诗句（style_06）
     "style_06": {
         "family": "F3_persistent_top_bar_deep",
-        "label": "顶部全宽灰半透双行暖金宋体大标 + 开场左置人设头衔 + 暖金放大重点行",
+        "label": "顶部全宽灰半透双行暖金宋体大标 + 开场左置人设头衔 + 暖金发光放大金句 + 右侧竖排诗意字",
         "top_bar": {
             "mode": "s06_translucent_warm_gold",
             "y": 168,
@@ -206,6 +244,7 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
         },
         "opening_profile_card": True,
         "overlay_override": "s06_warm_gold_serif",
+        "diagram_theme": {"light_theme": False, "accent": "#F4E2A8", "accent2": "#C88A16", "font_role": "serif_bold"},
         "scene_beats": [],
         "subtitle_patch": {
             "bg_box_color": "#00000000",
@@ -216,16 +255,17 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
             "stroke_color": "#1C1915",
         },
     },
-    # ── F5/F4 · 黑屏圆窗红字痛点 + 人后超大亮黄字 ───────────────────────────
+    # ── F5/F4 · 黑屏柔圆窗大红痛点 + 实拍方窗金数 + 人后顶天亮黄巨字（style_07）
     "style_07": {
         "family": "F5_person_over_giant",
-        "label": "黑屏顶置圆形主播小窗配大红双行痛点 + AI抠像人后顶天亮黄巨字",
+        "label": "黑屏顶置羽化圆形主播小窗配大红双行痛点 + 方窗展示金字数字 + AI抠像人后顶天亮黄巨字",
         "top_bar": None,
         "overlay_override": "s07_yellow_outline_callout",
+        "diagram_theme": {"light_theme": False, "accent": "#FFD426", "accent2": "#DC2626", "font_role": "serif"},
         "scene_beats": [
             {
-                "frac": 0.25,
-                "max_dur": 2.8,
+                "frac": 0.18,
+                "max_dur": 4.0,
                 "layout": {
                     "mode": "dark_circle_panel_pip",
                     "variant": "top_red_pain",
@@ -238,15 +278,39 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
                 },
             },
             {
+                "frac": 0.44,
+                "max_dur": 4.0,
+                "layout": {
+                    "mode": "framed_box_pip",
+                    "variant": "s04_dual_yellow_header",
+                    "bg_hex": "#14151B",
+                    "accent_hex": "#FFD426",
+                },
+            },
+            {
                 "frac": 0.68,
-                "max_dur": 2.8,
+                "max_dur": 4.0,
                 "layout": {
                     "mode": "person_behind_giant_text_pip",
                     "giant_color": "#FFD426",
                     "stroke_hex": "#18181B",
                     "bg_blur": 5,
                     "bg_darken": -0.08,
-                    "y_center": 480,
+                    "y_center": 440,
+                },
+            },
+            {
+                "frac": 0.86,
+                "max_dur": 3.6,
+                "layout": {
+                    "mode": "dark_circle_panel_pip",
+                    "variant": "top_red_pain",
+                    "bg_hex": "#14151B",
+                    "accent_hex": "#C92A2A",
+                    "sub_hex": "#E03131",
+                    "circle_cx": 540,
+                    "circle_cy": 500,
+                    "circle_r": 215,
                 },
             },
         ],
@@ -259,10 +323,10 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
             "stroke_color": "#0A0A0A",
         },
     },
-    # ── F3 · 左上角常驻斜杠双色大标 + 黑底条字幕 + 霸屏白大字 ───────────────
+    # ── F3 · 左上角常驻斜杠双色大标 + 黑底条字幕 + 满屏粗黑边白大字冲击（style_08）
     "style_08": {
         "family": "F3_persistent_top_bar_deep",
-        "label": "左上角常驻/斜杠/白黄双行大标 + 精致黑底条字幕 + 霸屏粗黑边白大字金句",
+        "label": "左上角常驻/斜杠/白黄双行斜体大标 + 精致黑底条字幕 + 霸屏粗黑边白大字金句",
         "top_bar": {
             "mode": "s08_slash_dual_top_left",
             "y": 172,
@@ -271,6 +335,7 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
             "fg_bot": "#FFE14D",
         },
         "overlay_override": "s08_giant_white_impact",
+        "diagram_theme": {"light_theme": False, "accent": "#FFE14D", "accent2": "#2563EB", "font_role": "oblique"},
         "scene_beats": [],
         "subtitle_patch": {
             "bg_box_color": "#0F1116CC",
@@ -280,32 +345,66 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
             "stroke_width": 0,
         },
     },
-    # ── F4 · 律政纪实黑屏左下圆窗 + 上区图文/红引号法条 ─────────────────────
+    # ── F4 · 高占比纯黑律政纪实双区（左下柔圆窗 + 上区证据/卷宗/红金法条）（style_09）
     "style_09": {
         "family": "F4_dark_box_panel",
-        "label": "纯黑纪实面板左下正圆主播小窗 + 上半区图文对比与金句引号条文 + 尾段全屏亮黄",
+        "label": "全片60%纯黑纪实双区左下正圆主播窗 + 上区实景证据/白纸卷宗卡/引号红金法条 + 尾段全屏亮黄",
         "top_bar": None,
         "overlay_override": "s09_doc_gold_caption",
+        "diagram_theme": {"light_theme": False, "accent": "#FACC15", "accent2": "#C92A2A", "font_role": "serif"},
         "scene_beats": [
             {
-                "frac": 0.16,
-                "max_dur": 2.9,
+                "frac": 0.08,
+                "max_dur": 5.0,
                 "layout": {
                     "mode": "dark_circle_panel_pip",
                     "variant": "bottom_left_doc",
                     "bg_hex": "#15161C",
-                    "accent_hex": "#C92A2A",
+                    "accent_hex": "#CCA966",
                     "sub_hex": "#E2D5B5",
                 },
             },
             {
-                "frac": 0.56,
-                "max_dur": 2.9,
+                "frac": 0.24,
+                "max_dur": 5.0,
+                "layout": {
+                    "mode": "dark_circle_panel_pip",
+                    "variant": "bottom_left_dossier",
+                    "bg_hex": "#15161C",
+                    "accent_hex": "#C92A2A",
+                    "sub_hex": "#F8FAFC",
+                },
+            },
+            {
+                "frac": 0.42,
+                "max_dur": 5.2,
+                "layout": {
+                    "mode": "dark_circle_panel_pip",
+                    "variant": "bottom_left_red_quote",
+                    "bg_hex": "#15161C",
+                    "accent_hex": "#DC2626",
+                    "sub_hex": "#FFE14D",
+                },
+            },
+            {
+                "frac": 0.60,
+                "max_dur": 5.2,
                 "layout": {
                     "mode": "dark_circle_panel_pip",
                     "variant": "bottom_left_yellow_quote",
                     "bg_hex": "#15161C",
                     "accent_hex": "#FACC15",
+                    "sub_hex": "#F8FAFC",
+                },
+            },
+            {
+                "frac": 0.76,
+                "max_dur": 4.5,
+                "layout": {
+                    "mode": "dark_circle_panel_pip",
+                    "variant": "bottom_left_dossier",
+                    "bg_hex": "#15161C",
+                    "accent_hex": "#CCA966",
                     "sub_hex": "#F8FAFC",
                 },
             },
@@ -319,16 +418,51 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
             "stroke_color": "#0A0A0A",
         },
     },
-    # ── F5 · 极简人后顶天大红/亮黄巨字 + 单字大白冲击 ───────────────────────
+    # ── F5 · 高频人后顶天大红/纯白巨字 + 黑屏绿标签方窗（style_10）─────────
     "style_10": {
         "family": "F5_person_over_giant",
-        "label": "清爽无框口播 + AI抠像人后顶天大红/亮黄粗巨字 + 底部原位关键词标黄",
+        "label": "高频AI抠像人后顶天大红/纯白粗巨字 + 黑屏方窗荧光绿标签 + 胸口单字白冲击",
         "top_bar": None,
         "overlay_override": "s10_giant_white_punch",
+        "diagram_theme": {"light_theme": False, "accent": "#FFE135", "accent2": "#D62828", "font_role": "sans"},
         "scene_beats": [
             {
-                "frac": 0.24,
-                "max_dur": 2.8,
+                "frac": 0.14,
+                "max_dur": 3.8,
+                "layout": {
+                    "mode": "person_behind_giant_text_pip",
+                    "giant_color": "#FFFFFF",
+                    "stroke_hex": "#121216",
+                    "bg_blur": 3,
+                    "bg_darken": -0.05,
+                    "y_center": 410,
+                },
+            },
+            {
+                "frac": 0.34,
+                "max_dur": 3.8,
+                "layout": {
+                    "mode": "person_behind_giant_text_pip",
+                    "giant_color": "#D62828",
+                    "stroke_hex": "#121216",
+                    "bg_blur": 3,
+                    "bg_darken": -0.05,
+                    "y_center": 410,
+                },
+            },
+            {
+                "frac": 0.56,
+                "max_dur": 4.0,
+                "layout": {
+                    "mode": "framed_box_pip",
+                    "variant": "s10_green_tag_box",
+                    "bg_hex": "#14151B",
+                    "accent_hex": "#16A34A",
+                },
+            },
+            {
+                "frac": 0.78,
+                "max_dur": 3.8,
                 "layout": {
                     "mode": "person_behind_giant_text_pip",
                     "giant_color": "#D62828",
@@ -336,18 +470,6 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
                     "bg_blur": 3,
                     "bg_darken": -0.05,
                     "y_center": 420,
-                },
-            },
-            {
-                "frac": 0.66,
-                "max_dur": 2.8,
-                "layout": {
-                    "mode": "person_behind_giant_text_pip",
-                    "giant_color": "#FFD426",
-                    "stroke_hex": "#121216",
-                    "bg_blur": 3,
-                    "bg_darken": -0.05,
-                    "y_center": 440,
                 },
             },
         ],
@@ -360,32 +482,56 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
             "stroke_color": "#0A0A0A",
         },
     },
-    # ── F5 · 开场人后白黄大字 + 一键纯黑抠像背景配顶部大白字 ────────────────
+    # ── F5 · 开场人后满屏大白字 + 黑屏圆窗提问 + 纯黑抠像大红/白字（style_11）
     "style_11": {
         "family": "F5_person_over_giant",
-        "label": "清爽知性口播 + 开场人后白黄大字 + 金句一键切纯黑背景AI抠像配顶部居中大白字",
+        "label": "开场人后大白字 + 纯黑圆窗设问 + 金句一键切纯黑背景AI抠像配大红/大白粗字",
         "top_bar": None,
         "overlay_override": "s11_clean_studio_callout",
+        "diagram_theme": {"light_theme": False, "accent": "#FFE14D", "accent2": "#DC2626", "font_role": "sans"},
         "scene_beats": [
             {
                 "frac": 0.08,
-                "max_dur": 2.7,
+                "max_dur": 3.8,
                 "layout": {
                     "mode": "person_behind_giant_text_pip",
                     "giant_color": "#F8FAFC",
                     "stroke_hex": "#14161D",
                     "bg_blur": 3,
                     "bg_darken": -0.05,
-                    "y_center": 430,
+                    "y_center": 410,
                 },
             },
             {
-                "frac": 0.68,
-                "max_dur": 2.9,
+                "frac": 0.28,
+                "max_dur": 3.8,
+                "layout": {
+                    "mode": "dark_circle_panel_pip",
+                    "variant": "top_large_gold",
+                    "bg_hex": "#14161C",
+                    "accent_hex": "#FFE14D",
+                    "sub_hex": "#FFFFFF",
+                    "circle_cx": 540,
+                    "circle_cy": 500,
+                    "circle_r": 215,
+                },
+            },
+            {
+                "frac": 0.62,
+                "max_dur": 4.0,
                 "layout": {
                     "mode": "pure_black_cutout_pip",
                     "bg_hex": "#14161C",
-                    "title_hex": "#FDE68A",
+                    "title_hex": "#DC2626",
+                },
+            },
+            {
+                "frac": 0.82,
+                "max_dur": 3.8,
+                "layout": {
+                    "mode": "pure_black_cutout_pip",
+                    "bg_hex": "#14161C",
+                    "title_hex": "#F8FAFC",
                 },
             },
         ],
@@ -398,10 +544,10 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
             "stroke_color": "#111318",
         },
     },
-    # ── F1/F3 · 顶部常驻白+亮黄粗黑边双行大标 + 重点整句亮黄 ────────────────
+    # ── F1/F3 · 顶部常驻白+亮黄双行标 + 纯黑顶圆窗 + 胶囊气泡（style_12）───
     "style_12": {
         "family": "F1_clean_inline_highlight",
-        "label": "顶部常驻纯白+亮黄#FFE135粗黑边双行大标题 + 常规清爽白字 + 重点句亮黄粗字",
+        "label": "顶部常驻纯白+亮黄#FFE135粗黑边双行大标题 + 纯黑顶置圆窗切镜 + 黑白胶囊小气泡",
         "top_bar": {
             "mode": "s12_white_yellow_dual_top",
             "y": 168,
@@ -410,7 +556,37 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
             "fg_bot": "#FFE135",
         },
         "overlay_override": "s12_yellow_sentence_emphasis",
-        "scene_beats": [],
+        "diagram_theme": {"light_theme": False, "accent": "#FFE135", "accent2": "#18181B", "font_role": "sans"},
+        "scene_beats": [
+            {
+                "frac": 0.42,
+                "max_dur": 3.8,
+                "layout": {
+                    "mode": "dark_circle_panel_pip",
+                    "variant": "top_large_gold",
+                    "bg_hex": "#14151B",
+                    "accent_hex": "#FFE135",
+                    "sub_hex": "#FFFFFF",
+                    "circle_cx": 540,
+                    "circle_cy": 560,
+                    "circle_r": 210,
+                },
+            },
+            {
+                "frac": 0.74,
+                "max_dur": 3.8,
+                "layout": {
+                    "mode": "dark_circle_panel_pip",
+                    "variant": "top_large_gold",
+                    "bg_hex": "#14151B",
+                    "accent_hex": "#FFE135",
+                    "sub_hex": "#FFFFFF",
+                    "circle_cx": 540,
+                    "circle_cy": 560,
+                    "circle_r": 210,
+                },
+            },
+        ],
         "subtitle_patch": {
             "bg_box_color": "#00000000",
             "primary_color": "#FFFFFF",
@@ -420,16 +596,17 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
             "stroke_color": "#0B0B0D",
         },
     },
-    # ── F4 · 反诈黑底红字方窗 + 虚化圆窗绕圈问号 ───────────────────────────
+    # ── F4 · 反诈黑底红字方窗 + 纯黑头顶大黄标 + 虚化圆窗绕圈问号（style_13）
     "style_13": {
         "family": "F4_dark_box_panel",
-        "label": "开场黑底白红警示大字配居中白边方窗 + 虚化暗底顶圆窗绕圈问号???? + 顶部亮黄标",
+        "label": "开场黑底白红警示方窗 + 纯黑抠像顶大黄宋体 + 虚化暗底圆窗绕圈动态问号???? + 法条档案",
         "top_bar": None,
         "overlay_override": "s13_yellow_warning_header",
+        "diagram_theme": {"light_theme": False, "accent": "#FFE14D", "accent2": "#E03131", "font_role": "serif"},
         "scene_beats": [
             {
                 "frac": 0.08,
-                "max_dur": 2.8,
+                "max_dur": 4.0,
                 "layout": {
                     "mode": "framed_box_pip",
                     "variant": "s13_red_warn_box",
@@ -438,8 +615,17 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
                 },
             },
             {
+                "frac": 0.30,
+                "max_dur": 3.8,
+                "layout": {
+                    "mode": "pure_black_cutout_pip",
+                    "bg_hex": "#14151B",
+                    "title_hex": "#FFD426",
+                },
+            },
+            {
                 "frac": 0.54,
-                "max_dur": 2.9,
+                "max_dur": 4.2,
                 "layout": {
                     "mode": "dark_circle_panel_pip",
                     "variant": "top_blur_qmark",
@@ -447,8 +633,19 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
                     "accent_hex": "#FFE14D",
                     "sub_hex": "#FFFFFF",
                     "circle_cx": 540,
-                    "circle_cy": 560,
-                    "circle_r": 185,
+                    "circle_cy": 540,
+                    "circle_r": 190,
+                },
+            },
+            {
+                "frac": 0.78,
+                "max_dur": 4.0,
+                "layout": {
+                    "mode": "dark_circle_panel_pip",
+                    "variant": "bottom_left_dossier",
+                    "bg_hex": "#16171E",
+                    "accent_hex": "#DC2626",
+                    "sub_hex": "#FFE14D",
                 },
             },
         ],
@@ -461,16 +658,17 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
             "stroke_color": "#0A0A0A",
         },
     },
-    # ── F4 · 黑底大圆窗设问 + 纯黑打字机引语 + 人后顶天亮黄大标 ─────────────
+    # ── F4 · 黑底大圆窗设问 + 真打字机引语 + 人后顶天亮黄大标（style_14）─────
     "style_14": {
         "family": "F4_dark_box_panel",
-        "label": "开场黑底大圆窗配白黄双行设问 + 纯黑屏白字引号打字机 + AI抠像人后亮黄大标",
+        "label": "开场黑底大圆窗白黄双行设问 + 纯黑屏白字引号真打字机 + AI抠像人后亮黄大标",
         "top_bar": None,
         "overlay_override": "s14_red_yellow_emphasis",
+        "diagram_theme": {"light_theme": False, "accent": "#FFE14D", "accent2": "#EA580C", "font_role": "sans"},
         "scene_beats": [
             {
                 "frac": 0.08,
-                "max_dur": 2.8,
+                "max_dur": 4.0,
                 "layout": {
                     "mode": "dark_circle_panel_pip",
                     "variant": "top_large_gold",
@@ -478,13 +676,13 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
                     "accent_hex": "#FFE14D",
                     "sub_hex": "#FFFFFF",
                     "circle_cx": 540,
-                    "circle_cy": 540,
-                    "circle_r": 255,
+                    "circle_cy": 530,
+                    "circle_r": 245,
                 },
             },
             {
-                "frac": 0.48,
-                "max_dur": 2.5,
+                "frac": 0.36,
+                "max_dur": 4.2,
                 "layout": {
                     "mode": "dark_typewriter_card_pip",
                     "variant": "s14_black_quote_top",
@@ -494,15 +692,26 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
                 },
             },
             {
-                "frac": 0.78,
-                "max_dur": 2.8,
+                "frac": 0.60,
+                "max_dur": 4.0,
+                "layout": {
+                    "mode": "dark_typewriter_card_pip",
+                    "variant": "s14_black_quote_top",
+                    "bg_hex": "#15171E",
+                    "fg_hex": "#F8FAFC",
+                    "accent_hex": "#FFE14D",
+                },
+            },
+            {
+                "frac": 0.80,
+                "max_dur": 3.8,
                 "layout": {
                     "mode": "person_behind_giant_text_pip",
                     "giant_color": "#FFD426",
                     "stroke_hex": "#121216",
                     "bg_blur": 3,
                     "bg_darken": -0.05,
-                    "y_center": 420,
+                    "y_center": 410,
                 },
             },
         ],
@@ -515,21 +724,62 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
             "stroke_color": "#0A0A0A",
         },
     },
-    # ── F6 · 电影感拼音大字访谈 ──────────────────────────────────────────────
+    # ── F6 · 重大纠偏！style_15 原母本真魂：纸质感白色大纲清单白板 + 发光大白字
     "style_15": {
         "family": "F6_cinema_pinyin_interview",
-        "label": "电影感宽字距访谈 + 开场红拼音注音大白字 + 暗红巨字叠加 + 居中超大纯白粗字",
+        "label": "高占比米白纸底大纲清单白板（左上圆窗+大写拼音副标+逐条黑体）+ 胸口发光白大字 + 黑屏黄字",
         "top_bar": None,
         "overlay_override": "s15_pinyin_and_crimson_giant",
+        "diagram_theme": {"light_theme": True, "accent": "#C88A16", "accent2": "#181A20", "font_role": "sans"},
         "scene_beats": [
             {
-                "frac": 0.10,
-                "max_dur": 2.8,
+                "frac": 0.16,
+                "max_dur": 5.0,
                 "layout": {
-                    "mode": "pinyin_hero_pip",
-                    "variant": "s15_pinyin_split",
-                    "pinyin_hex": "#EF4444",
-                    "fg_hex": "#FFFFFF",
+                    "mode": "paper_outline_pip",
+                    "variant": "s15_paper_outline",
+                    "bg_hex": "#F4F2EC",
+                    "accent_hex": "#C88A16",
+                    "circle_cx": 184,
+                    "circle_cy": 216,
+                    "circle_r": 106,
+                },
+            },
+            {
+                "frac": 0.40,
+                "max_dur": 5.0,
+                "layout": {
+                    "mode": "paper_outline_pip",
+                    "variant": "s15_paper_outline",
+                    "bg_hex": "#F4F2EC",
+                    "accent_hex": "#C88A16",
+                    "circle_cx": 184,
+                    "circle_cy": 216,
+                    "circle_r": 106,
+                },
+            },
+            {
+                "frac": 0.64,
+                "max_dur": 4.8,
+                "layout": {
+                    "mode": "paper_outline_pip",
+                    "variant": "s15_paper_outline",
+                    "bg_hex": "#F4F2EC",
+                    "accent_hex": "#C88A16",
+                    "circle_cx": 184,
+                    "circle_cy": 216,
+                    "circle_r": 106,
+                },
+            },
+            {
+                "frac": 0.82,
+                "max_dur": 3.8,
+                "layout": {
+                    "mode": "dark_typewriter_card_pip",
+                    "variant": "s03_black_typewriter",
+                    "bg_hex": "#131419",
+                    "fg_hex": "#FFE14D",
+                    "accent_hex": "#FFE14D",
                 },
             },
         ],
@@ -544,16 +794,29 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
             "max_chars_per_line": 10,
         },
     },
-    # ── F5 · 暗调创业重虚化打字机 + 人后暗红巨字 ────────────────────────────
+    # ── F5 · 暗调创业重虚化连续真打字机 + 人后暗红巨字（style_16）───────────
     "style_16": {
         "family": "F5_person_over_giant",
-        "label": "暗调创业口播 + 重度虚化暗底白字打字机引语 + AI抠像人后顶格暗红巨字",
+        "label": "暗调创业口播 + 长段重虚化暗底真逐字打字机与右对齐出处 + AI抠像人后顶格暗红巨字",
         "top_bar": None,
         "overlay_override": "s16_glow_white_callout",
+        "diagram_theme": {"light_theme": False, "accent": "#FACC15", "accent2": "#B91C1C", "font_role": "serif"},
         "scene_beats": [
             {
-                "frac": 0.30,
-                "max_dur": 2.6,
+                "frac": 0.16,
+                "max_dur": 3.8,
+                "layout": {
+                    "mode": "person_behind_giant_text_pip",
+                    "giant_color": "#B91C1C",
+                    "stroke_hex": "#180A0A",
+                    "bg_blur": 5,
+                    "bg_darken": -0.10,
+                    "y_center": 410,
+                },
+            },
+            {
+                "frac": 0.34,
+                "max_dur": 4.8,
                 "layout": {
                     "mode": "dark_typewriter_card_pip",
                     "variant": "s16_blur_dark_typewriter",
@@ -563,15 +826,26 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
                 },
             },
             {
-                "frac": 0.64,
-                "max_dur": 2.8,
+                "frac": 0.54,
+                "max_dur": 4.8,
+                "layout": {
+                    "mode": "dark_typewriter_card_pip",
+                    "variant": "s16_blur_dark_typewriter",
+                    "bg_hex": "#14161D",
+                    "fg_hex": "#FFFFFF",
+                    "accent_hex": "#FACC15",
+                },
+            },
+            {
+                "frac": 0.78,
+                "max_dur": 3.8,
                 "layout": {
                     "mode": "person_behind_giant_text_pip",
                     "giant_color": "#B91C1C",
                     "stroke_hex": "#180A0A",
                     "bg_blur": 5,
                     "bg_darken": -0.10,
-                    "y_center": 420,
+                    "y_center": 410,
                 },
             },
         ],
@@ -584,31 +858,60 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
             "stroke_color": "#0A0A0A",
         },
     },
-    # ── F4 · 明亮黑条字幕 + 黑底方窗/上下双图对比框 ─────────────────────────
+    # ── F4 · 纯黑柔和羽化圆窗金句 + 双圆角对比卡 + 黑条小字幕（style_17）─────
     "style_17": {
         "family": "F4_dark_box_panel",
-        "label": "明亮黑条小字幕 + 黑底上方人物方窗 / 上下双实拍对比图配居中白字标签",
+        "label": "纯黑底柔和羽化顶置主播窗配下方黄白建议金句 + 双实拍对比圆角卡 + 精致黑条字幕",
         "top_bar": None,
         "overlay_override": None,  # 保留既有 style_17 暖金双格单测契约
+        "diagram_theme": {"light_theme": False, "accent": "#FFE14D", "accent2": "#F59E0B", "font_role": "sans"},
         "scene_beats": [
             {
-                "frac": 0.32,
-                "max_dur": 2.8,
+                "frac": 0.16,
+                "max_dur": 4.2,
                 "layout": {
-                    "mode": "framed_box_pip",
-                    "variant": "s17_black_top_square",
-                    "bg_hex": "#15161B",
-                    "accent_hex": "#FDE047",
+                    "mode": "dark_circle_panel_pip",
+                    "variant": "top_large_gold",
+                    "bg_hex": "#121318",
+                    "accent_hex": "#FFE14D",
+                    "sub_hex": "#FFFFFF",
+                    "circle_cx": 540,
+                    "circle_cy": 500,
+                    "circle_r": 240,
                 },
             },
             {
-                "frac": 0.66,
-                "max_dur": 2.8,
+                "frac": 0.38,
+                "max_dur": 4.2,
+                "layout": {
+                    "mode": "dark_circle_panel_pip",
+                    "variant": "top_large_gold",
+                    "bg_hex": "#121318",
+                    "accent_hex": "#FFE14D",
+                    "sub_hex": "#FFFFFF",
+                    "circle_cx": 540,
+                    "circle_cy": 500,
+                    "circle_r": 240,
+                },
+            },
+            {
+                "frac": 0.62,
+                "max_dur": 4.0,
                 "layout": {
                     "mode": "framed_box_pip",
                     "variant": "s17_dual_compare_cards",
                     "bg_hex": "#15161B",
                     "accent_hex": "#FFFFFF",
+                },
+            },
+            {
+                "frac": 0.82,
+                "max_dur": 3.8,
+                "layout": {
+                    "mode": "framed_box_pip",
+                    "variant": "s17_black_top_square",
+                    "bg_hex": "#15161B",
+                    "accent_hex": "#FDE047",
                 },
             },
         ],
@@ -620,16 +923,17 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
             "stroke_width": 0,
         },
     },
-    # ── F5 · 户外人后暗红粗巨字 + 虚化暗底序号白条引语 ──────────────────────
+    # ── F5 · 户外顶圆窗红引号 + 重虚化白底红字引号条 + 人后暗红巨字（style_18）
     "style_18": {
         "family": "F5_person_over_giant",
-        "label": "户外街拍清爽字幕 + 开场AI抠像人后暗红粗巨字 + 虚化暗底白字序号与白底红黑字引号条",
+        "label": "户外口播 + 纯黑顶置圆窗配红引号金句 + 重虚化暗底大白序号与白底暗红引号条",
         "top_bar": None,
         "overlay_override": "s18_crimson_quote_strip",
+        "diagram_theme": {"light_theme": False, "accent": "#FFE14D", "accent2": "#DC2626", "font_role": "sans"},
         "scene_beats": [
             {
-                "frac": 0.10,
-                "max_dur": 2.8,
+                "frac": 0.16,
+                "max_dur": 3.8,
                 "layout": {
                     "mode": "person_behind_giant_text_pip",
                     "giant_color": "#B91C1C",
@@ -640,8 +944,33 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
                 },
             },
             {
-                "frac": 0.56,
-                "max_dur": 2.7,
+                "frac": 0.42,
+                "max_dur": 4.2,
+                "layout": {
+                    "mode": "dark_circle_panel_pip",
+                    "variant": "s18_circle_red_quote",
+                    "bg_hex": "#14151A",
+                    "accent_hex": "#FFE14D",
+                    "sub_hex": "#FFFFFF",
+                    "circle_cx": 540,
+                    "circle_cy": 520,
+                    "circle_r": 215,
+                },
+            },
+            {
+                "frac": 0.66,
+                "max_dur": 4.2,
+                "layout": {
+                    "mode": "dark_typewriter_card_pip",
+                    "variant": "s18_blur_white_strip",
+                    "bg_hex": "#181920",
+                    "fg_hex": "#111318",
+                    "accent_hex": "#DC2626",
+                },
+            },
+            {
+                "frac": 0.84,
+                "max_dur": 3.8,
                 "layout": {
                     "mode": "dark_typewriter_card_pip",
                     "variant": "s18_blur_white_strip",
@@ -660,16 +989,28 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
             "stroke_color": "#0A0A0A",
         },
     },
-    # ── F4 · 开场前景金黄大字 + 黑屏左下圆窗红引号大段法条 ──────────────────
+    # ── F4 · 律政商业红黑双区 + 卷宗典籍卡 + 红引号逐句高亮法条（style_19）──
     "style_19": {
         "family": "F4_dark_box_panel",
-        "label": "开场前景金黄黑边大字 + 纯黑屏左下正圆头像配右侧同步字与上区红引号大段白黄条文",
+        "label": "开场前景金黄大字 + 档案卷宗卡 + 纯黑屏左下正圆头像配红底引号逐句高亮白黄条文",
         "top_bar": None,
         "overlay_override": "s19_gold_headline",
+        "diagram_theme": {"light_theme": False, "accent": "#FFE14D", "accent2": "#DC2626", "font_role": "sans"},
         "scene_beats": [
             {
+                "frac": 0.22,
+                "max_dur": 4.4,
+                "layout": {
+                    "mode": "dark_circle_panel_pip",
+                    "variant": "bottom_left_dossier",
+                    "bg_hex": "#14151B",
+                    "accent_hex": "#DC2626",
+                    "sub_hex": "#FFE14D",
+                },
+            },
+            {
                 "frac": 0.44,
-                "max_dur": 2.9,
+                "max_dur": 4.6,
                 "layout": {
                     "mode": "dark_circle_panel_pip",
                     "variant": "bottom_left_red_quote",
@@ -679,13 +1020,24 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
                 },
             },
             {
-                "frac": 0.76,
-                "max_dur": 2.9,
+                "frac": 0.66,
+                "max_dur": 4.6,
                 "layout": {
                     "mode": "dark_circle_panel_pip",
                     "variant": "bottom_left_red_quote",
                     "bg_hex": "#14151B",
                     "accent_hex": "#E03131",
+                    "sub_hex": "#F8FAFC",
+                },
+            },
+            {
+                "frac": 0.84,
+                "max_dur": 4.0,
+                "layout": {
+                    "mode": "dark_circle_panel_pip",
+                    "variant": "bottom_left_yellow_quote",
+                    "bg_hex": "#14151B",
+                    "accent_hex": "#FFD426",
                     "sub_hex": "#F8FAFC",
                 },
             },
@@ -699,16 +1051,17 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
             "stroke_color": "#0A0A0A",
         },
     },
-    # ── F4 · 国风黑底顶大圆窗暖金双行 + 纯黑打字机 + 红底白字块 ─────────────
+    # ── F4 · 国风黑底顶大圆窗暖金双行 + 纯黑打字机 + 朱红底白字块（style_20）
     "style_20": {
         "family": "F4_dark_box_panel",
-        "label": "纯黑屏顶部大圆窗配古风暖金双行宋体 + 纯黑打字机引语 + 全屏底部朱红底白字块",
+        "label": "纯黑屏顶部大圆窗配古风暖金双行宋体 + 纯黑真打字机引语 + 常规朱红发光底块白字重点",
         "top_bar": None,
         "overlay_override": "s20_crimson_block_serif",
+        "diagram_theme": {"light_theme": False, "accent": "#F3D37A", "accent2": "#A61C1C", "font_role": "serif"},
         "scene_beats": [
             {
-                "frac": 0.26,
-                "max_dur": 2.9,
+                "frac": 0.22,
+                "max_dur": 4.4,
                 "layout": {
                     "mode": "dark_circle_panel_pip",
                     "variant": "top_guofeng_gold",
@@ -716,19 +1069,33 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
                     "accent_hex": "#F3D37A",
                     "sub_hex": "#F5E6BE",
                     "circle_cx": 540,
-                    "circle_cy": 540,
-                    "circle_r": 250,
+                    "circle_cy": 520,
+                    "circle_r": 245,
                 },
             },
             {
-                "frac": 0.56,
-                "max_dur": 2.5,
+                "frac": 0.50,
+                "max_dur": 4.2,
                 "layout": {
                     "mode": "dark_typewriter_card_pip",
                     "variant": "s20_black_quote_top",
                     "bg_hex": "#151412",
                     "fg_hex": "#F8F3E8",
                     "accent_hex": "#F3D37A",
+                },
+            },
+            {
+                "frac": 0.76,
+                "max_dur": 4.2,
+                "layout": {
+                    "mode": "dark_circle_panel_pip",
+                    "variant": "top_guofeng_gold",
+                    "bg_hex": "#161412",
+                    "accent_hex": "#F3D37A",
+                    "sub_hex": "#F5E6BE",
+                    "circle_cx": 540,
+                    "circle_cy": 520,
+                    "circle_r": 245,
                 },
             },
         ],
@@ -742,16 +1109,17 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
             "dual_line_banner": False,
         },
     },
-    # ── F5 · 开场白描边手绘人物贴纸 + 左上黄绿大字 + 黑框人后顶天白巨字 ─────
+    # ── F5 · 剪纸粗白边贴纸 + 荧光黄绿箭头大字 + 黑框人后顶天白巨字（style_21）
     "style_21": {
         "family": "F5_person_over_giant",
-        "label": "开场AI抠像白描边手绘人物贴纸 + 左上黄绿大字标注 + 黑边相框人后顶天纯白巨字",
+        "label": "开场AI抠像白描边手绘人物贴纸 + 荧光黄绿大字手绘红线 + 黑边相框人后顶天纯白巨字",
         "top_bar": None,
         "overlay_override": "s21_lime_yellow_annotation",
+        "diagram_theme": {"light_theme": False, "accent": "#D9F94D", "accent2": "#EF4444", "font_role": "sans"},
         "scene_beats": [
             {
                 "frac": 0.08,
-                "max_dur": 2.8,
+                "max_dur": 4.0,
                 "layout": {
                     "mode": "vision_portrait_cutout_pip",
                     "bg_mode": "soft_blur",
@@ -761,8 +1129,20 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
                 },
             },
             {
-                "frac": 0.58,
-                "max_dur": 2.8,
+                "frac": 0.36,
+                "max_dur": 3.8,
+                "layout": {
+                    "mode": "person_behind_giant_text_pip",
+                    "giant_color": "#D9F94D",
+                    "stroke_hex": "#0E1015",
+                    "bg_blur": 4,
+                    "bg_darken": -0.08,
+                    "y_center": 410,
+                },
+            },
+            {
+                "frac": 0.62,
+                "max_dur": 4.0,
                 "layout": {
                     "mode": "person_behind_giant_text_pip",
                     "giant_color": "#FFFFFF",
@@ -771,6 +1151,16 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
                     "bg_darken": -0.14,
                     "y_center": 420,
                     "frame_black": True,
+                },
+            },
+            {
+                "frac": 0.82,
+                "max_dur": 3.8,
+                "layout": {
+                    "mode": "framed_box_pip",
+                    "variant": "s04_focus_giant_word",
+                    "bg_hex": "#13151B",
+                    "accent_hex": "#D9F94D",
                 },
             },
         ],
@@ -783,28 +1173,49 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
             "stroke_color": "#0A0A0A",
         },
     },
-    # ── F4/F5 · 开场人后灰白巨字+红字 + 黑屏左下圆窗配上方亮黄引号警示 ──────
+    # ── F4/F5 · 人后灰白/暗红巨字 + 左下圆窗亮黄引号警示 + 悬浮概念白卡（style_22）
     "style_22": {
         "family": "F4_dark_box_panel",
-        "label": "开场人后大灰白巨字配前景大红粗字 + 纯黑屏左下正圆头像配上方大段亮黄引号警示",
+        "label": "开场人后大灰白巨字配红字 + 纯黑屏左下正圆头像亮黄引号警示 + 纯黑抠像大红字 + 悬浮概念白卡",
         "top_bar": None,
         "overlay_override": "s22_red_callout",
+        "diagram_theme": {"light_theme": False, "accent": "#FACC15", "accent2": "#DC2626", "font_role": "serif"},
         "scene_beats": [
             {
                 "frac": 0.08,
-                "max_dur": 2.8,
+                "max_dur": 3.8,
                 "layout": {
                     "mode": "person_behind_giant_text_pip",
                     "giant_color": "#E5E7EB",
                     "stroke_hex": "#18181B",
                     "bg_blur": 3,
                     "bg_darken": -0.04,
-                    "y_center": 430,
+                    "y_center": 420,
                 },
             },
             {
-                "frac": 0.38,
-                "max_dur": 2.9,
+                "frac": 0.30,
+                "max_dur": 4.4,
+                "layout": {
+                    "mode": "dark_circle_panel_pip",
+                    "variant": "bottom_left_yellow_quote",
+                    "bg_hex": "#14151B",
+                    "accent_hex": "#FACC15",
+                    "sub_hex": "#FDE047",
+                },
+            },
+            {
+                "frac": 0.58,
+                "max_dur": 4.0,
+                "layout": {
+                    "mode": "pure_black_cutout_pip",
+                    "bg_hex": "#13141A",
+                    "title_hex": "#DC2626",
+                },
+            },
+            {
+                "frac": 0.80,
+                "max_dur": 4.2,
                 "layout": {
                     "mode": "dark_circle_panel_pip",
                     "variant": "bottom_left_yellow_quote",
@@ -823,16 +1234,29 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
             "stroke_color": "#0A0A0A",
         },
     },
-    # ── F4 · 虚化暗底暖黄诗句+右下白描边剪纸 + 暗化圆窗暖黄金句 ─────────────
+    # ── F4 · 人后巨大暖金单字 + 虚化暗底暖黄诗句剪纸 + 暗化圆窗暖黄金句（style_23）
     "style_23": {
         "family": "F4_dark_box_panel",
-        "label": "虚化暗底左侧暖黄诗句配右下白描边人物剪纸 + 暗化背景顶部大圆窗配暖黄金句",
+        "label": "开场人后暖金大字 + 虚化暗底左侧逐行暖黄诗句配右下白描边剪纸 + 暗化背景顶部柔圆窗暖黄金句",
         "top_bar": None,
         "overlay_override": "s23_warm_serif_caption",
+        "diagram_theme": {"light_theme": False, "accent": "#FDE68A", "accent2": "#D97706", "font_role": "serif"},
         "scene_beats": [
             {
+                "frac": 0.08,
+                "max_dur": 3.8,
+                "layout": {
+                    "mode": "person_behind_giant_text_pip",
+                    "giant_color": "#FDE68A",
+                    "stroke_hex": "#292218",
+                    "bg_blur": 4,
+                    "bg_darken": -0.06,
+                    "y_center": 420,
+                },
+            },
+            {
                 "frac": 0.28,
-                "max_dur": 2.9,
+                "max_dur": 4.4,
                 "layout": {
                     "mode": "vision_portrait_cutout_pip",
                     "bg_mode": "blur_poem_left",
@@ -845,8 +1269,8 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
                 },
             },
             {
-                "frac": 0.62,
-                "max_dur": 2.9,
+                "frac": 0.56,
+                "max_dur": 4.4,
                 "layout": {
                     "mode": "dark_circle_panel_pip",
                     "variant": "top_blur_gold",
@@ -854,8 +1278,19 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
                     "accent_hex": "#FDE68A",
                     "sub_hex": "#FDE68A",
                     "circle_cx": 540,
-                    "circle_cy": 540,
-                    "circle_r": 230,
+                    "circle_cy": 530,
+                    "circle_r": 225,
+                },
+            },
+            {
+                "frac": 0.80,
+                "max_dur": 4.0,
+                "layout": {
+                    "mode": "dark_typewriter_card_pip",
+                    "variant": "s16_blur_dark_typewriter",
+                    "bg_hex": "#1B1B20",
+                    "fg_hex": "#FDE68A",
+                    "accent_hex": "#FDE68A",
                 },
             },
         ],
@@ -868,16 +1303,37 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
             "stroke_color": "#1A1815",
         },
     },
-    # ── F7 · 测评多图白板 + 黑底圆角冲击窗 + 竖排大黄字 ─────────────────────
+    # ── F7 · 高占比浅灰杂志纸底多图测评白板 + 黑底圆角冲击窗 + 竖排大黄字（style_24）
     "style_24": {
         "family": "F7_review_whiteboard",
-        "label": "黑底圆角实拍小窗黄蓝大字 + 浅灰白底多图痛点评测白板 + 竖排大黄字强调",
+        "label": "高占比浅灰杂志纸底多图痛点评测白板 + 黑底圆角实拍小窗蓝边大黄字 + 左侧竖排大黄手写字",
         "top_bar": None,
         "overlay_override": "s24_vertical_yellow_punch",
+        "diagram_theme": {"light_theme": True, "accent": "#F59E0B", "accent2": "#183A88", "font_role": "oblique"},
         "scene_beats": [
             {
                 "frac": 0.14,
-                "max_dur": 2.8,
+                "max_dur": 4.4,
+                "layout": {
+                    "mode": "review_whiteboard_pip",
+                    "variant": "s24_whiteboard_multi",
+                    "bg_hex": "#EEF1F5",
+                    "accent_hex": "#F59E0B",
+                },
+            },
+            {
+                "frac": 0.36,
+                "max_dur": 4.6,
+                "layout": {
+                    "mode": "review_whiteboard_pip",
+                    "variant": "s24_whiteboard_multi",
+                    "bg_hex": "#EEF1F5",
+                    "accent_hex": "#F59E0B",
+                },
+            },
+            {
+                "frac": 0.58,
+                "max_dur": 4.2,
                 "layout": {
                     "mode": "framed_box_pip",
                     "variant": "s24_rounded_impact",
@@ -886,8 +1342,8 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
                 },
             },
             {
-                "frac": 0.44,
-                "max_dur": 2.9,
+                "frac": 0.78,
+                "max_dur": 4.4,
                 "layout": {
                     "mode": "review_whiteboard_pip",
                     "variant": "s24_whiteboard_multi",
@@ -966,7 +1422,6 @@ def extract_sentence_punch(sent: Optional[Dict[str, Any]], max_chars: int = 4, f
     txt_raw = str(sent.get("text") or "").strip()
     txt = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9+]+", "", txt_raw)
 
-    # 先用自然分词切出合法词边界集合（含单词与相邻双词组合），杜绝上游脏 keywords 如「法找他/括我自己」混入大字
     nat_toks: List[str] = []
     valid_spans: Optional[set] = None
     if txt_raw:
@@ -999,15 +1454,12 @@ def extract_sentence_punch(sent: Optional[Dict[str, Any]], max_chars: int = 4, f
         if not (2 <= len(k) <= max_chars):
             return ""
         if require_boundary and valid_spans is not None and txt:
-            # 若词来自原文，则必须对齐自然词边界（数字短语放行），彻底挡住「法找他/括我自己」
             if k in txt and (not re.search(r"\d", k)) and (k not in valid_spans):
                 return ""
-            # 若原词根本不在原文里（如上游误识别残片「二一组」），直接拒绝
             if k not in txt:
                 return ""
         return k
 
-    # 1) 优先使用已清洗且落在自然词边界内的关键词
     for field in ("display_keywords", "keywords"):
         for kw in (sent.get(field) or []):
             hit = _clean_cand(str(kw or ""), require_boundary=True)
@@ -1017,14 +1469,12 @@ def extract_sentence_punch(sent: Optional[Dict[str, Any]], max_chars: int = 4, f
     if not txt:
         return fallback[:max_chars]
 
-    # 2) 从自然分词中优先挑选 2~max_chars 字高信息量实词（优先 3~4 字完整专名，其次 2 字实词）
     for min_len in (3, 2):
         for tk in nat_toks:
             if len(tk) >= min_len:
                 hit = _clean_cand(tk, require_boundary=False)
                 if hit:
                     return hit
-    # 尝试相邻双词合成 3~max_chars 字完整短语
     for i_t in range(len(nat_toks) - 1):
         comb = nat_toks[i_t] + nat_toks[i_t + 1]
         hit = _clean_cand(comb, require_boundary=False)

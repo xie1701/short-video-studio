@@ -1609,6 +1609,56 @@ def run_step6(
                 })
                 has_end_cta = True
 
+        # V11.0 消费大模型按风格 playbook 规划的专属 30fps 透明动态花字（style_callouts：竖排诗句/胶囊气泡/悬浮白卡/竖排大黄字等）
+        _dp_co_p = pipeline_dir / "03b_director_plan.json"
+        if _dp_co_p.is_file() and not no_flower_text:
+            try:
+                _dp_co_doc = read_json(_dp_co_p)
+                _sc_list = _dp_co_doc.get("style_callouts") if isinstance(_dp_co_doc, dict) else None
+                if isinstance(_sc_list, list):
+                    for _sc in _sc_list:
+                        if not isinstance(_sc, dict):
+                            continue
+                        _sc_txt = str(_sc.get("text") or "").strip()
+                        if not _sc_txt:
+                            continue
+                        _sc_sf = max(0, int(round(float(_sc.get("start_sec") or 0.0) * fps)))
+                        _sc_ef = min(total_frames, int(round(float(_sc.get("end_sec") or (_sc_sf / fps + 2.4)) * fps)))
+                        if _sc_ef - _sc_sf < int(1.45 * fps) or overlaps_code(_sc_sf, _sc_ef):
+                            continue
+                        _sc_y = int(_sc.get("callout_y") or 920)
+                        _sc_bb = {"x": 100, "y": max(168, min(980, _sc_y)), "w": 740, "h": 140}
+                        visual_elements.append({
+                            "id": f"pkg_{len(visual_elements)+1:03d}",
+                            "kind": "kinetic_callout",
+                            "callout_variant": str(_sc.get("variant") or ""),
+                            "callout_y": _sc_y,
+                            "accent_hex": str(_sc.get("accent_hex") or giant_accent),
+                            "font_role": str(_sc.get("font_role") or ""),
+                            "overlay_mode": "borderless",
+                            "fg_hex": str(_sc.get("fg_hex") or "#FFFFFF"),
+                            "stroke_hex": "#0A0A0E",
+                            "text_or_asset": _sc_txt,
+                            "subtext": str(_sc.get("subtext") or ""),
+                            "items": list(_sc.get("items") or []) if isinstance(_sc.get("items"), list) else [],
+                            "start_frame": _sc_sf,
+                            "end_frame": _sc_ef,
+                            "read_hold_sec": round((_sc_ef - _sc_sf) / float(fps), 2),
+                            "aligned_sfx_or_accent_frame": _sc_sf,
+                            "alignment_error_frames": 0,
+                            "bbox": _sc_bb,
+                            "final_bbox": _sc_bb,
+                            "safe_zone_ok": True,
+                            "jianying_anim_name": "弹入",
+                            "anim_duration_ms": 380,
+                            "paired_jianying_sfx": "",
+                            "trigger": "director_callout",
+                            "policy": f"{style_id} V11 30fps HTML 动态前景花字",
+                            "reason": f"导演总谱规划风格前景花字「{_sc_txt[:10]}」",
+                        })
+            except Exception:
+                pass
+
     # ── 片尾收尾诊断：话没说完、没有行动指引的，补一张 CTA 尾卡（不改台词、不改原声）──
     ending = None
     try:

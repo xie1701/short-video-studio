@@ -662,6 +662,18 @@ def split_clean_phrases(
                 merged[k + 1] = nxt[1:]
                 continue
         k += 1
+    # 行尾挂尾词护栏：禁止孤立介词/副词/代词挂在句尾（如「都觉得我」「晚上就系」），绝不把「的/嘅」推到下一行首
+    _bad_line_tails = set("系把被给从跟和与或最很都就也在我")
+    k = 0
+    while k < len(merged) - 1:
+        cur_m = merged[k]
+        nxt_m = merged[k + 1]
+        if len(cur_m) >= 3 and cur_m[-1] in _bad_line_tails and nxt_m and len(nxt_m) <= target_max:
+            if len(nxt_m) + 1 <= target_max + 2:
+                merged[k + 1] = cur_m[-1] + nxt_m
+                merged[k] = cur_m[:-1]
+                continue
+        k += 1
     return [m for m in merged if m]
 
 

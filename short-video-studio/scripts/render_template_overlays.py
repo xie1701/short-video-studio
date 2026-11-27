@@ -51,6 +51,7 @@ from common import (
     get_cached_font,
     hex_to_rgba,
     maybe_reexec_in_venv,
+    normalize_display_glyphs,
     read_json,
 )
 
@@ -157,7 +158,7 @@ def _fit_text(
     min_fs: int = 24,
     stroke_w: int = 0,
 ) -> Tuple[Any, str, int]:
-    t = str(text or "").strip()
+    t = normalize_display_glyphs(str(text or "").strip())
     if not t:
         return get_cached_font(font_path, min_fs), "", min_fs
 
@@ -241,7 +242,7 @@ def style_flower_palette(ov_style: Dict[str, Any], style_id: str = "",
 
 
 def _split_two_lines(text: str, max_first: int = 8) -> Tuple[str, str]:
-    t = str(text or "").strip()
+    t = normalize_display_glyphs(str(text or "").strip())
     if not t:
         return "", ""
     from step5_subtitles import split_semantic_two_lines
@@ -264,6 +265,7 @@ def _draw_glyph_run(
     base_offset_y: int = 0,
 ) -> None:
     """绘制一行文字：无缺字时走高速单次 draw.text，缺字（如粤语喺/嘅/咗）自动按基线逐字回退。"""
+    text = normalize_display_glyphs(text)
     if not has_fallback:
         draw.text((ox, oy), text, font=main_fnt, fill=fill, stroke_width=stroke_width, stroke_fill=stroke_fill)
         return
@@ -441,7 +443,7 @@ def _text_sprite(
     单行文字精灵：按 max_w 自动压字号 / 截断防溢出，可选字距、描边与柔和投影。
     返回已按实际墨迹裁边的 RGBA 图（透明底）。
     """
-    t = str(text or "").strip()
+    t = normalize_display_glyphs(str(text or "").strip())
     if not t:
         return None
     # 描边/阴影只认该风格的实测值（花字 24/24 套真草稿都没有描边）

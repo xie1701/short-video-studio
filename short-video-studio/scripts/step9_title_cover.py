@@ -924,416 +924,480 @@ def run_step9(
     cover_3x4_path = pipeline_dir / "09_cover_3x4.jpg"
     ui_preview_path = pipeline_dir / "09_ui_safe_preview.jpg"
 
+    gbro_i2i_raw = str(dir_plan.get("gbro_cover_3x4_path") or "").strip()
+    gbro_i2i_p: Optional[Path] = Path(gbro_i2i_raw).expanduser() if gbro_i2i_raw else None
+    if not (gbro_i2i_p and gbro_i2i_p.is_file()):
+        for cand_name in ("09_gbro_i2i_cover_3x4.png", "09_gbro_i2i_cover_3x4.jpg"):
+            cp = pipeline_dir / cand_name
+            if cp.is_file():
+                gbro_i2i_p = cp
+                break
+        else:
+            gbro_i2i_p = None
+
     person_cutout_applied = False
     person_mask_img: Optional[Image.Image] = None
-    with tempfile.TemporaryDirectory(prefix="svs_cover_") as td:
-        td_p = Path(td)
-        best_frame_p, best_meta = pick_best_cover_frame(
-            edl, pipeline_dir, td_p, color_plan=color_plan, audio_events=audio_events
-        )
-        if best_frame_p and best_frame_p.exists():
-            base_img = Image.open(best_frame_p).convert("RGBA")
-            # 决策 2A：若存在人脸主体且本机支持 macOS 原生 Apple Vision 前景人像分割，预提取人物前景蒙版用于主体压字纵深海报
-            if best_meta.get("face_bbox"):
-                mask_p = td_p / "person_mask.png"
-                if segment_person_mask(best_frame_p, mask_p):
-                    try:
-                        with Image.open(mask_p) as m_im:
-                            m_l = m_im.convert("L").resize((CANVAS_WIDTH, CANVAS_HEIGHT), Image.Resampling.BILINEAR)
-                            m_arr = np.asarray(m_l, dtype=np.float32)
-                            cov = float(np.mean(m_arr >= 128.0))
-                            if 0.08 <= cov <= 0.65:
-                                person_mask_img = m_l
-                    except Exception:
-                        person_mask_img = None
-        else:
-            base_img = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), hex_to_rgba(pal["bg_hex"], 255))
+    best_meta: Dict[str, Any] = {"score": 0.96, "detail": "gbro_i2i_cover", "graded_matched": True}
+    cover_mode = "template_composite"
 
-    cover_rules = load_typography_cover_rules()
-    layouts_cfg = cover_rules.get("cover_3x4_layouts") or {}
-    style_entry = load_style_spectrum_entry(eff_style) if eff_style else None
-    cover_layout_id = str(((style_entry or {}).get("title_cover_layout") or {}).get("layout_id") or "")
-    use_gbro_poster = (
-        bool(cov_spec)
-        or dir_plan_p.is_file()
-        or eff_style == "style_02"
-        or cover_layout_id not in ("four_corner_editorial",)
-    )
-    use_jianying_poster = (not use_gbro_poster) and (cover_layout_id == "jianying_poster_4zone")
-    sub_spec = (style_entry or {}).get("subtitle_spec") or {}
-    style_font_cands = sub_spec.get("font_candidates") or pal.get("font_candidates")
-    if use_gbro_poster or is_unified_s02:
-        # 狗哥爆款封面：超粗无衬线方正黑体，硬朗高点击视觉冲击
-        style_font_cands = ["AlimamaShuHeiTi-Bold.otf", "SourceHanSansCN-Bold.otf", "NotoSansSC-Bold.ttf"]
-    kw_hex_style = "#FFE135" if use_gbro_poster else str(sub_spec.get("keyword_color") or pal.get("accent_hex") or "#FFBF17")
+    if gbro_i2i_p is not None:
+        # V11 真图生图 gbro-cover-design 封面直出路径：保持原图文字与人像零二次压字污染，
+        # 标准输出 3:4 (1080x1440) 并柔化上下延展成 9:16 (1080x1920) 完整海报。
+        cover_mode = "gbro_i2i_generated"
+        with Image.open(gbro_i2i_p) as src_im:
+            src_rgb = src_im.convert("RGB")
+        sw, sh = src_rgb.size
+        target_ratio = 3.0 / 4.0
+        cur_ratio = sw / float(max(1, sh))
+        if abs(cur_ratio - target_ratio) > 0.02:
+            if cur_ratio > target_ratio:
+                nw = int(round(sh * target_ratio))
+                x0 = max(0, (sw - nw) // 2)
+                src_rgb = src_rgb.crop((x0, 0, x0 + nw, sh))
+            else:
+                nh = int(round(sw / target_ratio))
+                y0 = max(0, (sh - nh) // 2)
+                src_rgb = src_rgb.crop((0, y0, sw, y0 + nh))
+        crop_3x4 = src_rgb.resize((CANVAS_WIDTH, 1440), Image.Resampling.LANCZOS)
+        crop_3x4.save(cover_3x4_path, quality=94)
 
-    card_x1, card_x2 = 80, SAFE_ZONE["x_max"] - 20  # [80, 860] -> w=780
-    card_h = 340
-    card_y = _choose_cover_card_y(best_meta.get("face_bbox"), card_h=card_h)
-
-    scrim_layer = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
-    overlay = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
-    mid_layer = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-    scrim_draw = ImageDraw.Draw(scrim_layer)
-    font_path = find_commercial_font(style_font_cands)
-
-    if use_gbro_poster:
-        # gbro-cover-design 统一爆款封面：深色柔焦渐变背景 + 清晰正脸人物立体前置 + 上方超粗白字 + 高饱和亮黄警示色块黑字（10% 四边安全区）
-        if person_mask_img is not None:
-            # 有人像抠像：轻微压暗背景并柔和边缘，突出前景真人立体质感
-            dim_bg = ImageEnhance.Brightness(base_img.convert("RGB")).enhance(0.68)
-            dim_bg = dim_bg.filter(ImageFilter.GaussianBlur(radius=2.8))
-            base_rgb = dim_bg.convert("RGBA")
-            fg_p = base_img.copy()
-            fg_p.putalpha(person_mask_img)
-            base_img = Image.alpha_composite(base_rgb, fg_p)
-            person_cutout_applied = True
-        for gy in range(0, 620, 4):
-            a = int(175 * (1.0 - gy / 620.0))
-            scrim_draw.rectangle([0, gy, CANVAS_WIDTH, gy + 4], fill=(10, 12, 18, a))
-        for gy in range(1120, CANVAS_HEIGHT, 4):
-            a = int(195 * min(1.0, (gy - 1120) / 480.0))
-            scrim_draw.rectangle([0, gy, CANVAS_WIDTH, gy + 4], fill=(10, 12, 18, a))
-
-        safe_x = 104  # >= 约10% 左安全区，右不超过 SAFE_ZONE["x_max"] (880)
-        safe_w = SAFE_ZONE["x_max"] - safe_x - 16
-        fb_raw = best_meta.get("face_bbox")
-        face_top_px = 9999.0
-        face_bot_px = 0.0
-        if isinstance(fb_raw, dict):
-            rfy = float(fb_raw.get("y", 0.5))
-            rfh = float(fb_raw.get("h", 0.18))
-            is_norm = max(rfy, rfh, float(fb_raw.get("w", 0.1))) <= 1.05
-            face_top_px = rfy * CANVAS_HEIGHT if is_norm else rfy
-            face_bot_px = face_top_px + (rfh * CANVAS_HEIGHT if is_norm else rfh)
-
-        # 1) 上半部超粗纯白主标题（紧守 [256, 1680] 3:4 窗且绝不压额头眉眼）
-        f_l1, fit_l1 = _fit_text(draw, cover_main_l1, font_path, 96, safe_w, min_size=50)
-        l1_bb = draw.textbbox((0, 0), fit_l1, font=f_l1, stroke_width=6)
-        l1_h = max(68, int(l1_bb[3] - l1_bb[1]))
-        l1_y = 264
-        if face_top_px < 460:
-            l1_y = max(248, min(286, int(face_top_px) - l1_h - 14))
-        draw.text((safe_x + 4, l1_y + 6), fit_l1, fill=(0, 0, 0, 235), font=f_l1, stroke_width=6, stroke_fill=(0, 0, 0, 235))
-        draw.text((safe_x, l1_y), fit_l1, fill=(255, 255, 255, 255), font=f_l1, stroke_width=6, stroke_fill=(0, 0, 0, 255))
-
-        # 2) 高饱和亮黄色 #FFE135 警示牌矩形色块 + 超粗纯黑大字（头顶宽裕放标题下方，大头近景落胸前下方绝不遮脸）
-        f_l2, fit_l2 = _fit_text(draw, cover_main_l2, font_path, 76, safe_w - 48, min_size=40)
-        l2_bb = draw.textbbox((0, 0), fit_l2, font=f_l2)
-        l2_tw = int(l2_bb[2] - l2_bb[0])
-        l2_th = max(56, int(l2_bb[3] - l2_bb[1]))
-        pill_w = min(safe_w, l2_tw + 52)
-        pill_h = l2_th + 30
-        if face_top_px >= l1_y + l1_h + pill_h + 44:
-            pill_y = l1_y + l1_h + 24
-        else:
-            pill_y = max(int(face_bot_px) + 34 if face_bot_px > 0 else 1180, 1210)
-            pill_y = min(1450 - pill_h, pill_y)
-        draw.rounded_rectangle(
-            [safe_x + 4, pill_y + 5, safe_x + pill_w + 4, pill_y + pill_h + 5],
-            radius=12, fill=(0, 0, 0, 180),
-        )
-        draw.rounded_rectangle(
-            [safe_x, pill_y, safe_x + pill_w, pill_y + pill_h],
-            radius=12, fill=(255, 225, 53, 255),
-        )
-        draw.text(
-            (safe_x + pill_w // 2, pill_y + pill_h // 2 - int(l2_bb[1] // 3)),
-            fit_l2, fill=(14, 14, 18, 255), font=f_l2, anchor="mm",
-        )
+        # 9:16 满屏首帧延展：分别取 3:4 原图最顶/最底 12px 纯净边缘条垂直柔化拉伸，杜绝顶部标题字变成白雾残影
+        top_strip = crop_3x4.crop((0, 0, CANVAS_WIDTH, 12)).resize((CANVAS_WIDTH, 280), Image.Resampling.BICUBIC)
+        top_strip = top_strip.filter(ImageFilter.GaussianBlur(radius=18))
+        bot_strip = crop_3x4.crop((0, 1440 - 12, CANVAS_WIDTH, 1440)).resize((CANVAS_WIDTH, 280), Image.Resampling.BICUBIC)
+        bot_strip = bot_strip.filter(ImageFilter.GaussianBlur(radius=18))
+        bg_916 = Image.new("RGB", (CANVAS_WIDTH, CANVAS_HEIGHT))
+        bg_916.paste(top_strip, (0, 0))
+        bg_916.paste(crop_3x4, (0, 240))
+        bg_916.paste(bot_strip, (0, 1640))
+        composed_rgba = bg_916.convert("RGBA")
+        # 给 3:4 上下边缘加 28px 柔羽化 Alpha 完美融入延展底
+        alpha_mask = Image.new("L", (CANVAS_WIDTH, 1440), 255)
+        am_draw = ImageDraw.Draw(alpha_mask)
+        fade_h = 28
+        for i_f in range(fade_h):
+            val = int(round(255.0 * (i_f + 1) / float(fade_h)))
+            am_draw.line([(0, i_f), (CANVAS_WIDTH, i_f)], fill=val)
+            am_draw.line([(0, 1440 - 1 - i_f), (CANVAS_WIDTH, 1440 - 1 - i_f)], fill=val)
+        fg_34 = crop_3x4.convert("RGBA")
+        fg_34.putalpha(alpha_mask)
+        composed_rgba.alpha_composite(fg_34, dest=(0, 240))
+        composed = composed_rgba.convert("RGB")
+        composed.save(cover_path, quality=94)
 
         fit_sub = cover_sub
-        if cover_sub and face_top_px < 560 and pill_y >= 1150:
-            f_sub_p, fit_sub = _fit_text(draw, cover_sub, font_path, 38, safe_w, min_size=24)
-            sub_y = max(pill_y - 54, int(face_bot_px) + 12) if pill_y - int(face_bot_px) >= 92 else pill_y + pill_h + 18
-            if sub_y + 42 <= 1540:
-                draw.text((safe_x + 2, sub_y + 2), fit_sub, fill=(0, 0, 0, 220), font=f_sub_p, stroke_width=4, stroke_fill=(0, 0, 0, 220))
-                draw.text((safe_x, sub_y), fit_sub, fill=(245, 245, 248, 255), font=f_sub_p, stroke_width=4, stroke_fill=(0, 0, 0, 255))
-
-        card_y = l1_y
-        thumb_eval_box = (
-            safe_x - 8,
-            min(l1_y, pill_y) - 8,
-            min(860, max(safe_x + 360, safe_x + max(int(l1_bb[2] - l1_bb[0]), pill_w) + 16)),
-            max(l1_y + l1_h, pill_y + pill_h) + 12,
-        )
-    elif use_jianying_poster:
-        # 四区高低错落无闷框爆款封面（底图压暗渐变留在主体图层下方，保人物清晰）
-        for gy in range(0, 560, 4):
-            a = int(125 * (1.0 - gy / 560.0))
-            scrim_draw.rectangle([0, gy, CANVAS_WIDTH, gy + 4], fill=(10, 12, 16, a))
-        for gy in range(1060, CANVAS_HEIGHT, 4):
-            a = int(145 * min(1.0, (gy - 1060) / 520.0))
-            scrim_draw.rectangle([0, gy, CANVAS_WIDTH, gy + 4], fill=(10, 12, 16, a))
-
-        safe_w = SAFE_ZONE["x_max"] - 80  # 800px，严格在 [80, 880] 内不触碰右侧栏
-        # 起始 y=262，严格落在 3:4 主页封面裁切 [240, 1680] 内部，绝不齐头切字！
-        lead_small = "门店真实记录" if track == "store" else "实操真相拆解"
-        f_lead, fit_lead = _fit_text(draw, lead_small, font_path, 46, 420, min_size=28)
-        draw.text((88, 262), fit_lead, fill=(255, 255, 255, 255), font=f_lead, stroke_width=5, stroke_fill=(0, 0, 0, 255))
-
-        f_l1, fit_l1 = _fit_text(draw, cover_main_l1, font_path, 106, safe_w - 20, min_size=54)
-        draw.text((84 + 4, 326 + 6), fit_l1, fill=(0, 0, 0, 220), font=f_l1, stroke_width=7, stroke_fill=(0, 0, 0, 220))
-        draw.text((84, 326), fit_l1, fill=(255, 42, 36, 255), font=f_l1, stroke_width=7, stroke_fill=(0, 0, 0, 255))
-
-        # 中左区：微倾斜明黄黑边贴纸字（cover_main_l2），严格转换归一化 face_bbox 到像素坐标并钳制右边界 <= 868
-        f_l2, fit_l2 = _fit_text(draw, cover_main_l2, font_path, 80, safe_w - 80, min_size=42)
-        l2_tmp = Image.new("RGBA", (safe_w + 80, 180), (0, 0, 0, 0))
-        l2_d = ImageDraw.Draw(l2_tmp)
-        l2_d.text((28 + 3, 42 + 4), fit_l2, fill=(0, 0, 0, 220), font=f_l2, stroke_width=6, stroke_fill=(0, 0, 0, 220))
-        l2_d.text((28, 42), fit_l2, fill=(255, 226, 52, 255), font=f_l2, stroke_width=6, stroke_fill=(0, 0, 0, 220))
-        l2_rot = l2_tmp.rotate(4.5, resample=Image.Resampling.BICUBIC, expand=True)
-        l2_bb = l2_rot.getbbox()
-        if l2_bb:
-            l2_rot = l2_rot.crop(l2_bb)
-        max_rot_w = SAFE_ZONE["x_max"] - 84 - 12
-        if l2_rot.width > max_rot_w:
-            sc_r = max_rot_w / float(l2_rot.width)
-            l2_rot = l2_rot.resize((max(1, int(l2_rot.width * sc_r)), max(1, int(l2_rot.height * sc_r))), Image.Resampling.LANCZOS)
-        fb_raw = best_meta.get("face_bbox")
-        face_y_px = 9999.0
-        face_bottom_px = 0.0
-        if isinstance(fb_raw, dict):
-            raw_fy = float(fb_raw.get("y", 0.5))
-            raw_fh = float(fb_raw.get("h", 0.16))
-            face_y_px = raw_fy * CANVAS_HEIGHT if max(raw_fy, raw_fh) <= 1.01 else raw_fy
-            face_bottom_px = face_y_px + (raw_fh * CANVAS_HEIGHT if max(raw_fy, raw_fh) <= 1.01 else raw_fh)
-        l2_y = 1010 if face_y_px < 860.0 else 760
-        if face_bottom_px > 0:
-            l2_y = max(l2_y, int(face_bottom_px) + 28)
-        l2_y = max(500, min(1210 - l2_rot.height, l2_y))
-
-        l2_put_front = False
-        if person_mask_img is not None:
-            lx1 = max(0, min(CANVAS_WIDTH - 1, 84))
-            ly1 = max(0, min(CANVAS_HEIGHT - 1, int(l2_y)))
-            lx2 = max(lx1 + 1, min(CANVAS_WIDTH, 84 + l2_rot.width))
-            ly2 = max(ly1 + 1, min(CANVAS_HEIGHT, int(l2_y) + l2_rot.height))
-            l2_mask_roi = np.asarray(person_mask_img, dtype=np.float32)[ly1:ly2, lx1:lx2]
-            if l2_mask_roi.size > 0 and float(np.mean(l2_mask_roi >= 128.0)) > 0.15:
-                l2_put_front = True
-        if l2_put_front:
-            overlay.alpha_composite(l2_rot, dest=(84, l2_y))
-            draw = ImageDraw.Draw(overlay)
-        else:
-            mid_layer.alpha_composite(l2_rot, dest=(84, l2_y))
-
-        # 下方转化区：白字黑边副标 + 红白双色大字（严格落在 y <= 1460 安全区内）
-        f_sub, fit_sub = _fit_text(draw, cover_sub, font_path, 44, safe_w - 20, min_size=26)
-        draw.text((88 + 2, 1228 + 3), fit_sub, fill=(0, 0, 0, 220), font=f_sub, stroke_width=4, stroke_fill=(0, 0, 0, 220))
-        draw.text((88, 1228), fit_sub, fill=(255, 255, 255, 255), font=f_sub, stroke_width=4, stroke_fill=(0, 0, 0, 255))
-
-        cta_punch = (top_kw[:4] + "实测") if len(top_kw) >= 2 else "一线实拍"
-        f_cta, fit_cta = _fit_text(draw, cta_punch, font_path, 86, safe_w - 20, min_size=46)
-        split_at = max(1, len(fit_cta) // 2)
-        p_left, p_right = fit_cta[:split_at], fit_cta[split_at:]
-        draw.text((86 + 3, 1296 + 5), p_left, fill=(0, 0, 0, 225), font=f_cta, stroke_width=6, stroke_fill=(0, 0, 0, 225))
-        draw.text((86, 1296), p_left, fill=(255, 36, 56, 255), font=f_cta, stroke_width=6, stroke_fill=(0, 0, 0, 255))
-        lw = int(draw.textbbox((0, 0), p_left, font=f_cta, stroke_width=6)[2])
-        if p_right:
-            draw.text((86 + lw + 3, 1296 + 5), p_right, fill=(0, 0, 0, 225), font=f_cta, stroke_width=6, stroke_fill=(0, 0, 0, 225))
-            draw.text((86 + lw, 1296), p_right, fill=(255, 255, 255, 255), font=f_cta, stroke_width=6, stroke_fill=(0, 0, 0, 255))
-
-        card_y = 262
-        l1_w = int(draw.textbbox((0, 0), fit_l1, font=f_l1, stroke_width=7)[2])
-        thumb_eval_box = (80, 256, min(860, max(380, 88 + l1_w + 24)), 460)
-    elif cover_layout_id == "top_giant_bottom_sub":
-        # 顶部胶囊标签 + 顶部大号主标题 + 底部双行副标构图
-        grad = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
-        gd = ImageDraw.Draw(grad)
-        for gy in range(200, 620, 4):
-            a = int(185 * (1.0 - abs(gy - 360) / 260.0))
-            gd.rectangle([0, gy, CANVAS_WIDTH, gy + 4], fill=(10, 12, 18, max(0, a)))
-        for gy in range(1180, 1520, 4):
-            a = int(185 * (1.0 - abs(gy - 1340) / 180.0))
-            gd.rectangle([0, gy, CANVAS_WIDTH, gy + 4], fill=(10, 12, 18, max(0, a)))
-        overlay = Image.alpha_composite(overlay, grad)
-        draw = ImageDraw.Draw(overlay)
-
-        safe_w = SAFE_ZONE["x_max"] - 80
-        kw_rgba = hex_to_rgba(kw_hex_style, 255)
-        if contrast_ratio(kw_rgba[:3], (10, 12, 18)) < 5.5:
-            kw_rgba = (255, 214, 55, 255)
-        f_sub, fit_sub = _fit_text(draw, cover_sub, font_path, 36, safe_w - 80, min_size=22)
-        sub_bb = draw.textbbox((0, 0), fit_sub, font=f_sub)
-        cap_w = min(safe_w, max(240, int(sub_bb[2] - sub_bb[0]) + 56))
-        cap_x = 84
-        draw.rounded_rectangle([cap_x, 262, cap_x + cap_w, 322], radius=16, fill=(183, 28, 28, 240))
-        draw.text((cap_x + cap_w // 2, 292), fit_sub, fill=(255, 255, 255, 255), font=f_sub, anchor="mm")
-
-        f_l1, fit_l1 = _fit_text(draw, cover_main_l1, font_path, 104, safe_w - 20, min_size=52)
-        draw.text((84 + 4, 344 + 5), fit_l1, fill=(0, 0, 0, 235), font=f_l1, stroke_width=7, stroke_fill=(0, 0, 0, 235))
-        draw.text((84, 344), fit_l1, fill=kw_rgba, font=f_l1, stroke_width=7, stroke_fill=(0, 0, 0, 255))
-
-        f_l2, fit_l2 = _fit_text(draw, cover_main_l2, font_path, 78, safe_w - 20, min_size=42)
-        draw.text((84 + 3, 1280 + 4), fit_l2, fill=(0, 0, 0, 235), font=f_l2, stroke_width=5, stroke_fill=(0, 0, 0, 235))
-        draw.text((84, 1280), fit_l2, fill=(255, 255, 255, 255), font=f_l2, stroke_width=5, stroke_fill=(0, 0, 0, 255))
-        card_y = 262
-        l1_w = int(draw.textbbox((0, 0), fit_l1, font=f_l1, stroke_width=7)[2])
-        thumb_eval_box = (80, 258, min(860, max(380, 88 + max(cap_w, l1_w) + 24)), 475)
-    elif cover_layout_id == "four_corner_editorial":
-        # 四角留白 / 黑底画框高定构图封面
-        grad = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
-        gd = ImageDraw.Draw(grad)
-        gd.rectangle([0, 0, CANVAS_WIDTH, 475], fill=(8, 10, 14, 215))
-        gd.rectangle([0, 1210, CANVAS_WIDTH, CANVAS_HEIGHT], fill=(8, 10, 14, 220))
-        gd.rectangle([68, 252, SAFE_ZONE["x_max"] - 12, 1456], outline=(255, 245, 137, 200), width=3)
-        overlay = Image.alpha_composite(overlay, grad)
-        draw = ImageDraw.Draw(overlay)
-
-        safe_w = SAFE_ZONE["x_max"] - 110
-        f_l1, fit_l1 = _fit_text(draw, cover_main_l1, font_path, 96, safe_w, min_size=48)
-        draw.text((96 + 3, 286 + 4), fit_l1, fill=(0, 0, 0, 235), font=f_l1, stroke_width=6, stroke_fill=(0, 0, 0, 235))
-        draw.text((96, 286), fit_l1, fill=(255, 245, 137, 255), font=f_l1, stroke_width=6, stroke_fill=(0, 0, 0, 255))
-        f_l2, fit_l2 = _fit_text(draw, cover_main_l2, font_path, 68, safe_w, min_size=36)
-        draw.text((96, 1252), fit_l2, fill=(255, 255, 255, 255), font=f_l2, stroke_width=5, stroke_fill=(0, 0, 0, 245))
-        f_sub, fit_sub = _fit_text(draw, cover_sub, font_path, 36, safe_w, min_size=22)
-        draw.text((96, 1348), fit_sub, fill=(255, 245, 137, 240), font=f_sub, stroke_width=3, stroke_fill=(0, 0, 0, 230))
-        card_y = 276
-        l1_w = int(draw.textbbox((0, 0), fit_l1, font=f_l1, stroke_width=6)[2])
-        thumb_eval_box = (84, 268, min(860, max(380, 96 + l1_w + 28)), 445)
-    elif cover_layout_id == "left_right_split":
-        lr_zones = (layouts_cfg.get("left_right_split") or {}).get("zones") or {}
-        hl_z = lr_zones.get("left_headline_col") or {"x": 80, "y": 330, "max_w": 520, "size": 88, "color": "#FFBF17"}
-        aux_z = lr_zones.get("left_aux_points") or {"x": 84, "y": 540, "max_w": 480, "size": 36, "color": "#FFFFFF"}
-        ban_z = lr_zones.get("bottom_banner") or {"x": 80, "y": 1270, "max_w": 760, "size": 68, "color": "#FFFFFF"}
-
-        for gx in range(0, 620, 6):
-            a = int(190 * (1.0 - gx / 620.0))
-            scrim_draw.rectangle([gx, 210, gx + 6, 1140], fill=(10, 12, 18, max(0, a)))
-        for gy in range(1140, 1490, 4):
-            scrim_draw.rectangle([0, gy, CANVAS_WIDTH, gy + 4], fill=(10, 12, 18, 180))
-
-        # 归一化 face_bbox -> 含额头上方安全余量的像素避让框，防止副标胶囊压中眉眼
-        padded_face: Optional[Dict[str, float]] = None
-        fb_raw = best_meta.get("face_bbox")
-        if isinstance(fb_raw, dict):
-            fx = float(fb_raw.get("x", 0.0))
-            fy = float(fb_raw.get("y", 0.0))
-            fw = float(fb_raw.get("w", 0.0))
-            fh = float(fb_raw.get("h", 0.0))
-            if max(fx, fy, fw, fh) <= 1.01:
-                fx, fy, fw, fh = fx * CANVAS_WIDTH, fy * CANVAS_HEIGHT, fw * CANVAS_WIDTH, fh * CANVAS_HEIGHT
-            if fw > 10 and fh > 10:
-                head_pad_top = max(60.0, fh * 0.36)
-                padded_face = {
-                    "x": fx - 24.0,
-                    "y": fy - head_pad_top,
-                    "w": fw + 48.0,
-                    "h": fh + head_pad_top + 24.0,
-                }
-
-        hl_col = hex_to_rgba(str(hl_z.get("color") or kw_hex_style), 255)
-        if contrast_ratio(hl_col[:3], (10, 12, 18)) < 5.0:
-            hl_col = (255, 214, 55, 255)
-        hx = int(hl_z.get("x", 80))
-        hy = int(hl_z.get("y", 330))
-        hw = min(int(hl_z.get("max_w", 520)), SAFE_ZONE["x_max"] - hx - 20)
-        f_l1, fit_l1 = _fit_text(draw, cover_main_l1, font_path, int(hl_z.get("size", 88)), hw, min_size=42)
-        l1_bb_pre = draw.textbbox((hx, hy), fit_l1, font=f_l1, stroke_width=6)
-        l1_h_pre = max(60, int(l1_bb_pre[3] - l1_bb_pre[1]))
-        l1_box_pre = {"x": float(hx), "y": float(hy), "w": float(max(120, l1_bb_pre[2] - l1_bb_pre[0])), "h": float(l1_h_pre)}
-        if padded_face and bbox_iou(l1_box_pre, padded_face) > 0.0:
-            hy = max(258, min(hy, int(padded_face["y"] - l1_h_pre - 12)))
-        draw.text((hx + 3, hy + 4), fit_l1, fill=(0, 0, 0, 235), font=f_l1, stroke_width=6, stroke_fill=(0, 0, 0, 235))
-        draw.text((hx, hy), fit_l1, fill=hl_col, font=f_l1, stroke_width=6, stroke_fill=(0, 0, 0, 255))
-
-        bx = int(ban_z.get("x", 80))
-        by = int(ban_z.get("y", 1270))
-        ax = int(aux_z.get("x", 84))
-        ay = int(aux_z.get("y", 540))
-        aw = min(int(aux_z.get("max_w", 480)), SAFE_ZONE["x_max"] - ax - 20)
-        f_sub, fit_sub = _fit_text(draw, cover_sub, font_path, int(aux_z.get("size", 36)), aw - 32, min_size=22)
-        sub_bb = draw.textbbox((0, 0), fit_sub, font=f_sub)
-        cap_w = min(aw, max(200, int(sub_bb[2] - sub_bb[0]) + 40))
-        if padded_face and bbox_iou({"x": float(ax), "y": float(ay), "w": float(cap_w), "h": 58.0}, padded_face) > 0.0:
-            left_gap = int(padded_face["x"]) - 12 - ax
-            if left_gap >= 280:
-                aw = min(aw, left_gap)
-                f_sub, fit_sub = _fit_text(draw, cover_sub, font_path, int(aux_z.get("size", 36)), aw - 32, min_size=20)
-                sub_bb = draw.textbbox((0, 0), fit_sub, font=f_sub)
-                cap_w = min(aw, max(200, int(sub_bb[2] - sub_bb[0]) + 40))
-            else:
-                # 居中大头像：自动让位至下方暗角横幅正上方，绝不压脸/眉眼
-                ax = bx
-                ay = max(int(padded_face["y"] + padded_face["h"] + 24), by - 78)
-                aw = min(int(ban_z.get("max_w", 760)), SAFE_ZONE["x_max"] - ax - 20)
-                f_sub, fit_sub = _fit_text(draw, cover_sub, font_path, int(aux_z.get("size", 36)), aw - 32, min_size=22)
-                sub_bb = draw.textbbox((0, 0), fit_sub, font=f_sub)
-                cap_w = min(aw, max(200, int(sub_bb[2] - sub_bb[0]) + 40))
-
-        draw.rounded_rectangle([ax, ay, ax + cap_w, ay + 58], radius=12, fill=(22, 26, 36, 230), outline=hl_col, width=2)
-        draw.text((ax + cap_w // 2, ay + 29), fit_sub, fill=(255, 255, 255, 255), font=f_sub, anchor="mm")
-
-        bw_max = min(int(ban_z.get("max_w", 760)), SAFE_ZONE["x_max"] - bx - 12)
-        f_l2, fit_l2 = _fit_text(draw, cover_main_l2, font_path, int(ban_z.get("size", 68)), bw_max, min_size=36)
-        draw.text((bx + 3, by + 4), fit_l2, fill=(0, 0, 0, 235), font=f_l2, stroke_width=5, stroke_fill=(0, 0, 0, 235))
-        draw.text((bx, by), fit_l2, fill=(255, 255, 255, 255), font=f_l2, stroke_width=5, stroke_fill=(0, 0, 0, 255))
-        card_y = hy
-        l1_bb = draw.textbbox((hx, hy), fit_l1, font=f_l1, stroke_width=6)
-        thumb_eval_box = (
-            max(0, min(hx, int(l1_bb[0]))),
-            max(0, min(hy, int(l1_bb[1]))),
-            min(860, max(380, int(l1_bb[2]) + 24)),
-            min(SAFE_ZONE["y_max"], max(hy + 140, int(l1_bb[3]) + 24)),
-        )
+        card_y = 260
+        thumb_eval_box = (80, 260, 1000, 760)
+        font_path = find_commercial_font(["AlimamaShuHeiTi-Bold.otf", "SourceHanSansCN-Bold.otf", "NotoSansSC-Bold.ttf"])
     else:
-        # 通用杂志卡片封套
-        card_fill = hex_to_rgba(pal["card_bg_hex"], 224 if pal.get("is_light") else 212)
-        border_col = hex_to_rgba(pal["border_hex"], 230)
-        accent_col = hex_to_rgba(pal["accent_hex"], 255)
-        badge_txt_col = hex_to_rgba(pal["badge_text_hex"], 255)
-        main_txt_col = hex_to_rgba(pal["title_hex"], 255)
-
-        if contrast_ratio(main_txt_col[:3], card_fill[:3]) < 4.5:
-            main_txt_col = (17, 24, 39, 255) if pal.get("is_light") else (255, 255, 255, 255)
-        l2_col = accent_col if contrast_ratio(accent_col[:3], card_fill[:3]) >= 3.2 else main_txt_col
-
-        draw.rounded_rectangle([card_x1, card_y, card_x2, card_y + card_h], radius=22, fill=card_fill, outline=border_col, width=2)
-        draw.rounded_rectangle([card_x1, card_y + 24, card_x1 + 8, card_y + card_h - 24], radius=4, fill=accent_col)
-
-        inner_x = card_x1 + 32
-        max_inner_w = (card_x2 - 28) - inner_x
-        f_sub, fit_sub = _fit_text(draw, cover_sub, font_path, 34, max_inner_w - 44, min_size=22)
-        sub_bb = draw.textbbox((0, 0), fit_sub, font=f_sub)
-        cap_w = min(max_inner_w, max(220, int(sub_bb[2] - sub_bb[0]) + 44))
-        draw.rounded_rectangle([inner_x, card_y + 28, inner_x + cap_w, card_y + 84], radius=12, fill=accent_col)
-        draw.text((inner_x + cap_w // 2, card_y + 56), fit_sub, fill=badge_txt_col, font=f_sub, anchor="mm")
-
-        f_l1, fit_l1 = _fit_text(draw, cover_main_l1, font_path, 78, max_inner_w, min_size=40)
-        f_l2, fit_l2 = _fit_text(draw, cover_main_l2, font_path, 72, max_inner_w, min_size=36)
-        draw.text((inner_x, card_y + 114), fit_l1, fill=main_txt_col, font=f_l1)
-        draw.text((inner_x, card_y + 216), fit_l2, fill=l2_col, font=f_l2)
-        l1_w = int(draw.textbbox((0, 0), fit_l1, font=f_l1)[2])
-        l2_w = int(draw.textbbox((0, 0), fit_l2, font=f_l2)[2])
-        thumb_eval_box = (card_x1, card_y, min(card_x2, max(card_x1 + 320, inner_x + max(cap_w, l1_w, l2_w) + 28)), card_y + card_h)
-
-    stage_bg = Image.alpha_composite(base_img, scrim_layer)
-    if use_jianying_poster:
-        # 纵深合成：压暗底图 -> 中景贴纸字 -> (可选)前景人像边缘主体压字(重叠<=35%) -> 顶/底主标题清晰保底
-        stage = Image.alpha_composite(stage_bg, mid_layer)
-        if person_mask_img is not None:
-            tx1, ty1, tx2, ty2 = (
-                max(0, min(CANVAS_WIDTH - 1, int(thumb_eval_box[0]))),
-                max(0, min(CANVAS_HEIGHT - 1, int(thumb_eval_box[1]))),
-                max(1, min(CANVAS_WIDTH, int(thumb_eval_box[2]))),
-                max(1, min(CANVAS_HEIGHT, int(thumb_eval_box[3]))),
+        with tempfile.TemporaryDirectory(prefix="svs_cover_") as td:
+            td_p = Path(td)
+            best_frame_p, best_meta = pick_best_cover_frame(
+                edl, pipeline_dir, td_p, color_plan=color_plan, audio_events=audio_events
             )
-            title_region_mask = np.asarray(person_mask_img, dtype=np.float32)[ty1:ty2, tx1:tx2]
-            fg_overlap = float(np.mean(title_region_mask >= 128.0)) if title_region_mask.size > 0 else 0.0
-            if fg_overlap <= 0.35:
-                fg_person = base_img.copy()
-                fg_person.putalpha(person_mask_img)
-                stage = Image.alpha_composite(stage, fg_person)
-                person_cutout_applied = True
-        composed = Image.alpha_composite(stage, overlay).convert("RGB")
-    else:
-        composed = Image.alpha_composite(stage_bg, overlay).convert("RGB")
-    composed.save(cover_path, quality=92)
+            if best_frame_p and best_frame_p.exists():
+                base_img = Image.open(best_frame_p).convert("RGBA")
+                # 决策 2A：若存在人脸主体且本机支持 macOS 原生 Apple Vision 前景人像分割，预提取人物前景蒙版用于主体压字纵深海报
+                if best_meta.get("face_bbox"):
+                    mask_p = td_p / "person_mask.png"
+                    if segment_person_mask(best_frame_p, mask_p):
+                        try:
+                            with Image.open(mask_p) as m_im:
+                                m_l = m_im.convert("L").resize((CANVAS_WIDTH, CANVAS_HEIGHT), Image.Resampling.BILINEAR)
+                                m_arr = np.asarray(m_l, dtype=np.float32)
+                                cov = float(np.mean(m_arr >= 128.0))
+                                if 0.08 <= cov <= 0.65:
+                                    person_mask_img = m_l
+                        except Exception:
+                            person_mask_img = None
+            else:
+                base_img = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), hex_to_rgba(pal["bg_hex"], 255))
 
-    crop_3x4 = composed.crop((0, 240, CANVAS_WIDTH, 1680))
-    crop_3x4.save(cover_3x4_path, quality=92)
+        cover_rules = load_typography_cover_rules()
+        layouts_cfg = cover_rules.get("cover_3x4_layouts") or {}
+        style_entry = load_style_spectrum_entry(eff_style) if eff_style else None
+        cover_layout_id = str(((style_entry or {}).get("title_cover_layout") or {}).get("layout_id") or "")
+        use_gbro_poster = (
+            bool(cov_spec)
+            or dir_plan_p.is_file()
+            or eff_style == "style_02"
+            or cover_layout_id not in ("four_corner_editorial",)
+        )
+        use_jianying_poster = (not use_gbro_poster) and (cover_layout_id == "jianying_poster_4zone")
+        sub_spec = (style_entry or {}).get("subtitle_spec") or {}
+        style_font_cands = sub_spec.get("font_candidates") or pal.get("font_candidates")
+        if use_gbro_poster or is_unified_s02:
+            # 狗哥爆款封面：超粗无衬线方正黑体，硬朗高点击视觉冲击
+            style_font_cands = ["AlimamaShuHeiTi-Bold.otf", "SourceHanSansCN-Bold.otf", "NotoSansSC-Bold.ttf"]
+        kw_hex_style = "#FFE135" if use_gbro_poster else str(sub_spec.get("keyword_color") or pal.get("accent_hex") or "#FFBF17")
+
+        card_x1, card_x2 = 80, SAFE_ZONE["x_max"] - 20  # [80, 860] -> w=780
+        card_h = 340
+        card_y = _choose_cover_card_y(best_meta.get("face_bbox"), card_h=card_h)
+
+        scrim_layer = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
+        overlay = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
+        mid_layer = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
+        scrim_draw = ImageDraw.Draw(scrim_layer)
+        font_path = find_commercial_font(style_font_cands)
+
+        if use_gbro_poster:
+            # gbro-cover-design 统一爆款封面：深色柔焦渐变背景 + 清晰正脸人物立体前置 + 上方超粗白字 + 高饱和亮黄警示色块黑字（10% 四边安全区）
+            if person_mask_img is not None:
+                # 有人像抠像：轻微压暗背景并柔和边缘，突出前景真人立体质感
+                dim_bg = ImageEnhance.Brightness(base_img.convert("RGB")).enhance(0.68)
+                dim_bg = dim_bg.filter(ImageFilter.GaussianBlur(radius=2.8))
+                base_rgb = dim_bg.convert("RGBA")
+                fg_p = base_img.copy()
+                fg_p.putalpha(person_mask_img)
+                base_img = Image.alpha_composite(base_rgb, fg_p)
+                person_cutout_applied = True
+            for gy in range(0, 620, 4):
+                a = int(175 * (1.0 - gy / 620.0))
+                scrim_draw.rectangle([0, gy, CANVAS_WIDTH, gy + 4], fill=(10, 12, 18, a))
+            for gy in range(1120, CANVAS_HEIGHT, 4):
+                a = int(195 * min(1.0, (gy - 1120) / 480.0))
+                scrim_draw.rectangle([0, gy, CANVAS_WIDTH, gy + 4], fill=(10, 12, 18, a))
+
+            safe_x = 104  # >= 约10% 左安全区，右不超过 SAFE_ZONE["x_max"] (880)
+            safe_w = SAFE_ZONE["x_max"] - safe_x - 16
+            fb_raw = best_meta.get("face_bbox")
+            face_top_px = 9999.0
+            face_bot_px = 0.0
+            if isinstance(fb_raw, dict):
+                rfy = float(fb_raw.get("y", 0.5))
+                rfh = float(fb_raw.get("h", 0.18))
+                is_norm = max(rfy, rfh, float(fb_raw.get("w", 0.1))) <= 1.05
+                face_top_px = rfy * CANVAS_HEIGHT if is_norm else rfy
+                face_bot_px = face_top_px + (rfh * CANVAS_HEIGHT if is_norm else rfh)
+
+            # 1) 上半部超粗纯白主标题（紧守 [256, 1680] 3:4 窗且绝不压额头眉眼）
+            f_l1, fit_l1 = _fit_text(draw, cover_main_l1, font_path, 96, safe_w, min_size=50)
+            l1_bb = draw.textbbox((0, 0), fit_l1, font=f_l1, stroke_width=6)
+            l1_h = max(68, int(l1_bb[3] - l1_bb[1]))
+            l1_y = 264
+            if face_top_px < 460:
+                l1_y = max(248, min(286, int(face_top_px) - l1_h - 14))
+            draw.text((safe_x + 4, l1_y + 6), fit_l1, fill=(0, 0, 0, 235), font=f_l1, stroke_width=6, stroke_fill=(0, 0, 0, 235))
+            draw.text((safe_x, l1_y), fit_l1, fill=(255, 255, 255, 255), font=f_l1, stroke_width=6, stroke_fill=(0, 0, 0, 255))
+
+            # 2) 高饱和亮黄色 #FFE135 警示牌矩形色块 + 超粗纯黑大字（头顶宽裕放标题下方，大头近景落胸前下方绝不遮脸）
+            f_l2, fit_l2 = _fit_text(draw, cover_main_l2, font_path, 76, safe_w - 48, min_size=40)
+            l2_bb = draw.textbbox((0, 0), fit_l2, font=f_l2)
+            l2_tw = int(l2_bb[2] - l2_bb[0])
+            l2_th = max(56, int(l2_bb[3] - l2_bb[1]))
+            pill_w = min(safe_w, l2_tw + 52)
+            pill_h = l2_th + 30
+            if face_top_px >= l1_y + l1_h + pill_h + 44:
+                pill_y = l1_y + l1_h + 24
+            else:
+                pill_y = max(int(face_bot_px) + 34 if face_bot_px > 0 else 1180, 1210)
+                pill_y = min(1450 - pill_h, pill_y)
+            draw.rounded_rectangle(
+                [safe_x + 4, pill_y + 5, safe_x + pill_w + 4, pill_y + pill_h + 5],
+                radius=12, fill=(0, 0, 0, 180),
+            )
+            draw.rounded_rectangle(
+                [safe_x, pill_y, safe_x + pill_w, pill_y + pill_h],
+                radius=12, fill=(255, 225, 53, 255),
+            )
+            draw.text(
+                (safe_x + pill_w // 2, pill_y + pill_h // 2 - int(l2_bb[1] // 3)),
+                fit_l2, fill=(14, 14, 18, 255), font=f_l2, anchor="mm",
+            )
+
+            fit_sub = cover_sub
+            if cover_sub and face_top_px < 560 and pill_y >= 1150:
+                f_sub_p, fit_sub = _fit_text(draw, cover_sub, font_path, 38, safe_w, min_size=24)
+                sub_y = max(pill_y - 54, int(face_bot_px) + 12) if pill_y - int(face_bot_px) >= 92 else pill_y + pill_h + 18
+                if sub_y + 42 <= 1540:
+                    draw.text((safe_x + 2, sub_y + 2), fit_sub, fill=(0, 0, 0, 220), font=f_sub_p, stroke_width=4, stroke_fill=(0, 0, 0, 220))
+                    draw.text((safe_x, sub_y), fit_sub, fill=(245, 245, 248, 255), font=f_sub_p, stroke_width=4, stroke_fill=(0, 0, 0, 255))
+
+            card_y = l1_y
+            thumb_eval_box = (
+                safe_x - 8,
+                min(l1_y, pill_y) - 8,
+                min(860, max(safe_x + 360, safe_x + max(int(l1_bb[2] - l1_bb[0]), pill_w) + 16)),
+                max(l1_y + l1_h, pill_y + pill_h) + 12,
+            )
+        elif use_jianying_poster:
+            # 四区高低错落无闷框爆款封面（底图压暗渐变留在主体图层下方，保人物清晰）
+            for gy in range(0, 560, 4):
+                a = int(125 * (1.0 - gy / 560.0))
+                scrim_draw.rectangle([0, gy, CANVAS_WIDTH, gy + 4], fill=(10, 12, 16, a))
+            for gy in range(1060, CANVAS_HEIGHT, 4):
+                a = int(145 * min(1.0, (gy - 1060) / 520.0))
+                scrim_draw.rectangle([0, gy, CANVAS_WIDTH, gy + 4], fill=(10, 12, 16, a))
+
+            safe_w = SAFE_ZONE["x_max"] - 80  # 800px，严格在 [80, 880] 内不触碰右侧栏
+            # 起始 y=262，严格落在 3:4 主页封面裁切 [240, 1680] 内部，绝不齐头切字！
+            lead_small = "门店真实记录" if track == "store" else "实操真相拆解"
+            f_lead, fit_lead = _fit_text(draw, lead_small, font_path, 46, 420, min_size=28)
+            draw.text((88, 262), fit_lead, fill=(255, 255, 255, 255), font=f_lead, stroke_width=5, stroke_fill=(0, 0, 0, 255))
+
+            f_l1, fit_l1 = _fit_text(draw, cover_main_l1, font_path, 106, safe_w - 20, min_size=54)
+            draw.text((84 + 4, 326 + 6), fit_l1, fill=(0, 0, 0, 220), font=f_l1, stroke_width=7, stroke_fill=(0, 0, 0, 220))
+            draw.text((84, 326), fit_l1, fill=(255, 42, 36, 255), font=f_l1, stroke_width=7, stroke_fill=(0, 0, 0, 255))
+
+            # 中左区：微倾斜明黄黑边贴纸字（cover_main_l2），严格转换归一化 face_bbox 到像素坐标并钳制右边界 <= 868
+            f_l2, fit_l2 = _fit_text(draw, cover_main_l2, font_path, 80, safe_w - 80, min_size=42)
+            l2_tmp = Image.new("RGBA", (safe_w + 80, 180), (0, 0, 0, 0))
+            l2_d = ImageDraw.Draw(l2_tmp)
+            l2_d.text((28 + 3, 42 + 4), fit_l2, fill=(0, 0, 0, 220), font=f_l2, stroke_width=6, stroke_fill=(0, 0, 0, 220))
+            l2_d.text((28, 42), fit_l2, fill=(255, 226, 52, 255), font=f_l2, stroke_width=6, stroke_fill=(0, 0, 0, 220))
+            l2_rot = l2_tmp.rotate(4.5, resample=Image.Resampling.BICUBIC, expand=True)
+            l2_bb = l2_rot.getbbox()
+            if l2_bb:
+                l2_rot = l2_rot.crop(l2_bb)
+            max_rot_w = SAFE_ZONE["x_max"] - 84 - 12
+            if l2_rot.width > max_rot_w:
+                sc_r = max_rot_w / float(l2_rot.width)
+                l2_rot = l2_rot.resize((max(1, int(l2_rot.width * sc_r)), max(1, int(l2_rot.height * sc_r))), Image.Resampling.LANCZOS)
+            fb_raw = best_meta.get("face_bbox")
+            face_y_px = 9999.0
+            face_bottom_px = 0.0
+            if isinstance(fb_raw, dict):
+                raw_fy = float(fb_raw.get("y", 0.5))
+                raw_fh = float(fb_raw.get("h", 0.16))
+                face_y_px = raw_fy * CANVAS_HEIGHT if max(raw_fy, raw_fh) <= 1.01 else raw_fy
+                face_bottom_px = face_y_px + (raw_fh * CANVAS_HEIGHT if max(raw_fy, raw_fh) <= 1.01 else raw_fh)
+            l2_y = 1010 if face_y_px < 860.0 else 760
+            if face_bottom_px > 0:
+                l2_y = max(l2_y, int(face_bottom_px) + 28)
+            l2_y = max(500, min(1210 - l2_rot.height, l2_y))
+
+            l2_put_front = False
+            if person_mask_img is not None:
+                lx1 = max(0, min(CANVAS_WIDTH - 1, 84))
+                ly1 = max(0, min(CANVAS_HEIGHT - 1, int(l2_y)))
+                lx2 = max(lx1 + 1, min(CANVAS_WIDTH, 84 + l2_rot.width))
+                ly2 = max(ly1 + 1, min(CANVAS_HEIGHT, int(l2_y) + l2_rot.height))
+                l2_mask_roi = np.asarray(person_mask_img, dtype=np.float32)[ly1:ly2, lx1:lx2]
+                if l2_mask_roi.size > 0 and float(np.mean(l2_mask_roi >= 128.0)) > 0.15:
+                    l2_put_front = True
+            if l2_put_front:
+                overlay.alpha_composite(l2_rot, dest=(84, l2_y))
+                draw = ImageDraw.Draw(overlay)
+            else:
+                mid_layer.alpha_composite(l2_rot, dest=(84, l2_y))
+
+            # 下方转化区：白字黑边副标 + 红白双色大字（严格落在 y <= 1460 安全区内）
+            f_sub, fit_sub = _fit_text(draw, cover_sub, font_path, 44, safe_w - 20, min_size=26)
+            draw.text((88 + 2, 1228 + 3), fit_sub, fill=(0, 0, 0, 220), font=f_sub, stroke_width=4, stroke_fill=(0, 0, 0, 220))
+            draw.text((88, 1228), fit_sub, fill=(255, 255, 255, 255), font=f_sub, stroke_width=4, stroke_fill=(0, 0, 0, 255))
+
+            cta_punch = (top_kw[:4] + "实测") if len(top_kw) >= 2 else "一线实拍"
+            f_cta, fit_cta = _fit_text(draw, cta_punch, font_path, 86, safe_w - 20, min_size=46)
+            split_at = max(1, len(fit_cta) // 2)
+            p_left, p_right = fit_cta[:split_at], fit_cta[split_at:]
+            draw.text((86 + 3, 1296 + 5), p_left, fill=(0, 0, 0, 225), font=f_cta, stroke_width=6, stroke_fill=(0, 0, 0, 225))
+            draw.text((86, 1296), p_left, fill=(255, 36, 56, 255), font=f_cta, stroke_width=6, stroke_fill=(0, 0, 0, 255))
+            lw = int(draw.textbbox((0, 0), p_left, font=f_cta, stroke_width=6)[2])
+            if p_right:
+                draw.text((86 + lw + 3, 1296 + 5), p_right, fill=(0, 0, 0, 225), font=f_cta, stroke_width=6, stroke_fill=(0, 0, 0, 225))
+                draw.text((86 + lw, 1296), p_right, fill=(255, 255, 255, 255), font=f_cta, stroke_width=6, stroke_fill=(0, 0, 0, 255))
+
+            card_y = 262
+            l1_w = int(draw.textbbox((0, 0), fit_l1, font=f_l1, stroke_width=7)[2])
+            thumb_eval_box = (80, 256, min(860, max(380, 88 + l1_w + 24)), 460)
+        elif cover_layout_id == "top_giant_bottom_sub":
+            # 顶部胶囊标签 + 顶部大号主标题 + 底部双行副标构图
+            grad = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
+            gd = ImageDraw.Draw(grad)
+            for gy in range(200, 620, 4):
+                a = int(185 * (1.0 - abs(gy - 360) / 260.0))
+                gd.rectangle([0, gy, CANVAS_WIDTH, gy + 4], fill=(10, 12, 18, max(0, a)))
+            for gy in range(1180, 1520, 4):
+                a = int(185 * (1.0 - abs(gy - 1340) / 180.0))
+                gd.rectangle([0, gy, CANVAS_WIDTH, gy + 4], fill=(10, 12, 18, max(0, a)))
+            overlay = Image.alpha_composite(overlay, grad)
+            draw = ImageDraw.Draw(overlay)
+
+            safe_w = SAFE_ZONE["x_max"] - 80
+            kw_rgba = hex_to_rgba(kw_hex_style, 255)
+            if contrast_ratio(kw_rgba[:3], (10, 12, 18)) < 5.5:
+                kw_rgba = (255, 214, 55, 255)
+            f_sub, fit_sub = _fit_text(draw, cover_sub, font_path, 36, safe_w - 80, min_size=22)
+            sub_bb = draw.textbbox((0, 0), fit_sub, font=f_sub)
+            cap_w = min(safe_w, max(240, int(sub_bb[2] - sub_bb[0]) + 56))
+            cap_x = 84
+            draw.rounded_rectangle([cap_x, 262, cap_x + cap_w, 322], radius=16, fill=(183, 28, 28, 240))
+            draw.text((cap_x + cap_w // 2, 292), fit_sub, fill=(255, 255, 255, 255), font=f_sub, anchor="mm")
+
+            f_l1, fit_l1 = _fit_text(draw, cover_main_l1, font_path, 104, safe_w - 20, min_size=52)
+            draw.text((84 + 4, 344 + 5), fit_l1, fill=(0, 0, 0, 235), font=f_l1, stroke_width=7, stroke_fill=(0, 0, 0, 235))
+            draw.text((84, 344), fit_l1, fill=kw_rgba, font=f_l1, stroke_width=7, stroke_fill=(0, 0, 0, 255))
+
+            f_l2, fit_l2 = _fit_text(draw, cover_main_l2, font_path, 78, safe_w - 20, min_size=42)
+            draw.text((84 + 3, 1280 + 4), fit_l2, fill=(0, 0, 0, 235), font=f_l2, stroke_width=5, stroke_fill=(0, 0, 0, 235))
+            draw.text((84, 1280), fit_l2, fill=(255, 255, 255, 255), font=f_l2, stroke_width=5, stroke_fill=(0, 0, 0, 255))
+            card_y = 262
+            l1_w = int(draw.textbbox((0, 0), fit_l1, font=f_l1, stroke_width=7)[2])
+            thumb_eval_box = (80, 258, min(860, max(380, 88 + max(cap_w, l1_w) + 24)), 475)
+        elif cover_layout_id == "four_corner_editorial":
+            # 四角留白 / 黑底画框高定构图封面
+            grad = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
+            gd = ImageDraw.Draw(grad)
+            gd.rectangle([0, 0, CANVAS_WIDTH, 475], fill=(8, 10, 14, 215))
+            gd.rectangle([0, 1210, CANVAS_WIDTH, CANVAS_HEIGHT], fill=(8, 10, 14, 220))
+            gd.rectangle([68, 252, SAFE_ZONE["x_max"] - 12, 1456], outline=(255, 245, 137, 200), width=3)
+            overlay = Image.alpha_composite(overlay, grad)
+            draw = ImageDraw.Draw(overlay)
+
+            safe_w = SAFE_ZONE["x_max"] - 110
+            f_l1, fit_l1 = _fit_text(draw, cover_main_l1, font_path, 96, safe_w, min_size=48)
+            draw.text((96 + 3, 286 + 4), fit_l1, fill=(0, 0, 0, 235), font=f_l1, stroke_width=6, stroke_fill=(0, 0, 0, 235))
+            draw.text((96, 286), fit_l1, fill=(255, 245, 137, 255), font=f_l1, stroke_width=6, stroke_fill=(0, 0, 0, 255))
+            f_l2, fit_l2 = _fit_text(draw, cover_main_l2, font_path, 68, safe_w, min_size=36)
+            draw.text((96, 1252), fit_l2, fill=(255, 255, 255, 255), font=f_l2, stroke_width=5, stroke_fill=(0, 0, 0, 245))
+            f_sub, fit_sub = _fit_text(draw, cover_sub, font_path, 36, safe_w, min_size=22)
+            draw.text((96, 1348), fit_sub, fill=(255, 245, 137, 240), font=f_sub, stroke_width=3, stroke_fill=(0, 0, 0, 230))
+            card_y = 276
+            l1_w = int(draw.textbbox((0, 0), fit_l1, font=f_l1, stroke_width=6)[2])
+            thumb_eval_box = (84, 268, min(860, max(380, 96 + l1_w + 28)), 445)
+        elif cover_layout_id == "left_right_split":
+            lr_zones = (layouts_cfg.get("left_right_split") or {}).get("zones") or {}
+            hl_z = lr_zones.get("left_headline_col") or {"x": 80, "y": 330, "max_w": 520, "size": 88, "color": "#FFBF17"}
+            aux_z = lr_zones.get("left_aux_points") or {"x": 84, "y": 540, "max_w": 480, "size": 36, "color": "#FFFFFF"}
+            ban_z = lr_zones.get("bottom_banner") or {"x": 80, "y": 1270, "max_w": 760, "size": 68, "color": "#FFFFFF"}
+
+            for gx in range(0, 620, 6):
+                a = int(190 * (1.0 - gx / 620.0))
+                scrim_draw.rectangle([gx, 210, gx + 6, 1140], fill=(10, 12, 18, max(0, a)))
+            for gy in range(1140, 1490, 4):
+                scrim_draw.rectangle([0, gy, CANVAS_WIDTH, gy + 4], fill=(10, 12, 18, 180))
+
+            # 归一化 face_bbox -> 含额头上方安全余量的像素避让框，防止副标胶囊压中眉眼
+            padded_face: Optional[Dict[str, float]] = None
+            fb_raw = best_meta.get("face_bbox")
+            if isinstance(fb_raw, dict):
+                fx = float(fb_raw.get("x", 0.0))
+                fy = float(fb_raw.get("y", 0.0))
+                fw = float(fb_raw.get("w", 0.0))
+                fh = float(fb_raw.get("h", 0.0))
+                if max(fx, fy, fw, fh) <= 1.01:
+                    fx, fy, fw, fh = fx * CANVAS_WIDTH, fy * CANVAS_HEIGHT, fw * CANVAS_WIDTH, fh * CANVAS_HEIGHT
+                if fw > 10 and fh > 10:
+                    head_pad_top = max(60.0, fh * 0.36)
+                    padded_face = {
+                        "x": fx - 24.0,
+                        "y": fy - head_pad_top,
+                        "w": fw + 48.0,
+                        "h": fh + head_pad_top + 24.0,
+                    }
+
+            hl_col = hex_to_rgba(str(hl_z.get("color") or kw_hex_style), 255)
+            if contrast_ratio(hl_col[:3], (10, 12, 18)) < 5.0:
+                hl_col = (255, 214, 55, 255)
+            hx = int(hl_z.get("x", 80))
+            hy = int(hl_z.get("y", 330))
+            hw = min(int(hl_z.get("max_w", 520)), SAFE_ZONE["x_max"] - hx - 20)
+            f_l1, fit_l1 = _fit_text(draw, cover_main_l1, font_path, int(hl_z.get("size", 88)), hw, min_size=42)
+            l1_bb_pre = draw.textbbox((hx, hy), fit_l1, font=f_l1, stroke_width=6)
+            l1_h_pre = max(60, int(l1_bb_pre[3] - l1_bb_pre[1]))
+            l1_box_pre = {"x": float(hx), "y": float(hy), "w": float(max(120, l1_bb_pre[2] - l1_bb_pre[0])), "h": float(l1_h_pre)}
+            if padded_face and bbox_iou(l1_box_pre, padded_face) > 0.0:
+                hy = max(258, min(hy, int(padded_face["y"] - l1_h_pre - 12)))
+            draw.text((hx + 3, hy + 4), fit_l1, fill=(0, 0, 0, 235), font=f_l1, stroke_width=6, stroke_fill=(0, 0, 0, 235))
+            draw.text((hx, hy), fit_l1, fill=hl_col, font=f_l1, stroke_width=6, stroke_fill=(0, 0, 0, 255))
+
+            bx = int(ban_z.get("x", 80))
+            by = int(ban_z.get("y", 1270))
+            ax = int(aux_z.get("x", 84))
+            ay = int(aux_z.get("y", 540))
+            aw = min(int(aux_z.get("max_w", 480)), SAFE_ZONE["x_max"] - ax - 20)
+            f_sub, fit_sub = _fit_text(draw, cover_sub, font_path, int(aux_z.get("size", 36)), aw - 32, min_size=22)
+            sub_bb = draw.textbbox((0, 0), fit_sub, font=f_sub)
+            cap_w = min(aw, max(200, int(sub_bb[2] - sub_bb[0]) + 40))
+            if padded_face and bbox_iou({"x": float(ax), "y": float(ay), "w": float(cap_w), "h": 58.0}, padded_face) > 0.0:
+                left_gap = int(padded_face["x"]) - 12 - ax
+                if left_gap >= 280:
+                    aw = min(aw, left_gap)
+                    f_sub, fit_sub = _fit_text(draw, cover_sub, font_path, int(aux_z.get("size", 36)), aw - 32, min_size=20)
+                    sub_bb = draw.textbbox((0, 0), fit_sub, font=f_sub)
+                    cap_w = min(aw, max(200, int(sub_bb[2] - sub_bb[0]) + 40))
+                else:
+                    # 居中大头像：自动让位至下方暗角横幅正上方，绝不压脸/眉眼
+                    ax = bx
+                    ay = max(int(padded_face["y"] + padded_face["h"] + 24), by - 78)
+                    aw = min(int(ban_z.get("max_w", 760)), SAFE_ZONE["x_max"] - ax - 20)
+                    f_sub, fit_sub = _fit_text(draw, cover_sub, font_path, int(aux_z.get("size", 36)), aw - 32, min_size=22)
+                    sub_bb = draw.textbbox((0, 0), fit_sub, font=f_sub)
+                    cap_w = min(aw, max(200, int(sub_bb[2] - sub_bb[0]) + 40))
+
+            draw.rounded_rectangle([ax, ay, ax + cap_w, ay + 58], radius=12, fill=(22, 26, 36, 230), outline=hl_col, width=2)
+            draw.text((ax + cap_w // 2, ay + 29), fit_sub, fill=(255, 255, 255, 255), font=f_sub, anchor="mm")
+
+            bw_max = min(int(ban_z.get("max_w", 760)), SAFE_ZONE["x_max"] - bx - 12)
+            f_l2, fit_l2 = _fit_text(draw, cover_main_l2, font_path, int(ban_z.get("size", 68)), bw_max, min_size=36)
+            draw.text((bx + 3, by + 4), fit_l2, fill=(0, 0, 0, 235), font=f_l2, stroke_width=5, stroke_fill=(0, 0, 0, 235))
+            draw.text((bx, by), fit_l2, fill=(255, 255, 255, 255), font=f_l2, stroke_width=5, stroke_fill=(0, 0, 0, 255))
+            card_y = hy
+            l1_bb = draw.textbbox((hx, hy), fit_l1, font=f_l1, stroke_width=6)
+            thumb_eval_box = (
+                max(0, min(hx, int(l1_bb[0]))),
+                max(0, min(hy, int(l1_bb[1]))),
+                min(860, max(380, int(l1_bb[2]) + 24)),
+                min(SAFE_ZONE["y_max"], max(hy + 140, int(l1_bb[3]) + 24)),
+            )
+        else:
+            # 通用杂志卡片封套
+            card_fill = hex_to_rgba(pal["card_bg_hex"], 224 if pal.get("is_light") else 212)
+            border_col = hex_to_rgba(pal["border_hex"], 230)
+            accent_col = hex_to_rgba(pal["accent_hex"], 255)
+            badge_txt_col = hex_to_rgba(pal["badge_text_hex"], 255)
+            main_txt_col = hex_to_rgba(pal["title_hex"], 255)
+
+            if contrast_ratio(main_txt_col[:3], card_fill[:3]) < 4.5:
+                main_txt_col = (17, 24, 39, 255) if pal.get("is_light") else (255, 255, 255, 255)
+            l2_col = accent_col if contrast_ratio(accent_col[:3], card_fill[:3]) >= 3.2 else main_txt_col
+
+            draw.rounded_rectangle([card_x1, card_y, card_x2, card_y + card_h], radius=22, fill=card_fill, outline=border_col, width=2)
+            draw.rounded_rectangle([card_x1, card_y + 24, card_x1 + 8, card_y + card_h - 24], radius=4, fill=accent_col)
+
+            inner_x = card_x1 + 32
+            max_inner_w = (card_x2 - 28) - inner_x
+            f_sub, fit_sub = _fit_text(draw, cover_sub, font_path, 34, max_inner_w - 44, min_size=22)
+            sub_bb = draw.textbbox((0, 0), fit_sub, font=f_sub)
+            cap_w = min(max_inner_w, max(220, int(sub_bb[2] - sub_bb[0]) + 44))
+            draw.rounded_rectangle([inner_x, card_y + 28, inner_x + cap_w, card_y + 84], radius=12, fill=accent_col)
+            draw.text((inner_x + cap_w // 2, card_y + 56), fit_sub, fill=badge_txt_col, font=f_sub, anchor="mm")
+
+            f_l1, fit_l1 = _fit_text(draw, cover_main_l1, font_path, 78, max_inner_w, min_size=40)
+            f_l2, fit_l2 = _fit_text(draw, cover_main_l2, font_path, 72, max_inner_w, min_size=36)
+            draw.text((inner_x, card_y + 114), fit_l1, fill=main_txt_col, font=f_l1)
+            draw.text((inner_x, card_y + 216), fit_l2, fill=l2_col, font=f_l2)
+            l1_w = int(draw.textbbox((0, 0), fit_l1, font=f_l1)[2])
+            l2_w = int(draw.textbbox((0, 0), fit_l2, font=f_l2)[2])
+            thumb_eval_box = (card_x1, card_y, min(card_x2, max(card_x1 + 320, inner_x + max(cap_w, l1_w, l2_w) + 28)), card_y + card_h)
+
+        stage_bg = Image.alpha_composite(base_img, scrim_layer)
+        if use_jianying_poster:
+            # 纵深合成：压暗底图 -> 中景贴纸字 -> (可选)前景人像边缘主体压字(重叠<=35%) -> 顶/底主标题清晰保底
+            stage = Image.alpha_composite(stage_bg, mid_layer)
+            if person_mask_img is not None:
+                tx1, ty1, tx2, ty2 = (
+                    max(0, min(CANVAS_WIDTH - 1, int(thumb_eval_box[0]))),
+                    max(0, min(CANVAS_HEIGHT - 1, int(thumb_eval_box[1]))),
+                    max(1, min(CANVAS_WIDTH, int(thumb_eval_box[2]))),
+                    max(1, min(CANVAS_HEIGHT, int(thumb_eval_box[3]))),
+                )
+                title_region_mask = np.asarray(person_mask_img, dtype=np.float32)[ty1:ty2, tx1:tx2]
+                fg_overlap = float(np.mean(title_region_mask >= 128.0)) if title_region_mask.size > 0 else 0.0
+                if fg_overlap <= 0.35:
+                    fg_person = base_img.copy()
+                    fg_person.putalpha(person_mask_img)
+                    stage = Image.alpha_composite(stage, fg_person)
+                    person_cutout_applied = True
+            composed = Image.alpha_composite(stage, overlay).convert("RGB")
+        else:
+            composed = Image.alpha_composite(stage_bg, overlay).convert("RGB")
+        composed.save(cover_path, quality=92)
+
+        crop_3x4 = composed.crop((0, 240, CANVAS_WIDTH, 1680))
+        crop_3x4.save(cover_3x4_path, quality=92)
 
     _render_ui_safe_preview(composed, ui_preview_path)
 
@@ -1451,6 +1515,8 @@ def run_step9(
         "measured_cover_wcag": measured_cover_wcag,
         "thumb_180_contrast_ratio": measured_cover_wcag,
         "person_cutout_applied": person_cutout_applied,
+        "cover_mode": cover_mode,
+        "gbro_cover_source": str(gbro_i2i_p.resolve()) if gbro_i2i_p is not None else None,
         "cover_jpg": str(cover_path.resolve()),
         "cover_3x4_jpg": str(cover_3x4_path.resolve()),
         "ui_safe_preview_jpg": str(ui_preview_path.resolve()),

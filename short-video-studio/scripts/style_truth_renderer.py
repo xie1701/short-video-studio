@@ -30,6 +30,7 @@ from common import (
     find_commercial_font,
     get_cached_font,
     hex_to_rgba,
+    normalize_display_glyphs,
 )
 from glyph_fallback import glyph_font_for
 from style_visual_truth import get_visual_truth
@@ -63,7 +64,7 @@ def _text_line_rgba(
     spacing_px: float = 0.0,
 ) -> Optional[Image.Image]:
     """逐字回退字体的高精度单行 RGBA 文字精灵（按墨迹紧裁）。"""
-    t = str(text or "").strip()
+    t = normalize_display_glyphs(str(text or "").strip())
     if not t:
         return None
     sw = max(0, int(stroke_w))
@@ -113,11 +114,26 @@ def _text_line_rgba(
 
 
 def _wrap_lines(text: str, max_chars_per_line: int, max_lines: int = 4) -> List[str]:
-    clean = re.sub(r"\s+", "", str(text or "").strip())
+    clean = normalize_display_glyphs(re.sub(r"\s+", "", str(text or "").strip()))
     if not clean:
         return []
+    try:
+        from step5_subtitles import dp_segment_short_lines
+        segs = dp_segment_short_lines(
+            clean,
+            max_width_px=max(260, int(max_chars_per_line) * 68),
+            font_path=None,
+            font_size=56,
+            max_chars=max(5, int(max_chars_per_line)),
+            strip_punct=False,
+        )
+        lines = [t.strip("，、；：,;: ") for _, _, t in segs if t.strip("，、；：,;: ")]
+        if lines:
+            return lines[:max_lines]
+    except Exception:
+        pass
     parts = [p for p in re.split(r"[，。！？、,.!?；;]+", clean) if p]
-    lines: List[str] = []
+    lines = []
     buf = ""
     for p in parts:
         if not buf:
@@ -139,8 +155,8 @@ def _wrap_lines(text: str, max_chars_per_line: int, max_lines: int = 4) -> List[
 
 
 def _split_two(text: str, subtext: str = "", max_first: int = 8) -> Tuple[str, str]:
-    t = str(text or "").strip()
-    s = str(subtext or "").strip()
+    t = normalize_display_glyphs(str(text or "").strip())
+    s = normalize_display_glyphs(str(subtext or "").strip())
     if s and s != t:
         return t[:11], s[:11]
     if "\n" in t:
@@ -148,6 +164,13 @@ def _split_two(text: str, subtext: str = "", max_first: int = 8) -> Tuple[str, s
         return (ps[0][:11], ps[1][:11]) if len(ps) >= 2 else (ps[0][:11], "")
     if len(t) <= max_first:
         return t, ""
+    try:
+        from step5_subtitles import split_semantic_two_lines
+        l1, l2 = split_semantic_two_lines(t, max_first=max_first)
+        if l1:
+            return l1[:11], l2[:11]
+    except Exception:
+        pass
     mid = min(max_first, max(3, (len(t) + 1) // 2))
     return t[:mid], t[mid:mid + 11]
 
@@ -567,6 +590,8 @@ def build_truth_scene_panel_cmd(
         "framed_box_pip",
         "review_whiteboard_pip",
         "pinyin_hero_pip",
+        "paper_outline_pip",
+        "concept_diagram_pip",
     }:
         return None
 
@@ -942,6 +967,29 @@ def build_truth_scene_panel_cmd(
             ffmpeg_bin, "-y",
             "-ss", f"{src_in:.4f}", "-t", f"{src_avail + 0.1:.4f}", "-i", media_path,
             "-loop", "1", "-framerate", str(fps), "-i", str(py_png),
+            "-an", "-filter_complex", fc, "-map", "[vout]",
+            "-frames:v", str(clip_frames), "-c:v", "libx264", "-preset", "fast", "-crf", "16",
+            "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS, str(out_mp4),
+        ]
+
+    # ── 6) style_15 纸底大纲清单白板 & 商业概念图解卡（无 Chromium 时轻量 PIL 兜底）──
+    if mode in ("paper_outline_pip", "concept_diagram_pip"):
+        ov_png = work / f"{stem}_v11_{mode}.png"
+        is_light = mode == "paper_outline_pip" or bool(pip_layout.get("light_theme"))
+        cv = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (244, 242, 236, 255)) if is_light else _make_charcoal_bg(bg_hex)
+        d = ImageDraw.Draw(cv)
+        if is_light:
+            d.rectangle([(0, 1260), (CANVAS_WIDTH - 1, CANVAS_HEIGHT - 1)], fill=(20, 22, 30, 245))
+        fg_c = (24, 26, 32, 255) if is_light else (248, 250, 252, 255)
+        acc_c = hex_to_rgba(accent_hex, 255)
+        _paste_centered_lines(cv, [title_txt[:10]], 350 if mode == "paper_outline_pip" else 280, sans_f, 76, fg_c if is_light else acc_c)
+        pts = _wrap_lines(quote_txt, max_chars_per_line=12, max_lines=3)
+        _paste_centered_lines(cv, pts, 560, sans_f, 48, fg_c, line_gap=26)
+        cv.save(ov_png)
+        fc = f"[0:v]fps=fps={fps},trim=duration={clip_dur:.4f},setpts=PTS-STARTPTS,{tail_str}[vout]"
+        return [
+            ffmpeg_bin, "-y",
+            "-loop", "1", "-framerate", str(fps), "-i", str(ov_png),
             "-an", "-filter_complex", fc, "-map", "[vout]",
             "-frames:v", str(clip_frames), "-c:v", "libx264", "-preset", "fast", "-crf", "16",
             "-pix_fmt", "yuv420p", *BT709_FFMPEG_ARGS, str(out_mp4),

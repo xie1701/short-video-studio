@@ -35,6 +35,18 @@ NODE_TOOLS_DIR = SVS_HOME_DIR / "node_tools"
 DEFAULT_STYLE_ID = "style_01"
 DEFAULT_CREATOR_STYLE_ID = "style_11"
 
+# 粤语/生僻扩展 B 字形展示层规范化：源字库中 CJK Ext-B 生僻异体字（如 𠮶 U+2CA36）在常规粗体字库中缺失，
+# 回退至细体在小字号下极易发糊认成错字；在最终视觉渲染层统一映射为港澳通行标准字形（嗰 U+55F0，
+# 思源宋体/黑体等全粗细原生 100% 覆盖），兼顾清晰度与文本审计一致性。
+_DISPLAY_GLYPH_MAP = str.maketrans({
+    "𠮶": "嗰",
+})
+
+
+def normalize_display_glyphs(text: str) -> str:
+    """将展示文本中的扩展 B 缺字异体字规范化为标准高清字形（仅用于视觉渲染层，不篡改上游字幕原始词表）。"""
+    return str(text or "").translate(_DISPLAY_GLYPH_MAP)
+
 # 国内高速镜像源默认值（下载失败时自动回退官方源）
 PYPI_CHINA_MIRRORS = (
     "https://pypi.tuna.tsinghua.edu.cn/simple",

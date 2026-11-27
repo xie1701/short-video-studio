@@ -4530,7 +4530,17 @@ def run_step4(
                         "geometry_pip_main_punch_in",
                     ):
                         c_obj.pop("pip_layout", None)
-            beats = list(truth_cfg.get("scene_beats") or [])
+            # V11.0 优先消费大模型按本风格 playbook 规划的专属 `style_scene_beats`，无显式规划时回退风格真母本高占比 scene_beats
+            _dp_beats = None
+            _dp_p4 = pipeline_dir / "03b_director_plan.json"
+            if _dp_p4.is_file():
+                try:
+                    _dp_doc4 = read_json(_dp_p4)
+                    if isinstance(_dp_doc4, dict) and isinstance(_dp_doc4.get("style_scene_beats"), list) and _dp_doc4["style_scene_beats"]:
+                        _dp_beats = list(_dp_doc4["style_scene_beats"])
+                except Exception:
+                    _dp_beats = None
+            beats = _dp_beats if _dp_beats is not None else list(truth_cfg.get("scene_beats") or [])
             if beats:
                 sent_idx_map = {str(s.get("id")): idx_s for idx_s, s in enumerate(sentences)}
                 live_b_list = [m for m in broll_pool if m.get("role") == "b_roll"]
@@ -4541,8 +4551,11 @@ def run_step4(
                 except Exception:
                     _ff_v10 = None
                 for b_i, beat in enumerate(beats):
-                    target_t = float(beat.get("frac") or 0.3) * total_dur
-                    max_d = float(beat.get("max_dur") or 2.8)
+                    if beat.get("target_sec") is not None:
+                        target_t = float(beat.get("target_sec"))
+                    else:
+                        target_t = float(beat.get("frac") or 0.3) * total_dur
+                    max_d = float(beat.get("max_dur") or 4.2)
                     base_lay = dict(beat.get("layout") or {})
                     if not base_lay.get("mode"):
                         continue
@@ -4552,6 +4565,7 @@ def run_step4(
                         "pure_black_cutout_pip",
                         "dark_circle_panel_pip",
                         "framed_box_pip",
+                        "paper_outline_pip",
                     )
                     def _clip_has_face(c_item: Dict[str, Any]) -> bool:
                         mp_f = str(c_item.get("media_path") or "")
@@ -4574,15 +4588,19 @@ def run_step4(
                             and float((f_x.get("bbox") or f_x).get("h") or 0.0) >= 0.09
                             for f_x in fs_f
                         )
+                    _allow_broll_host = str(base_lay.get("mode") or "") in (
+                        "dark_typewriter_card_pip", "concept_diagram_pip", "review_whiteboard_pip",
+                    )
+                    _roles_ok = ("a_roll", "b_roll") if _allow_broll_host else ("a_roll",)
                     cands_b = [
                         c for c in clips
                         if c.get("clip_id") not in used_clip_ids
-                        and c.get("track_role") == "a_roll"
-                        and 1.0 <= float(c.get("duration_sec") or 0.0) <= max_d + 1.8
+                        and c.get("track_role") in _roles_ok
+                        and 1.0 <= float(c.get("duration_sec") or 0.0) <= max_d + 2.4
                     ] or [
                         c for c in clips
                         if c.get("clip_id") not in used_clip_ids
-                        and c.get("track_role") == "a_roll"
+                        and c.get("track_role") in _roles_ok
                         and float(c.get("duration_sec") or 0.0) >= 0.85
                     ]
                     if _needs_face:
@@ -4591,27 +4609,82 @@ def run_step4(
                             cands_b = face_cands
                     if not cands_b:
                         continue
-                    chosen_c = min(
-                        cands_b,
-                        key=lambda c: abs((float(c.get("timeline_in_sec") or 0.0) + float(c.get("timeline_out_sec") or 0.0)) * 0.5 - target_t),
-                    )
+                    _pref_sid = str(beat.get("sentence_id") or "").strip()
+                    _sid_hits = [c for c in cands_b if _pref_sid and str(c.get("sentence_id") or "") == _pref_sid]
+                    if _sid_hits:
+                        chosen_c = _sid_hits[0]
+                    else:
+                        chosen_c = min(
+                            cands_b,
+                            key=lambda c: abs((float(c.get("timeline_in_sec") or 0.0) + float(c.get("timeline_out_sec") or 0.0)) * 0.5 - target_t),
+                        )
                     used_clip_ids.add(chosen_c["clip_id"])
+                    # V11.0 严格帧锁同源连续 A-roll 合并：仅合并紧邻同源且时间/帧严格无缝连续的 A-roll 镜（保护前 3.2s 开场切换），
+                    # 同步更新 timeline_out_frame / timeline_out_sec / source_out_sec / duration_sec，保证 0ms av_sync、0 假切点与 35%~55% 真面板密度。
+                    _target_beat_dur = float(beat.get("target_dur") or max(4.2, min(6.6, max_d * 1.35)))
+                    try:
+                        _ci = clips.index(chosen_c)
+                    except ValueError:
+                        _ci = -1
+                    while (
+                        _ci >= 0
+                        and chosen_c.get("track_role") == "a_roll"
+                        and float(chosen_c.get("timeline_in_sec") or 0.0) >= 3.2
+                        and float(chosen_c.get("duration_sec") or 0.0) < _target_beat_dur * 0.88
+                        and _ci + 1 < len(clips)
+                    ):
+                        _nxt = clips[_ci + 1]
+                        if (
+                            _nxt.get("clip_id") in used_clip_ids
+                            or _nxt.get("pip_layout")
+                            or _nxt.get("track_role") != "a_roll"
+                            or str(_nxt.get("media_path") or "") != str(chosen_c.get("media_path") or "")
+                            or float(_nxt.get("speed") or 1.0) != 1.0
+                            or float(chosen_c.get("speed") or 1.0) != 1.0
+                            or float(_nxt.get("punch_in_zoom") or 1.0) > 1.01
+                            or bool(_nxt.get("vf_extra"))
+                        ):
+                            break
+                        _src_gap = abs(float(_nxt.get("source_in_sec") or 0.0) - float(chosen_c.get("source_out_sec") or 0.0))
+                        _tl_gap = abs(float(_nxt.get("timeline_in_sec") or 0.0) - float(chosen_c.get("timeline_out_sec") or 0.0))
+                        _merged_d = float(_nxt.get("timeline_out_sec") or 0.0) - float(chosen_c.get("timeline_in_sec") or 0.0)
+                        _merged_src = float(_nxt.get("source_out_sec") or 0.0) - float(chosen_c.get("source_in_sec") or 0.0)
+                        if (
+                            _src_gap > 0.06
+                            or _tl_gap > 0.06
+                            or abs(_merged_src - _merged_d) > 0.08
+                            or _merged_d > _target_beat_dur + 1.6
+                        ):
+                            break
+                        chosen_c["source_out_sec"] = round(float(_nxt["source_out_sec"]), 4)
+                        chosen_c["timeline_out_sec"] = round(float(_nxt["timeline_out_sec"]), 4)
+                        if "timeline_out_frame" in _nxt:
+                            chosen_c["timeline_out_frame"] = int(_nxt["timeline_out_frame"])
+                        if "end_frame" in _nxt:
+                            chosen_c["end_frame"] = int(_nxt["end_frame"])
+                        chosen_c["duration_sec"] = round(chosen_c["timeline_out_sec"] - float(chosen_c["timeline_in_sec"]), 4)
+                        if "timeline_in_frame" in chosen_c and "timeline_out_frame" in chosen_c:
+                            chosen_c["duration_frames"] = int(chosen_c["timeline_out_frame"]) - int(chosen_c["timeline_in_frame"])
+                        clips.pop(_ci + 1)
                     sid_c = str(chosen_c.get("sentence_id") or "")
                     cur_s = sent_by_id.get(sid_c)
                     s_idx = sent_idx_map.get(sid_c, 0)
-                    punch_w = svt.extract_sentence_punch(cur_s, max_chars=4)
-                    quote_ex = svt.extract_quote_excerpt(sentences, s_idx, max_chars=42)
+                    punch_w = str(base_lay.get("panel_title") or "").strip() or svt.extract_sentence_punch(cur_s, max_chars=4)
+                    quote_ex = str(base_lay.get("quote_text") or "").strip() or svt.extract_quote_excerpt(sentences, s_idx, max_chars=44)
                     lay_full = {
                         **base_lay,
                         "panel_title": punch_w,
-                        "giant_back_text": punch_w,
+                        "giant_back_text": str(base_lay.get("giant_back_text") or punch_w),
                         "quote_text": quote_ex,
                         "single_source": True,
                         "face_framing": "face_center",
                         "v10_truth_beat": True,
                     }
-                    # 若版式可嵌异源 B-roll 副镜（如 style_09 纪实上窗 / style_17 双图对比），在有合规 B-roll 时自动挂载
-                    if base_lay.get("variant") in ("bottom_left_doc", "s17_dual_compare_cards") and live_b_list:
+                    # 若版式可嵌异源 B-roll 副镜（如 style_09 纪实上窗 / style_17 双图对比 / style_24 杂志实拍卡槽），在有合规 B-roll 时自动挂载
+                    if (
+                        base_lay.get("variant") in ("bottom_left_doc", "s17_dual_compare_cards")
+                        or base_lay.get("mode") == "review_whiteboard_pip"
+                    ) and live_b_list:
                         sec_m = live_b_list[b_i % len(live_b_list)]
                         sec_p = str(sec_m.get("normalized_mp4") or "")
                         if sec_p and sec_p != str(chosen_c.get("media_path") or "") and Path(sec_p).is_file():

@@ -56,6 +56,7 @@ from common import (
     load_subtitle_templates,
     measure_lufs_ebur128,
     maybe_reexec_in_venv,
+    normalize_display_glyphs,
     parse_manifest_faces,
     parse_video_stream_geometry,
     read_json,
@@ -223,9 +224,11 @@ def render_subtitle_png(
     （暗底永不动），只有投影在同族系数上限内加强仍达不到 WCAG 3.8 时才补细描边。
     """
     words = entry.get("words") or []
-    raw_text = str(entry.get("text") or "").strip()
+    raw_text = normalize_display_glyphs(str(entry.get("text") or "").strip())
     if not raw_text and words:
-        raw_text = "".join(str(w.get("word", "")) for w in words)
+        raw_text = normalize_display_glyphs("".join(str(w.get("word", "")) for w in words))
+    if words:
+        words = [dict(w, word=normalize_display_glyphs(str(w.get("word", "")))) for w in words]
 
     dual_banner = bool(tpl.get("dual_line_banner"))
     raw_base_fs = max(24, int(tpl.get("font_size", 62)))
@@ -1688,9 +1691,23 @@ def _build_single_masked_pip_cmd(
     fps: int,
     out_mp4: Path,
 ) -> Optional[List[str]]:
-    """单源带 Alpha 预烘焙蒙版的高保真画框合成器（style_13 上白圆角 / style_14 纯黑聚光圆窗 / style_16 真羽化 / style_09 单源面板）。"""
+    """单源带 Alpha 预烘焙蒙版的高保真画框合成器（V11 30fps HTML 真动效优先，离线回退 PIL）。"""
     mode = str(pip_layout.get("mode") or "none").strip()
     tail_str = ",".join(BT709_VF_SUFFIX)
+
+    html_mov_str = str(pip_layout.get("_v11_html_motion_path") or "").strip()
+    if html_mov_str and Path(html_mov_str).is_file():
+        try:
+            from motion_html_renderer import build_html_motion_panel_cmd
+            html_cmd = build_html_motion_panel_cmd(
+                ffmpeg_bin=ffmpeg_bin, media_path=media_path, src_in=src_in, src_avail=src_avail,
+                base_vf_chain=base_vf_chain, pip_layout=pip_layout,
+                rendered_bg_or_ov=Path(html_mov_str), clip_frames=clip_frames, fps=fps, out_mp4=out_mp4,
+            )
+            if html_cmd is not None:
+                return html_cmd
+        except Exception:
+            pass
 
     try:
         from style_truth_renderer import build_truth_scene_panel_cmd
@@ -2592,6 +2609,37 @@ def build_base_video_track(
     reused = 0
     render_jobs: List[Tuple[Dict[str, Any], Optional[str], int, List[str], Path, Path, Path, str]] = []
 
+    # V11.0 单浏览器 30fps HTML 真动效面板批渲染（将整条视频全部动态面板合并为 1 次 --batch-json 调用）
+    v11_panel_motion_map: Dict[str, Path] = {}
+    if not preview:
+        try:
+            from motion_html_renderer import batch_render_motion_jobs, build_panel_job_spec
+            panel_jobs: Dict[str, Dict[str, Any]] = {}
+            clip_to_job_key: Dict[int, str] = {}
+            for idx_m, c_m in enumerate(clips):
+                pl_m = c_m.get("pip_layout")
+                if not isinstance(pl_m, dict):
+                    continue
+                gid_m = str(pl_m.get("v11_panel_group_id") or "").strip()
+                jkey_m = f"grp_{gid_m}" if gid_m else f"clip_{idx_m:03d}"
+                clip_to_job_key[idx_m] = jkey_m
+                if jkey_m in panel_jobs:
+                    continue
+                extra_m = xf_frames if (idx_m < len(xf_edges) and xf_edges[idx_m]) else 0
+                dur_m = float(pl_m.get("v11_panel_group_dur") or 0.0) if gid_m else frames_to_sec(clip_nom_frames[idx_m] + extra_m, fps)
+                if dur_m <= 0.2:
+                    dur_m = frames_to_sec(clip_nom_frames[idx_m] + extra_m, fps)
+                spec_m = build_panel_job_spec(pl_m, dur_m + 0.35, style_id=style_id)
+                if spec_m is not None:
+                    panel_jobs[jkey_m] = spec_m
+            if panel_jobs:
+                raw_motion_map = batch_render_motion_jobs(panel_jobs, work_dir, fps=fps)
+                for idx_m, jkey_m in clip_to_job_key.items():
+                    if jkey_m in raw_motion_map:
+                        v11_panel_motion_map[f"clip_{idx_m:03d}"] = raw_motion_map[jkey_m]
+        except Exception as _v11_p_exc:
+            print(f"[render] [WARN] V11 HTML 动效面板批渲染降级为 PIL: {_v11_p_exc}")
+
     for idx, clip in enumerate(clips):
         seg_out = expected_segments[idx]
         media_path = str(clip.get("media_path") or "")
@@ -2604,6 +2652,9 @@ def build_base_video_track(
         extra_xf = xf_frames if (idx < len(xf_edges) and xf_edges[idx]) else 0
         seg_frames = clip_nom_frames[idx] + extra_xf
         clip_eff = dict(clip)
+        _m_path = v11_panel_motion_map.get(f"clip_{idx:03d}")
+        if _m_path and isinstance(clip_eff.get("pip_layout"), dict):
+            clip_eff["pip_layout"] = {**clip_eff["pip_layout"], "_v11_html_motion_path": str(_m_path)}
         if extra_xf > 0:
             clip_eff["timeline_in_frame"] = 0
             clip_eff["timeline_out_frame"] = seg_frames
@@ -2617,10 +2668,11 @@ def build_base_video_track(
         sec_hash = sha256_file(Path(sec_p)) if sec_p and Path(sec_p).is_file() else ""
         pip_mode_k = str((clip.get("pip_layout") or {}).get("mode") or "")
         seg_key = compute_segment_cache_key({
-            "ver": 5,
+            "ver": 6,
             "cmd": cmd[:-1],
             "pip_layout": clip.get("pip_layout"),
             "pip_mode": pip_mode_k,
+            "html_motion": _m_path.name if _m_path else "",
             "seg_frames": seg_frames,
             "source_hash": source_hashes[media_path],
             "sec_hash": sec_hash,
@@ -2819,6 +2871,31 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
         for c in (edl.get("clips") or [])
         if isinstance(c.get("pip_layout"), dict) and c["pip_layout"].get("v10_truth_beat")
     ]
+    # V11.0 批量预渲染所有常规镜头上的 30fps 透明 HTML 动态前景花字（单浏览器 --batch-json，彻底告别静态死花字）
+    v11_callout_mov_map: Dict[int, Path] = {}
+    if not preview:
+        try:
+            from motion_html_renderer import batch_render_motion_jobs, build_callout_job_spec
+            co_jobs: Dict[str, Dict[str, Any]] = {}
+            for idx_co, elem_co in enumerate(pkg_data.get("visual_elements") or []):
+                st_co = max(0.0, frames_to_sec(int(elem_co.get("start_frame", 0)), fps))
+                et_co = min(exact_dur, frames_to_sec(int(elem_co.get("end_frame", 0)), fps))
+                if et_co - st_co < 0.45:
+                    continue
+                kd_co = str(elem_co.get("kind") or elem_co.get("type") or "")
+                if kd_co not in ("persistent_top_bar", "opening_profile_card") and truth_panel_spans:
+                    if any(min(et_co, pe) - max(st_co, ps) >= 0.25 for ps, pe in truth_panel_spans):
+                        continue
+                spec_co = build_callout_job_spec(elem_co, style_id=style_id, dur_sec=et_co - st_co)
+                if spec_co is not None:
+                    co_jobs[f"co_{idx_co:03d}"] = spec_co
+            if co_jobs:
+                rendered_cos = batch_render_motion_jobs(co_jobs, work_dir, fps=fps)
+                for ck, cp in rendered_cos.items():
+                    v11_callout_mov_map[int(ck.split("_")[1])] = cp
+        except Exception as _v11_co_exc:
+            print(f"[render] [WARN] V11 HTML 前景花字批渲染降级: {_v11_co_exc}")
+
     # 先预渲染包装图层，以便把与全屏分层抠像（layered_cutout_over_broll）重叠的大字/巨字压进「人物背后 4 层纵深」
     prepared_pkg_ovs: List[Tuple[int, Dict[str, Any], Path, int, int, float, float, Optional[Tuple[int, int, int, int]], bool, bool]] = []
     for idx, elem in enumerate(pkg_data.get("visual_elements") or []):
@@ -2830,6 +2907,12 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
         if elem_kind_d not in ("persistent_top_bar", "opening_profile_card") and truth_panel_spans:
             if any(min(e_t, pe) - max(s_t, ps) >= 0.25 for ps, pe in truth_panel_spans):
                 continue
+        # 若命中 V11 30fps 透明 HTML 动态前景花字（全屏 1080x1920 argb .mov），直接走全屏叠加（仅跳过与底字幕字面完全重叠的普通 flower_text）
+        if idx in v11_callout_mov_map and v11_callout_mov_map[idx].is_file():
+            if elem_kind_d in ("flower_text", "stamp_tag") and _flower_duplicates_subtitle(str(elem.get("text_or_asset") or elem.get("text") or ""), s_t, e_t, subs_data.get("entries") or []):
+                continue
+            prepared_pkg_ovs.append((idx, elem, v11_callout_mov_map[idx], 0, 0, s_t, e_t, None, False, True))
+            continue
         is_poster_burst = str(elem.get("opening_mode") or "") == "store_poster_burst"
         if (not is_poster_burst) and (
             elem_kind_d in ("flower_text", "stamp_tag")
