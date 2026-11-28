@@ -88,11 +88,6 @@
       repeating-linear-gradient(0deg, rgba(20, 20, 24, 0.22) 0px, rgba(20, 20, 24, 0.22) 1px, transparent 1px, transparent 4px),
       repeating-linear-gradient(90deg, rgba(20, 20, 24, 0.14) 0px, rgba(20, 20, 24, 0.14) 1px, transparent 1px, transparent 6px);
   }
-  .bottom-sub-band {
-    position: absolute;
-    left: 0; right: 0; bottom: 0; height: 675px;
-    background: linear-gradient(180deg, rgba(18, 20, 28, 0) 0%, rgba(18, 20, 28, 0.90) 14%, rgba(15, 17, 24, 0.98) 38%, #10121a 100%);
-  }
 
   /* 通用描边文字辅助 */
   .stroke-heavy {
@@ -134,7 +129,7 @@
     const res = await fetch("./" + jobFile);
     cfg = await res.json();
   } catch (e) {
-    cfg = { kind: "typewriter_quote", dur: 2.5, title: "核心真相", lines: ["先找底层前提", "再谈方法落地"] };
+    cfg = { kind: "typewriter_quote", dur: 2.5, title: "核心真相", lines: ["核心观点拆解", "关键细节实录"] };
   }
 
   const DUR = Math.max(0.4, Number(cfg.dur || 2.8));
@@ -285,9 +280,9 @@
         <div class="bg-paper"></div>
         <div class="paper-grain"></div>
         <!-- 左上角主播圆形小窗细框（留洞交由 FFmpeg 叠实拍圆窗） -->
-        <div id="po-ring" style="position:absolute;left:${cx - cr - 8}px;top:${cy - cr - 8}px;width:${(cr + 8) * 2}px;height:${(cr + 8) * 2}px;border-radius:50%;border:5px solid #262932;box-shadow:0 12px 32px rgba(0,0,0,0.16);opacity:0;"></div>
+        <div id="po-ring" style="position:absolute;left:${cx - cr - 8}px;top:${cy - cr - 8}px;width:${(cr + 8) * 2}px;height:${(cr + 8) * 2}px;border-radius:50%;border:5px solid #262932;box-shadow:0 12px 32px rgba(0,0,0,0.16);opacity:1;"></div>
         <!-- 顶部纸张页眉装饰线 -->
-        <div id="po-head" style="position:absolute;left:72px;top:368px;width:936px;text-align:center;opacity:0;">
+        <div id="po-head" style="position:absolute;left:72px;top:368px;width:936px;text-align:center;opacity:1;">
           <div class="font-sans" style="font-size:${(title || "").length >= 8 ? 64 : 82}px;color:#181A20;letter-spacing:4px;line-height:1.15;">${esc(title || "核心三要素")}</div>
           <div class="font-sans" style="margin-top:16px;font-size:28px;color:#646B7A;letter-spacing:5px;font-weight:700;">${esc(pySub)}</div>
           <div id="po-rule" style="margin:26px auto 0 auto;width:360px;height:4px;background:linear-gradient(90deg,transparent,#1E222B,transparent);transform-origin:center;"></div>
@@ -297,7 +292,7 @@
           ${bullets
             .map(
               (b, idx) => `
-            <div id="po-item-${idx}" style="margin-bottom:44px;padding:28px 34px;border-radius:18px;background:rgba(255,255,255,0.82);border:2px solid rgba(24,26,32,0.10);box-shadow:0 10px 26px rgba(24,26,32,0.06);opacity:0;">
+            <div id="po-item-${idx}" style="margin-bottom:44px;padding:28px 34px;border-radius:18px;background:rgba(255,255,255,0.88);border:2px solid rgba(24,26,32,0.12);box-shadow:0 10px 26px rgba(24,26,32,0.06);opacity:${idx === 0 ? 0.92 : 0};">
               <div style="display:flex;align-items:baseline;gap:14px;">
                 <span class="font-serif" style="font-size:50px;color:#C88A16;flex-shrink:0;">${esc(b.ord || `${idx + 1}、`)}</span>
                 <span class="font-sans" style="font-size:50px;color:#181A20;line-height:1.35;letter-spacing:1px;">${esc(b.text || b)}</span>
@@ -306,34 +301,32 @@
             </div>`
             )
             .join("")}
-        </div>
-        <!-- 底部深暗过渡带保证底部白色常规字幕高对比度 -->
-        <div class="bottom-sub-band"></div>`;
+        </div>`;
 
       const ringEl = document.getElementById("po-ring");
       const headEl = document.getElementById("po-head");
       const ruleEl = document.getElementById("po-rule");
       const itemEls = bullets.map((_, idx) => document.getElementById(`po-item-${idx}`));
-      const stagger = Math.min(0.55, (DUR * 0.56) / Math.max(1, bullets.length));
+      const stagger = Math.min(0.45, (DUR * 0.48) / Math.max(1, bullets.length));
 
       return (t) => {
-        const rp = easeOutBack(prog(t, 0.0, 0.35));
-        ringEl.style.opacity = clamp(prog(t, 0.0, 0.25));
-        ringEl.style.transform = `scale(${lerp(0.75, 1, rp)})`;
+        const rp = easeOutBack(prog(t, 0.0, 0.30));
+        ringEl.style.opacity = clamp(0.88 + 0.12 * prog(t, 0.0, 0.18));
+        ringEl.style.transform = `scale(${lerp(0.92, 1, rp)})`;
 
-        const hp = easeOutCubic(prog(t, 0.04, 0.38));
-        headEl.style.opacity = hp;
-        headEl.style.transform = `translateY(${lerp(28, 0, hp)}px)`;
-        ruleEl.style.transform = `scaleX(${easeOutExpo(prog(t, 0.14, 0.42))})`;
+        const hp = easeOutCubic(prog(t, 0.0, 0.28));
+        headEl.style.opacity = clamp(0.92 + 0.08 * hp);
+        headEl.style.transform = `translateY(${lerp(10, 0, hp)}px)`;
+        ruleEl.style.transform = `scaleX(${lerp(0.65, 1, easeOutExpo(prog(t, 0.0, 0.32)))})`;
 
         itemEls.forEach((el, idx) => {
-          const t0 = 0.22 + idx * stagger;
-          const ip = easeOutBack(prog(t, t0, 0.42), 1.25);
-          el.style.opacity = clamp(prog(t, t0, 0.24));
-          el.style.transform = `translateX(${lerp(-44, 0, ip)}px)`;
-          // 当前读到的条目高亮微描边
+          const t0 = idx * stagger;
+          const ip = easeOutBack(prog(t, t0, 0.32), 1.2);
+          el.style.opacity = idx === 0 ? clamp(0.90 + 0.10 * prog(t, 0.0, 0.18)) : clamp(prog(t, t0, 0.22));
+          el.style.transform = `translateX(${lerp(idx === 0 ? -14 : -36, 0, ip)}px)`;
           const active = t >= t0 && (idx === itemEls.length - 1 || t < t0 + stagger * 1.15);
-          el.style.borderColor = active ? "rgba(200,138,22,0.75)" : "rgba(24,26,32,0.10)";
+          el.style.borderColor = active ? "rgba(200,138,22,0.85)" : "rgba(24,26,32,0.12)";
+          el.style.background = active ? "rgba(255,252,242,0.96)" : "rgba(255,255,255,0.88)";
         });
       };
     }
@@ -347,40 +340,43 @@
         <div class="bg-magazine"></div>
         <div class="paper-grain"></div>
         <!-- 顶部黄蓝斜体冲击大标题 -->
-        <div id="mr-title" class="font-oblique stroke-blue" style="position:absolute;left:60px;top:148px;width:960px;text-align:center;font-size:112px;color:#FFE033;letter-spacing:4px;opacity:0;">${esc(title || "实测痛点")}</div>
+        <div id="mr-title" class="font-oblique stroke-blue" style="position:absolute;left:60px;top:148px;width:960px;text-align:center;font-size:112px;color:#FFE033;letter-spacing:4px;opacity:1;">${esc(title || "实测痛点")}</div>
         <!-- 中央圆角实拍/主播视频卡槽装饰框（实拍内容由 FFmpeg 嵌在 110,316 尺寸 860x500） -->
-        <div id="mr-slot" style="position:absolute;left:104px;top:310px;width:872px;height:512px;border-radius:32px;border:6px solid #FFFFFF;box-shadow:0 22px 48px rgba(15,23,42,0.22);background:rgba(15,23,42,0.06);opacity:0;"></div>
+        <div id="mr-slot" style="position:absolute;left:104px;top:310px;width:872px;height:512px;border-radius:32px;border:6px solid #FFFFFF;box-shadow:0 22px 48px rgba(15,23,42,0.22);background:rgba(15,23,42,0.06);opacity:1;"></div>
         <!-- 下方带图标徽章的要点/痛点测评卡片 -->
         <div style="position:absolute;left:96px;top:866px;width:888px;">
           ${cards
             .map(
               (c, idx) => `
-            <div id="mr-card-${idx}" style="display:flex;align-items:center;gap:26px;margin-bottom:28px;padding:24px 32px;border-radius:24px;background:rgba(255,255,255,0.96);border:3px solid #D4DCE8;box-shadow:0 12px 28px rgba(15,23,42,0.10);opacity:0;">
-              <div style="width:74px;height:74px;border-radius:50%;background:linear-gradient(135deg,#F59E0B,#EA580C);display:flex;align-items:center;justify-content:center;color:#FFFFFF;font-size:38px;font-weight:900;flex-shrink:0;box-shadow:0 6px 14px rgba(234,88,12,0.35);" class="font-sans">${idx + 1}</div>
-              <div class="font-oblique" style="font-size:52px;color:#1E293B;line-height:1.25;letter-spacing:1px;">${esc(c.text || c)}</div>
+            <div id="mr-card-${idx}" style="display:flex;align-items:center;gap:26px;margin-bottom:28px;padding:24px 32px;border-radius:24px;background:rgba(255,255,255,0.96);border:3px solid #262932;box-shadow:0 12px 28px rgba(15,23,42,0.12);opacity:${idx === 0 ? 0.92 : idx === 1 ? 0.82 : 0};">
+              <div style="width:74px;height:74px;border-radius:50%;background:linear-gradient(135deg,#F59E0B,#D97706);display:flex;align-items:center;justify-content:center;color:#FFFFFF;font-size:38px;font-weight:900;flex-shrink:0;box-shadow:0 6px 14px rgba(217,119,6,0.32);" class="font-sans">${idx + 1}</div>
+              <div class="font-oblique" style="font-size:52px;color:#181A20;line-height:1.25;letter-spacing:1px;">${esc(c.text || c)}</div>
             </div>`
             )
             .join("")}
-        </div>
-        <div class="bottom-sub-band"></div>`;
+        </div>`;
 
       const tEl = document.getElementById("mr-title");
       const sEl = document.getElementById("mr-slot");
       const cEls = cards.map((_, i) => document.getElementById(`mr-card-${i}`));
       return (t) => {
-        const tp = easeOutBack(prog(t, 0.0, 0.36), 1.8);
-        tEl.style.opacity = clamp(prog(t, 0.0, 0.20));
-        tEl.style.transform = `scale(${lerp(0.65, 1, tp)}) translateY(${lerp(-24, 0, tp)}px)`;
+        const tp = easeOutBack(prog(t, 0.0, 0.30), 1.4);
+        tEl.style.opacity = clamp(0.92 + 0.08 * prog(t, 0.0, 0.16));
+        tEl.style.transform = `scale(${lerp(0.92, 1, tp)}) translateY(${lerp(-10, 0, tp)}px)`;
 
-        const sp = easeOutCubic(prog(t, 0.08, 0.34));
-        sEl.style.opacity = sp;
-        sEl.style.transform = `scale(${lerp(0.94, 1, sp)})`;
+        const sp = easeOutCubic(prog(t, 0.0, 0.28));
+        sEl.style.opacity = clamp(0.90 + 0.10 * sp);
+        sEl.style.transform = `scale(${lerp(0.97, 1, sp)})`;
 
         cEls.forEach((el, i) => {
-          const t0 = 0.24 + i * 0.36;
-          const cp = easeOutBack(prog(t, t0, 0.38), 1.35);
-          el.style.opacity = clamp(prog(t, t0, 0.22));
-          el.style.transform = `translateY(${lerp(42, 0, cp)}px) scale(${lerp(0.92, 1, cp)})`;
+          const t0 = i * 0.28;
+          const cp = easeOutBack(prog(t, t0, 0.32), 1.3);
+          el.style.opacity = i === 0
+            ? clamp(0.92 + 0.08 * prog(t, 0.0, 0.18))
+            : i === 1
+            ? clamp(0.82 + 0.18 * prog(t, t0, 0.22))
+            : clamp(prog(t, t0, 0.20));
+          el.style.transform = `translateY(${lerp(i === 0 ? 12 : i === 1 ? 18 : 36, 0, cp)}px) scale(${lerp(0.95, 1, cp)})`;
         });
       };
     }
@@ -538,8 +534,8 @@
             .join("")
         : "";
 
-      const c1 = isRedPain ? "#E03131" : isGuofeng || variant === "top_blur_gold" ? "#F3D37A" : "#FFFFFF";
-      const c2 = isRedPain ? "#FF4D4F" : accent;
+      const c1 = isRedPain ? "#FF6B6B" : isGuofeng || variant === "top_blur_gold" ? "#F3D37A" : "#FFFFFF";
+      const c2 = isRedPain ? "#FF8787" : accent;
       const textTopY = cy + cr + 68;
       const l1 = lines[0] || title || "核心洞察";
       const l2 = lines[1] || subtitle || "";
@@ -547,7 +543,7 @@
       STAGE.innerHTML = `
         ${bgDiv}
         <!-- 圆窗细腻外环（内区留空交由 FFmpeg 叠柔和径向羽化主播圆窗） -->
-        <div id="cf-ring" style="position:absolute;left:${cx - cr - 8}px;top:${cy - cr - 8}px;width:${(cr + 8) * 2}px;height:${(cr + 8) * 2}px;border-radius:50%;border:5px solid ${isRedPain ? "rgba(248,250,252,0.55)" : accent};box-shadow:0 0 36px ${isRedPain ? "rgba(224,49,49,0.35)" : "rgba(255,225,77,0.28)"};opacity:0;"></div>
+        <div id="cf-ring" style="position:absolute;left:${cx - cr - 8}px;top:${cy - cr - 8}px;width:${(cr + 8) * 2}px;height:${(cr + 8) * 2}px;border-radius:50%;border:5px solid ${isRedPain ? "rgba(248,250,252,0.55)" : accent};box-shadow:0 0 36px ${isRedPain ? "rgba(255,107,107,0.35)" : "rgba(255,225,77,0.28)"};opacity:0;"></div>
         ${qmarksHtml}
         <div style="position:absolute;left:74px;top:${textTopY}px;width:932px;text-align:center;">
           ${isS18Red ? `<div id="cf-s18q" class="font-serif" style="font-size:96px;color:#DC2626;line-height:0.6;margin-bottom:14px;text-align:left;padding-left:64px;opacity:0;">“</div>` : ""}
@@ -620,20 +616,46 @@
           : "4px solid rgba(255,255,255,0.22)";
         contentHtml = `<div id="fb-frame" style="position:absolute;left:${fx - 4}px;top:${fy - 4}px;width:${fw + 8}px;height:${fh + 8}px;border-radius:${rad + 4}px;border:${borderStyle};box-shadow:0 24px 60px rgba(0,0,0,0.55);opacity:0;"></div>`;
         if (isFocusGiant) {
-          contentHtml += `<div id="fb-t1" class="font-sans" style="position:absolute;left:60px;top:960px;width:960px;text-align:center;font-size:${title.length >= 5 ? 112 : 144}px;color:#FFFFFF;letter-spacing:8px;opacity:0;">${esc(title.slice(0, 6))}</div>`;
+          const titleChars = Array.from(title);
+          let dispLines = [];
+          if (titleChars.length <= 10) {
+            dispLines = [title];
+          } else {
+            const joinedLines = lines.map((s) => String(s || "").trim()).filter(Boolean);
+            const joinedChars = Array.from(joinedLines.join(""));
+            if (joinedLines.length >= 2 && joinedChars.length === titleChars.length && joinedLines.slice(0, 2).every((ln) => Array.from(ln).length <= 10)) {
+              dispLines = joinedLines.slice(0, 2);
+            } else {
+              const mid = Math.ceil(titleChars.length / 2);
+              dispLines = [titleChars.slice(0, mid).join(""), titleChars.slice(mid).join("")];
+            }
+          }
+          const maxLineLen = Math.max(1, ...dispLines.map((ln) => Array.from(ln).length));
+          const isTwoLines = dispLines.length >= 2;
+          const fsFocus = isTwoLines
+            ? (maxLineLen <= 7 ? 60 : maxLineLen <= 9 ? 54 : Math.min(48, Math.floor(880 / maxLineLen)))
+            : (titleChars.length <= 4 ? 110 : titleChars.length <= 6 ? 100 : titleChars.length <= 8 ? 84 : 76);
+          const lsFocus = isTwoLines ? (maxLineLen <= 8 ? 4 : 2) : (titleChars.length <= 6 ? 6 : 3);
+          const lhFocus = isTwoLines ? 1.12 : 1.08;
+          const topFocus = isTwoLines ? (maxLineLen <= 7 ? 906 : 908) : (fsFocus >= 100 ? 916 : 924);
+          const bodyHtml = dispLines.map((ln) => `<div style="white-space:nowrap;">${esc(ln)}</div>`).join("");
+          contentHtml += `<div id="fb-t1" class="font-sans" style="position:absolute;left:60px;top:${topFocus}px;width:960px;text-align:center;font-size:${fsFocus}px;line-height:${lhFocus};color:#FFFFFF;letter-spacing:${lsFocus}px;opacity:0;">${bodyHtml}</div>`;
         } else if (isRedWarn) {
+          const fsWarn = title.length <= 5 ? 112 : title.length <= 8 ? 84 : 68;
           contentHtml += `
             <div id="fb-sub" class="font-serif-bold" style="position:absolute;left:134px;top:188px;font-size:48px;color:#F8FAFC;letter-spacing:4px;opacity:0;">${esc(subtitle || "一定要警惕")}</div>
-            <div id="fb-t1" class="font-serif stroke-mid" style="position:absolute;left:130px;top:256px;font-size:112px;color:#EF4444;letter-spacing:4px;opacity:0;">${esc(title.slice(0, 7))}</div>`;
+            <div id="fb-t1" class="font-serif stroke-mid" style="position:absolute;left:130px;top:256px;width:820px;font-size:${fsWarn}px;line-height:1.15;color:#EF4444;letter-spacing:4px;word-break:break-word;opacity:0;">${esc(title)}</div>`;
         } else if (isGreenTag) {
-          contentHtml += `<div id="fb-t1" class="font-sans" style="position:absolute;left:50%;top:${fy + fh + 52}px;transform:translateX(-50%);background:#16A34A;color:#FFFFFF;padding:18px 42px;border-radius:12px;font-size:56px;letter-spacing:3px;box-shadow:0 12px 30px rgba(22,163,74,0.40);white-space:nowrap;opacity:0;">${esc(title.slice(0, 10))}</div>`;
+          contentHtml += `<div id="fb-t1" class="font-sans" style="position:absolute;left:50%;top:${fy + fh + 52}px;transform:translateX(-50%);background:#16A34A;color:#FFFFFF;padding:18px 42px;border-radius:12px;font-size:${title.length > 8 ? 46 : 56}px;letter-spacing:3px;box-shadow:0 12px 30px rgba(22,163,74,0.40);white-space:nowrap;opacity:0;">${esc(title.slice(0, 12))}</div>`;
         } else if (isS05Pip) {
           contentHtml += `<div id="fb-t1" class="font-serif-bold" style="position:absolute;left:80px;top:${fy + fh + 54}px;width:920px;text-align:center;font-size:50px;color:#F8FAFC;letter-spacing:4px;opacity:0;">${esc(lines[0] || title)}</div>`;
         } else if (isS24Impact) {
-          contentHtml += `<div id="fb-t1" class="font-oblique stroke-blue" style="position:absolute;left:60px;top:${fy + fh + 42}px;width:960px;text-align:center;font-size:116px;color:#FFE135;letter-spacing:4px;opacity:0;">${esc(title.slice(0, 7))}</div>`;
+          const fsImp = title.length <= 6 ? 116 : title.length <= 9 ? 88 : 72;
+          contentHtml += `<div id="fb-t1" class="font-oblique stroke-blue" style="position:absolute;left:60px;top:${fy + fh + 42}px;width:960px;text-align:center;font-size:${fsImp}px;line-height:1.18;color:#FFE135;letter-spacing:4px;word-break:break-word;opacity:0;">${esc(title)}</div>`;
         } else {
           // s04_dual_yellow_header / s17_black_top_square
-          contentHtml += `<div id="fb-t1" class="${fCls} stroke-mid" style="position:absolute;left:60px;top:218px;width:960px;text-align:center;font-size:108px;color:${accent};letter-spacing:4px;opacity:0;">${esc(title.slice(0, 8))}</div>`;
+          const fsHdr = title.length <= 6 ? 108 : title.length <= 9 ? 84 : 68;
+          contentHtml += `<div id="fb-t1" class="${fCls} stroke-mid" style="position:absolute;left:60px;top:${title.length > 8 ? 196 : 218}px;width:960px;text-align:center;font-size:${fsHdr}px;line-height:1.16;color:${accent};letter-spacing:4px;word-break:break-word;opacity:0;">${esc(title)}</div>`;
         }
       }
 
@@ -699,8 +721,8 @@
 
       let bodyHtml = "";
       if (mode === "compare") {
-        const leftObj = items[0] || { label: "表层做法", points: [lines[0] || "照搬模板", "忽略自身前提"] };
-        const rightObj = items[1] || { label: "底层前提", points: [lines[1] || "先看利润结构", "规矩自己长出来"] };
+        const leftObj = items[0] || { label: "表面做法", points: [lines[0] || "盲目照搬形式", "忽略实际条件"] };
+        const rightObj = items[1] || { label: "底层逻辑", points: [lines[1] || "先看核心前提", "因地制宜落地"] };
         bodyHtml = `
           <div style="display:flex;gap:28px;margin-top:44px;">
             <div id="dg-c0" style="flex:1;background:${cardBg};border:3px solid rgba(239,68,68,0.65);border-radius:24px;padding:34px 26px;opacity:0;">
@@ -735,16 +757,17 @@
           </div>`;
       }
 
+      const topSafe = Number(cfg.top_safe_y || 0);
+      const dgContentTop = Math.max(topSafe > 160 ? topSafe + 20 : 0, showCircle ? (topSafe > 160 ? 416 : 330) : (topSafe > 160 ? 376 : 260));
       STAGE.innerHTML = `
         <div class="${bgCls}"></div>
         ${lightTheme ? '<div class="paper-grain"></div>' : ""}
         ${showCircle ? `<div id="dg-ring" style="position:absolute;left:${cx - cr - 6}px;top:${cy - cr - 6}px;width:${(cr + 6) * 2}px;height:${(cr + 6) * 2}px;border-radius:50%;border:5px solid ${accent};opacity:0;"></div>` : ""}
-        <div style="position:absolute;left:76px;top:${showCircle ? 330 : 260}px;width:928px;">
+        <div style="position:absolute;left:76px;top:${dgContentTop}px;width:928px;">
           <div id="dg-kicker" class="font-sans" style="display:inline-block;padding:8px 22px;border-radius:8px;background:${accent2};color:${accent2Ink};font-size:30px;letter-spacing:3px;opacity:0;">${esc(subtitle || "核心结构拆解")}</div>
           <div id="dg-title" class="${fCls}" style="margin-top:20px;font-size:74px;color:${headColor};letter-spacing:3px;line-height:1.2;opacity:0;">${esc(title || "本质拆解")}</div>
           ${bodyHtml}
-        </div>
-        ${lightTheme ? '<div class="bottom-sub-band"></div>' : ""}`;
+        </div>`;
 
       const ringEl = document.getElementById("dg-ring");
       const kEl = document.getElementById("dg-kicker");
@@ -851,10 +874,11 @@
       }
 
       if (variant === "s06_vertical_poem") {
-        // style_06 尾段右侧竖排诗意暖金宋体（复刻原片 19.5s）
+        // style_06 尾段右侧竖排诗意暖金宋体（确保落入 x<=880 安全区且避让顶栏）
         const txt = (title || lines[0] || "行稳致远").slice(0, 9);
+        const topSafePoem = Math.max(390, Number(cfg.top_safe_y || cfg.y || 390));
         STAGE.innerHTML = `
-          <div id="kc-vp" class="font-serif-bold glow-gold" style="position:absolute;right:94px;top:360px;writing-mode:vertical-rl;font-size:58px;letter-spacing:14px;color:#F4E2A8;opacity:0;">${esc(txt)}</div>`;
+          <div id="kc-vp" class="font-serif-bold glow-gold" style="position:absolute;right:216px;top:${topSafePoem}px;writing-mode:vertical-rl;font-size:58px;letter-spacing:14px;color:#F4E2A8;opacity:0;">${esc(txt)}</div>`;
         const el = document.getElementById("kc-vp");
         return (t) => {
           const outA = 1 - clamp(prog(t, outFadeStart, DUR - outFadeStart));
@@ -902,7 +926,8 @@
       }
 
       // 通用满屏/胸口动态大花字砸屏（涵盖 s05 胸口暗红/白大字、s06 胸口发光暖金、s08 满屏白大字、s15 胸口发光白大字等）
-      const yPos = Number(cfg.y || 960);
+      const isBehindPerson = String(cfg.z_layer || "") === "behind_person";
+      const yPos = isBehindPerson ? Math.max(170, Number(cfg.y || 280)) : Number(cfg.y || 960);
       const isGlowWhite = variant === "s15_glow_white" || variant === "s16_glow_white";
       const isWarmGold = variant === "s06_warm_gold";
       const isS05Red = variant === "s05_crimson_3d";
@@ -922,12 +947,12 @@
       const l2El = document.getElementById("kc-l2");
       return (t) => {
         const outA = 1 - clamp(prog(t, outFadeStart, DUR - outFadeStart));
-        const p = easeOutBack(prog(t, 0.0, 0.30), 2.1);
-        // 前 0.18s 带极微妙砸屏冲击震动
-        const shakeX = t < 0.18 ? Math.sin(t * 75) * (1 - t / 0.18) * 10 : 0;
-        const shakeY = t < 0.18 ? Math.cos(t * 68) * (1 - t / 0.18) * 6 : 0;
+        const p = easeOutBack(prog(t, 0.0, 0.30), isBehindPerson ? 1.35 : 2.1);
+        const shakeX = (!isBehindPerson && t < 0.18) ? Math.sin(t * 75) * (1 - t / 0.18) * 10 : 0;
+        const shakeY = (!isBehindPerson && t < 0.18) ? Math.cos(t * 68) * (1 - t / 0.18) * 6 : 0;
+        const startScale = (isBehindPerson || yPos < 450) ? 1.18 : 1.42;
         boxEl.style.opacity = clamp(prog(t, 0.0, 0.12)) * outA;
-        boxEl.style.transform = `translate(${shakeX.toFixed(1)}px, ${(lerp(28, 0, p) + shakeY).toFixed(1)}px) scale(${lerp(1.42, 1.0, p)})`;
+        boxEl.style.transform = `translate(${shakeX.toFixed(1)}px, ${(lerp(22, 0, p) + shakeY).toFixed(1)}px) scale(${lerp(startScale, 1.0, p)})`;
         if (l2El) {
           const p2 = easeOutBack(prog(t, 0.16, 0.32), 1.6);
           l2El.style.opacity = clamp(prog(t, 0.16, 0.18)) * outA;
@@ -940,40 +965,43 @@
   }
 
   const update = buildScene();
-  // 电影级持续氛围流光与呼吸微推（仅对不透明动态面板生效，让 0..DUR 全程每秒保持细腻真实动效、彻底消除后半段死静与冻帧）
+  // 中性消色差双相位呼吸微光 + 3px 细线阅读进度条（仅对不透明动态面板生效，R=G=B 零色偏且稳定通过防冻帧检测）
   let ambientLayer = null;
-  let sweepBar = null;
+  let breathTop = null;
+  let breathBot = null;
+  let progressFill = null;
+  let isLightBg = false;
   if (cfg.opaque !== false && String(cfg.kind || "") !== "kinetic_callout") {
     ambientLayer = document.createElement("div");
+    ambientLayer.id = "ed-micro-motion";
     ambientLayer.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:99;overflow:hidden;";
-    const isLightBg = Boolean(cfg.light_theme) || String(cfg.kind || "") === "paper_outline_whiteboard" || String(cfg.kind || "") === "magazine_review_whiteboard";
-    const glowA = isLightBg ? "rgba(217,119,6,0.18)" : "rgba(255,225,77,0.30)";
-    const glowB = isLightBg ? "rgba(37,99,235,0.14)" : "rgba(220,38,38,0.26)";
+    isLightBg = Boolean(cfg.light_theme) || String(cfg.kind || "") === "paper_outline_whiteboard" || String(cfg.kind || "") === "magazine_review_whiteboard";
+    const trackBg = isLightBg ? "rgba(24,24,24,0.10)" : "rgba(255,255,255,0.10)";
+    const fillBg = isLightBg ? "rgba(24,24,24,0.34)" : "rgba(255,255,255,0.42)";
     ambientLayer.innerHTML = `
-      <div id="amb-orb-1" style="position:absolute;width:760px;height:760px;border-radius:50%;background:radial-gradient(circle,${glowA},transparent 64%);filter:blur(28px);"></div>
-      <div id="amb-orb-2" style="position:absolute;width:700px;height:700px;border-radius:50%;background:radial-gradient(circle,${glowB},transparent 66%);filter:blur(30px);"></div>
-      <div id="amb-sweep" style="position:absolute;left:-20%;width:140%;height:380px;background:linear-gradient(180deg,transparent,${isLightBg ? "rgba(15,23,42,0.12)" : "rgba(255,255,255,0.16)"},transparent);transform:rotate(-8deg);"></div>
+      <div id="ed-breath-top" style="position:absolute;left:60px;top:370px;width:960px;height:360px;border-radius:50%;"></div>
+      <div id="ed-breath-bot" style="position:absolute;left:60px;top:730px;width:960px;height:370px;border-radius:50%;"></div>
+      <div id="ed-progress-track" style="position:absolute;left:96px;top:1112px;width:888px;height:3px;border-radius:2px;background:${trackBg};overflow:hidden;">
+        <div id="ed-progress-fill" style="width:0%;height:100%;background:${fillBg};border-radius:2px;"></div>
+      </div>
     `;
     STAGE.appendChild(ambientLayer);
-    sweepBar = ambientLayer.querySelector("#amb-sweep");
+    breathTop = ambientLayer.querySelector("#ed-breath-top");
+    breathBot = ambientLayer.querySelector("#ed-breath-bot");
+    progressFill = ambientLayer.querySelector("#ed-progress-fill");
   }
-  const orb1 = ambientLayer ? ambientLayer.querySelector("#amb-orb-1") : null;
-  const orb2 = ambientLayer ? ambientLayer.querySelector("#amb-orb-2") : null;
 
   window.seek = (t) => {
     const tc = Math.max(0, Math.min(DUR, Number(t || 0)));
     update(tc);
-    if (ambientLayer && orb1 && orb2 && sweepBar) {
+    if (ambientLayer && breathTop && breathBot && progressFill) {
       const u = DUR > 0.01 ? tc / DUR : 0;
-      // 双光晕绕屏匀速柔和巡航 + 斜向流光缓慢扫屏（每 0.5s 产生清晰可见光学位移，电影感十足且 0 冻帧）
-      const x1 = -160 + 780 * Math.sin(u * Math.PI * 2.2 + 0.3);
-      const y1 = 80 + 960 * Math.abs(Math.sin(u * Math.PI * 1.4));
-      const x2 = 480 - 680 * Math.cos(u * Math.PI * 2.0);
-      const y2 = 1320 - 880 * Math.abs(Math.cos(u * Math.PI * 1.3));
-      orb1.style.transform = `translate(${x1.toFixed(1)}px, ${y1.toFixed(1)}px)`;
-      orb2.style.transform = `translate(${x2.toFixed(1)}px, ${y2.toFixed(1)}px)`;
-      const sy = -340 + (1920 + 680) * ((tc * 0.42) % 1.0);
-      sweepBar.style.top = `${sy.toFixed(1)}px`;
+      const b1 = 0.015 + 0.075 * (0.5 + 0.5 * Math.sin(tc * 2.5));
+      const b2 = 0.015 + 0.075 * (0.5 + 0.5 * Math.cos(tc * 2.5));
+      const rgbStr = isLightBg ? "20,20,20" : "255,255,255";
+      breathTop.style.background = `radial-gradient(ellipse at center, rgba(${rgbStr},${b1.toFixed(4)}) 0%, rgba(${rgbStr},${(b1 * 0.72).toFixed(4)}) 48%, transparent 86%)`;
+      breathBot.style.background = `radial-gradient(ellipse at center, rgba(${rgbStr},${b2.toFixed(4)}) 0%, rgba(${rgbStr},${(b2 * 0.72).toFixed(4)}) 48%, transparent 86%)`;
+      progressFill.style.width = `${(u * 100).toFixed(2)}%`;
     }
   };
   try {

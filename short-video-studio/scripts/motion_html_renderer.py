@@ -74,7 +74,11 @@ def _ensure_stage_workspace(stage_dir: Path) -> Path:
     stage_dir = Path(stage_dir)
     stage_dir.mkdir(parents=True, exist_ok=True)
     dst_html = stage_dir / "stage.html"
-    if (not dst_html.is_file()) or (dst_html.stat().st_mtime < STAGE_HTML_SRC.stat().st_mtime):
+    if (
+        (not dst_html.is_file())
+        or (dst_html.stat().st_mtime < STAGE_HTML_SRC.stat().st_mtime)
+        or (dst_html.stat().st_size != STAGE_HTML_SRC.stat().st_size)
+    ):
         shutil.copy2(STAGE_HTML_SRC, dst_html)
     fonts_dst = stage_dir / "fonts"
     if not fonts_dst.exists():
@@ -157,6 +161,41 @@ def _cover_crop_vf(w: int, h: int, face_bias: bool = True) -> str:
     return f"scale={w_e}:{h_e}:force_original_aspect_ratio=increase:flags=lanczos,crop={w_e}:{h_e}:(iw-ow)/2:{y_expr},setsar=1"
 
 
+def resolve_concept_diagram_geometry(pip_layout: Dict[str, Any], style_id: str = "") -> Dict[str, int]:
+    """单一真值几何解析器：保证 HTML 外环与 FFmpeg 实拍圆窗圆心/半径/安全顶距 100% 同步。"""
+    sid = str(style_id or pip_layout.get("_style_id") or "").strip()
+    tb_spec = None
+    try:
+        from style_visual_truth import get_persistent_top_bar_spec
+        tb_spec = get_persistent_top_bar_spec(sid) if sid else None
+    except Exception:
+        tb_spec = None
+    raw_top_safe = pip_layout.get("top_safe_y")
+    has_top_bar = bool(tb_spec) or (raw_top_safe is not None and int(raw_top_safe) > 160)
+    if raw_top_safe is not None and int(raw_top_safe) > 160:
+        top_safe_y = int(raw_top_safe)
+    elif tb_spec:
+        top_safe_y = int(tb_spec.get("top_safe_y") or 356)
+    else:
+        top_safe_y = 160
+    cr = int(pip_layout.get("circle_r") or 92)
+    cx = int(pip_layout.get("circle_cx") or 888)
+    raw_cy = pip_layout.get("circle_cy")
+    if raw_cy is not None:
+        cy = int(raw_cy)
+        if has_top_bar:
+            cy = max(cy, top_safe_y + cr)
+    else:
+        cy = max(top_safe_y + cr + 10, 458) if has_top_bar else 220
+    return {
+        "circle_cx": cx,
+        "circle_cy": cy,
+        "circle_r": cr,
+        "top_safe_y": top_safe_y,
+        "has_top_bar": int(has_top_bar),
+    }
+
+
 def build_panel_job_spec(pip_layout: Dict[str, Any], dur_sec: float, style_id: str = "") -> Optional[Dict[str, Any]]:
     """将 EDL clip 的 pip_layout 转换为 stage.html 消费的标准化 30fps 动效任务规格。"""
     mode = str(pip_layout.get("mode") or "").strip()
@@ -229,18 +268,16 @@ def build_panel_job_spec(pip_layout: Dict[str, Any], dur_sec: float, style_id: s
         }
 
     if mode == "concept_diagram_pip":
-        _has_top_hdr = str(style_id or "") in {
-            "style_03", "style_06", "style_08", "style_10", "style_11",
-            "style_12", "style_14", "style_18", "style_19", "style_22",
-        }
+        geom = resolve_concept_diagram_geometry(pip_layout, style_id=style_id)
         return {
             "kind": "concept_diagram_card",
             "diagram_mode": str(pip_layout.get("diagram_mode") or "compare"),
             "light_theme": bool(pip_layout.get("light_theme")),
             "with_anchor_circle": bool(pip_layout.get("with_anchor_circle", True)),
-            "circle_cx": int(pip_layout.get("circle_cx") or 888),
-            "circle_cy": int(pip_layout.get("circle_cy") or (340 if _has_top_hdr else 220)),
-            "circle_r": int(pip_layout.get("circle_r") or 92),
+            "circle_cx": geom["circle_cx"],
+            "circle_cy": geom["circle_cy"],
+            "circle_r": geom["circle_r"],
+            "top_safe_y": geom["top_safe_y"],
             "dur": dur,
             "opaque": True,
             "alpha": False,
@@ -325,7 +362,12 @@ def build_panel_job_spec(pip_layout: Dict[str, Any], dur_sec: float, style_id: s
     return None
 
 
-def build_callout_job_spec(elem: Dict[str, Any], style_id: str, dur_sec: float) -> Optional[Dict[str, Any]]:
+def build_callout_job_spec(
+    elem: Dict[str, Any],
+    style_id: str,
+    dur_sec: float,
+    top_safe_y: Optional[int] = None,
+) -> Optional[Dict[str, Any]]:
     """将前景动态花字元素转为透明通道 30fps HTML 动效任务规格。"""
     kind = str(elem.get("kind") or elem.get("type") or "")
     if kind not in ("center_burst_title", "flower_text", "stamp_tag", "kinetic_callout"):
@@ -362,17 +404,30 @@ def build_callout_job_spec(elem: Dict[str, Any], style_id: str, dur_sec: float) 
     def_var, def_font, def_y, def_acc = var_map.get(style_id, ("s08_giant_white", "sans", 940, "#FFE14D"))
     variant = custom_var or def_var
     lines = _semantic_wrap(text, max_chars=8, max_lines=2)
+    z_layer = str(elem.get("z_layer") or "")
+    eff_top_safe = int(top_safe_y if top_safe_y is not None else (elem.get("top_safe_y") or 160))
+    if elem.get("callout_y") is not None:
+        y_val = int(elem["callout_y"])
+    elif z_layer == "behind_person" or (style_id in ("style_10", "style_16") and kind == "center_burst_title"):
+        fb = elem.get("final_bbox") or elem.get("bbox") or {}
+        y_val = int(fb.get("y") or 280)
+    else:
+        y_val = def_y
+    if eff_top_safe > 160 and z_layer != "behind_person":
+        y_val = max(y_val, eff_top_safe + 12)
     return {
         "kind": "kinetic_callout",
         "variant": variant,
         "dur": dur,
         "opaque": False,
         "alpha": True,
-        "title": text[:10],
+        "title": text[:16],
         "subtitle": sub,
         "lines": lines,
         "items": items,
-        "y": int(elem.get("callout_y") or def_y),
+        "y": y_val,
+        "top_safe_y": eff_top_safe,
+        "z_layer": z_layer,
         "accent": str(elem.get("accent_hex") or def_acc),
         "font_role": str(elem.get("font_role") or def_font),
     }
@@ -391,6 +446,7 @@ def batch_render_motion_jobs(
         return {}
 
     stage_dir = _ensure_stage_workspace(Path(work_dir) / "_v11_motion_stage")
+    stage_html_hash = hashlib.sha256(STAGE_HTML_SRC.read_bytes()).hexdigest()[:10] if STAGE_HTML_SRC.is_file() else ""
     out_map: Dict[str, Path] = {}
     batch_tasks: List[Dict[str, Any]] = []
     pending_keys: List[Tuple[str, Path]] = []
@@ -398,7 +454,8 @@ def batch_render_motion_jobs(
     for jkey, spec in jobs.items():
         use_alpha = bool(spec.get("alpha"))
         ext = ".mov" if use_alpha else ".mp4"
-        payload = json.dumps({**spec, "fps": int(fps)}, ensure_ascii=False, sort_keys=True)
+        payload_dict = {**spec, "fps": int(fps), "_stage_html": stage_html_hash}
+        payload = json.dumps(payload_dict, ensure_ascii=False, sort_keys=True)
         h12 = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
         out_file = stage_dir / f"m_{h12}{ext}"
         if out_file.is_file() and out_file.stat().st_size > 2048:
@@ -445,6 +502,7 @@ def build_html_motion_panel_cmd(
     clip_frames: int,
     fps: int,
     out_mp4: Path,
+    style_id: str = "",
 ) -> Optional[List[str]]:
     """
     将预先由 Chromium 30fps 渲染好的动态底板/透明层视频，与实拍主播/B-roll 实时合成为最终片段 MP4。
@@ -514,9 +572,10 @@ def build_html_motion_panel_cmd(
     # 3) 商业口播风格自适应动态概念图解卡（可选右上角柔和主播圆窗）
     if mode == "concept_diagram_pip":
         if bool(pip_layout.get("with_anchor_circle", True)):
-            cx = int(pip_layout.get("circle_cx") or 888)
-            cy = int(pip_layout.get("circle_cy") or 220)
-            cr = int(pip_layout.get("circle_r") or 98)
+            geom = resolve_concept_diagram_geometry(pip_layout, style_id=str(style_id or pip_layout.get("_style_id") or ""))
+            cx = geom["circle_cx"]
+            cy = geom["circle_cy"]
+            cr = geom["circle_r"]
             diam = cr * 2
             cmask = soft_circle_mask_png(work, cr, feather_px=10)
             fc = (

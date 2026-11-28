@@ -510,9 +510,39 @@ def _measure_sfx_peak_offset_sec(arr: np.ndarray, sr: int = SR) -> float:
     return round(peak_idx / float(sr), 4)
 
 
-def _avoid_faces_for_pkg(bbox: Dict[str, int], faces_px: List[Dict[str, Any]]) -> Dict[str, int]:
-    """在 Step 6 源头一次性将花字胶囊避开裁切后人脸五官，保持安全区且不侵入字幕带。"""
+def _pad_faces_for_head_avoidance(faces_px: List[Dict[str, Any]]) -> List[Dict[str, int]]:
+    """将眼睛-下巴人脸检测框向上外扩 0.60*h 覆盖额头与发冠，防止前景花字压住主播头顶/头发。"""
+    padded: List[Dict[str, int]] = []
+    for fb in (faces_px or []):
+        if not isinstance(fb, dict):
+            continue
+        x = int(fb.get("x") or 0)
+        y = int(fb.get("y") or 0)
+        w = int(fb.get("w") or 0)
+        h = int(fb.get("h") or 0)
+        if w <= 0 or h <= 0:
+            continue
+        pad_top = max(80, int(round(0.60 * h)))
+        pad_side = int(round(0.12 * w))
+        pad_bot = int(round(0.10 * h))
+        nx = max(0, x - pad_side)
+        ny = max(0, y - pad_top)
+        nw = min(CANVAS_WIDTH - nx, w + pad_side * 2)
+        nh = min(CANVAS_HEIGHT - ny, y + h + pad_bot - ny)
+        padded.append({"x": nx, "y": ny, "w": max(1, nw), "h": max(1, nh)})
+    return padded
+
+
+def _avoid_faces_for_pkg(
+    bbox: Dict[str, int],
+    faces_px: List[Dict[str, Any]],
+    y_min_safe: int = SAFE_ZONE["y_min"],
+) -> Dict[str, int]:
+    """在 Step 6 源头一次性将花字胶囊避开裁切后人脸五官/发冠并遵守顶栏安全下界，保持安全区且不侵入字幕带。"""
     cand = dict(bbox)
+    y_floor = max(int(SAFE_ZONE["y_min"]), int(y_min_safe))
+    if cand["y"] < y_floor:
+        cand["y"] = min(y_floor, max(y_floor, 1120 - int(cand["h"])))
     if not faces_px:
         return cand
     cur_iou = max(bbox_iou(cand, fb) for fb in faces_px)
@@ -520,7 +550,12 @@ def _avoid_faces_for_pkg(bbox: Dict[str, int], faces_px: List[Dict[str, Any]]) -
         return cand
     best = cand
     best_iou = cur_iou
-    for try_y in (176, 224, 280, 340, 460, 780, 880, 960):
+    cands_y = [176, 224, 280, 340, 360, 390, 460, 780, 820, 880, 960]
+    if y_floor not in cands_y:
+        cands_y.append(y_floor)
+    for try_y in sorted(set(cands_y)):
+        if try_y < y_floor:
+            continue
         if try_y + cand["h"] > 1120:
             continue
         alt = {"x": cand["x"], "y": int(try_y), "w": cand["w"], "h": cand["h"]}
@@ -1079,6 +1114,7 @@ def run_step6(
             else None
         )
         _emit_top_bar = bool(_tb_truth) or (use_top_bar and not suppress_top_dup)
+        top_safe_y = SAFE_ZONE["y_min"]
         if _emit_top_bar and total_dur >= 3.2 and not overlaps_code(0, top_ef):
             if _tb_truth:
                 _dp_p6 = pipeline_dir / "03b_director_plan.json"
@@ -1089,16 +1125,18 @@ def run_step6(
                 top_label = _tb_l1
                 top_sub = _tb_l2
                 top_end_f = total_frames if _tb_truth.get("full_duration") else top_ef
-                top_y_pos = max(SAFE_ZONE["y_min"], int(_tb_truth.get("y") or 168))
+                top_y_pos = max(SAFE_ZONE["y_min"], int(_tb_truth.get("y") or 162))
                 top_w = min(SUBTITLE_SYMMETRIC_MAX_W, 640)
                 top_x_pos = 72 if _tb_truth.get("mode") == "s08_slash_dual_top_left" else (SUBTITLE_CENTER_X - top_w // 2)
-                top_bb = {"x": top_x_pos, "y": top_y_pos, "w": top_w, "h": 150}
+                top_bb = {"x": top_x_pos, "y": top_y_pos, "w": top_w, "h": 152}
+                top_safe_y = max(int(_tb_truth.get("top_safe_y") or 356), top_bb["y"] + top_bb["h"] + 36)
             else:
                 top_label = f"{hook_badge_text[:10]}"
                 top_sub = ""
                 top_end_f = top_ef
                 top_w = _measure_pkg_badge_width(top_label, pkg_font_path, SUBTITLE_SYMMETRIC_MAX_W, target_fs=34, min_w=280)
                 top_bb = {"x": SUBTITLE_CENTER_X - top_w // 2, "y": 162, "w": top_w, "h": 58}
+                top_safe_y = top_bb["y"] + top_bb["h"] + 16
             ok_top, _ = check_bbox_in_safe_zone(top_bb)
             # 常驻顶栏遇 code_broll 代码数据卡自动礼貌分段退让，严格满足 0 代码卡碰撞与 >=1.4s 阅读停留
             _tb_segs: List[Tuple[int, int]] = [(0, top_end_f)]
@@ -1238,16 +1276,27 @@ def run_step6(
             hook_h = 280 if is_opening_poster_burst else (min(480, max(142, int(round(tier_fs_open * 1.12)))) if is_pure_giant_style else (152 if giant_mode in ("giant_dual_clash", "giant_numeric_trio") else 142))
             if style_id == "style_17" and style17_open_parts:
                 hook_h = max(hook_h, 200)
-            init_giant_y = 780 if style_id == "style_01" else (max(framed_top_y, 224) if use_top_bar else framed_top_y)
+            is_s10_16_behind = (style_id in ("style_10", "style_16")) and not is_opening_poster_burst
+            init_giant_y = 780 if style_id == "style_01" else max(
+                top_safe_y,
+                (260 if is_s10_16_behind else (max(framed_top_y, 224) if use_top_bar else framed_top_y)),
+            )
             active_faces_0 = []
             for c in edl.get("clips", []):
                 if int(c["timeline_in_frame"]) < hook_ef and int(c["timeline_out_frame"]) > 0:
                     active_faces_0.extend(faces_by_mp4.get(str(c.get("media_path", "")), []))
-            hook_bbox = _avoid_faces_for_pkg({"x": hook_x, "y": init_giant_y, "w": hook_w, "h": hook_h}, active_faces_0)
-            if use_top_bar and hook_bbox["y"] < 218:
-                hook_bbox["y"] = 222
+            if is_s10_16_behind:
+                hook_bbox = {"x": hook_x, "y": init_giant_y, "w": hook_w, "h": hook_h}
+            else:
+                hook_bbox = _avoid_faces_for_pkg(
+                    {"x": hook_x, "y": init_giant_y, "w": hook_w, "h": hook_h},
+                    _pad_faces_for_head_avoidance(active_faces_0),
+                    y_min_safe=top_safe_y,
+                )
+            if use_top_bar and hook_bbox["y"] < max(218, top_safe_y):
+                hook_bbox["y"] = max(222, top_safe_y)
             if hook_bbox["y"] + hook_bbox["h"] > 1120:
-                hook_bbox["y"] = max(162, 1120 - hook_bbox["h"])
+                hook_bbox["y"] = max(top_safe_y, 1120 - hook_bbox["h"])
             safe_ok, _ = check_bbox_in_safe_zone(hook_bbox)
             _fkw = _display_keywords(open_sents[-1]) or _display_keywords(first_sent)
             sec_kw = next((k for k in _fkw if k and k not in hook_label and hook_label not in k), "")
@@ -1296,6 +1345,11 @@ def run_step6(
                     open_elem["tilt_deg"] = -5.0
             elif is_pure_giant_style or (_allow_giant and giant_spec.get("size_tiers_px")):
                 open_elem["display_role"] = "giant_text"
+            if is_s10_16_behind:
+                open_elem["z_layer"] = "behind_person"
+                open_elem["callout_y"] = int(hook_bbox["y"])
+            if top_safe_y > SAFE_ZONE["y_min"]:
+                open_elem["top_safe_y"] = int(top_safe_y)
             if style_id == "style_03":
                 from style_dna_profiles import resolve_style03_bar_layout
                 s03 = resolve_style03_bar_layout(
@@ -1305,7 +1359,7 @@ def run_step6(
                 bar_bb = dict(open_elem["final_bbox"])
                 bar_bb["w"] = min(SUBTITLE_SYMMETRIC_MAX_W, max(360, int(bar_bb["w"])))
                 bar_bb["x"] = SUBTITLE_CENTER_X - bar_bb["w"] // 2
-                bar_bb["y"] = max(SAFE_ZONE["y_min"], min(int(bar_bb["y"]), 1120 - int(bar_bb["h"])))
+                bar_bb["y"] = max(top_safe_y, min(int(bar_bb["y"]), 1120 - int(bar_bb["h"])))
                 open_elem["bar_mode"] = s03["bar_mode"]
                 open_elem["anchor"] = s03["anchor"]
                 open_elem["bar_width_px"] = int(s03["width_px"])
@@ -1345,8 +1399,8 @@ def run_step6(
             else 0
         )
         last_sent = audio_events["sentences"][-1] if audio_events["sentences"] else None
-        stamp_zone_ys = (max(framed_top_y, 280), 820, max(framed_top_y, 230), 890)
-        giant_zone_ys = (max(framed_top_y, 230), max(framed_top_y + 40, 310), 400)
+        stamp_zone_ys = (max(top_safe_y, framed_top_y, 280), 820, max(top_safe_y, framed_top_y, 230), 890)
+        giant_zone_ys = (max(top_safe_y, framed_top_y, 230), max(top_safe_y, framed_top_y + 40, 310), max(top_safe_y, 400))
         stamp_seq = 0
         has_end_cta = False
         _tail_reserve_f = int(total_dur * 0.75 * fps) if (_allow_end_card and total_dur >= 4.0) else int((total_dur - 1.35) * fps)
@@ -1406,10 +1460,17 @@ def run_step6(
                     box_w = min(SUBTITLE_SYMMETRIC_MAX_W, max(280, len(g_label) * min(g_tier_fs, 260) + 96))
                     box_h = min(480, max(142, int(round(g_tier_fs * 1.12))))
                     box_x = SUBTITLE_CENTER_X - box_w // 2
-                    init_y = giant_zone_ys[stamp_seq % len(giant_zone_ys)]
-                    final_bbox = _avoid_faces_for_pkg({"x": box_x, "y": init_y, "w": box_w, "h": box_h}, active_faces)
+                    init_y = max(top_safe_y, giant_zone_ys[stamp_seq % len(giant_zone_ys)])
+                    if style_id in ("style_10", "style_16"):
+                        final_bbox = {"x": box_x, "y": max(top_safe_y, min(320, init_y)), "w": box_w, "h": box_h}
+                    else:
+                        final_bbox = _avoid_faces_for_pkg(
+                            {"x": box_x, "y": init_y, "w": box_w, "h": box_h},
+                            _pad_faces_for_head_avoidance(active_faces),
+                            y_min_safe=top_safe_y,
+                        )
                     if final_bbox["y"] + final_bbox["h"] > 1120:
-                        final_bbox["y"] = max(162, 1120 - final_bbox["h"])
+                        final_bbox["y"] = max(top_safe_y, 1120 - final_bbox["h"])
                     ok, _ = check_bbox_in_safe_zone(final_bbox)
                     elem_obj = {
                         "id": f"pkg_{len(visual_elements)+1:03d}",
@@ -1444,6 +1505,11 @@ def run_step6(
                         "policy": f"{style_id} 分级砸屏大字（{len(g_label)}字→{g_tier_fs}px，禁止普通花字）",
                         "reason": f"分级大字 {spec.get('trigger')}｜{g_tier_fs}px｜出处「{str(spec.get('evidence_text') or '')[:12]}」",
                     }
+                    if style_id in ("style_10", "style_16"):
+                        elem_obj["z_layer"] = "behind_person"
+                        elem_obj["callout_y"] = int(final_bbox["y"])
+                    if top_safe_y > SAFE_ZONE["y_min"]:
+                        elem_obj["top_safe_y"] = int(top_safe_y)
                     stamp_seq += 1
                     visual_elements.append(elem_obj)
                     last_vis_end = ef + int(1.0 * fps)
@@ -1466,7 +1532,7 @@ def run_step6(
                 box_w = min(box_max_w, max(320 if is_quote_item else 260, _measure_pkg_badge_width(kw_label, pkg_font_path, box_max_w, target_fs=target_fs, min_w=320 if is_quote_item else 260)))
                 box_x = SUBTITLE_CENTER_X - box_w // 2
                 box_h = 136 if is_end_cta else (132 if is_quote_item else (112 if is_borderless_flower else 96))
-                init_y = 890 if is_end_cta else (820 if is_quote_item else stamp_zone_ys[stamp_seq % len(stamp_zone_ys)])
+                init_y = max(top_safe_y, 890 if is_end_cta else (820 if is_quote_item else stamp_zone_ys[stamp_seq % len(stamp_zone_ys)]))
                 if style_id == "style_03" and not is_end_cta:
                     from style_dna_profiles import resolve_style03_bar_layout
                     style03_layout = resolve_style03_bar_layout(main_text_out, sub_text_out, elem_kind, "")
@@ -1474,7 +1540,7 @@ def run_step6(
                         box_w = min(box_max_w, int(style03_layout["width_px"]))
                         box_x = SUBTITLE_CENTER_X - box_w // 2
                         box_h = _STYLE03_QUOTE_BOX_H
-                        init_y = _style03_top_min_y(use_top_bar, suppress_top_dup)
+                        init_y = max(top_safe_y, 820) if _tb_truth else _style03_top_min_y(use_top_bar, suppress_top_dup)
                     else:
                         # 通宽底条视觉宽 960（1080 画布居中），碰撞 bbox 收在 640 文本带里过安全区
                         box_w = min(box_max_w, int(style03_layout["text_width_px"] or box_max_w))
@@ -1494,12 +1560,18 @@ def run_step6(
                         box_w = min(box_max_w, 640)
                         box_x = SUBTITLE_CENTER_X - box_w // 2
                         box_h = max(200, box_h)
-                final_bbox = _avoid_faces_for_pkg({"x": box_x, "y": init_y, "w": box_w, "h": box_h}, active_faces)
-                if style_id == "style_03" and style03_layout and style03_layout["bar_mode"] == "quote_citation_card":
+                final_bbox = _avoid_faces_for_pkg(
+                    {"x": box_x, "y": init_y, "w": box_w, "h": box_h},
+                    _pad_faces_for_head_avoidance(active_faces),
+                    y_min_safe=top_safe_y,
+                )
+                if style_id == "style_03" and style03_layout and style03_layout["bar_mode"] == "quote_citation_card" and (not _tb_truth):
                     top_min = _style03_top_min_y(use_top_bar, suppress_top_dup)
                     final_bbox["y"] = max(top_min, min(int(final_bbox["y"]), _STYLE03_QUOTE_TOP_MAX - box_h))
+                if final_bbox["y"] < top_safe_y:
+                    final_bbox["y"] = top_safe_y
                 if final_bbox["y"] + final_bbox["h"] > 1120:
-                    final_bbox["y"] = max(162, 1120 - final_bbox["h"])
+                    final_bbox["y"] = max(top_safe_y, 1120 - final_bbox["h"])
                 ok, _ = check_bbox_in_safe_zone(final_bbox)
                 fg_key = "end_card_color" if is_end_cta else ("flank_color" if is_quote_item else "stamp_color")
                 fg_default = "#FFE28A" if (is_end_cta or is_quote_item) else "#FFF589"
@@ -1578,10 +1650,14 @@ def run_step6(
                 for c in edl.get("clips", []):
                     if int(c["timeline_in_frame"]) < ls_ef and int(c["timeline_out_frame"]) > ls_sf:
                         active_f.extend(faces_by_mp4.get(str(c.get("media_path", "")), []))
-                cta_init_y = 260 if is_pure_giant_style else 890
-                cta_bb = _avoid_faces_for_pkg({"x": bx, "y": cta_init_y, "w": bw, "h": 128}, active_f)
+                cta_init_y = max(top_safe_y, 260) if is_pure_giant_style else max(top_safe_y, 890)
+                cta_bb = _avoid_faces_for_pkg(
+                    {"x": bx, "y": cta_init_y, "w": bw, "h": 128},
+                    _pad_faces_for_head_avoidance(active_f),
+                    y_min_safe=top_safe_y,
+                )
                 if cta_bb["y"] + cta_bb["h"] > 1120:
-                    cta_bb["y"] = max(162, 1120 - cta_bb["h"])
+                    cta_bb["y"] = max(top_safe_y, 1120 - cta_bb["h"])
                 ok_cta, _ = check_bbox_in_safe_zone(cta_bb)
                 cta_sub = "" if (cta_label == "评论区聊聊" or "评论区" in cta_label) else "评论区聊聊"
                 visual_elements.append({
@@ -1626,13 +1702,43 @@ def run_step6(
                         _sc_ef = min(total_frames, int(round(float(_sc.get("end_sec") or (_sc_sf / fps + 2.4)) * fps)))
                         if _sc_ef - _sc_sf < int(1.45 * fps) or overlaps_code(_sc_sf, _sc_ef):
                             continue
+                        _sc_var = str(_sc.get("variant") or "")
                         _sc_y = int(_sc.get("callout_y") or 920)
-                        _sc_bb = {"x": 100, "y": max(168, min(980, _sc_y)), "w": 740, "h": 140}
-                        visual_elements.append({
+                        _tb_bot = max(
+                            [0]
+                            + [
+                                int((ve.get("final_bbox") or ve.get("bbox") or {}).get("y") or 0)
+                                + int((ve.get("final_bbox") or ve.get("bbox") or {}).get("h") or 0)
+                                for ve in visual_elements
+                                if str(ve.get("kind") or "") == "persistent_top_bar"
+                            ]
+                        )
+                        _min_y = max(SAFE_ZONE["y_min"], top_safe_y, (_tb_bot + 16) if _tb_bot > 0 else SAFE_ZONE["y_min"])
+                        if _sc_var == "s06_vertical_poem":
+                            _n_chars = min(9, max(1, len(_sc_txt)))
+                            _vw = 96
+                            _vh = min(720, max(220, _n_chars * 74 + 24))
+                            _vx = SAFE_ZONE["x_max"] - 16 - _vw
+                            _vy = max(_min_y, 390, min(1140 - _vh, _sc_y))
+                            _sc_bb = {"x": _vx, "y": _vy, "w": _vw, "h": _vh}
+                            _sc_y = _vy
+                        elif _sc_var == "s24_vertical_yellow":
+                            _vw = 160
+                            _vh = min(640, max(180, min(4, max(1, len(_sc_txt))) * 145 + 24))
+                            _vy = max(_min_y, min(SAFE_ZONE["y_max"] - _vh, _sc_y))
+                            _sc_bb = {"x": 78, "y": _vy, "w": _vw, "h": _vh}
+                            _sc_y = _vy
+                        else:
+                            _vy = max(_min_y, min(980, _sc_y))
+                            _sc_bb = {"x": 100, "y": _vy, "w": 740, "h": 140}
+                            _sc_y = _vy
+                        _sc_ok, _ = check_bbox_in_safe_zone(_sc_bb)
+                        _sc_elem = {
                             "id": f"pkg_{len(visual_elements)+1:03d}",
                             "kind": "kinetic_callout",
-                            "callout_variant": str(_sc.get("variant") or ""),
+                            "callout_variant": _sc_var,
                             "callout_y": _sc_y,
+                            "top_safe_y": _min_y,
                             "accent_hex": str(_sc.get("accent_hex") or giant_accent),
                             "font_role": str(_sc.get("font_role") or ""),
                             "overlay_mode": "borderless",
@@ -1648,14 +1754,17 @@ def run_step6(
                             "alignment_error_frames": 0,
                             "bbox": _sc_bb,
                             "final_bbox": _sc_bb,
-                            "safe_zone_ok": True,
+                            "safe_zone_ok": _sc_ok,
                             "jianying_anim_name": "弹入",
                             "anim_duration_ms": 380,
                             "paired_jianying_sfx": "",
                             "trigger": "director_callout",
                             "policy": f"{style_id} V11 30fps HTML 动态前景花字",
                             "reason": f"导演总谱规划风格前景花字「{_sc_txt[:10]}」",
-                        })
+                        }
+                        if _sc.get("z_layer"):
+                            _sc_elem["z_layer"] = str(_sc["z_layer"])
+                        visual_elements.append(_sc_elem)
             except Exception:
                 pass
 
@@ -1693,12 +1802,12 @@ def run_step6(
                 bw = _measure_pkg_badge_width(text[:16], pkg_font_path, SUBTITLE_SYMMETRIC_MAX_W, target_fs=fs_try, min_w=520)
                 bh = 132
                 bx = SUBTITLE_CENTER_X - bw // 2
-                bb = {"x": bx, "y": 820, "w": bw, "h": bh}
+                bb = {"x": bx, "y": max(top_safe_y, 820), "w": bw, "h": bh}
                 active_f = []
                 for c in edl.get("clips", []):
                     if int(c["timeline_in_frame"]) < ef and int(c["timeline_out_frame"]) > sf:
                         active_f.extend(faces_by_mp4.get(str(c.get("media_path", "")), []))
-                bb = _avoid_faces_for_pkg(bb, active_f)
+                bb = _avoid_faces_for_pkg(bb, _pad_faces_for_head_avoidance(active_f), y_min_safe=top_safe_y)
                 ok_card, _ = check_bbox_in_safe_zone(bb)
                 visual_elements.append({
                     "id": f"pkg_{len(visual_elements)+1:03d}",
@@ -1773,7 +1882,7 @@ def run_step6(
             else:
                 sx = max(framed_x_min, min(framed_x_max - 180, ax0 - 140))
                 p_dir = "right" if sx < ax0 + aw // 2 else "left"
-            sy = max(max(framed_top_y, SAFE_ZONE["y_min"]), min(min(920, SAFE_ZONE["y_max"] - 180), ay0 + (ah // 2) - 90))
+            sy = max(max(top_safe_y, framed_top_y, SAFE_ZONE["y_min"]), min(min(920, SAFE_ZONE["y_max"] - 180), ay0 + (ah // 2) - 90))
             st_bb = {"x": sx, "y": sy, "w": 180, "h": 180}
             st_kind = "thumbs_up" if st_i == 0 else "red_arrow"
             visual_elements.append({

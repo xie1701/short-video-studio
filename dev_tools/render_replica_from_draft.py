@@ -698,7 +698,7 @@ def parse_text_material(mat: dict, canvas_w: int = CANVAS_W) -> dict:
             if styles:
                 st0 = styles[0]
                 # 字号真源：识别字幕的 material 上 font_size 是 None，真值写在 content.styles[0].size
-                # （实测 17-二手车 的字幕是 15，旧代码回退 24 会让字幕大 1.6 倍）
+                # （实测 style_17 源草稿的字幕是 15，旧代码回退 24 会让字幕大 1.6 倍）
                 if not out["font_size"] and st0.get("size"):
                     out["font_size"] = float(st0["size"])
                 fill = ((st0.get("fill") or {}).get("content") or {}).get("solid") or {}

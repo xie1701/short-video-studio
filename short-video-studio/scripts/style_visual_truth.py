@@ -49,7 +49,8 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
         "label": "顶部常驻双行亮黄宋体标题 + 暗底顶圆窗金黄大字 + 炭墨真打字机引语 + 人像剪纸白边",
         "top_bar": {
             "mode": "s03_dual_yellow_serif",
-            "y": 168,
+            "y": 162,
+            "top_safe_y": 356,
             "full_duration": True,
             "fg_top": "#FDE047",
             "fg_bot": "#FDE047",
@@ -83,7 +84,7 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
                     "outline_hex": "#FFFFFF",
                     "quote_top_left": True,
                     "fg_offset_x": 110,
-                    "fg_offset_y": 140,
+                    "fg_offset_y": 268,
                     "fg_scale": 0.86,
                 },
             },
@@ -236,7 +237,8 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
         "label": "顶部全宽灰半透双行暖金宋体大标 + 开场左置人设头衔 + 暖金发光放大金句 + 右侧竖排诗意字",
         "top_bar": {
             "mode": "s06_translucent_warm_gold",
-            "y": 168,
+            "y": 162,
+            "top_safe_y": 356,
             "full_duration": True,
             "fg_top": "#F4E2A8",
             "fg_bot": "#F4E2A8",
@@ -270,8 +272,8 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
                     "mode": "dark_circle_panel_pip",
                     "variant": "top_red_pain",
                     "bg_hex": "#14151B",
-                    "accent_hex": "#C92A2A",
-                    "sub_hex": "#E03131",
+                    "accent_hex": "#FF6B6B",
+                    "sub_hex": "#FF8787",
                     "circle_cx": 540,
                     "circle_cy": 500,
                     "circle_r": 215,
@@ -306,8 +308,8 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
                     "mode": "dark_circle_panel_pip",
                     "variant": "top_red_pain",
                     "bg_hex": "#14151B",
-                    "accent_hex": "#C92A2A",
-                    "sub_hex": "#E03131",
+                    "accent_hex": "#FF6B6B",
+                    "sub_hex": "#FF8787",
                     "circle_cx": 540,
                     "circle_cy": 500,
                     "circle_r": 215,
@@ -329,7 +331,8 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
         "label": "左上角常驻/斜杠/白黄双行斜体大标 + 精致黑底条字幕 + 霸屏粗黑边白大字金句",
         "top_bar": {
             "mode": "s08_slash_dual_top_left",
-            "y": 172,
+            "y": 164,
+            "top_safe_y": 356,
             "full_duration": True,
             "fg_top": "#FFFFFF",
             "fg_bot": "#FFE14D",
@@ -550,7 +553,8 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
         "label": "顶部常驻纯白+亮黄#FFE135粗黑边双行大标题 + 纯黑顶置圆窗切镜 + 黑白胶囊小气泡",
         "top_bar": {
             "mode": "s12_white_yellow_dual_top",
-            "y": 168,
+            "y": 162,
+            "top_safe_y": 356,
             "full_duration": True,
             "fg_top": "#FFFFFF",
             "fg_bot": "#FFE135",
@@ -568,7 +572,7 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
                     "accent_hex": "#FFE135",
                     "sub_hex": "#FFFFFF",
                     "circle_cx": 540,
-                    "circle_cy": 560,
+                    "circle_cy": 576,
                     "circle_r": 210,
                 },
             },
@@ -582,7 +586,7 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
                     "accent_hex": "#FFE135",
                     "sub_hex": "#FFFFFF",
                     "circle_cx": 540,
-                    "circle_cy": 560,
+                    "circle_cy": 576,
                     "circle_r": 210,
                 },
             },
@@ -1125,7 +1129,7 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
                     "bg_mode": "soft_blur",
                     "outline_px": 14,
                     "outline_hex": "#FFFFFF",
-                    "torn_paper": True,
+                    "torn_paper": False,
                 },
             },
             {
@@ -1364,6 +1368,31 @@ STYLE_VISUAL_TRUTH: Dict[str, Dict[str, Any]] = {
 }
 
 
+_DEFAULT_CALLOUT_TEMPLATES: Dict[str, List[Dict[str, Any]]] = {
+    "style_05": [{"variant": "s05_crimson_3d", "font_role": "serif", "callout_y": 960, "accent_hex": "#FDE047"}],
+    "style_06": [
+        {"variant": "s06_warm_gold", "font_role": "serif_bold", "callout_y": 980, "accent_hex": "#F4E2A8"},
+        {"variant": "s06_vertical_poem", "font_role": "serif_bold", "callout_y": 390, "accent_hex": "#F4E2A8"},
+    ],
+    "style_08": [{"variant": "s08_giant_white", "font_role": "sans", "callout_y": 900, "accent_hex": "#FFE14D"}],
+    "style_10": [{"variant": "s08_giant_white", "font_role": "sans", "callout_y": 280, "accent_hex": "#FFE135", "z_layer": "behind_person"}],
+    "style_12": [{"variant": "s12_pill_bubbles", "font_role": "sans", "callout_y": 940, "accent_hex": "#FFE135"}],
+    "style_15": [{"variant": "s15_glow_white", "font_role": "sans", "callout_y": 960, "accent_hex": "#FFE14D"}],
+    "style_16": [{"variant": "s16_glow_white", "font_role": "sans", "callout_y": 280, "accent_hex": "#FACC15", "z_layer": "behind_person"}],
+    "style_18": [{"variant": "s18_blur_white_strip", "font_role": "sans", "callout_y": 560, "accent_hex": "#DC2626"}],
+    "style_19": [{"variant": "s08_giant_white", "font_role": "sans", "callout_y": 930, "accent_hex": "#FFD426"}],
+    "style_20": [{"variant": "s20_crimson_plate", "font_role": "serif", "callout_y": 1030, "accent_hex": "#F3D37A"}],
+    "style_21": [{"variant": "s21_lime_arrow", "font_role": "sans", "callout_y": 240, "accent_hex": "#D9F94D"}],
+    "style_22": [{"variant": "s22_floating_tags", "font_role": "serif_bold", "callout_y": 820, "accent_hex": "#DC2626"}],
+    "style_23": [{"variant": "s06_warm_gold", "font_role": "serif_bold", "callout_y": 980, "accent_hex": "#FDE68A"}],
+    "style_24": [{"variant": "s24_vertical_yellow", "font_role": "oblique", "callout_y": 310, "accent_hex": "#FFE135"}],
+}
+
+for _sid_ct, _cfg_ct in STYLE_VISUAL_TRUTH.items():
+    if "callout_templates" not in _cfg_ct:
+        _cfg_ct["callout_templates"] = [dict(t) for t in _DEFAULT_CALLOUT_TEMPLATES.get(_sid_ct, [])]
+
+
 def get_visual_truth(style_id: str) -> Dict[str, Any]:
     """返回指定风格的真母本视觉基因（未登记时返回空字典，保持兼容）。"""
     return dict(STYLE_VISUAL_TRUTH.get(str(style_id or "").strip(), {}))
@@ -1373,6 +1402,37 @@ def get_persistent_top_bar_spec(style_id: str) -> Optional[Dict[str, Any]]:
     """仅返回母本真有全片常驻顶栏的风格规格（style_03/06/08/12）。"""
     tb = get_visual_truth(style_id).get("top_bar")
     return dict(tb) if isinstance(tb, dict) else None
+
+
+def get_top_safe_y(style_id: str, top_bar_bbox: Optional[Dict[str, int]] = None) -> int:
+    """计算全片常驻顶栏下方的安全起始纵坐标（无顶栏时返回标准安全区起点 160）。"""
+    tb = get_persistent_top_bar_spec(style_id)
+    if isinstance(top_bar_bbox, dict) and top_bar_bbox.get("y") is not None:
+        bottom_margin = int(top_bar_bbox["y"]) + int(top_bar_bbox.get("h") or 0) + 28
+        if tb:
+            return max(int(tb.get("top_safe_y") or 356), bottom_margin)
+        return max(160, bottom_margin)
+    if tb:
+        return int(tb.get("top_safe_y") or 356)
+    return 160
+
+
+def get_diagram_theme(style_id: str) -> Dict[str, Any]:
+    """返回指定风格的概念图解换肤主题。"""
+    dt = get_visual_truth(style_id).get("diagram_theme")
+    return dict(dt) if isinstance(dt, dict) else {"light_theme": False, "accent": "#FFE14D", "accent2": "#DC2626", "font_role": "sans"}
+
+
+def get_scene_beat_specs(style_id: str) -> List[Dict[str, Any]]:
+    """返回指定风格的真母本镜面节奏骨架。"""
+    beats = get_visual_truth(style_id).get("scene_beats") or []
+    return [dict(b) for b in beats if isinstance(b, dict)]
+
+
+def get_callout_templates(style_id: str) -> List[Dict[str, Any]]:
+    """返回指定风格的前景动态花字模板列表（供通用导演规划消费，零 BIZ/STO 文本）。"""
+    tpls = get_visual_truth(style_id).get("callout_templates") or []
+    return [dict(t) for t in tpls if isinstance(t, dict)]
 
 
 def extract_top_bar_two_lines(
@@ -1408,7 +1468,7 @@ _PUNCH_STOP_WORDS = frozenset({
     "觉得", "可以", "应该", "非常", "特别", "这么", "那么", "还有", "已经", "我们",
     "我哋", "你们", "他们", "大家", "自己", "开始", "之后", "之前", "时候", "地方",
     "两个", "一次", "下来", "出来", "上去", "过来", "过去", "还是", "不是", "没有",
-    "二一组", "大轩王啦", "括我自己", "法找他", "干分", "么活", "边就", "就系", "什么活", "包括",
+    "就系", "包括",
 })
 _PUNCH_BAD_HEAD = frozenset("的了呢吗吧啊呀么嘅啲喺唔是把被在从跟比和与括")
 _PUNCH_BAD_TAIL = frozenset("的了呢吗吧啊呀么嘅啲喺在从跟比和与改")
@@ -1497,7 +1557,7 @@ def extract_quote_excerpt(
 ) -> str:
     """围绕当前句提取完整通顺的金句/条文段落（供黑屏引号/打字机/诗句面板使用）。"""
     if not sentences:
-        return "先看清底层前提，再谈方法落地"
+        return "核心要点拆解"
     buf: List[str] = []
     total = 0
     for i in range(max(0, center_idx), min(len(sentences), center_idx + 3)):
@@ -1509,4 +1569,4 @@ def extract_quote_excerpt(
         buf.append(t)
         total += len(t)
     out = "，".join(s.rstrip("，。！？,.!?") for s in buf)
-    return out[:max_chars] if out else "先看清底层前提，再谈方法落地"
+    return out[:max_chars] if out else "核心要点拆解"

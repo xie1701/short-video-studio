@@ -33,10 +33,12 @@ from common import (
     CANVAS_WIDTH,
     DEFAULT_FPS,
     SAFE_ZONE,
+    SUB_CROP_PAD_PX,
     SUBTITLE_CENTER_X,
     SUBTITLE_SAFE_ZONE,
     SUBTITLE_SYMMETRIC_MAX_W,
     TP_MAX_DBTP,
+    _wcag_rel_lum,
     compute_centered_crop_frac,
     compute_crop_transform,
     compute_segment_cache_key,
@@ -627,12 +629,13 @@ def render_subtitle_png_adaptive(
     meta: Dict[str, Any] = {
         "shadow_boost": 1.0,
         "stroke_extra": 0,
+        "bg_pill_applied": False,
         "contrast_before": None,
         "contrast_after": None,
         "bg_lum": None,
     }
 
-    def _measure(w: int, h: int) -> Optional[Dict[str, float]]:
+    def _measure(w: int, h: int, pad: int = SUB_CROP_PAD_PX) -> Optional[Dict[str, float]]:
         if bg_strip is None or place_xy is None:
             return None
         px, py = place_xy(w, h)
@@ -642,26 +645,47 @@ def render_subtitle_png_adaptive(
             return None
         if top + h > bg_strip.shape[0] or left + w > bg_strip.shape[1]:
             return None
+        c_top = max(0, top - int(pad))
+        c_left = max(0, left - int(pad))
+        c_bot = min(bg_strip.shape[0], top + h + int(pad))
+        c_right = min(bg_strip.shape[1], left + w + int(pad))
+        raw_crop = bg_strip[c_top:c_bot, c_left:c_right]
         with Image.open(out_png) as png:
             layer = png.convert("RGBA")
-            patch = Image.fromarray(bg_strip[top : top + h, left : left + w]).convert("RGBA")
-            canvas = Image.alpha_composite(patch, layer)
-            return glyph_contrast_ratio(np.asarray(canvas.convert("RGB")))
+            patch = Image.fromarray(raw_crop).convert("RGBA")
+            patch.alpha_composite(layer, dest=(left - c_left, top - c_top))
+            res = glyph_contrast_ratio(np.asarray(patch.convert("RGB")))
+            if res is not None:
+                res["raw_bg_lum"] = float(np.median(_wcag_rel_lum(raw_crop)))
+            return res
 
     sw, sh = render_subtitle_png(entry, tpl, font_path, out_png)
     base_metric = _measure(sw, sh)
     if base_metric is None:
         return sw, sh, meta
     base_eff = float(base_metric.get("ratio_effective", base_metric["ratio"]))
+    base_med = float(base_metric["ratio"])
+    base_bg_lum = float(base_metric["bg_lum"])
+    base_raw_lum = float(base_metric.get("raw_bg_lum", base_bg_lum))
+    base_ink = float(base_metric.get("ink_ratio", 0.0))
+    bg_hex_cfg = str(tpl.get("bg_box_color") or tpl.get("bg_box") or "none").strip()
+    has_bg_box = bool(bg_hex_cfg and bg_hex_cfg.lower() != "none" and parse_hex_rgba(bg_hex_cfg, 210)[3] > 0)
+    is_bright_panel = max(base_bg_lum, base_raw_lum) >= 0.45
     meta["contrast_before"] = round(base_eff, 2)
-    meta["contrast_median"] = round(float(base_metric["ratio"]), 2)
-    meta["bg_lum"] = round(float(base_metric["bg_lum"]), 3)
-    if base_metric["bg_lum"] < SUBTITLE_BRIGHT_BG_LUM or base_eff >= target_ratio:
+    meta["contrast_median"] = round(base_med, 2)
+    meta["bg_lum"] = round(base_bg_lum, 3)
+    meta["raw_bg_lum"] = round(base_raw_lum, 3)
+    early_ok = (
+        (not is_bright_panel and (base_bg_lum < SUBTITLE_BRIGHT_BG_LUM or base_eff >= target_ratio))
+        or (is_bright_panel and base_eff >= target_ratio and base_med >= 3.8 and (has_bg_box or (base_raw_lum < 0.70 and base_ink <= 0.45)))
+    )
+    if early_ok:
         # 暗底或本来就够清楚：保持已标定的 1:1 参数，一个像素都不动
         meta["contrast_after"] = meta["contrast_before"]
         return sw, sh, meta
 
-    best = (sw, sh, 1.0, 0, base_eff)
+    best = (sw, sh, 1.0, 0, base_eff, base_med, False)
+    ink_cap = 0.35 if (base_raw_lum >= 0.70 and not has_bg_box) else 0.45
     for boost, extra in (SUBTITLE_ENHANCE_LADDER if allow_stroke else tuple(c for c in SUBTITLE_ENHANCE_LADDER if c[1] == 0)):
         cand_w, cand_h = render_subtitle_png(
             entry, tpl, font_path, out_png, shadow_boost=boost, stroke_extra=extra
@@ -670,23 +694,52 @@ def render_subtitle_png_adaptive(
         if m is None:
             continue
         cand_eff = float(m.get("ratio_effective", m["ratio"]))
-        if cand_eff > best[4]:
-            best = (cand_w, cand_h, boost, extra, cand_eff)
-        if cand_eff >= target_ratio:
+        cand_med = float(m["ratio"])
+        cand_ink = float(m.get("ink_ratio", 0.0))
+        if (cand_med, cand_eff) > (best[5], best[4]):
+            best = (cand_w, cand_h, boost, extra, cand_eff, cand_med, False)
+        med_ok = (not is_bright_panel) or (cand_med >= 4.5 and cand_ink <= ink_cap)
+        if cand_eff >= target_ratio and med_ok:
             meta.update({
                 "shadow_boost": float(boost),
                 "stroke_extra": int(extra),
                 "contrast_after": round(cand_eff, 2),
+                "contrast_median": round(cand_med, 2),
             })
             return cand_w, cand_h, meta
+
+    # 亮纸底（如 style_15 #F4F2EC 米白纸底）单纯描边仍低对比或字形被纸底吞没时，自动叠加柔和深炭黑胶囊底托
+    if is_bright_panel and not has_bg_box:
+        pill_tpl = {**tpl, "bg_box_color": "#14161CE6", "bg_radius": int(tpl.get("bg_radius") or 16)}
+        pill_boost = 1.4
+        pill_extra = max(4, int(tpl.get("stroke_width") or 0)) if allow_stroke else 0
+        pw_p, ph_p = render_subtitle_png(
+            entry, pill_tpl, font_path, out_png, shadow_boost=pill_boost, stroke_extra=pill_extra
+        )
+        m_p = _measure(pw_p, ph_p)
+        if m_p is not None:
+            p_eff = float(m_p.get("ratio_effective", m_p["ratio"]))
+            p_med = float(m_p["ratio"])
+            if p_med >= best[5] or p_eff >= target_ratio:
+                meta.update({
+                    "shadow_boost": float(pill_boost),
+                    "stroke_extra": int(pill_extra),
+                    "bg_pill_applied": True,
+                    "contrast_after": round(p_eff, 2),
+                    "contrast_median": round(p_med, 2),
+                    "bg_lum": round(float(m_p["bg_lum"]), 3),
+                })
+                return pw_p, ph_p, meta
+
     # 到顶仍不够：用跑到的最好一档（不撒谎，实测值照记）
-    bw, bh, bboost, bextra, bratio = best
+    bw, bh, bboost, bextra, bratio, bmed, _ = best
     if (bboost, bextra) != (1.0, 0):
         render_subtitle_png(entry, tpl, font_path, out_png, shadow_boost=bboost, stroke_extra=bextra)
     meta.update({
         "shadow_boost": float(bboost),
         "stroke_extra": int(bextra),
         "contrast_after": round(float(bratio), 2),
+        "contrast_median": round(float(bmed), 2),
         "below_target": True,
     })
     return bw, bh, meta
@@ -1101,6 +1154,29 @@ def _ensure_dual_gold_divider_png(
     return p
 
 
+def _pad_faces_for_head_avoidance(faces: List[Dict[str, int]]) -> List[Dict[str, int]]:
+    """将眼睛-下巴人脸检测框向上外扩 0.60*h 覆盖额头与发冠，防止前景花字压住主播头顶/头发。"""
+    padded: List[Dict[str, int]] = []
+    for f in (faces or []):
+        if not isinstance(f, dict):
+            continue
+        x = int(f.get("x") or 0)
+        y = int(f.get("y") or 0)
+        w = int(f.get("w") or 0)
+        h = int(f.get("h") or 0)
+        if w <= 0 or h <= 0:
+            continue
+        pad_top = max(80, int(round(0.60 * h)))
+        pad_side = int(round(0.12 * w))
+        pad_bot = int(round(0.10 * h))
+        nx = max(0, x - pad_side)
+        ny = max(0, y - pad_top)
+        nw = min(CANVAS_WIDTH - nx, w + pad_side * 2)
+        nh = min(CANVAS_HEIGHT - ny, y + h + pad_bot - ny)
+        padded.append({"x": nx, "y": ny, "w": max(1, nw), "h": max(1, nh)})
+    return padded
+
+
 def _rects_overlap(a: Tuple[int, int, int, int], b: Tuple[int, int, int, int]) -> bool:
     return not (a[2] <= b[0] or a[0] >= b[2] or a[3] <= b[1] or a[1] >= b[3])
 
@@ -1261,6 +1337,16 @@ def _pad_short_segments(
     return padded
 
 
+def _v12_code_fingerprint() -> str:
+    """将 stage.html 与 person_matting.py 源码摘要注入渲染缓存键，模板升级后自动失效旧缓存。"""
+    h = hashlib.sha256()
+    scripts_dir = Path(__file__).resolve().parent
+    for p in (scripts_dir.parent / "assets" / "motion_templates" / "stage.html", scripts_dir / "person_matting.py"):
+        if p.is_file():
+            h.update(p.read_bytes())
+    return h.hexdigest()[:12]
+
+
 def _compute_base_cache_key(
     edl: Dict[str, Any],
     color_plan: Dict[str, Any],
@@ -1270,7 +1356,8 @@ def _compute_base_cache_key(
     eye_by_mp4: Dict[str, Any],
 ) -> str:
     payload = {
-        "version": 7,  # v7：修正 layered_cutout_over_broll face_anchor['cy'] 偏移与底部字幕安全带避让
+        "version": 8,  # v8：V12 顶栏安全边距/圆窗同步/平滑抠像/stage.html 指纹
+        "v12_fp": _v12_code_fingerprint(),
         "edl": edl,
         "color_plan": color_plan,
         "sources": source_hashes,
@@ -1703,6 +1790,7 @@ def _build_single_masked_pip_cmd(
                 ffmpeg_bin=ffmpeg_bin, media_path=media_path, src_in=src_in, src_avail=src_avail,
                 base_vf_chain=base_vf_chain, pip_layout=pip_layout,
                 rendered_bg_or_ov=Path(html_mov_str), clip_frames=clip_frames, fps=fps, out_mp4=out_mp4,
+                style_id=str(pip_layout.get("_style_id") or ""),
             )
             if html_cmd is not None:
                 return html_cmd
@@ -1897,7 +1985,7 @@ def _render_ai_person_matting_segment(
         matte_mp4,
         out_outline_mp4=outline_mp4,
         outline_px=outline_px,
-        quality="balanced",
+        quality="accurate",
         fps=fps,
         torn_paper=bool(pip_cfg.get("torn_paper", False)),
     )
@@ -1936,7 +2024,7 @@ def _render_ai_person_matting_segment(
                 f"[0:v]boxblur={bg_blur}:1,eq=brightness={bg_dark:.2f}[bg_dim];"
                 f"[bg_dim][2:v]overlay=0:0:shortest=1[bg_txt];"
                 f"[0:v]format=rgba[fg_raw];"
-                f"[1:v]format=gray[m_gray];"
+                f"[1:v]format=gray,gblur=sigma=0.5[m_gray];"
                 f"[fg_raw][m_gray]alphamerge[fg_cut];"
                 f"[bg_txt][fg_cut]overlay=0:0:shortest=1,{tail_str}[vout]"
             )
@@ -1957,7 +2045,7 @@ def _render_ai_person_matting_segment(
             render_cutout_scene_bg_png(pip_cfg, bg_png)
             fc = (
                 f"[0:v]format=rgba[fg_raw];"
-                f"[1:v]format=gray[m_gray];"
+                f"[1:v]format=gray,gblur=sigma=0.5[m_gray];"
                 f"[fg_raw][m_gray]alphamerge[fg_cut];"
                 f"[2:v][fg_cut]overlay=0:0:shortest=1,{tail_str}[vout]"
             )
@@ -1980,7 +2068,7 @@ def _render_ai_person_matting_segment(
             fc_s: List[str] = [
                 f"[0:v]split=2[bg0][fg_src]",
                 f"[fg_src]format=rgba[fg_raw]",
-                f"[1:v]format=gray[mm]",
+                f"[1:v]format=gray,gblur=sigma=0.5[mm]",
                 f"[fg_raw][mm]alphamerge[fg_cut]",
             ]
             bg_lbl_s = "[bg0]"
@@ -2000,7 +2088,7 @@ def _render_ai_person_matting_segment(
                     else:
                         cmd_inputs_s.extend(["-i", bpath])
                     prep_lbl_s = f"[bvp_{bi}]"
-                    fc_s.append(f"[{in_i}:v]format=rgba,setpts=PTS-STARTPTS+{rs:.4f}/TB{prep_lbl_s}")
+                    fc_s.append(f"[{in_i}:v]fps=fps={fps},format=rgba,setpts=PTS-STARTPTS+{rs:.4f}/TB{prep_lbl_s}")
                     b_stream = prep_lbl_s
                 nxt_lbl_s = f"[bg_sbt_{bi}]"
                 fc_s.append(
@@ -2029,12 +2117,12 @@ def _render_ai_person_matting_segment(
                 fw_c = max(2, int(round(CANVAS_WIDTH * fg_sc)) & ~1)
                 fh_c = max(2, int(round(CANVAS_HEIGHT * fg_sc)) & ~1)
                 ox_c = int(pip_cfg.get("fg_offset_x") or ((CANVAS_WIDTH - fw_c) // 2))
-                oy_c = int(pip_cfg.get("fg_offset_y") or (CANVAS_HEIGHT - fh_c))
+                oy_c = max(int(pip_cfg.get("fg_offset_y") or (CANVAS_HEIGHT - fh_c)), CANVAS_HEIGHT - fh_c)
                 if bg_mode == "dark_charcoal":
                     fc = (
                         f"color=c={out_hex}:s={CANVAS_WIDTH}x{CANVAS_HEIGHT}:r={fps}:d={clip_dur + 0.2:.4f},format=rgba[wc];"
-                        f"[2:v]format=gray[om];[wc][om]alphamerge,scale={fw_c}:{fh_c}[wo];"
-                        f"[0:v]format=rgba[fr];[1:v]format=gray[mm];[fr][mm]alphamerge,scale={fw_c}:{fh_c}[fc];"
+                        f"[2:v]format=gray,gblur=sigma=0.5[om];[wc][om]alphamerge,scale={fw_c}:{fh_c}[wo];"
+                        f"[0:v]format=rgba[fr];[1:v]format=gray,gblur=sigma=0.5[mm];[fr][mm]alphamerge,scale={fw_c}:{fh_c}[fc];"
                         f"[3:v][wo]overlay=x={ox_c}:y={oy_c}:shortest=1[m1];"
                         f"[m1][fc]overlay=x={ox_c}:y={oy_c}:shortest=1,{tail_str}[vout]"
                     )
@@ -2044,8 +2132,8 @@ def _render_ai_person_matting_segment(
                         f"[bg_in]boxblur=24:2,eq=brightness=-0.26:saturation=0.72[bg0];"
                         f"[bg0][3:v]overlay=0:0:shortest=1[bg_txt];"
                         f"color=c={out_hex}:s={CANVAS_WIDTH}x{CANVAS_HEIGHT}:r={fps}:d={clip_dur + 0.2:.4f},format=rgba[wc];"
-                        f"[2:v]format=gray[om];[wc][om]alphamerge,scale={fw_c}:{fh_c}[wo];"
-                        f"[fg_in]format=rgba[fr];[1:v]format=gray[mm];[fr][mm]alphamerge,scale={fw_c}:{fh_c}[fc];"
+                        f"[2:v]format=gray,gblur=sigma=0.5[om];[wc][om]alphamerge,scale={fw_c}:{fh_c}[wo];"
+                        f"[fg_in]format=rgba[fr];[1:v]format=gray,gblur=sigma=0.5[mm];[fr][mm]alphamerge,scale={fw_c}:{fh_c}[fc];"
                         f"[bg_txt][wo]overlay=x={ox_c}:y={oy_c}:shortest=1[m1];"
                         f"[m1][fc]overlay=x={ox_c}:y={oy_c}:shortest=1,{tail_str}[vout]"
                     )
@@ -2065,10 +2153,10 @@ def _render_ai_person_matting_segment(
                 fc = (
                     f"[3:v]{sec_trim},{_cover_crop_vf(CANVAS_WIDTH, CANVAS_HEIGHT, face_bias=False)},boxblur={blur_s}:2,eq=brightness=-0.08[bg];"
                     f"color=c={out_hex}:s={CANVAS_WIDTH}x{CANVAS_HEIGHT}:r={fps}:d={clip_dur + 0.2:.4f},format=rgba[wc];"
-                    f"[2:v]format=gray[om];"
+                    f"[2:v]format=gray,gblur=sigma=0.5[om];"
                     f"[wc][om]alphamerge[white_outline];"
                     f"[0:v]format=rgba[fg_raw];"
-                    f"[1:v]format=gray[mm];"
+                    f"[1:v]format=gray,gblur=sigma=0.5[mm];"
                     f"[fg_raw][mm]alphamerge[fg_cut];"
                     f"[bg][white_outline]overlay=0:0:shortest=1[m1];"
                     f"[m1][fg_cut]overlay=0:0:shortest=1,{tail_str}[vout]"
@@ -2088,10 +2176,10 @@ def _render_ai_person_matting_segment(
                 fc = (
                     f"[0:v]boxblur={blur_s + 4}:2,eq=brightness=-0.10:saturation=0.85[bg];"
                     f"color=c={out_hex}:s={CANVAS_WIDTH}x{CANVAS_HEIGHT}:r={fps}:d={clip_dur + 0.2:.4f},format=rgba[wc];"
-                    f"[2:v]format=gray[om];"
+                    f"[2:v]format=gray,gblur=sigma=0.5[om];"
                     f"[wc][om]alphamerge[white_outline];"
                     f"[0:v]format=rgba[fg_raw];"
-                    f"[1:v]format=gray[mm];"
+                    f"[1:v]format=gray,gblur=sigma=0.5[mm];"
                     f"[fg_raw][mm]alphamerge[fg_cut];"
                     f"[bg][white_outline]overlay=0:0:shortest=1[m1];"
                     f"[m1][fg_cut]overlay=0:0:shortest=1,{tail_str}[vout]"
@@ -2190,11 +2278,11 @@ def _render_ai_person_matting_segment(
                 bg_lbl = nxt_lbl
 
             fc_stages.append(f"[0:v]format=rgba[fg_raw]")
-            fc_stages.append(f"[1:v]format=gray[mm]")
+            fc_stages.append(f"[1:v]format=gray,gblur=sigma=0.5[mm]")
             fc_stages.append(f"[fg_raw][mm]alphamerge{scale_fg}[fg_cut]")
             if has_out_layer:
                 fc_stages.append(f"color=c={out_hex}:s={CANVAS_WIDTH}x{CANVAS_HEIGHT}:r={fps}:d={clip_dur + 0.2:.4f},format=rgba[wc]")
-                fc_stages.append(f"[{out_idx}:v]format=gray[om]")
+                fc_stages.append(f"[{out_idx}:v]format=gray,gblur=sigma=0.5[om]")
                 fc_stages.append(f"[wc][om]alphamerge{scale_fg}[white_outline]")
                 fc_stages.append(f"{bg_lbl}[white_outline]overlay=x={ox}:y={oy}:shortest=1[m1]")
                 fc_stages.append(f"[m1][fg_cut]overlay=x={ox}:y={oy}:shortest=1,{tail_str}[vout]")
@@ -2216,7 +2304,7 @@ def _render_ai_person_matting_segment(
                 fc = (
                     f"[2:v]{sec_trim},{_cover_crop_vf(CANVAS_WIDTH, CANVAS_HEIGHT, face_bias=False)},boxblur=6:1,eq=saturation=0.52:contrast=1.10:brightness=-0.12[bg];"
                     f"[0:v]format=rgba[fg_raw];"
-                    f"[1:v]format=gray[mm];"
+                    f"[1:v]format=gray,gblur=sigma=0.5[mm];"
                     f"[fg_raw][mm]alphamerge[fg_cut];"
                     f"[bg][fg_cut]overlay=0:0:shortest=1,{tail_str}[vout]"
                 )
@@ -2236,7 +2324,7 @@ def _render_ai_person_matting_segment(
                     render_cool_data_news_bg_mp4(data_bg, max(0.6, clip_dur + 0.1), fps=fps)
                 fc = (
                     f"[0:v]format=rgba[fg_raw];"
-                    f"[1:v]format=gray[mm];"
+                    f"[1:v]format=gray,gblur=sigma=0.5[mm];"
                     f"[fg_raw][mm]alphamerge[fg_cut];"
                     f"[2:v][fg_cut]overlay=0:0:shortest=1,{tail_str}[vout]"
                 )
@@ -2652,6 +2740,18 @@ def build_base_video_track(
         extra_xf = xf_frames if (idx < len(xf_edges) and xf_edges[idx]) else 0
         seg_frames = clip_nom_frames[idx] + extra_xf
         clip_eff = dict(clip)
+        if isinstance(clip_eff.get("pip_layout"), dict):
+            _top_safe_val = 160
+            try:
+                from style_visual_truth import get_top_safe_y
+                _top_safe_val = get_top_safe_y(style_id)
+            except Exception:
+                _top_safe_val = 160
+            _pl_eff = dict(clip_eff["pip_layout"])
+            _pl_eff["_style_id"] = style_id
+            if _top_safe_val > 160 and not _pl_eff.get("top_safe_y"):
+                _pl_eff["top_safe_y"] = _top_safe_val
+            clip_eff["pip_layout"] = _pl_eff
         _m_path = v11_panel_motion_map.get(f"clip_{idx:03d}")
         if _m_path and isinstance(clip_eff.get("pip_layout"), dict):
             clip_eff["pip_layout"] = {**clip_eff["pip_layout"], "_v11_html_motion_path": str(_m_path)}
@@ -2668,9 +2768,11 @@ def build_base_video_track(
         sec_hash = sha256_file(Path(sec_p)) if sec_p and Path(sec_p).is_file() else ""
         pip_mode_k = str((clip.get("pip_layout") or {}).get("mode") or "")
         seg_key = compute_segment_cache_key({
-            "ver": 6,
+            "ver": 7,
+            "v12_fp": _v12_code_fingerprint(),
+            "style_id": style_id,
             "cmd": cmd[:-1],
-            "pip_layout": clip.get("pip_layout"),
+            "pip_layout": clip_eff.get("pip_layout"),
             "pip_mode": pip_mode_k,
             "html_motion": _m_path.name if _m_path else "",
             "seg_frames": seg_frames,
@@ -2871,6 +2973,29 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
         for c in (edl.get("clips") or [])
         if isinstance(c.get("pip_layout"), dict) and c["pip_layout"].get("v10_truth_beat")
     ]
+    # 预采集全片常驻顶栏时间窗与安全底线（用于 callout 避让与后续前景元素夹持）
+    top_bar_windows: List[Tuple[float, float, int]] = []
+    for elem_tb in (pkg_data.get("visual_elements") or []):
+        if str(elem_tb.get("kind") or elem_tb.get("type") or "") != "persistent_top_bar":
+            continue
+        tb_st = max(0.0, frames_to_sec(int(elem_tb.get("start_frame", 0)), fps))
+        tb_et = min(exact_dur, frames_to_sec(int(elem_tb.get("end_frame", 0)), fps))
+        if tb_et <= tb_st:
+            continue
+        tb_fb = elem_tb.get("final_bbox") or elem_tb.get("bbox") or {}
+        if elem_tb.get("top_bar_mode"):
+            tb_y0 = 164 if str(elem_tb.get("top_bar_mode")) == "s08_slash_dual_top_left" else 162
+            tb_yb = max(356, tb_y0 + int(tb_fb.get("h") or 152) + 28)
+        else:
+            tb_yb = int(tb_fb.get("y") or 162) + int(tb_fb.get("h") or 58) + 16
+        top_bar_windows.append((tb_st, tb_et, tb_yb))
+
+    def _active_top_safe_y(s_sec: float, e_sec: float) -> int:
+        return max(
+            [SAFE_ZONE["y_min"]]
+            + [yb for ts, te, yb in top_bar_windows if min(e_sec, te) - max(s_sec, ts) > 0.05]
+        )
+
     # V11.0 批量预渲染所有常规镜头上的 30fps 透明 HTML 动态前景花字（单浏览器 --batch-json，彻底告别静态死花字）
     v11_callout_mov_map: Dict[int, Path] = {}
     if not preview:
@@ -2886,7 +3011,10 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
                 if kd_co not in ("persistent_top_bar", "opening_profile_card") and truth_panel_spans:
                     if any(min(et_co, pe) - max(st_co, ps) >= 0.25 for ps, pe in truth_panel_spans):
                         continue
-                spec_co = build_callout_job_spec(elem_co, style_id=style_id, dur_sec=et_co - st_co)
+                spec_co = build_callout_job_spec(
+                    elem_co, style_id=style_id, dur_sec=et_co - st_co,
+                    top_safe_y=_active_top_safe_y(st_co, et_co),
+                )
                 if spec_co is not None:
                     co_jobs[f"co_{idx_co:03d}"] = spec_co
             if co_jobs:
@@ -2965,12 +3093,15 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
             ov_path = _scale_png_for_preview(png_path, f"p{idx}")
 
         elem_kind_s = str(elem.get("kind") or elem.get("type") or "")
+        active_y_min = _active_top_safe_y(s_t, e_t)
+        zone_ov = {**SAFE_ZONE, "y_min": active_y_min}
         if elem_kind_s == "persistent_top_bar" and elem.get("top_bar_mode"):
             if str(elem.get("top_bar_mode")) == "s08_slash_dual_top_left":
-                px, py = 72, 172
+                px, py = 72, 164
             else:
                 px = max(40, (CANVAS_WIDTH - pw) // 2)
-                py = 168
+                py = 162
+            top_bar_windows.append((s_t, e_t, max(356, py + ph + 28)))
         elif elem_kind_s == "opening_profile_card":
             px, py = 76, 960
         elif style_id == "style_01" and (elem_kind_s == "center_burst_title" or str(elem.get("opening_mode") or "") == "store_poster_burst"):
@@ -3012,26 +3143,36 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
                         py = max(164, min(1130 - ph, _f_bot + 12))
         elif style_id == "style_18" and elem_kind_s == "center_burst_title":
             px = max(40, (CANVAS_WIDTH - pw) // 2)
-            py = max(760, 1120 - ph)
+            py = max(active_y_min, 760, 1120 - ph)
         elif elem_kind_s == "indicator_sticker":
             def_x = max(SAFE_ZONE["x_min"], (CANVAS_WIDTH - pw) // 2)
-            def_y = SAFE_ZONE["y_min"] + 120
-            px, py = _place_from_final_bbox(elem, pw, ph, SAFE_ZONE, (def_x, def_y), [])
+            def_y = max(active_y_min, SAFE_ZONE["y_min"] + 120)
+            px, py = _place_from_final_bbox(elem, pw, ph, zone_ov, (def_x, def_y), [])
+        elif elem_kind_s == "end_card_cta" and (elem.get("final_bbox") or elem.get("bbox")):
+            def_x = max(SAFE_ZONE["x_min"], (CANVAS_WIDTH - pw) // 2)
+            def_y = max(active_y_min, SAFE_ZONE["y_min"] + 40)
+            avoid_faces = _pad_faces_for_head_avoidance(_faces_at_time(s_t))
+            px, py = _place_from_final_bbox(elem, pw, ph, zone_ov, (def_x, def_y), avoid_faces)
         elif style_id in ("style_05", "style_06", "style_08", "style_12"):
             px = max(60, (CANVAS_WIDTH - pw) // 2)
-            py = max(860, min(1020, 1120 - ph))
+            py = max(active_y_min, 860, min(1020, 1120 - ph))
         elif style_id == "style_14":
-            px, py = max(60, (CANVAS_WIDTH - pw) // 2), 915
-        elif style_id == "style_16":
-            px, py = max(60, (CANVAS_WIDTH - pw) // 2), 775
+            px, py = max(60, (CANVAS_WIDTH - pw) // 2), max(active_y_min, 915)
         elif style_id == "style_22":
-            px, py = max(40, (CANVAS_WIDTH - pw) // 2), 62
+            px, py = max(40, (CANVAS_WIDTH - pw) // 2), max(active_y_min, 62) if active_y_min > SAFE_ZONE["y_min"] else 62
         else:
             def_x = max(SAFE_ZONE["x_min"], (CANVAS_WIDTH - pw) // 2)
-            def_y = SAFE_ZONE["y_min"] + 40
-            px, py = _place_from_final_bbox(elem, pw, ph, SAFE_ZONE, (def_x, def_y), _faces_at_time(s_t))
-        if style_id not in ("style_09", "style_20") and (py + ph) > 1130:
-            py = max(140, 1130 - ph)
+            def_y = max(active_y_min, SAFE_ZONE["y_min"] + 40)
+            is_behind_elem = (str(elem.get("z_layer") or "") == "behind_person") or (
+                style_id in ("style_10", "style_16") and elem_kind_s == "center_burst_title"
+            )
+            avoid_faces = [] if is_behind_elem else _pad_faces_for_head_avoidance(_faces_at_time(s_t))
+            px, py = _place_from_final_bbox(elem, pw, ph, zone_ov, (def_x, def_y), avoid_faces)
+        if elem_kind_s != "persistent_top_bar" and active_y_min > SAFE_ZONE["y_min"] and py < active_y_min:
+            py = active_y_min
+        y_cap_ov = 1176 if elem_kind_s == "end_card_cta" else 1130
+        if style_id not in ("style_09", "style_20") and (py + ph) > y_cap_ov:
+            py = max(active_y_min if elem_kind_s != "persistent_top_bar" else 140, y_cap_ov - ph)
         blur_rect = (px, py, pw, ph) if (not preview and elem.get("overlay_mode") == "focus_blur") else None
         fade_in = bool((not preview) and (not is_video_ov) and int(elem.get("start_frame", 0)) > 0)
         prepared_pkg_ovs.append((idx, elem, ov_path, px, py, s_t, e_t, blur_rect, fade_in, is_video_ov))
@@ -3097,34 +3238,57 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
     clips_base = [dict(c) for c in (edl.get("clips") or [])]
     skip_foreground_idxs: set = set()
     fallback_lower_idxs: set = set()
+    extra_uncovered_overlays: List[Tuple[Path, int, int, float, float, Optional[Tuple[int, int, int, int]], bool, bool]] = []
     if (not preview) and prepared_pkg_ovs:
         for p_idx, p_elem, ov_p, bx, by, s_t, e_t, _br, _fi, _iv in prepared_pkg_ovs:
             z_layer_p = str(p_elem.get("z_layer") or "")
             is_behind_person = (z_layer_p == "behind_person")
             is_center_burst = (str(p_elem.get("kind") or "") == "center_burst_title")
+            allow_auto_aroll = is_behind_person or (is_center_burst and style_id in ("style_10", "style_16"))
             if not (is_behind_person or is_center_burst):
                 continue
             cut_overlap = 0.0
-            matched_clips: List[Tuple[int, float, float]] = []
+            matched_clips: List[Tuple[int, float, float, float, float]] = []
             for ci, c_it in enumerate(clips_base):
                 lay = c_it.get("pip_layout") or {}
                 l_mode = str(lay.get("mode") or "")
-                if is_behind_person:
-                    if l_mode not in ("self_matting_behind_text", "layered_cutout_over_broll"):
-                        continue
-                else:
-                    if l_mode != "layered_cutout_over_broll" or float(lay.get("fg_scale") or 1.2) < 0.98:
-                        continue
                 c_s = float(c_it.get("timeline_in_sec") or 0.0)
                 c_e = float(c_it.get("timeline_out_sec") or 0.0)
-                ov_l = min(c_e, e_t) - max(c_s, s_t)
-                if ov_l >= (0.12 if is_behind_person else 0.20):
+                ov_s = max(c_s, s_t)
+                ov_e = min(c_e, e_t)
+                ov_l = ov_e - ov_s
+                if ov_l < (0.12 if allow_auto_aroll else 0.20):
+                    continue
+                eligible = False
+                if l_mode in ("self_matting_behind_text", "layered_cutout_over_broll"):
+                    if l_mode == "layered_cutout_over_broll" and (not is_behind_person) and float(lay.get("fg_scale") or 1.2) < 0.98:
+                        eligible = False
+                    else:
+                        eligible = True
+                elif allow_auto_aroll and str(c_it.get("track_role") or "") == "a_roll" and l_mode in ("", "none"):
+                    mp_c = str(c_it.get("media_path") or "")
+                    has_face_c = bool(faces_by_mp4.get(mp_c) or (Path(mp_c).is_file() and faces_by_mp4.get(str(Path(mp_c).resolve()))))
+                    if has_face_c:
+                        eligible = True
+                        clips_base[ci]["pip_layout"] = {
+                            "mode": "self_matting_behind_text",
+                            "cutout": True,
+                            "self_matting": True,
+                            "single_source": True,
+                            "fg_scale": 1.0,
+                            "outline_px": 0,
+                            "matting_quality": "accurate",
+                            "face_framing": "face_center",
+                            "back_overlays": [],
+                        }
+                if eligible:
                     cut_overlap += ov_l
-                    matched_clips.append((ci, max(c_s, s_t) - c_s, min(c_e, e_t) - c_s))
-            min_need = 0.15 if is_behind_person else min(0.25, (e_t - s_t) * 0.45)
+                    matched_clips.append((ci, ov_s - c_s, ov_e - c_s, ov_s, ov_e))
+            min_need = 0.15 if allow_auto_aroll else min(0.25, (e_t - s_t) * 0.45)
             if matched_clips and cut_overlap >= min_need:
                 skip_foreground_idxs.add(p_idx)
-                for ci, rs_c, re_c in matched_clips:
+                covered_spans: List[Tuple[float, float]] = []
+                for ci, rs_c, re_c, abs_s, abs_e in matched_clips:
                     c_s = float(clips_base[ci].get("timeline_in_sec") or 0.0)
                     lay_new = dict(clips_base[ci].get("pip_layout") or {})
                     b_list = list(lay_new.get("back_overlays") or [])
@@ -3138,6 +3302,26 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
                     })
                     lay_new["back_overlays"] = b_list
                     clips_base[ci]["pip_layout"] = lay_new
+                    covered_spans.append((abs_s, abs_e))
+                # 缺口保护：若 [s_t, e_t] 中夹杂未走抠像的短 B-roll 片段，保留其对应的非遮挡补丁窗，防止文字半途闪灭
+                covered_spans.sort()
+                cur_u = s_t
+                for cs_u, ce_u in covered_spans:
+                    if cs_u - cur_u >= 0.25:
+                        extra_uncovered_overlays.append((
+                            ov_p,
+                            int(round(bx * scale_k)),
+                            int(round(by * scale_k)),
+                            cur_u, cs_u, _br, False, _iv,
+                        ))
+                    cur_u = max(cur_u, ce_u)
+                if e_t - cur_u >= 0.25:
+                    extra_uncovered_overlays.append((
+                        ov_p,
+                        int(round(bx * scale_k)),
+                        int(round(by * scale_k)),
+                        cur_u, e_t, _br, False, _iv,
+                    ))
             elif is_behind_person:
                 fallback_lower_idxs.add(p_idx)
     edl_for_base["clips"] = clips_base
@@ -3157,6 +3341,7 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
             int(round(py * scale_k)),
             s_t, e_t, blur_rect, fade_in, is_video_ov,
         ))
+    overlays.extend(extra_uncovered_overlays)
 
     # 字幕闭环必须量在「真实的底片」上：先前把 base + 所有非字幕图层合成为 stage A，
     # 再从 stage A 抽帧量对比度。否则投影/描边是按一张没有贴纸/花字/卡片的假底图在算，
@@ -3227,6 +3412,7 @@ def render_mp4(pipeline_dir: Path, preview: bool = False) -> Path:
             "font_path": font_path,
             "shadow_boost": sub_meta.get("shadow_boost"),
             "stroke_extra": sub_meta.get("stroke_extra"),
+            "bg_pill_applied": bool(sub_meta.get("bg_pill_applied")),
         })
         (work_dir / f"sub_{idx:03d}.key").write_text(sub_cache_key, encoding="utf-8")
         px, py = _place_for(sw_px, sh_px)

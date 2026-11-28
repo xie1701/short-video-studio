@@ -10,7 +10,7 @@
 
 # short-video-studio 跨平台可运行性审计
 
-根目录：`/Users/jerry/Downloads/AIworks/shortVideo-CCstudio/`。下文路径均相对该根（`short-video-studio/scripts/...`）。
+根目录：`<repo_root>/`。下文路径均相对该根（`short-video-studio/scripts/...`）。
 只读核查；在本机跑了 `check_and_setup.py --check-only`（未安装、未写文件），确认基线为 Darwin arm64 + Python 3.12 venv + Homebrew ffmpeg 9.0.2 + Xcode CLT。
 
 先给三条会改变结论的硬事实：

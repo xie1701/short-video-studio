@@ -212,70 +212,70 @@ def render_truth_overlay_png(
 
         if tb_mode == "s03_dual_yellow_serif":
             fnt = _load_font_role("serif", font_candidates)
-            sp1 = _text_line_rgba(l1, fnt, 820, 72, (253, 224, 71, 255), stroke_rgba=(10, 10, 14, 255), stroke_w=5, shadow_rgba=(0, 0, 0, 190), shadow_dy=5)
-            sp2 = _text_line_rgba(l2, fnt, 820, 72, (253, 224, 71, 255), stroke_rgba=(10, 10, 14, 255), stroke_w=5, shadow_rgba=(0, 0, 0, 190), shadow_dy=5) if l2 else None
+            sp1 = _text_line_rgba(l1, fnt, 820, 50, (253, 224, 71, 255), stroke_rgba=(10, 10, 14, 255), stroke_w=4, shadow_rgba=(0, 0, 0, 185), shadow_dy=3)
+            sp2 = _text_line_rgba(l2, fnt, 820, 50, (253, 224, 71, 255), stroke_rgba=(10, 10, 14, 255), stroke_w=4, shadow_rgba=(0, 0, 0, 185), shadow_dy=3) if l2 else None
             sprites = [s for s in (sp1, sp2) if s is not None]
             if not sprites:
                 return None
             w = max(s.width for s in sprites) + 24
-            h = sum(s.height for s in sprites) + (12 if len(sprites) > 1 else 0) + 16
+            h = sum(s.height for s in sprites) + (4 if len(sprites) > 1 else 0) + 8
             cv = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-            y = 8
+            y = 4
             for sp in sprites:
                 cv.alpha_composite(sp, dest=((w - sp.width) // 2, y))
-                y += sp.height + 12
+                y += sp.height + 4
             return cv
 
         if tb_mode == "s06_translucent_warm_gold":
             fnt = _load_font_role("serif_bold", font_candidates)
-            sp1 = _text_line_rgba(l1, fnt, 800, 62, (244, 226, 168, 255), stroke_rgba=(20, 18, 14, 210), stroke_w=2, shadow_rgba=(0, 0, 0, 150), shadow_dy=3)
-            sp2 = _text_line_rgba(l2, fnt, 800, 62, (244, 226, 168, 255), stroke_rgba=(20, 18, 14, 210), stroke_w=2, shadow_rgba=(0, 0, 0, 150), shadow_dy=3) if l2 else None
+            sp1 = _text_line_rgba(l1, fnt, 800, 46, (244, 226, 168, 255), stroke_rgba=(20, 18, 14, 210), stroke_w=2, shadow_rgba=(0, 0, 0, 150), shadow_dy=2)
+            sp2 = _text_line_rgba(l2, fnt, 800, 46, (244, 226, 168, 255), stroke_rgba=(20, 18, 14, 210), stroke_w=2, shadow_rgba=(0, 0, 0, 150), shadow_dy=2) if l2 else None
             sprites = [s for s in (sp1, sp2) if s is not None]
             if not sprites:
                 return None
             w = min(900, max(760, max(s.width for s in sprites) + 112))
-            h = sum(s.height for s in sprites) + (14 if len(sprites) > 1 else 0) + 42
+            h = sum(s.height for s in sprites) + (6 if len(sprites) > 1 else 0) + 20
             cv = Image.new("RGBA", (w, h), (0, 0, 0, 0))
             d = ImageDraw.Draw(cv)
             d.rounded_rectangle([(0, 0), (w - 1, h - 1)], radius=16, fill=(26, 28, 32, 162))
-            y = 20
+            y = 10
             for sp in sprites:
                 cv.alpha_composite(sp, dest=((w - sp.width) // 2, y))
-                y += sp.height + 14
+                y += sp.height + 6
             return cv
 
         if tb_mode == "s08_slash_dual_top_left":
             fnt = _load_font_role("oblique", font_candidates)
             top_l = f"/{l1.strip('/')}/"
             bot_l = l2 or "核心实战拆解"
-            sp1 = _text_line_rgba(top_l, fnt, 700, 50, (255, 255, 255, 255), stroke_rgba=(12, 16, 26, 255), stroke_w=5, shadow_rgba=(0, 0, 0, 180), shadow_dy=4)
-            sp2 = _text_line_rgba(bot_l, fnt, 700, 62, (255, 225, 77, 255), stroke_rgba=(12, 16, 26, 255), stroke_w=6, shadow_rgba=(0, 0, 0, 185), shadow_dy=5)
-            sprites = [s for s in (sp1, sp2) if s is not None]
-            if not sprites:
-                return None
-            w = max(s.width for s in sprites) + 28
-            h = sum(s.height for s in sprites) + 24
-            cv = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-            y = 6
-            for sp in sprites:
-                cv.alpha_composite(sp, dest=(12, y))
-                y += sp.height + 10
-            return cv
-
-        if tb_mode == "s12_white_yellow_dual_top":
-            fnt = _load_font_role("sans", font_candidates)
-            sp1 = _text_line_rgba(l1, fnt, 780, 60, (255, 255, 255, 255), stroke_rgba=(10, 10, 14, 255), stroke_w=6, shadow_rgba=(0, 0, 0, 195), shadow_dy=5)
-            sp2 = _text_line_rgba(l2, fnt, 780, 66, (255, 225, 53, 255), stroke_rgba=(10, 10, 14, 255), stroke_w=7, shadow_rgba=(0, 0, 0, 195), shadow_dy=5) if l2 else None
+            sp1 = _text_line_rgba(top_l, fnt, 700, 40, (255, 255, 255, 255), stroke_rgba=(12, 16, 26, 255), stroke_w=4, shadow_rgba=(0, 0, 0, 175), shadow_dy=3)
+            sp2 = _text_line_rgba(bot_l, fnt, 700, 50, (255, 225, 77, 255), stroke_rgba=(12, 16, 26, 255), stroke_w=5, shadow_rgba=(0, 0, 0, 180), shadow_dy=3)
             sprites = [s for s in (sp1, sp2) if s is not None]
             if not sprites:
                 return None
             w = max(s.width for s in sprites) + 24
-            h = sum(s.height for s in sprites) + (12 if len(sprites) > 1 else 0) + 18
+            h = sum(s.height for s in sprites) + (4 if len(sprites) > 1 else 0) + 10
             cv = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-            y = 8
+            y = 5
+            for sp in sprites:
+                cv.alpha_composite(sp, dest=(12, y))
+                y += sp.height + 4
+            return cv
+
+        if tb_mode == "s12_white_yellow_dual_top":
+            fnt = _load_font_role("sans", font_candidates)
+            sp1 = _text_line_rgba(l1, fnt, 780, 46, (255, 255, 255, 255), stroke_rgba=(10, 10, 14, 255), stroke_w=4, shadow_rgba=(0, 0, 0, 190), shadow_dy=3)
+            sp2 = _text_line_rgba(l2, fnt, 780, 52, (255, 225, 53, 255), stroke_rgba=(10, 10, 14, 255), stroke_w=5, shadow_rgba=(0, 0, 0, 190), shadow_dy=3) if l2 else None
+            sprites = [s for s in (sp1, sp2) if s is not None]
+            if not sprites:
+                return None
+            w = max(s.width for s in sprites) + 24
+            h = sum(s.height for s in sprites) + (4 if len(sprites) > 1 else 0) + 8
+            cv = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+            y = 4
             for sp in sprites:
                 cv.alpha_composite(sp, dest=((w - sp.width) // 2, y))
-                y += sp.height + 12
+                y += sp.height + 4
             return cv
 
     # 2) style_06 开场左侧人设头衔名片
@@ -497,10 +497,10 @@ def render_person_behind_giant_v10_png(
     frame_black: bool = False,
     font_candidates: Optional[List[str]] = None,
 ) -> Path:
-    """升级版人后巨字透明图（1080x1920）：支持红/黄/白/灰巨字、可控高度及 style_21 黑边相框。"""
+    """升级版人后巨字透明图（1080x1920）：支持红/黄/白/灰巨字、可控高度、无截断自适应换行及 style_21 黑边相框。"""
     out_png = Path(out_png)
     out_png.parent.mkdir(parents=True, exist_ok=True)
-    clean_t = str(text or "核心真相").strip()[:4] or "核心真相"
+    clean_t = normalize_display_glyphs(str(text or "核心真相").strip()) or "核心真相"
     fnt = _load_font_role("sans", font_candidates)
     fg_rgba = hex_to_rgba(accent_hex, 255)
     st_rgba = hex_to_rgba(stroke_hex, 230)
@@ -509,12 +509,33 @@ def render_person_behind_giant_v10_png(
         d = ImageDraw.Draw(cv)
         d.rectangle([(0, 0), (CANVAS_WIDTH - 1, 210)], fill=(18, 20, 26, 230))
         d.rectangle([(0, 1520), (CANVAS_WIDTH - 1, CANVAS_HEIGHT - 1)], fill=(18, 20, 26, 230))
-    sp = _text_line_rgba(
-        clean_t, fnt, CANVAS_WIDTH - 56, 250, fg_rgba,
-        stroke_rgba=st_rgba, stroke_w=6, shadow_rgba=(0, 0, 0, 185), shadow_dy=10, min_fs=120,
-    )
-    if sp is not None:
-        cv.alpha_composite(sp, dest=((CANVAS_WIDTH - sp.width) // 2, max(160, y_center - sp.height // 2)))
+    if len(clean_t) <= 6:
+        req_fs = 250 if len(clean_t) <= 4 else 184
+        sp = _text_line_rgba(
+            clean_t, fnt, CANVAS_WIDTH - 56, req_fs, fg_rgba,
+            stroke_rgba=st_rgba, stroke_w=6, shadow_rgba=(0, 0, 0, 185), shadow_dy=10, min_fs=112,
+        )
+        if sp is not None:
+            y_pos = max(160, min(920 - sp.height, y_center - sp.height // 2))
+            cv.alpha_composite(sp, dest=((CANVAS_WIDTH - sp.width) // 2, y_pos))
+    else:
+        max_line_chars = max(5, (len(clean_t) + 1) // 2)
+        wrapped = _wrap_lines(clean_t, max_chars_per_line=max_line_chars, max_lines=2) or [clean_t]
+        sprites = [
+            _text_line_rgba(
+                ln, fnt, CANVAS_WIDTH - 64, 156, fg_rgba,
+                stroke_rgba=st_rgba, stroke_w=6, shadow_rgba=(0, 0, 0, 185), shadow_dy=8, min_fs=92,
+            )
+            for ln in wrapped[:2]
+        ]
+        sprites = [s for s in sprites if s is not None]
+        if sprites:
+            gap = 18
+            tot_h = sum(s.height for s in sprites) + gap * (len(sprites) - 1)
+            cur_y = max(170, min(980 - tot_h, y_center - tot_h // 2))
+            for sp in sprites:
+                cv.alpha_composite(sp, dest=((CANVAS_WIDTH - sp.width) // 2, cur_y))
+                cur_y += sp.height + gap
     cv.save(out_png)
     return out_png
 
@@ -528,7 +549,7 @@ def render_cutout_scene_bg_png(
     out_png.parent.mkdir(parents=True, exist_ok=True)
     mode = str(pip_cfg.get("mode") or "")
     bg_mode = str(pip_cfg.get("bg_mode") or "")
-    quote_txt = str(pip_cfg.get("quote_text") or pip_cfg.get("giant_back_text") or "先找前提再落地").strip()
+    quote_txt = str(pip_cfg.get("quote_text") or pip_cfg.get("giant_back_text") or "核心要点拆解").strip()
     sans_f = _load_font_role("sans")
     serif_f = _load_font_role("serif")
 
@@ -650,8 +671,10 @@ def build_truth_scene_panel_cmd(
         elif variant in ("top_red_pain", "top_large_gold", "top_guofeng_gold", "top_blur_gold"):
             use_f = serif_f if variant in ("top_guofeng_gold", "top_blur_gold", "top_red_pain") else sans_f
             l1, l2 = _split_two(quote_txt, "", max_first=8)
-            c1 = hex_to_rgba(accent_hex, 255) if variant in ("top_red_pain", "top_guofeng_gold", "top_blur_gold") else (255, 255, 255, 255)
-            c2 = hex_to_rgba(sub_hex, 255) if variant == "top_red_pain" else hex_to_rgba(accent_hex, 255)
+            eff_acc = "#FF6B6B" if (variant == "top_red_pain" and accent_hex.upper() in ("#C92A2A", "#E03131")) else accent_hex
+            eff_sub = "#FF8787" if (variant == "top_red_pain" and sub_hex.upper() in ("#C92A2A", "#E03131")) else sub_hex
+            c1 = hex_to_rgba(eff_acc, 255) if variant in ("top_red_pain", "top_guofeng_gold", "top_blur_gold") else (255, 255, 255, 255)
+            c2 = hex_to_rgba(eff_sub, 255) if variant == "top_red_pain" else hex_to_rgba(eff_acc, 255)
             _paste_centered_lines(cv, [l1], cy + cr + 62, use_f, 68, c1, stroke_rgba=(12, 10, 10, 220), stroke_w=3)
             if l2:
                 _paste_centered_lines(cv, [l2], cy + cr + 150, use_f, 70, c2, stroke_rgba=(12, 10, 10, 220), stroke_w=3)
@@ -847,16 +870,58 @@ def build_truth_scene_panel_cmd(
         # 单圆角方窗变体（s04_dual_yellow_header / s04_focus_giant_word / s13_red_warn_box / s17_black_top_square / s24_rounded_impact）
         if variant == "s04_dual_yellow_header":
             fw, fh, fx, fy, rad = 820, 820, 130, 410, 38
-            _paste_centered_lines(cv, [title_txt[:7]], 235, serif_f, 102, hex_to_rgba(accent_hex, 255), stroke_rgba=(12, 12, 16, 255), stroke_w=5)
+            hdr_lines = _wrap_lines(title_txt, max_chars_per_line=7, max_lines=2) if len(title_txt) > 7 else [title_txt]
+            hdr_fs = 102 if len(hdr_lines) == 1 and len(title_txt) <= 6 else 74
+            _paste_centered_lines(cv, hdr_lines, 200 if len(hdr_lines) > 1 else 235, serif_f, hdr_fs, hex_to_rgba(accent_hex, 255), stroke_rgba=(12, 12, 16, 255), stroke_w=5, line_gap=10)
         elif variant == "s04_focus_giant_word":
-            fw, fh, fx, fy, rad = 680, 680, 200, 220, 36
-            _w4 = title_txt[:4]
-            _fs4 = 118 if len(_w4) >= 4 else 138
-            _paste_centered_lines(cv, [_w4], 970, sans_f, _fs4, (255, 255, 255, 255))
+            fw, fh, fx, fy, rad = 680, 680, 200, 210, 36
+            clean_title = normalize_display_glyphs(re.sub(r"\s+", "", title_txt)) or "核心真相"
+            if len(clean_title) <= 6:
+                f_lines = [clean_title]
+            else:
+                max_c = max(6, (len(clean_title) + 1) // 2)
+                f_lines = _wrap_lines(clean_title, max_chars_per_line=max_c, max_lines=2)
+                if len("".join(f_lines)) < len(clean_title):
+                    mid = (len(clean_title) + 1) // 2
+                    f_lines = [clean_title[:mid], clean_title[mid:]]
+            max_line_c = max((len(ln) for ln in f_lines), default=len(clean_title))
+            if len(f_lines) == 1:
+                _fs4 = 112 if max_line_c <= 4 else (98 if max_line_c <= 6 else 78)
+            else:
+                _fs4 = 62 if max_line_c <= 7 else (56 if max_line_c <= 9 else 48)
+            frame_bot = fy + fh + 6  # 896px：严禁与上方圆角方窗底部重叠
+            max_band_h = 1055 - frame_bot  # 159px：严格落在 y < 1056 安全带内
+            gap = 8
+            line_sprites: List[Image.Image] = []
+            while _fs4 >= 32:
+                cand = [
+                    sp for sp in (
+                        _text_line_rgba(
+                            ln, sans_f, 920, _fs4, (255, 255, 255, 255),
+                            shadow_rgba=(0, 0, 0, 175), shadow_dy=4,
+                        )
+                        for ln in f_lines[:2]
+                    )
+                    if sp is not None
+                ]
+                if not cand:
+                    break
+                tot_h = sum(sp.height for sp in cand) + gap * (len(cand) - 1)
+                if tot_h <= max_band_h or _fs4 <= 32:
+                    line_sprites = cand
+                    break
+                _fs4 -= 4
+            if line_sprites:
+                tot_h = sum(sp.height for sp in line_sprites) + gap * (len(line_sprites) - 1)
+                cur_y = max(frame_bot, min(1055 - tot_h, 974 - tot_h // 2))
+                for sp in line_sprites:
+                    cv.alpha_composite(sp, dest=((CANVAS_WIDTH - sp.width) // 2, cur_y))
+                    cur_y += sp.height + gap
         elif variant == "s13_red_warn_box":
             fw, fh, fx, fy, rad = 820, 740, 130, 440, 24
             _paste_centered_lines(cv, ["一定要警惕"], 205, serif_f, 44, (255, 255, 255, 250), left_x=134)
-            _paste_centered_lines(cv, [title_txt[:6]], 268, serif_f, 108, (224, 49, 49, 255), stroke_rgba=(20, 6, 6, 240), stroke_w=4, left_x=130)
+            w_lines = _wrap_lines(title_txt, max_chars_per_line=6, max_lines=2) if len(title_txt) > 7 else [title_txt]
+            _paste_centered_lines(cv, w_lines, 268, serif_f, 108 if len(w_lines) == 1 else 74, (224, 49, 49, 255), stroke_rgba=(20, 6, 6, 240), stroke_w=4, left_x=130, line_gap=8)
             d.rounded_rectangle([(fx - 4, fy - 4), (fx + fw + 4, fy + fh + 4)], radius=rad + 4, outline=(245, 245, 248, 225), width=4)
         elif variant == "s24_rounded_impact":
             fw, fh, fx, fy, rad = 920, 640, 80, 340, 36
@@ -870,7 +935,8 @@ def build_truth_scene_panel_cmd(
         if variant == "s24_rounded_impact":
             fg_png = work / f"{stem}_v10_s24_fg.png"
             fcv = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (0, 0, 0, 0))
-            _paste_centered_lines(fcv, [title_txt[:6]], 610, oblique_f, 118, (255, 225, 53, 255), stroke_rgba=(28, 78, 166, 255), stroke_w=10)
+            s24_lines = _wrap_lines(title_txt, max_chars_per_line=7, max_lines=2) if len(title_txt) > 7 else [title_txt]
+            _paste_centered_lines(fcv, s24_lines, 610, oblique_f, 118 if len(s24_lines) == 1 else 84, (255, 225, 53, 255), stroke_rgba=(28, 78, 166, 255), stroke_w=10, line_gap=12)
             fcv.save(fg_png)
             fc = (
                 f"[0:v]{base_vf_chain},{_cover_crop_vf(fw, fh, face_bias=True)},format=rgba[f_raw];"
@@ -906,10 +972,8 @@ def build_truth_scene_panel_cmd(
         wb_png = work / f"{stem}_v10_whiteboard.png"
         cv = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (236, 240, 245, 255))
         d = ImageDraw.Draw(cv)
-        # 底部深暗过渡带，保证常规白色字幕 WCAG > 12:1 绝不发灰掉对比
-        d.rectangle([(0, 1260), (CANVAS_WIDTH - 1, CANVAS_HEIGHT - 1)], fill=(22, 24, 32, 245))
         # 顶部黄蓝大标
-        _paste_centered_lines(cv, [title_txt[:6]], 180, oblique_f, 108, (255, 200, 36, 255), stroke_rgba=(24, 52, 118, 255), stroke_w=8)
+        _paste_centered_lines(cv, [title_txt[:8]], 180, oblique_f, 108, (255, 200, 36, 255), stroke_rgba=(24, 52, 118, 255), stroke_w=8)
         # 下方评测要点卡片条
         pts = _wrap_lines(quote_txt, max_chars_per_line=10, max_lines=2)
         y_pt = 900
@@ -977,9 +1041,6 @@ def build_truth_scene_panel_cmd(
         ov_png = work / f"{stem}_v11_{mode}.png"
         is_light = mode == "paper_outline_pip" or bool(pip_layout.get("light_theme"))
         cv = Image.new("RGBA", (CANVAS_WIDTH, CANVAS_HEIGHT), (244, 242, 236, 255)) if is_light else _make_charcoal_bg(bg_hex)
-        d = ImageDraw.Draw(cv)
-        if is_light:
-            d.rectangle([(0, 1260), (CANVAS_WIDTH - 1, CANVAS_HEIGHT - 1)], fill=(20, 22, 30, 245))
         fg_c = (24, 26, 32, 255) if is_light else (248, 250, 252, 255)
         acc_c = hex_to_rgba(accent_hex, 255)
         _paste_centered_lines(cv, [title_txt[:10]], 350 if mode == "paper_outline_pip" else 280, sans_f, 76, fg_c if is_light else acc_c)

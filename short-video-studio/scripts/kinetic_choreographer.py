@@ -33,6 +33,8 @@ from common import (  # noqa: E402
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
     DEFAULT_FPS,
+    find_commercial_font,
+    find_source_font,
     local_assets_dir,
     read_json,
 )
@@ -48,7 +50,35 @@ from director_plan import (
     load_or_build_director_plan,
 )
 from step5_subtitles import (  # noqa: E402
+    _ALNUM_MIXED_TOKEN_RE,
+    _ASCII_UNIT_PAT,
+    _CLAUSE_START_PROTECT_RE,
+    _DP_NO_LEAD_CHARS,
+    _DP_NO_TAIL_CHARS,
+    _HYPHEN_ASCII_TOKEN_RE,
+    _MULTI_UNIT_PAT,
+    _NUM_UNIT_PRESPLIT_RE,
+    _SINGLE_UNIT_CHARS,
+    _SINGLE_UNIT_CHARS_NO_PCT,
+    _SPEC_MOD_HEAD_PREFIXES,
+    _SUFFIX_DERIV_STEM_POS,
+    _SUFFIX_MOD_CHARS,
+    _UNIT_TAIL_PAT,
+    _guard_no_aux_head,
+    _is_cantonese_ne_demo_head,
+    _is_completed_le_clause,
+    _measure_text_px,
+    _normalize_pos_tag,
+    _pseg_cut_clean,
+    _terms_file_for,
+    dp_segment_short_lines,
+    is_compound_np_body,
+    is_degree_complement_haoduo,
+    is_independent_svo_clause,
+    is_predicative_after_headless_de,
+    iter_num_unit_spans,
     load_protected_terms,
+    rebalance_asr_sentences,
     split_sentence_into_chunks,
     tokenize_semantic_words,
 )
@@ -448,10 +478,20 @@ def canvas_px_to_norm(cx: int, cy: int) -> Tuple[float, float]:
     return round(xn, 4), round(yn, 4)
 
 
+_DISPLAY_PUNCT_RE = re.compile(
+    r"(?<![A-Za-z0-9])\.|(?<=[A-Za-z0-9])\.(?!\d)"
+    r"|(?<!\d)[:：](?!\d)|(?<!\d)[:：](?=\d)|(?<=\d)[:：](?!\d)"
+    r"|(?<!\d),(?!\d)|(?<!\d),(?=\d)|(?<=\d),(?!\d{3}(?!\d))"
+    r"|[，。、；！？!?;]+"
+)
+
+
 def clean_display_text(text: str) -> str:
-    """清除结尾/孤立标点与多余空格，保持视觉干净。"""
-    t = re.sub(r"[，。！？、；：,.!?;:]+", "", str(text or "")).strip()
-    return t
+    """清除结尾/孤立标点与中文间多余空格，保留数字间小数点/冒号/千分位逗号与英文词间单空格。"""
+    t = re.sub(r"(?<=\d)：(?=\d)", ":", str(text or ""))
+    t = _DISPLAY_PUNCT_RE.sub("", t)
+    t = re.sub(r"(?<=[\u4e00-\u9fff])\s+|\s+(?=[\u4e00-\u9fff])", "", t)
+    return re.sub(r"\s+", " ", t).strip()
 
 
 _FILLER_CHARS = set("啊呀哦呃诶嘛呢吧咧啦哇呵嗯")
@@ -565,116 +605,697 @@ def map_chunks_to_times(
     return out
 
 
+_ZH_DIGITS = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_ZH_UNITS = {"十": 10, "百": 100, "千": 1000}
+
+
+def _parse_zh_int_below_wan(token: str) -> Optional[int]:
+    """解析千位及以内的中文整数（如 两百 -> 200，三百 -> 300，两千 -> 2000，二十六 -> 26）。"""
+    if not token:
+        return None
+    if not any(ch in token for ch in ("十", "百", "千")):
+        return None
+    total = 0
+    cur = 0
+    for ch in token:
+        if ch in _ZH_DIGITS:
+            cur = _ZH_DIGITS[ch]
+        elif ch in _ZH_UNITS:
+            unit = _ZH_UNITS[ch]
+            if cur == 0 and ch == "十":
+                cur = 1
+            elif cur == 0:
+                return None
+            total += cur * unit
+            cur = 0
+        else:
+            return None
+    return total + cur
+
+
+def _normalize_zh_numerals_with_map(text: str) -> Tuple[str, List[int]]:
+    """通用中文数词转阿拉伯数字归一化（返回归一化串与每个字符在原串的起始下标映射）。
+    - 4 位年份如「二零二五(?=年)」->「2025」
+    - 含十/百/千的位值中文整数如「两百」->「200」、「三百万」->「300万」、「两千」->「2000」、「十万」->「10万」
+    - 保留「十分」「第一」「一个」「一直」等非位值量词/副词不动。
+    """
+    src = str(text or "")
+    if not src:
+        return "", []
+    repls: List[Tuple[int, int, str]] = []
+    # 1) 四位年份
+    for m in re.finditer(r"[零〇一二三四五六七八九]{4}(?=年)", src):
+        digits = "".join(str(_ZH_DIGITS[ch]) for ch in m.group(0))
+        repls.append((m.start(), m.end(), digits))
+    # 2) 位值中文整数（含百/千，或 2..9+十[1..9]，或 十+[1..9万亿]）
+    for m in re.finditer(r"[零〇一二两三四五六七八九十百千]+", src):
+        sa, sb = m.start(), m.end()
+        if any(sa < rb and sb > ra for ra, rb, _ in repls):
+            continue
+        tok = m.group(0)
+        if tok == "十" and not (sb < len(src) and src[sb] in ("万", "亿")):
+            continue
+        if len(tok) == 1 and tok not in ("十",):
+            continue
+        if tok.startswith("十") and len(tok) == 2 and tok[1] not in _ZH_DIGITS:
+            continue
+        val = _parse_zh_int_below_wan(tok)
+        if val is not None and val >= 10:
+            repls.append((sa, sb, str(val)))
+    repls.sort(key=lambda x: x[0])
+    out_chars: List[str] = []
+    idx_map: List[int] = []
+    cur = 0
+    for ra, rb, rep in repls:
+        while cur < ra:
+            out_chars.append(src[cur])
+            idx_map.append(cur)
+            cur += 1
+        for ch_r in rep:
+            out_chars.append(ch_r)
+            idx_map.append(ra)
+        cur = rb
+    while cur < len(src):
+        out_chars.append(src[cur])
+        idx_map.append(cur)
+        cur += 1
+    return "".join(out_chars), idx_map
+
+
+def _normalize_zh_numerals(text: str) -> str:
+    return _normalize_zh_numerals_with_map(text)[0]
+
+
+def _style02_font_path() -> Optional[str]:
+    return (
+        find_source_font(None, "style_02", _STYLE02_UNIFIED_FONT_CANDS)
+        or find_commercial_font(_STYLE02_UNIFIED_FONT_CANDS, verified_only=True)
+        or find_commercial_font(_STYLE02_UNIFIED_FONT_CANDS)
+    )
+
+
+def _compute_sentence_word_gaps(sent: Dict[str, Any], text: str) -> Dict[int, float]:
+    """将句子逐字时间戳之间的停顿（>=0.08s）对齐到句子原始字符串的字符断点下标。"""
+    s_txt = str(text or "")
+    if not s_txt:
+        return {}
+    tl = [c for c in _extract_char_timeline(sent) if c[0].strip()]
+    if len(tl) < 2:
+        return {}
+    # 把 clean 字符序列与原始字符串中的非标点字符对齐
+    txt_clean_positions: List[int] = [
+        idx for idx, ch in enumerate(s_txt)
+        if clean_display_text(ch) and not ch.isspace()
+    ]
+    if len(txt_clean_positions) != len(tl):
+        tl_no_punct = [c for c in tl if clean_display_text(c[0]) and not c[0].isspace()]
+        if len(txt_clean_positions) == len(tl_no_punct):
+            tl = tl_no_punct
+        else:
+            return {}
+    gaps: Dict[int, float] = {}
+    for k in range(1, len(tl)):
+        g = float(tl[k][1]) - float(tl[k - 1][2])
+        if g >= 0.08:
+            gaps[txt_clean_positions[k]] = round(g, 4)
+    return gaps
+
+
 def split_clean_phrases(
     text: str,
     target_min: int = 3,
     target_max: int = 8,
     protected_terms: Optional[List[str]] = None,
+    *,
+    max_width_px: int = 640,
+    font_path: Optional[str] = None,
+    font_size: int = 69,
+    word_gaps: Optional[Dict[int, float]] = None,
+    strict_width: bool = True,
 ) -> List[str]:
     """
-    通用中文/粤语口播短语切分器（绝对不断碎固定搭配/数字量词，不遗漏字符）。
-    优先按自然停顿标点切，过长再在 tokenize_semantic_words 词边界归并拆分，过短并入邻块。
+    通用中文/粤语口播短语切分器：统一复用 step5_subtitles.dp_segment_short_lines 词性+DP 引擎，
+    保证零挂尾助词、零助词行首、不断碎固定搭配/数字量词，且单行严格落在安全像素宽内。
     """
     raw = str(text or "").strip()
     if not raw:
         return []
-    clauses = [clean_display_text(p) for p in re.split(r"[，。！？、；：,.!?;:]+", raw) if clean_display_text(p)]
-    if not clauses:
+    # 按句末硬标点拆分后再喂入 DP（保留句内逗号供 DP zero-cost 自然断开，同时映射 word_gaps）
+    hard_spans = [
+        (m.start(), m.end(), m.group(0).strip())
+        for m in re.finditer(r"[^。！？!?]+", raw)
+        if clean_display_text(m.group(0))
+    ]
+    if not hard_spans:
         return []
+    eff_terms = list(dict.fromkeys(list(protected_terms or []) + _EXTRA_COHESIVE))
+    if font_path is None:
+        eff_fs = min(int(font_size), max(40, int((max_width_px - 32) // max(1, target_max))))
+    else:
+        eff_fs = int(font_size)
 
-    raw_chunks: List[str] = []
-    # 介词/冠词（如「在/把/一间」）不能悬在行尾；
-    # 结构/动态助词（「的/地/得/了/着/过/嘅/之」）绝不允许当下一行行首（否则劈成「还有种 / 的踏实感」）。
-    _no_hang_tail = set("只在把被从向和跟与同是") | {
-        "一间", "一个", "一家", "一套", "一份", "一种",
-        "这间", "那间", "呢间", "𠮶间", "这种", "那种", "呢种", "𠮶种", "这个", "那个", "呢个", "𠮶个",
-        "也不",
-    }
-    _attach_tail_suffix = set("的地得之了着过嘅")
-    for cl in clauses:
-        if len(cl) <= target_max:
-            raw_chunks.append(cl)
+    out_chunks: List[Dict[str, Any]] = []
+    part_meta: List[Tuple[str, Optional[Dict[int, float]]]] = []
+    for part_idx, (sp_start, sp_end, part) in enumerate(hard_spans):
+        lead_ws = len(raw[sp_start:sp_end]) - len(raw[sp_start:sp_end].lstrip())
+        part_off = sp_start + lead_ws
+        part_gaps: Optional[Dict[int, float]] = None
+        if word_gaps:
+            part_gaps = {
+                gp - part_off: gv
+                for gp, gv in word_gaps.items()
+                if part_off < gp < part_off + len(part)
+            }
+        part_meta.append((part, part_gaps))
+        dp_segs = dp_segment_short_lines(
+            part,
+            max_width_px=max_width_px,
+            font_path=font_path,
+            font_size=eff_fs,
+            terms=eff_terms,
+            max_chars=target_max,
+            strip_punct=True,
+            word_gaps=part_gaps,
+            strict_width=strict_width,
+        )
+        for _sa, _sb, seg_t in dp_segs:
+            ct = clean_display_text(seg_t)
+            if ct:
+                out_chunks.append({
+                    "text": ct,
+                    "start_sec": 0.0,
+                    "end_sec": 1.0,
+                    "words": [],
+                    "_part_idx": part_idx,
+                    "_sa": _sa,
+                    "_sb": _sb,
+                    "_orig_ct": ct,
+                })
+    if not out_chunks:
+        return []
+    out_chunks = _guard_no_aux_head(
+        out_chunks,
+        max_chars=target_max,
+        max_width_px=max_width_px if strict_width else None,
+        font_path=font_path,
+        font_size=eff_fs,
+    )
+    chunk_entries: List[Tuple[str, int, int, int]] = []
+    for c in out_chunks:
+        ct_now = str(c.get("text") or "").strip()
+        if not ct_now:
             continue
-        toks = tokenize_semantic_words(cl, terms=protected_terms)
-        # 进一步保证「的/嘅/一间」绝不单独悬在上一块末尾，同时「了/着/过」粘附前词不作行首
-        cur = ""
-        for idx_t, tk in enumerate(toks):
-            nxt_tk = toks[idx_t + 1] if idx_t + 1 < len(toks) else ""
-            if not cur:
-                cur = tk
-            elif tk in _attach_tail_suffix and len(cur) + len(tk) <= target_max + 1:
-                cur += tk
-            elif len(cur) + len(tk) <= target_max:
-                # 防止把“的/嘅/在/一间”当块尾虚词（除非整句刚好在这里收尾或下块是完整独立名词太长）
-                if tk in _no_hang_tail and nxt_tk and len(cur) >= 4 and len(tk) + len(nxt_tk) <= target_max:
-                    raw_chunks.append(cur)
-                    cur = tk
-                else:
-                    cur += tk
-            else:
-                raw_chunks.append(cur)
-                cur = tk
-        if cur:
-            raw_chunks.append(cur)
+        p_idx = int(c.get("_part_idx", 0))
+        sa_c = int(c.get("_sa", 0))
+        sb_c = int(c.get("_sb", 0))
+        if ct_now != str(c.get("_orig_ct") or "") and 0 <= p_idx < len(part_meta):
+            p_str = part_meta[p_idx][0]
+            idx_f = p_str.find(ct_now, max(0, sa_c - 6))
+            if idx_f >= 0:
+                sa_c, sb_c = idx_f, idx_f + len(ct_now)
+        chunk_entries.append((ct_now, p_idx, sa_c, sb_c))
+    if len(chunk_entries) <= 1:
+        return [e[0] for e in chunk_entries]
 
-    # 合并孤立单字/2字过短残留块（不把序数引导词「第一/第二/第三」硬吞进长句里）
-    merged: List[str] = []
-    for chunk in raw_chunks:
-        prev_is_ord = bool(merged and _ORDINAL_SENT_RE.match(merged[-1]))
-        cur_is_ord = bool(_ORDINAL_SENT_RE.match(chunk))
+    # 仅合并长度 < target_min 的碎片，且严禁跨句界、跨标点或跨 >=0.22s 声学气口融合，亦不可超宽或吞并序数词
+    _strict_no_tail = frozenset("的嘅地得之把被从向给俾在喺这那呢嗰𠮶")
+    merged: List[Tuple[str, int, int, int]] = []
+    for ph, c_idx, cur_sa, cur_sb in chunk_entries:
+        prev_ord = bool(merged and _ORDINAL_SENT_RE.match(merged[-1][0]))
+        cur_ord = bool(_ORDINAL_SENT_RE.match(ph))
+        blocked_by_pause_or_punct = False
+        if merged:
+            _p_txt, p_idx_prev, _prev_sa, prev_sb = merged[-1]
+            if p_idx_prev != c_idx:
+                blocked_by_pause_or_punct = True
+            elif 0 <= c_idx < len(part_meta):
+                part_str, p_gaps = part_meta[c_idx]
+                bnd_slice = part_str[max(0, prev_sb - 1) : min(len(part_str), cur_sa + 1)]
+                if any(ch in "，、；：,;:" for ch in bnd_slice):
+                    blocked_by_pause_or_punct = True
+                elif p_gaps and any(gv >= 0.22 for gp, gv in p_gaps.items() if prev_sb - 1 <= gp <= cur_sa + 1):
+                    blocked_by_pause_or_punct = True
         if (
             merged
-            and len(chunk) < target_min
-            and len(merged[-1]) + len(chunk) <= target_max + 2
-            and not (cur_is_ord and len(merged[-1]) >= 4)
-            and not (prev_is_ord and len(chunk) >= 5)
+            and not blocked_by_pause_or_punct
+            and len(ph) < target_min
+            and len(merged[-1][0]) + len(ph) <= target_max + 1
+            and not (cur_ord and len(merged[-1][0]) >= 4)
+            and not (prev_ord and len(ph) >= 5)
         ):
-            merged[-1] += chunk
-        elif (
+            cand = merged[-1][0] + ph
+            pw, _ = _measure_text_px(cand, font_path, eff_fs)
+            if pw <= max_width_px and cand[-1] not in _strict_no_tail:
+                merged[-1] = (cand, c_idx, merged[-1][2], cur_sb)
+                continue
+        if (
             merged
-            and len(merged[-1]) < target_min
-            and len(merged[-1]) + len(chunk) <= target_max + 2
-            and not (prev_is_ord and len(chunk) >= 5)
-            and not (cur_is_ord and len(merged[-1]) >= 4)
+            and not blocked_by_pause_or_punct
+            and len(merged[-1][0]) < target_min
+            and len(merged[-1][0]) + len(ph) <= target_max + 1
+            and not (prev_ord and len(ph) >= 5)
+            and not (cur_ord and len(merged[-1][0]) >= 4)
         ):
-            merged[-1] += chunk
+            cand = merged[-1][0] + ph
+            pw, _ = _measure_text_px(cand, font_path, eff_fs)
+            if pw <= max_width_px:
+                merged[-1] = (cand, c_idx, merged[-1][2], cur_sb)
+                continue
+        merged.append((ph, c_idx, cur_sa, cur_sb))
+
+    # <=3字残句同句跨顿/跨逗号安全并回 + 2-chunk 语义重切兜底（仅在严格像素宽内且不制造挂尾/序数尾时生效）
+    def _clean_len_p(s_val: str) -> int:
+        return len(re.sub(r"[\s，。！？、；：,.!?;:]+", "", str(s_val or "")))
+
+    for _ in range(4):
+        if len(merged) < 2:
+            break
+        orphan_fixed = False
+        for k_idx in range(len(merged)):
+            ph_k, c_idx_k, sa_k, sb_k = merged[k_idx]
+            if _clean_len_p(ph_k) > 3 or _ORDINAL_SENT_RE.match(ph_k) or _CLAUSE_START_PROTECT_RE.match(ph_k):
+                continue
+            if 0 <= c_idx_k < len(part_meta) and _clean_len_p(part_meta[c_idx_k][0]) < 5:
+                continue
+            # 1) 优先尝试与同句内较短的相邻块直接合并（允许跨越句内顿号/逗号/0.22s以上气口，只要总宽<=max_width_px且零挂尾）
+            merge_cands: List[Tuple[int, int, int, str]] = []
+            for nb_i in (k_idx - 1, k_idx + 1):
+                if not (0 <= nb_i < len(merged)):
+                    continue
+                lo, hi = (nb_i, k_idx) if nb_i < k_idx else (k_idx, nb_i)
+                l_txt_m, l_pidx, _lsa, _lsb = merged[lo]
+                r_txt_m, r_pidx, _rsa, _rsb = merged[hi]
+                if l_pidx != r_pidx:
+                    continue
+                join_sp = " " if (l_txt_m and r_txt_m and l_txt_m[-1].isascii() and l_txt_m[-1].isalnum() and r_txt_m[0].isascii() and r_txt_m[0].isalnum()) else ""
+                cand_m = l_txt_m + join_sp + r_txt_m
+                if _clean_len_p(cand_m) > target_max + 1:
+                    continue
+                if strict_width and _measure_text_px(cand_m, font_path, eff_fs)[0] > max_width_px:
+                    continue
+                if len(_clean_len_p(cand_m) * "x") >= 4 and re.search(r"(第[一二三四五六七八九十两\d]+)$", cand_m):
+                    continue
+                if cand_m[-1] in _ADAPTIVE_STRICT_TAIL:
+                    continue
+                if cand_m[0] in _DP_NO_LEAD_CHARS and not (cand_m[0] == "呢" and _is_cantonese_ne_demo_head(cand_m)):
+                    continue
+                ctx_before = [merged[lo - 1][0]] if lo - 1 >= 0 else []
+                ctx_after = [merged[hi + 1][0]] if hi + 1 < len(merged) else []
+                old_brks = _count_genitive_or_tail_breaks(ctx_before + [l_txt_m, r_txt_m] + ctx_after, protected_terms=eff_terms)
+                new_brks = _count_genitive_or_tail_breaks(ctx_before + [cand_m] + ctx_after, protected_terms=eff_terms)
+                if new_brks > old_brks:
+                    continue
+                merge_cands.append((_clean_len_p(merged[nb_i][0]), 0 if nb_i < k_idx else 1, lo, cand_m))
+            if merge_cands:
+                _, _, lo, cand_m = min(merge_cands)
+                hi = lo + 1
+                merged[lo] = (cand_m, merged[lo][1], merged[lo][2], merged[hi][3])
+                merged.pop(hi)
+                orphan_fixed = True
+                break
+        if not orphan_fixed:
+            break
+
+    for _ in range(3):
+        if len(merged) < 2:
+            break
+        resplit_done = False
+        for k_idx in range(len(merged)):
+            ph_k, c_idx_k, sa_k, sb_k = merged[k_idx]
+            if _clean_len_p(ph_k) > 3 or _ORDINAL_SENT_RE.match(ph_k) or _CLAUSE_START_PROTECT_RE.match(ph_k):
+                continue
+            if 0 <= c_idx_k < len(part_meta) and _clean_len_p(part_meta[c_idx_k][0]) < 5:
+                continue
+            best_rs: Optional[Tuple[Tuple[int, int, int], int, int, str, str]] = None
+            for nb_i in (k_idx - 1, k_idx + 1):
+                if not (0 <= nb_i < len(merged)):
+                    continue
+                lo, hi = (nb_i, k_idx) if nb_i < k_idx else (k_idx, nb_i)
+                l_txt_m, l_pidx, l_sa, l_sb = merged[lo]
+                r_txt_m, r_pidx, r_sa, r_sb = merged[hi]
+                if l_pidx != r_pidx:
+                    continue
+                cross_comma_orphan = False
+                if 0 <= l_pidx < len(part_meta):
+                    part_str, p_gaps = part_meta[l_pidx]
+                    bnd_slice = part_str[max(0, l_sb - 1) : min(len(part_str), r_sa + 1)]
+                    if p_gaps and any(gv >= 0.22 for gp, gv in p_gaps.items() if l_sb - 1 <= gp <= r_sa + 1):
+                        continue
+                    if any(ch in "；：;:" for ch in bnd_slice):
+                        continue
+                    if any(ch in "，、," for ch in bnd_slice):
+                        cross_comma_orphan = True
+                join_sp = " " if (l_txt_m and r_txt_m and l_txt_m[-1].isascii() and l_txt_m[-1].isalnum() and r_txt_m[0].isascii() and r_txt_m[0].isalnum()) else ""
+                comb = l_txt_m + join_sp + r_txt_m
+                if not comb or len(comb) > 22:
+                    continue
+                toks_c = tokenize_semantic_words(comb, terms=eff_terms)
+                acc_c = 0
+                for tk_c in toks_c[:-1]:
+                    acc_c += len(tk_c)
+                    l_new = comb[:acc_c].strip()
+                    r_new = comb[acc_c:].strip()
+                    if not l_new or not r_new:
+                        continue
+                    if _clean_len_p(l_new) < 4 or _clean_len_p(r_new) < 4:
+                        continue
+                    if _clean_len_p(l_new) > (target_max if cross_comma_orphan else target_max + 1) or _clean_len_p(r_new) > (target_max if cross_comma_orphan else target_max + 1):
+                        continue
+                    if strict_width and (
+                        _measure_text_px(l_new, font_path, eff_fs)[0] > max_width_px
+                        or _measure_text_px(r_new, font_path, eff_fs)[0] > max_width_px
+                    ):
+                        continue
+                    if _ORDINAL_SENT_RE.match(l_new) or _ORDINAL_SENT_RE.match(r_new):
+                        continue
+                    if l_new[-1] in _ADAPTIVE_STRICT_TAIL:
+                        continue
+                    if r_new[0] in _DP_NO_LEAD_CHARS and not (r_new[0] == "呢" and _is_cantonese_ne_demo_head(r_new)):
+                        continue
+                    brk_cnt = _count_genitive_or_tail_breaks([l_new, r_new], protected_terms=eff_terms)
+                    if cross_comma_orphan and brk_cnt > 0:
+                        continue
+                    if brk_cnt > 1 or (brk_cnt == 1 and not l_new.endswith(("几个", "一间", "一份", "一种"))):
+                        continue
+                    pen_tail = 1 if brk_cnt == 1 else 0
+                    sc_rs = (pen_tail, abs(_clean_len_p(l_new) - _clean_len_p(r_new)), _clean_len_p(r_new))
+                    if best_rs is None or sc_rs < best_rs[0]:
+                        best_rs = (sc_rs, lo, hi, l_new, r_new)
+            if best_rs is not None:
+                _, lo, hi, l_new, r_new = best_rs
+                l_pidx = merged[lo][1]
+                l_sa0 = merged[lo][2]
+                r_sb0 = merged[hi][3]
+                merged[lo] = (l_new, l_pidx, l_sa0, l_sa0 + len(l_new))
+                merged[hi] = (r_new, l_pidx, max(l_sa0 + len(l_new), r_sb0 - len(r_new)), r_sb0)
+                resplit_done = True
+                break
+        if not resplit_done:
+            break
+
+    return [m[0] for m in merged if m[0]]
+
+
+_ADAPTIVE_STRICT_TAIL = frozenset("的嘅地得之把被从向给俾在喺这那呢嗰𠮶某每各哪")
+_ADAPTIVE_GENITIVE_AUX = frozenset("的嘅地得之")
+_ADAPTIVE_GENITIVE_NEXT_POS = frozenset({"n", "nr", "ns", "nt", "nz", "vn", "s", "f", "m", "mq", "q", "a", "i", "l"})
+_MOD_NOUN_NEXT_POS = frozenset({"n", "nr", "ns", "nt", "nz", "vn", "s", "f"})
+_ADAPTIVE_MULTI_MOD_TAILS = (
+    "有啲", "好多", "呢啲", "𠮶啲", "嗰啲", "呢个", "嗰个", "𠮶个",
+    "这个", "那个", "哪个", "每个", "某个", "几个", "一间", "一份", "一种",
+    "𠮶种", "嗰种", "这种", "那种", "呢种", "哪种", "每种", "某种",
+)
+_ADAPTIVE_NEG_MOD_TAILS = ("没有", "没", "不", "唔", "别", "不要", "不能", "不会", "不想", "不敢", "不用")
+_ADAPTIVE_DEG_NEG_SINGLE_ADV = frozenset("最很太极更不没唔")
+
+
+def _count_genitive_or_tail_breaks(
+    phrases: List[str],
+    protected_terms: Optional[List[str]] = None,
+) -> int:
+    if not phrases:
+        return 0
+    breaks = 0
+    for idx, cur in enumerate(phrases):
+        if not cur:
+            continue
+        if cur[0] in _DP_NO_LEAD_CHARS and not (cur[0] == "呢" and _is_cantonese_ne_demo_head(cur)):
+            breaks += 1
+        if idx + 1 >= len(phrases):
+            continue
+        nxt = phrases[idx + 1]
+        if not nxt:
+            continue
+        if protected_terms:
+            joint_pt = cur + nxt
+            cut_pt = len(cur)
+            if any(
+                m_pt.start() < cut_pt < m_pt.end()
+                for pt in protected_terms
+                if len(pt) >= 2 and pt in joint_pt
+                for m_pt in re.finditer(re.escape(pt), joint_pt)
+            ):
+                breaks += 1
+
+        _bound_cache: Optional[Tuple[str, str, str, str]] = None
+
+        def _get_bound() -> Tuple[str, str, str, str]:
+            nonlocal _bound_cache
+            if _bound_cache is not None:
+                return _bound_cache
+            pairs_b = _pseg_cut_clean(cur + nxt, prot_terms=protected_terms)
+            pos_acc = 0
+            wb_r, pb_r, wa_r, pa_r = "", "", "", ""
+            for idx_p, (wp, fp) in enumerate(pairs_b):
+                if pos_acc == len(cur):
+                    wa_r, pa_r = wp, fp
+                    if idx_p > 0:
+                        wb_r, pb_r = pairs_b[idx_p - 1]
+                    break
+                pos_acc += len(wp)
+            _bound_cache = (wb_r, pb_r, wa_r, pa_r)
+            return _bound_cache
+
+        if nxt[0] in _ADAPTIVE_GENITIVE_AUX:
+            breaks += 1
+        elif cur[-1] in {"的", "嘅"} and not cur.endswith(("出来的", "起来的", "下去的", "过来的", "过去的")):
+            _wb, _pb, _wa, pa = _get_bound()
+            pa = _normalize_pos_tag(_wa, pa)
+            if (
+                pa in _ADAPTIVE_GENITIVE_NEXT_POS
+                and not is_independent_svo_clause(nxt, prot_terms=protected_terms, prev_plain=cur)
+                and not is_predicative_after_headless_de(cur, nxt, prot_terms=protected_terms)
+            ):
+                breaks += 1
+        elif cur[-1] in {"了", "咗", "着", "过"} and not cur.endswith(("出来了", "起来了", "下去了", "回来了", "过去了", "进来了", "过来了")):
+            _wb, _pb, _wa, pa = _get_bound()
+            pa = _normalize_pos_tag(_wa, pa)
+            if (
+                (
+                    pa in {"m", "mq", "q", "n", "nr", "ns", "nt", "nz", "vn"}
+                    or (
+                        pa in {"b", "i", "a"}
+                        and not _is_completed_le_clause(cur, prot_terms=protected_terms)
+                        and (
+                            is_compound_np_body(nxt, prot_terms=protected_terms, prev_plain=cur)
+                            or (pa in {"b", "i"} and _wa.startswith(_SPEC_MOD_HEAD_PREFIXES))
+                        )
+                    )
+                )
+                and not is_independent_svo_clause(nxt, prot_terms=protected_terms, prev_plain=cur)
+            ):
+                nxt_pairs = _pseg_cut_clean(nxt, prot_terms=protected_terms)
+                first_np_len = len(nxt_pairs[0][0]) if nxt_pairs else 0
+                first_np_pos = _normalize_pos_tag(nxt_pairs[0][0], nxt_pairs[0][1]) if nxt_pairs else ""
+                is_num_head_np = first_np_pos in {"m", "mq", "q"}
+                is_heavy_mod_np = (
+                    len(nxt) >= 8
+                    and ("的" in nxt[2:] or "嘅" in nxt[2:])
+                    and not nxt.endswith(("的", "嘅"))
+                    and (
+                        (
+                            is_num_head_np
+                            and len(nxt_pairs) >= 2
+                            and nxt_pairs[1][0] in {"的", "嘅"}
+                            and ((len(cur) >= 3 and first_np_len >= 4) or (len(cur) >= 5 and first_np_len >= 3))
+                        )
+                        or (not is_num_head_np and len(cur) >= 3 and first_np_len >= 4)
+                    )
+                )
+                if not is_heavy_mod_np:
+                    breaks += 1
+        elif cur[-1] in _ADAPTIVE_STRICT_TAIL:
+            if cur[-1] == "呢":
+                if _is_cantonese_ne_demo_head("呢" + nxt):
+                    breaks += 1
+            else:
+                breaks += 1
+        elif cur.endswith(_ADAPTIVE_MULTI_MOD_TAILS):
+            _wb, _pb, _wa, pa = _get_bound()
+            pa = _normalize_pos_tag(_wa, pa)
+            if not (
+                cur.endswith(("好多", "有啲"))
+                and is_degree_complement_haoduo(cur, nxt, prot_terms=protected_terms)
+            ):
+                breaks += 1
         else:
-            merged.append(chunk)
-    # 边界保护：防止指示代词「这/那/呢/𠮶」与紧随量词跨块腰斩，也禁止任何结构/动态助词或尾缀虚词充当行首
-    _demo_heads = set("这那呢𠮶")
-    _demo_tails = set("种个间些啲边度")
-    _bad_line_starts = set("的地得之了着过嘅啲嘛呢吧啊呀")
-    for k in range(len(merged) - 1):
-        if len(merged[k]) >= 3 and merged[k][-1] in _demo_heads and merged[k + 1][0] in _demo_tails:
-            merged[k + 1] = merged[k][-1] + merged[k + 1]
-            merged[k] = merged[k][:-1]
-    k = 0
-    while k < len(merged) - 1:
-        nxt = merged[k + 1]
-        if nxt and nxt[0] in _bad_line_starts and len(merged[k]) >= 2:
-            if len(merged[k]) + len(nxt) <= target_max + 2:
-                merged[k] = merged[k] + nxt
-                merged.pop(k + 1)
-                continue
-            # 上块若较长，将前导助词收回上一块末尾，若上块末尾仍是虚字则继续前收 1~2 字实体（如「种的」）
-            if len(merged[k]) + 1 <= target_max + 2 and len(nxt) >= 2:
-                merged[k] = merged[k] + nxt[0]
-                merged[k + 1] = nxt[1:]
-                continue
-        k += 1
-    # 行尾挂尾词护栏：禁止孤立介词/副词/代词挂在句尾（如「都觉得我」「晚上就系」），绝不把「的/嘅」推到下一行首
-    _bad_line_tails = set("系把被给从跟和与或最很都就也在我")
-    k = 0
-    while k < len(merged) - 1:
-        cur_m = merged[k]
-        nxt_m = merged[k + 1]
-        if len(cur_m) >= 3 and cur_m[-1] in _bad_line_tails and nxt_m and len(nxt_m) <= target_max:
-            if len(nxt_m) + 1 <= target_max + 2:
-                merged[k + 1] = cur_m[-1] + nxt_m
-                merged[k] = cur_m[:-1]
-                continue
-        k += 1
-    return [m for m in merged if m]
+            wb, pb, _wa, pa = _get_bound()
+            pa = _normalize_pos_tag(_wa, pa)
+            pb = _normalize_pos_tag(wb, pb)
+            if (
+                (pa == "k" and len(_wa) == 1 and pb not in {"", "x", "u", "uj", "ug", "ud", "ul", "uz", "uv", "c", "p"} and wb not in _DP_NO_TAIL_CHARS)
+                or (pb == "j" and pa in {"g", "ng", "k"} and len(wb) == 1 and len(_wa) == 1)
+                or (
+                    len(_wa) == 1
+                    and _wa in _SUFFIX_MOD_CHARS
+                    and pa in {"k", "ng", "n", "q", "m"}
+                    and pb in _SUFFIX_DERIV_STEM_POS
+                    and len(wb) >= 2
+                    and wb not in _DP_NO_TAIL_CHARS
+                )
+            ):
+                breaks += 1
+            elif cur.endswith(_ADAPTIVE_NEG_MOD_TAILS) and pa in {"v", "p", "a", "n", "vn"}:
+                breaks += 1
+            elif len(wb) == 1 and pb in {"d", "zg"} and cur[-1] in _ADAPTIVE_DEG_NEG_SINGLE_ADV and pa in {"v", "a", "ad", "an", "p", "d", "m", "n", "vn"}:
+                breaks += 1
+            elif len(wb) == 1 and pb == "v" and pa in {"n", "nr", "ns", "nt", "nz", "vn"}:
+                breaks += 1
+            elif (
+                wb
+                and (
+                    (
+                        pa in _MOD_NOUN_NEXT_POS
+                        and (
+                            pb == "b"
+                            or (
+                                pb == "i"
+                                and (
+                                    wb.startswith(_SPEC_MOD_HEAD_PREFIXES)
+                                    or is_compound_np_body(wb + nxt, prot_terms=protected_terms)
+                                )
+                            )
+                        )
+                    )
+                    or (
+                        pb in {"nz", "b"}
+                        and pa == "v"
+                        and is_compound_np_body(wb + re.split(r"[，。！？、；：,;:!?]", nxt, 1)[0], prot_terms=protected_terms)
+                    )
+                )
+            ):
+                breaks += 1
+            elif pa in _MOD_NOUN_NEXT_POS and wb:
+                cur_ps = _pseg_cut_clean(cur, prot_terms=protected_terms)
+                if len(cur_ps) >= 2:
+                    prev_w, prev_f = cur_ps[-2]
+                    prev_fn = _normalize_pos_tag(prev_w, prev_f)
+                    if (
+                        (pb == "a" and prev_fn in {"v", "vn", "ul", "zg", "d", "m", "mq", "q", "uj", "x"} and (prev_fn != "x" or prev_w == "嘅"))
+                        or (prev_w in {"的", "嘅"} and (pb in {"a", "b"} or len(wb) == 1 or wb.endswith(("式", "型", "级", "类", "款", "版"))))
+                    ):
+                        breaks += 1
+        joint_b = cur[-min(4, len(cur)):] + nxt[:min(4, len(nxt))]
+        cut_b = min(4, len(cur))
+        pos_b = 0
+        for tk_b in tokenize_semantic_words(joint_b, terms=protected_terms):
+            nxt_b = pos_b + len(tk_b)
+            if (
+                len(tk_b) >= 2
+                and pos_b < cut_b < nxt_b
+                and tk_b[0] not in _DP_NO_LEAD_CHARS
+                and tk_b[-1] not in _DP_NO_LEAD_CHARS
+            ):
+                if not (
+                    len(tk_b) == 4
+                    and pos_b + 2 == cut_b
+                    and len(cur) >= 8
+                    and cur[-3] in {"的", "嘅"}
+                    and bool(re.search(
+                        r"(?:[零〇一二两三四五六七八九十百千万亿廿\d%％平间套家斤克元米层项吨箱台]{3,}|[零〇一二两三四五六七八九十百千万亿廿]+分之[零〇一二两三四五六七八九十百千万亿两廿\d]+)[的嘅]$",
+                        cur[:-2],
+                    ))
+                ):
+                    breaks += 1
+                    break
+            pos_b = nxt_b
+    return breaks
+
+
+def _has_genitive_or_tail_break(
+    phrases: List[str],
+    protected_terms: Optional[List[str]] = None,
+) -> bool:
+    return _count_genitive_or_tail_breaks(phrases, protected_terms=protected_terms) > 0
+
+
+def _split_bridge_phrases_adaptive(
+    text: str,
+    target_min: int = 3,
+    target_max: int = 8,
+    protected_terms: Optional[List[str]] = None,
+    font_path: Optional[str] = None,
+    word_gaps: Optional[Dict[int, float]] = None,
+) -> List[str]:
+    max_prot_in_text = max((len(t) for t in (protected_terms or []) if len(t) >= 2 and t in text), default=0)
+    eff_max = max(target_max, max_prot_in_text) if max_prot_in_text > target_max else target_max
+    c69 = split_clean_phrases(
+        text,
+        target_min=target_min,
+        target_max=eff_max,
+        protected_terms=protected_terms,
+        max_width_px=640,
+        font_path=font_path,
+        font_size=69,
+        word_gaps=word_gaps,
+        strict_width=True,
+    )
+    if not c69:
+        return []
+    def _orphan_cnt(chs: List[str]) -> int:
+        return sum(1 for ch in chs if len(re.sub(r"[\s，。！？、；：,.!?;:]+", "", ch)) <= 3)
+
+    def _has_collapsed_long(chs: List[str]) -> bool:
+        cap = max(12, max_prot_in_text + 2)
+        for ch in chs:
+            comp = re.sub(r"[\s，。！？、；：,.!?;:]+", "", ch)
+            ascii_n = sum(1 for c in comp if c.isascii() and not c.isspace())
+            cjk_n = len(comp) - ascii_n
+            eff_n = (cjk_n + (ascii_n * 55 + 99) // 100) if ascii_n >= 4 else len(comp)
+            if eff_n > cap:
+                return True
+        return False
+
+    b69 = _count_genitive_or_tail_breaks(c69, protected_terms=protected_terms)
+    o69 = _orphan_cnt(c69)
+    bad69 = _has_collapsed_long(c69)
+    if b69 == 0 and o69 == 0 and not bad69:
+        return c69
+    c60 = split_clean_phrases(
+        text,
+        target_min=target_min,
+        target_max=max(eff_max, 10),
+        protected_terms=protected_terms,
+        max_width_px=640,
+        font_path=font_path,
+        font_size=60,
+        word_gaps=word_gaps,
+        strict_width=True,
+    )
+    if c60 and not _has_collapsed_long(c60):
+        b60 = _count_genitive_or_tail_breaks(c60, protected_terms=protected_terms)
+        o60 = _orphan_cnt(c60)
+        if (bad69 or b60 < b69 or (b60 == b69 and o60 < o69)) and all(_measure_text_px(ch, font_path, 60)[0] <= 640 for ch in c60):
+            return c60
+    if bad69 and max_prot_in_text >= 9:
+        prot_px_60 = max(
+            (_measure_text_px(t, font_path, 60)[0] for t in (protected_terms or []) if len(t) >= 2 and t in text),
+            default=0,
+        )
+        c_wide = split_clean_phrases(
+            text,
+            target_min=target_min,
+            target_max=max(eff_max, 10),
+            protected_terms=protected_terms,
+            max_width_px=max(640, prot_px_60 + 16, max_prot_in_text * 66 + 24),
+            font_path=font_path,
+            font_size=60,
+            word_gaps=word_gaps,
+            strict_width=True,
+        )
+        if c_wide and not _has_collapsed_long(c_wide):
+            return c_wide
+    return c69
+
+
+def _bridge_units_for_text(text: str, font_path: Optional[str]) -> float:
+    if _measure_text_px(text, font_path, 69)[0] <= 640:
+        return _UNIFIED_L1_U
+    for u in (11.0, 10.5, 10.0):
+        fs = int(round(u * 6))
+        if _measure_text_px(text, font_path, fs)[0] <= 640:
+            return u
+    return 10.0
 
 
 # ── 4. 修辞意群识别与 `style_02` 六大舞台原语编排 ─────────────────────────────
@@ -690,21 +1311,19 @@ _CONTRAST_PAIRS = (
 # 只匹配真正的计量/比例/面积/倍数/年份数字，不误抓「一个」「一次」「一间」「一种」「一起」等泛指量词
 _NUM_UNIT_RE = re.compile(
     r"(?:"
-    r"[0-9]+(?:[.:][0-9]+)?\s*(?:[%％\+＋]|万|亿|千|百|平|平米|平方|年|倍|成|折|元|块|家|间|店|人|份)?"
+    r"[零〇一二两三四五六七八九十百千万亿廿]+分之(?:[十百千万亿]?[一二三四五六七八九十零〇]+|两(?![百千万亿]))(?:点[零〇一二两三四五六七八九十]+)?"
+    rf"|(?<![A-Za-z0-9.])[0-9]+(?:,[0-9]{{3}})*(?:[.:][0-9]+)?(?:{_ASCII_UNIT_PAT}|[A-Za-z][A-Za-z0-9]*|\s*(?:[多余来]?(?:[%％\+＋]|{_UNIT_TAIL_PAT})[+＋]?))?(?![A-Za-z0-9])"
+    rf"|[零〇一二三四五六七八九十百千万亿两廿]{{2,}}(?:{_MULTI_UNIT_PAT}|[平平米万千百亿年倍成匹节颗粒片支根盏扇口头亩瓦伏安度克斤米吨升]+)"
     r"|[二三四五六七八九十两廿][万千百平倍成]+"
-    r"|[一二三四五六七八九十两廿][万千百]"
-    r"|[零〇一二三四五六七八九十百千万亿两廿]{2,}[平平米万千百亿年倍成]+"
+    rf"|[一二三四五六七八九十两廿][万千百]+(?:{_MULTI_UNIT_PAT}|[{_SINGLE_UNIT_CHARS_NO_PCT}]半?)?"
     r")"
 )
 _ORDINAL_SENT_RE = re.compile(r"^第[一二三四五六七八九十0-9]+[条点步个]?$")
 _ENGLISH_UNIT_TOKEN_RE = re.compile(r"[A-Za-z0-9]+|[%％\+＋]")
 _EXTRA_COHESIVE = [
-    "𠮶种", "这种", "那种", "呢种", "呢个", "𠮶个", "呢间", "𠮶间",
-    "一间", "一个", "一家", "一套", "一份", "一种", "有种", "几个", "没这个", "这个", "前提",
-    "负债", "破产", "那年", "替你", "也不",
-    "纯手工", "原汁原味", "四大天王", "叉烧包", "桑拿鸡", "点赞茶楼",
-    "评论区", "三分之一", "非常之", "我觉得", "性价比", "实体店", "工厂老板",
-    "品质OK", "OK嘅", "好多", "好食", "有啲", "中空", "卡座", "灯笼", "岭南元素",
+    "𠮶种", "嗰种", "这种", "那种", "呢种",
+    "呢个", "𠮶个", "嗰个", "这个", "那个",
+    "呢间", "𠮶间", "嗰间", "一间", "一个", "一家", "一套", "一份", "一种", "有种", "几个",
 ]
 
 
@@ -713,13 +1332,21 @@ def _split_into_n_at_word_bounds(
     n: int,
     protected_terms: Optional[List[str]] = None,
 ) -> List[str]:
-    """沿语义词界与完整数字跨度把短句分为 n 块，避免暴力按下标腰斩双字词（如「负债」「200多万」）。"""
+    """沿语义词界与完整数字/英文跨度把短句分为 n 块，严防腰斩英文单位/品牌或残留首尾空格与挂尾虚词。"""
     clean = clean_display_text(text)
     L = len(clean)
     if n <= 1 or L < n * 2:
         return [clean] if clean else []
     toks = tokenize_semantic_words(clean, terms=protected_terms)
-    num_spans = [m.span() for m in re.finditer(r"[0-9]+(?:[.:][0-9]+)?[多余来上下左右]?[%％\+＋万亿千百平年倍成折元块家间店人份]*", clean)]
+    num_spans = list(iter_num_unit_spans(clean))
+    num_spans.extend(m.span() for m in _ALNUM_MIXED_TOKEN_RE.finditer(clean))
+    num_spans.extend(m.span() for m in _HYPHEN_ASCII_TOKEN_RE.finditer(clean))
+    _no_tail_bound = frozenset("的嘅地得之了咗着过把被从向给俾在喺和与及跟或这那呢嗰𠮶某每各哪")
+    _dir_allow_bound = ("出来了", "起来了", "下去了", "回来了", "过去了", "进来了", "过来了")
+    _brand_space_num_re = re.compile(
+        r"(?:iOS|Android|Windows|macOS|GPT|Claude|Gemini|Pro|Max|Ultra|Plus|Type|USB|Wi-Fi|WiFi)$",
+        re.I,
+    )
     bounds: List[int] = []
     pos = 0
     for tk in toks[:-1]:
@@ -728,22 +1355,38 @@ def _split_into_n_at_word_bounds(
             continue
         if any(s < pos < e for s, e in num_spans):
             continue
-        if clean[pos] in "的嘅了着过得":
+        if clean[pos - 1].isspace():
+            continue
+        left_s = clean[:pos].rstrip()
+        right_s = clean[pos:].lstrip()
+        if len(left_s) < 2 or len(right_s) < 2:
+            continue
+        if right_s[0] in _DP_NO_LEAD_CHARS and not (right_s[0] == "呢" and _is_cantonese_ne_demo_head(right_s)):
+            continue
+        if left_s[-1] in _no_tail_bound and not left_s.endswith(_dir_allow_bound):
+            continue
+        if left_s.endswith(_ADAPTIVE_MULTI_MOD_TAILS) and not (
+            left_s.endswith(("好多", "有啲"))
+            and is_degree_complement_haoduo(left_s, right_s, prot_terms=protected_terms)
+        ):
+            continue
+        if clean[pos].isspace() and _brand_space_num_re.search(left_s) and re.match(r"^[0-9]+", right_s):
             continue
         bounds.append(pos)
     if n == 2:
         if bounds:
             b = min(bounds, key=lambda x: abs(x - L / 2.0))
-            return [clean[:b], clean[b:]]
-        mid = L // 2
-        return [clean[:mid], clean[mid:]]
+            return [p for p in (clean[:b].strip(), clean[b:].strip()) if p]
+        return [clean]
     if n == 3:
-        pairs = [(b1, b2) for i, b1 in enumerate(bounds) for b2 in bounds[i + 1 :] if b2 - b1 >= 2]
+        pairs = [(b1, b2) for i, b1 in enumerate(bounds) for b2 in bounds[i + 1 :] if len(clean[b1:b2].strip()) >= 2]
         if pairs:
             b1, b2 = min(pairs, key=lambda p: abs(p[0] - L / 3.0) + abs(p[1] - 2.0 * L / 3.0))
-            return [clean[:b1], clean[b1:b2], clean[b2:]]
-        mid = max(2, L // 3)
-        return [clean[:mid], clean[mid : mid * 2], clean[mid * 2 :]]
+            return [p for p in (clean[:b1].strip(), clean[b1:b2].strip(), clean[b2:].strip()) if p]
+        if bounds:
+            b = min(bounds, key=lambda x: abs(x - L / 2.0))
+            return [p for p in (clean[:b].strip(), clean[b:].strip()) if p]
+        return [clean]
     return [clean]
 
 
@@ -852,7 +1495,7 @@ def _extract_parallel_list(text: str) -> Optional[Tuple[str, List[str], str]]:
         return None
     # 模式 A：同埋 / 以及 / 还有 串联 3~4 项短词，如「我哋嘅四大天王虾饺排骨凤爪同埋叉烧包」
     m_num_group = re.search(
-        r"(四大天王|三[件个点步项大法宝]|(?:[一二三四五六七八九十两]大(?:\S{2}))|主要有|包括|分为)",
+        r"(三[件个点步项大法宝]|(?:[一二三四五六七八九十两]大(?:\S{2}))|主要有|包括|分为)",
         clean,
     )
     if m_num_group:
@@ -904,10 +1547,15 @@ def _group_sentences(sentences: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         tl: List[Tuple[str, float, float]] = []
         for s in cur_sents:
             tl.extend(_extract_char_timeline(s))
+        g_sids: List[Any] = []
+        for s in cur_sents:
+            for sid_x in (s.get("merged_sentence_ids") or ([s.get("id")] if s.get("id") else [])):
+                if sid_x and sid_x not in g_sids:
+                    g_sids.append(sid_x)
         groups.append({
             "index": len(groups),
             "sentences": list(cur_sents),
-            "sentence_ids": [s.get("id") for s in cur_sents if s.get("id")],
+            "sentence_ids": g_sids,
             "start_sec": round(st, 4),
             "end_sec": round(en, 4),
             "duration_sec": round(max(0.1, en - st), 4),
@@ -962,17 +1610,89 @@ def _group_sentences(sentences: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return groups
 
 
-def _extract_anchor_phrase(clean_txt: str, max_len: int = 6) -> str:
-    """提炼痛点/数字/总结句的短锚点词（绝不截断半个词，也不砸出孤立干瘪的二字「问题」）。"""
+def _load_stage_protected_terms(
+    audio_events: Dict[str, Any],
+    pipeline_dir: Optional[Path] = None,
+    extra_terms: Optional[List[str]] = None,
+) -> List[str]:
+    """对齐 director_plan._load_pipeline_protected_terms：兼容 terms.txt 与 00_raw_intel.json（含 pain_keywords 与 dict entities，2..12 字）。"""
+    terms: List[str] = []
+    seen: set[str] = set()
+
+    def _push(val: Any) -> None:
+        raw = str(
+            val.get("name") or val.get("text") or val.get("term") or ""
+            if isinstance(val, dict) else (val or "")
+        ).strip()
+        if "=>" in raw:
+            raw = raw.split("=>", 1)[1].strip()
+        if 2 <= len(raw) <= 12 and raw not in seen:
+            seen.add(raw)
+            terms.append(raw)
+
+    for t in (audio_events.get("protected_terms") or []):
+        _push(t)
+    if pipeline_dir is not None:
+        p_dir = Path(pipeline_dir)
+        tf_p = _terms_file_for(p_dir)
+        if tf_p is not None and tf_p.is_file():
+            for t in load_protected_terms(tf_p):
+                _push(t)
+        intel_p = p_dir / "00_raw_intel.json"
+        if intel_p.is_file():
+            intel_d = _read_optional_json(intel_p) or {}
+            for k_t in ("pain_keywords", "terms", "protected_terms", "entities"):
+                for v_t in (intel_d.get(k_t) or []):
+                    _push(v_t)
+    for t in (extra_terms or []):
+        _push(t)
+    terms.sort(key=len, reverse=True)
+    return terms
+
+
+def _extract_anchor_phrase(
+    clean_txt: str,
+    max_len: int = 6,
+    protected_terms: Optional[List[str]] = None,
+) -> str:
+    """提炼痛点/数字/总结句的短锚点词（绝不截断半个词或保护词，也不砸出孤立干瘪的二字「问题」）。"""
+    prot_active = [t for t in (protected_terms or []) if len(t) >= 2 and t in clean_txt]
+
+    def _splits_prot(cand: str) -> bool:
+        for tm in prot_active:
+            pos = 0
+            while True:
+                ta = clean_txt.find(tm, pos)
+                if ta < 0:
+                    break
+                tb = ta + len(tm)
+                ca = clean_txt.find(cand)
+                while ca >= 0:
+                    cb = ca + len(cand)
+                    if ca < tb and cb > ta and (ca > ta or cb < tb):
+                        return True
+                    ca = clean_txt.find(cand, ca + 1)
+                pos = ta + 1
+        return False
+
     for pat in (
         r"(?:好傻|难做|陷阱|误区|三分之一[^，。]{0,3}|[0-9一二三四五六七八九十百千万两]+平(?:[的嘅]厨房)?|[0-9一二三四五六七八九十百千万两]+万)",
         r"(?:不是|没有)[^，。]{1,3}问题|[^，。]{1,2}[的嘅]?问题|问题",
     ):
         m = re.search(pat, clean_txt)
         if m and 2 <= len(m.group(0)) <= max_len + 2:
-            return m.group(0)[: max_len + 1]
-    parts = split_clean_phrases(clean_txt, target_min=2, target_max=max_len)
-    return parts[-1][:max_len] if parts else clean_txt[:max_len]
+            cand_m = m.group(0)[: max_len + 1]
+            if not _splits_prot(cand_m):
+                return cand_m
+    eff_max = max(max_len, max((len(t) for t in prot_active), default=0))
+    parts = split_clean_phrases(clean_txt, target_min=2, target_max=eff_max, protected_terms=protected_terms)
+    for pt in reversed(parts):
+        if len(pt) <= max_len and not _splits_prot(pt):
+            return pt
+    for pt in reversed(parts):
+        if not _splits_prot(pt):
+            return pt
+    return parts[-1] if parts else clean_txt[:max_len]
 
 
 def _plan_legacy_stage(
@@ -993,20 +1713,13 @@ def _plan_legacy_stage(
     sents = audio_events.get("sentences") or []
     if not sents:
         return {"style_id": style_id, "enabled": True, "groups": [], "items": [], "stats": {}}
+    sents = rebalance_asr_sentences(sents, max_chars=9) or sents
 
-    terms_p = None
-    if pipeline_dir:
-        for cand in (
-            Path(pipeline_dir) / "terms.txt",
-            Path(pipeline_dir).parent / "_SVS工作区" / "术语表.txt",
-        ):
-            if cand.is_file():
-                terms_p = cand
-                break
-    protected_terms = load_protected_terms(terms_p, extra_terms=_EXTRA_COHESIVE)
+    protected_terms = _load_stage_protected_terms(audio_events, pipeline_dir, extra_terms=_EXTRA_COHESIVE)
     groups_raw = _group_sentences(sents)
     ev_map = broll_evidence_by_sent or {}
 
+    _leg_fp = _style02_font_path()
     items: List[Dict[str, Any]] = []
     beat_groups: List[Dict[str, Any]] = []
     item_seq = 0
@@ -1024,6 +1737,30 @@ def _plan_legacy_stage(
         g_txt = g["clean_text"]
         g_split_txt = g["text"]  # 含“，”句界分隔符，绝不跨句把末尾虚词粘到下句开头
         tl = g["char_timeline"]
+
+        def _seg_legacy_sents(sents_in: List[Dict[str, Any]], t_min: int, t_max: int) -> List[Tuple[str, float, float]]:
+            mapped_s: List[Tuple[str, float, float]] = []
+            prev_end_s = gs
+            for s_leg in sents_in:
+                st_l_txt = str(s_leg.get("text") or "").strip()
+                if not st_l_txt:
+                    continue
+                s_l_start = max(prev_end_s, float(s_leg.get("start_sec") or gs))
+                s_l_end = max(s_l_start + 0.25, float(s_leg.get("end_sec") or ge))
+                s_l_tl = [c for c in _extract_char_timeline(s_leg) if c[0].strip()]
+                s_l_gaps = _compute_sentence_word_gaps(s_leg, st_l_txt)
+                phs_l = _split_bridge_phrases_adaptive(
+                    st_l_txt,
+                    target_min=t_min,
+                    target_max=t_max,
+                    protected_terms=protected_terms,
+                    font_path=_leg_fp,
+                    word_gaps=s_l_gaps,
+                ) or [clean_display_text(st_l_txt)]
+                for b_txt, bs, be in map_chunks_to_times(phs_l, s_l_tl, s_l_start, s_l_end):
+                    mapped_s.append((b_txt, bs, be))
+                    prev_end_s = max(prev_end_s, be)
+            return mapped_s
         is_first = (gi == 0)
         is_last = (gi == len(groups_raw) - 1)
         has_num = bool(_NUM_UNIT_RE.search(g_txt))
@@ -1099,19 +1836,84 @@ def _plan_legacy_stage(
 
         # ── 原语 B：三层阶梯累积建构（还原 00.03..03.07） ──
         elif pattern == "staged_3tier_build":
-            phrases = split_clean_phrases(g_split_txt, target_min=3, target_max=7, protected_terms=protected_terms)
-            if len(phrases) < 3:
-                phrases = _split_into_n_at_word_bounds(g_txt, 3, protected_terms=protected_terms)
-            elif len(phrases) > 3:
-                # 均并回 3 层，保证与原片一致的三行金字塔
-                k1 = phrases[0]
-                k2 = "".join(phrases[1 : max(2, len(phrases) - 1)])
-                if len(k2) > 9:
-                    k2 = phrases[1]
-                    k3 = "".join(phrases[2:])
+            def _join_ph(ps_list: List[str]) -> str:
+                acc_s = ""
+                for ps_i in ps_list:
+                    if not ps_i:
+                        continue
+                    if acc_s and acc_s[-1].isascii() and acc_s[-1].isalnum() and ps_i[0].isascii() and ps_i[0].isalnum():
+                        acc_s += " " + ps_i
+                    else:
+                        acc_s += ps_i
+                return acc_s
+
+            _raw_sent_joined_3 = "，".join(
+                str(s_3.get("text") or "").strip() for s_3 in (g.get("sentences") or []) if str(s_3.get("text") or "").strip()
+            ) or g_split_txt
+            _clause_split_3 = re.compile(r"(?:(?<!\d)[，；,;]|(?<=\d)[，；;]|(?<=\d),(?!\d{3}(?!\d))|[。！？!?])+")
+            _raw_clauses_split = [clean_display_text(c) for c in _clause_split_3.split(_raw_sent_joined_3) if clean_display_text(c)]
+            _raw_clauses_3: List[str] = []
+            for _rc_i in _raw_clauses_split:
+                if (
+                    _raw_clauses_3
+                    and _raw_clauses_3[-1].endswith(("好多", "有啲"))
+                    and not is_degree_complement_haoduo(_raw_clauses_3[-1], _rc_i, prot_terms=protected_terms)
+                ):
+                    _raw_clauses_3[-1] = _join_ph([_raw_clauses_3[-1], _rc_i])
                 else:
-                    k3 = phrases[-1]
-                phrases = [k1, k2, k3]
+                    _raw_clauses_3.append(_rc_i)
+            phrases = [p for p, _, _ in _seg_legacy_sents(g["sentences"], 3, 7)]
+            if len(phrases) < 3:
+                if len(_raw_clauses_3) >= 2 and min(len(c) for c in _raw_clauses_3) >= 4:
+                    if len(_raw_clauses_3) >= 3:
+                        phrases = list(_raw_clauses_3)
+                    else:
+                        c0, c1 = _raw_clauses_3[0], _raw_clauses_3[1]
+                        if len(c0) >= len(c1):
+                            sp = _split_into_n_at_word_bounds(c0, 2, protected_terms=protected_terms)
+                            phrases = (sp if len(sp) == 2 else [c0]) + [c1]
+                        else:
+                            sp = _split_into_n_at_word_bounds(c1, 2, protected_terms=protected_terms)
+                            phrases = [c0] + (sp if len(sp) == 2 else [c1])
+                if len(phrases) < 3:
+                    phrases = _split_into_n_at_word_bounds(g_txt, 3, protected_terms=protected_terms)
+            if len(phrases) > 3:
+                # 均并回 3 层，保证与原片一致的三行金字塔，同时严禁跨逗号/句界融合或生成序数挂尾
+                _clause_ends_3: set[int] = set()
+                _acc_ce = 0
+                for _cl in _raw_clauses_3[:-1]:
+                    _acc_ce += len(_cl)
+                    _clause_ends_3.add(_acc_ce)
+                work_ph = list(phrases)
+                while len(work_ph) > 3:
+                    _cum = 0
+                    _best_idx = -1
+                    _best_score: Optional[Tuple[int, int, int, int]] = None
+                    for _pi in range(len(work_ph) - 1):
+                        _cum += len(work_ph[_pi])
+                        if _cum in _clause_ends_3:
+                            continue
+                        _cand_m = _join_ph([work_ph[_pi], work_ph[_pi + 1]])
+                        _ord_pen = 1 if (len(_cand_m) >= 6 and re.search(r"第[一二三四五六七八九十两\d]+$", _cand_m)) else 0
+                        _mid_pen = 1 if (_pi == 1 and len(work_ph) == 4 and len(_cand_m) >= 8) else 0
+                        _sc = (_ord_pen, _mid_pen, len(_cand_m), _pi)
+                        if _best_score is None or _sc < _best_score:
+                            _best_score = _sc
+                            _best_idx = _pi
+                    if _best_idx >= 0:
+                        _m_str = _join_ph([work_ph[_best_idx], work_ph[_best_idx + 1]])
+                        work_ph = work_ph[:_best_idx] + [_m_str] + work_ph[_best_idx + 2 :]
+                    else:
+                        k1 = work_ph[0]
+                        k2 = _join_ph(work_ph[1 : max(2, len(work_ph) - 1)])
+                        if len(k2) > 9:
+                            k2 = work_ph[1]
+                            k3 = _join_ph(work_ph[2:])
+                        else:
+                            k3 = work_ph[-1]
+                        work_ph = [k1, k2, k3]
+                        break
+                phrases = work_ph
             mapped = map_chunks_to_times(phrases, tl, gs, ge)
             tiers = [
                 ("hero_white", -0.34, -0.28, 16.0, "in:向右集合"),
@@ -1132,7 +1934,7 @@ def _plan_legacy_stage(
 
         # ── 原语 C：反差痛点母题红大字 + 自抠像人后滚动弹幕（还原 11.00..16.17） ──
         elif pattern == "hero_anchor_plus_danmaku":
-            anchor = _extract_anchor_phrase(g_txt, max_len=6)
+            anchor = _extract_anchor_phrase(g_txt, max_len=6, protected_terms=protected_terms)
             # 1) 前景红色重磅主题词（用缩小 II + 拳击砰砸出，贯穿整个意群）
             g_items.append(_make_item(
                 item_id=next_id(), group_id=f"grp_{gi:02d}", text=anchor,
@@ -1141,14 +1943,13 @@ def _plan_legacy_stage(
                 anim_key="in:缩小 II", z_layer="foreground", track_lane=0,
             ))
             # 2) 中下区第一小节先出1条小过桥，紧接着用自抠像把剩下痛点句全部分配到人后滚动弹幕（确保不缺漏台词）
-            phrases = split_clean_phrases(g_split_txt, target_min=3, target_max=6, protected_terms=protected_terms)
-            mapped = map_chunks_to_times(phrases, tl, gs, ge)
+            mapped = _seg_legacy_sents(g["sentences"], 3, 6)
             if mapped:
                 first_txt, f_s, f_e = mapped[0]
                 g_items.append(_make_item(
                     item_id=next_id(), group_id=f"grp_{gi:02d}", text=first_txt,
                     start_sec=max(gs + 0.30, f_s), end_sec=min(ge, max(gs + 1.35, f_e + 0.15)), fps=fps,
-                    variant="bridge_bar", x_norm=0.0, y_norm=-0.52, font_size_units=15.0,
+                    variant="bridge_bar", x_norm=0.0, y_norm=-0.52, font_size_units=_bridge_units_for_text(first_txt, _leg_fp),
                     anim_key=None, z_layer="foreground", track_lane=1,
                 ))
             danmaku_lanes_y = [0.34, 0.20, 0.40, 0.14]
@@ -1183,14 +1984,42 @@ def _plan_legacy_stage(
                 sum_tl = _extract_char_timeline(summary_sent)
                 sum_orig_s = float(summary_sent.get("start_sec") or list_end)
                 sum_txt = clean_display_text(str(summary_sent.get("text") or ""))
-                sum_phrase = _extract_anchor_phrase(sum_txt, max_len=7)
+                sum_phrase = _extract_anchor_phrase(sum_txt, max_len=7, protected_terms=protected_terms)
                 if len(sum_txt) > len(sum_phrase) + 2:
-                    pre_body = clean_display_text(sum_txt.replace(sum_phrase, "", 1))
-                    pre_list = split_clean_phrases(pre_body, target_min=3, target_max=8, protected_terms=protected_terms)
-                    mapped_sum = map_chunks_to_times([*pre_list, sum_phrase], sum_tl, sum_orig_s, ge)
+                    idx_sp = sum_txt.find(sum_phrase)
+                    before_body = clean_display_text(sum_txt[:idx_sp]) if idx_sp > 0 else ""
+                    after_body = clean_display_text(sum_txt[idx_sp + len(sum_phrase) :]) if idx_sp >= 0 else ""
+                    if after_body and len(after_body) <= 2 and len(sum_phrase) + len(after_body) <= 9:
+                        sum_phrase = sum_phrase + after_body
+                        after_body = ""
+                    pre_list = (
+                        _split_bridge_phrases_adaptive(
+                            before_body,
+                            target_min=3,
+                            target_max=8,
+                            protected_terms=protected_terms,
+                            font_path=_leg_fp,
+                            word_gaps=_compute_sentence_word_gaps(summary_sent, before_body),
+                        )
+                        if len(before_body) >= 2
+                        else ([before_body] if before_body else [])
+                    )
+                    post_list = (
+                        _split_bridge_phrases_adaptive(
+                            after_body,
+                            target_min=3,
+                            target_max=8,
+                            protected_terms=protected_terms,
+                            font_path=_leg_fp,
+                            word_gaps=_compute_sentence_word_gaps(summary_sent, after_body),
+                        )
+                        if len(after_body) >= 2
+                        else ([after_body] if after_body else [])
+                    )
+                    mapped_sum = map_chunks_to_times([*pre_list, sum_phrase, *post_list], sum_tl, sum_orig_s, ge)
                     if mapped_sum:
-                        sum_pre_chunks = mapped_sum[:-1]
-                        sum_s = mapped_sum[-1][1]
+                        sum_pre_chunks = mapped_sum[: len(pre_list)]
+                        sum_s = mapped_sum[min(len(pre_list), len(mapped_sum) - 1)][1]
                     else:
                         sum_s = sum_orig_s
                 else:
@@ -1262,7 +2091,7 @@ def _plan_legacy_stage(
                 g_items.append(_make_item(
                     item_id=next_id(), group_id=f"grp_{gi:02d}", text=p_stxt,
                     start_sec=max(gather_t, p_ss), end_sec=max(max(gather_t, p_ss) + 0.25, nxt_ps), fps=fps,
-                    variant="bridge_bar", x_norm=0.0, y_norm=-0.73, font_size_units=14.5,
+                    variant="bridge_bar", x_norm=0.0, y_norm=-0.73, font_size_units=_bridge_units_for_text(p_stxt, _leg_fp),
                     anim_key=None, track_lane=5, trigger="bridge",
                 ))
             g_items.append(_make_item(
@@ -1284,15 +2113,20 @@ def _plan_legacy_stage(
                 ]
                 blocks = []
                 for rp in raw_parts:
-                    if len(rp) > 9:
-                        blocks.extend(split_clean_phrases(rp, target_min=3, target_max=8, protected_terms=protected_terms))
+                    if len(rp) > 8 or _measure_text_px(rp, _leg_fp, 69)[0] > 640:
+                        blocks.extend(_split_bridge_phrases_adaptive(
+                            rp, target_min=3, target_max=8, protected_terms=protected_terms, font_path=_leg_fp,
+                        ))
                     else:
                         blocks.append(rp)
+                if len(blocks) == 1 and len(blocks[0]) >= 4:
+                    blocks = _split_into_n_at_word_bounds(blocks[0], 2, protected_terms=protected_terms)
+                mapped = map_chunks_to_times(blocks, tl, gs, ge)
             else:
-                blocks = split_clean_phrases(g_split_txt, target_min=3, target_max=8, protected_terms=protected_terms)
-            if len(blocks) == 1 and len(blocks[0]) >= 4:
-                blocks = _split_into_n_at_word_bounds(blocks[0], 2, protected_terms=protected_terms)
-            mapped = map_chunks_to_times(blocks, tl, gs, ge)
+                mapped = _seg_legacy_sents(g["sentences"], 3, 8)
+                if len(mapped) == 1 and len(mapped[0][0]) >= 4:
+                    blocks = _split_into_n_at_word_bounds(mapped[0][0], 2, protected_terms=protected_terms)
+                    mapped = map_chunks_to_times(blocks, tl, gs, ge)
             # 若超 3 块：前 (len-2) 块作清爽无截断前置过渡句，最后 2~3 块做左右/上下对比压轴！
             n_pre = max(0, len(mapped) - 3)
             pre_blocks = mapped[:n_pre]
@@ -1303,7 +2137,7 @@ def _plan_legacy_stage(
                 g_items.append(_make_item(
                     item_id=next_id(), group_id=f"grp_{gi:02d}", text=p_txt,
                     start_sec=ps, end_sec=max(ps + 0.25, nxt_s), fps=fps,
-                    variant="bridge_bar", x_norm=0.0, y_norm=-0.52, font_size_units=15.5,
+                    variant="bridge_bar", x_norm=0.0, y_norm=-0.52, font_size_units=_bridge_units_for_text(p_txt, _leg_fp),
                     anim_key=None, track_lane=0, trigger="bridge",
                 ))
             styles_seq = [
@@ -1335,19 +2169,77 @@ def _plan_legacy_stage(
 
         # ── 原语 F：数字锚点先滚入再压暗叠白结论（还原 24.97..26.30 `6000+` → `实体企业`，零字截断） ──
         elif pattern == "num_anchor_dim_overlay":
-            m_num = _NUM_UNIT_RE.search(g_txt)
+            _brand_num_spans = [
+                m.span()
+                for m in re.finditer(
+                    r"(?<![A-Za-z0-9])[A-Za-z]+(?:-[A-Za-z0-9]+)*\s+[0-9]+(?![A-Za-z0-9])",
+                    g_txt,
+                )
+            ]
+            _brand_num_spans.extend(m.span() for m in _ALNUM_MIXED_TOKEN_RE.finditer(g_txt))
+            _brand_num_spans.extend(m.span() for m in _HYPHEN_ASCII_TOKEN_RE.finditer(g_txt))
+            for _pt_n in (protected_terms or ()):
+                if len(_pt_n) >= 2 and _pt_n in g_txt:
+                    _brand_num_spans.extend(m.span() for m in re.finditer(re.escape(_pt_n), g_txt))
+            m_num = next(
+                (
+                    (ms, me)
+                    for ms, me in iter_num_unit_spans(g_txt, pattern=_NUM_UNIT_RE)
+                    if not any(bs <= ms < be for bs, be in _brand_num_spans)
+                ),
+                None,
+            )
             if m_num:
-                num_str = m_num.group(0)
-                pre_str = clean_display_text(g_txt[: m_num.start()])
-                post_str = clean_display_text(g_txt[m_num.end() :])
-                if post_str and post_str[0] in "的地得之了着过嘅":
+                num_start, num_end = m_num
+                num_str = g_txt[num_start:num_end]
+                pre_str = clean_display_text(g_txt[:num_start])
+                raw_post_str = clean_display_text(g_txt[num_end:])
+                post_str = raw_post_str
+                if (
+                    post_str
+                    and post_str[0] in "的地得之了着过嘅"
+                    and not post_str.startswith(("之内", "之外", "之间", "之上", "之下", "之中", "之后", "之前", "之一", "之类"))
+                ):
                     if len(post_str) >= 3:
                         post_str = post_str[1:].strip()
                     else:
                         num_str = f"{num_str}{post_str[0]}"
                         post_str = post_str[1:].strip()
-                pre_chunks = split_clean_phrases(pre_str, target_min=2, target_max=8, protected_terms=protected_terms) if pre_str else []
-                post_chunks = split_clean_phrases(post_str, target_min=2, target_max=8, protected_terms=protected_terms) if post_str else []
+
+                def _split_leg_subspan(span_txt: str, start_offset_in_g: int) -> List[str]:
+                    if not span_txt:
+                        return []
+                    if len(g["sentences"]) == 1:
+                        s0 = g["sentences"][0]
+                        s0_raw = str(s0.get("text") or "").strip()
+                        s0_gaps = _compute_sentence_word_gaps(s0, span_txt) if clean_display_text(s0_raw) == span_txt else None
+                        return _split_bridge_phrases_adaptive(
+                            span_txt, target_min=2, target_max=8, protected_terms=protected_terms,
+                            font_path=_leg_fp, word_gaps=s0_gaps,
+                        )
+                    pieces: List[str] = []
+                    cursor_g = 0
+                    span_end_in_g = start_offset_in_g + len(span_txt)
+                    for s_leg in g["sentences"]:
+                        s_clean = clean_display_text(str(s_leg.get("text") or ""))
+                        s_len = len(s_clean)
+                        ov_a = max(start_offset_in_g, cursor_g)
+                        ov_b = min(span_end_in_g, cursor_g + s_len)
+                        if ov_b > ov_a:
+                            sub_t = g_txt[ov_a:ov_b]
+                            if sub_t:
+                                pieces.extend(_split_bridge_phrases_adaptive(
+                                    sub_t, target_min=2, target_max=8, protected_terms=protected_terms,
+                                    font_path=_leg_fp, word_gaps=_compute_sentence_word_gaps(s_leg, sub_t) if sub_t == s_clean else None,
+                                ) or [sub_t])
+                        cursor_g += s_len
+                    return pieces or _split_bridge_phrases_adaptive(
+                        span_txt, target_min=2, target_max=8, protected_terms=protected_terms, font_path=_leg_fp,
+                    )
+
+                pre_chunks = _split_leg_subspan(pre_str, 0) if pre_str else []
+                post_off = num_end + max(0, len(raw_post_str) - len(post_str))
+                post_chunks = _split_leg_subspan(post_str, post_off) if post_str else []
                 sub_parts = [*pre_chunks, num_str, *post_chunks]
                 mapped = map_chunks_to_times(sub_parts, tl, gs, ge)
                 num_idx = len(pre_chunks)
@@ -1358,7 +2250,7 @@ def _plan_legacy_stage(
                     g_items.append(_make_item(
                         item_id=next_id(), group_id=f"grp_{gi:02d}", text=p_txt,
                         start_sec=ps, end_sec=max(ps + 0.25, nxt_s), fps=fps,
-                        variant="bridge_bar", x_norm=0.0, y_norm=-0.52, font_size_units=15.0,
+                        variant="bridge_bar", x_norm=0.0, y_norm=-0.52, font_size_units=_bridge_units_for_text(p_txt, _leg_fp),
                         anim_key=None, track_lane=0, trigger="bridge",
                     ))
                 has_post = bool(post_chunks)
@@ -1385,18 +2277,19 @@ def _plan_legacy_stage(
 
         # ── 原语 G：尾句双色混排强调 + 呼吸互动 CTA（零字截断，长句自动保留完整） ──
         elif pattern == "inline_emphasis_cta":
-            phrases = split_clean_phrases(g_split_txt, target_min=4, target_max=9, protected_terms=protected_terms)
-            if len(phrases) < 2:
-                mid = max(2, len(g_txt) // 2)
-                phrases = [g_txt[:mid], g_txt[mid:]]
-            mapped = map_chunks_to_times(phrases, tl, gs, ge)
+            mapped = _seg_legacy_sents(g["sentences"], 4, 8)
+            if len(mapped) < 2:
+                base_txt = mapped[0][0] if mapped else g_txt
+                if len(base_txt) >= 4:
+                    phrases = _split_into_n_at_word_bounds(base_txt, 2, protected_terms=protected_terms)
+                    mapped = map_chunks_to_times(phrases, tl, gs, ge)
             for ci_e, (e_txt, es, _) in enumerate(mapped):
                 nxt_s = mapped[ci_e + 1][1] if ci_e + 1 < len(mapped) else ge
                 if ci_e == len(mapped) - 1:
                     g_items.append(_make_item(
                         item_id=next_id(), group_id=f"grp_{gi:02d}", text=e_txt,
                         start_sec=es, end_sec=ge, fps=fps,
-                        variant="bridge_bar", x_norm=0.0, y_norm=-0.52, font_size_units=16.0,
+                        variant="bridge_bar", x_norm=0.0, y_norm=-0.52, font_size_units=_bridge_units_for_text(e_txt, _leg_fp),
                         anim_key=None, sfx_role_override=None, track_lane=1, trigger="cta",
                     ))
                 elif ci_e == len(mapped) - 2 and len(e_txt) >= 4:
@@ -1405,7 +2298,7 @@ def _plan_legacy_stage(
                     pos_acc = 0
                     for w_tok in words_e[:-1]:
                         pos_acc += len(w_tok)
-                        if 2 <= pos_acc <= len(e_txt) - 2:
+                        if 2 <= pos_acc <= len(e_txt) - 2 and not e_txt[pos_acc].isspace() and not e_txt[pos_acc - 1].isspace():
                             boundaries.append(pos_acc)
                     if boundaries:
                         split_i = min(boundaries, key=lambda p: (abs(p - len(e_txt) / 2.0), -p))
@@ -1427,20 +2320,19 @@ def _plan_legacy_stage(
                     g_items.append(_make_item(
                         item_id=next_id(), group_id=f"grp_{gi:02d}", text=e_txt,
                         start_sec=es, end_sec=max(es + 0.25, nxt_s), fps=fps,
-                        variant="bridge_bar", x_norm=0.0, y_norm=-0.52, font_size_units=15.5,
+                        variant="bridge_bar", x_norm=0.0, y_norm=-0.52, font_size_units=_bridge_units_for_text(e_txt, _leg_fp),
                         anim_key=None, track_lane=0, trigger="bridge",
                     ))
 
         # ── 原语 H：极简半透黑底呼吸过渡短句（bg=0.7，无动效、严格无音效） ──
         if pattern == "plain_bridge":
-            phrases = split_clean_phrases(g_split_txt, target_min=3, target_max=8, protected_terms=protected_terms)
-            mapped = map_chunks_to_times(phrases, tl, gs, ge)
-            for pi, (b_txt, bs, be) in enumerate(mapped):
-                next_s = mapped[pi + 1][1] if pi + 1 < len(mapped) else ge
+            mapped_all = _seg_legacy_sents(g["sentences"], 3, 8)
+            for pi, (b_txt, bs, be) in enumerate(mapped_all):
+                next_s = mapped_all[pi + 1][1] if pi + 1 < len(mapped_all) else ge
                 g_items.append(_make_item(
                     item_id=next_id(), group_id=f"grp_{gi:02d}", text=b_txt,
                     start_sec=bs, end_sec=max(bs + 0.25, next_s), fps=fps,
-                    variant="bridge_bar", x_norm=0.0, y_norm=-0.52, font_size_units=15.5,
+                    variant="bridge_bar", x_norm=0.0, y_norm=-0.52, font_size_units=_bridge_units_for_text(b_txt, _leg_fp),
                     anim_key=None, track_lane=0, trigger="bridge",
                 ))
             bridge_group_cnt += 1
@@ -1675,15 +2567,26 @@ def _locate_phrase_offset(
             if idx_m >= 0:
                 break
     if idx_m < 0:
-        # 对数字表达（如 200 <-> 两百）做阿拉伯数字与中文数字互查
-        m_d = re.search(r"\d+", clean_p)
-        if m_d:
-            digit_map = {"200": "两百", "300": "三百", "600": "六百", "2000": "两千"}
-            alt = digit_map.get(m_d.group(0))
-            if alt:
-                idx_m = spoken.find(alt)
-            if idx_m < 0 and alt:
-                idx_m = spoken.find(alt[:1])
+        # 对任意中文数字与阿拉伯数字表达（如 200 <-> 两百、15 <-> 十五、2000 <-> 两千）做通用归一化互查
+        norm_p = _normalize_zh_numerals(clean_p)
+        norm_spoken, norm_idx_map = _normalize_zh_numerals_with_map(spoken)
+        if norm_p and norm_spoken:
+            idx_norm = norm_spoken.find(norm_p)
+            if idx_norm < 0:
+                m_d = re.search(r"\d+", norm_p)
+                if m_d:
+                    idx_norm = norm_spoken.find(m_d.group(0))
+            if idx_norm < 0 and len(norm_p) >= 2:
+                for sub_len in range(min(4, len(norm_p)), 1, -1):
+                    for start_i in range(len(norm_p) - sub_len + 1):
+                        sub_n = norm_p[start_i : start_i + sub_len]
+                        idx_norm = norm_spoken.find(sub_n)
+                        if idx_norm >= 0:
+                            break
+                    if idx_norm >= 0:
+                        break
+            if 0 <= idx_norm < len(norm_idx_map):
+                idx_m = norm_idx_map[idx_norm]
     if idx_m < 0 or idx_m >= len(tl_clean):
         return None
     rel = float(tl_clean[idx_m][1]) - ref_start
@@ -1718,6 +2621,9 @@ def _unified_style02_items(
     ordinal: int,
     fps: int,
     pillar_state: Optional[Dict[str, int]] = None,
+    *,
+    protected_terms: Optional[List[str]] = None,
+    subtitle_entries: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """
     style_02 一体化单层动态舞台（商业与探店绝对共用同一字体、三级字号标尺与唯一色盘）：
@@ -1727,8 +2633,8 @@ def _unified_style02_items(
     """
     primitive = act["primitive"]
     start, end = act["start_sec"], act["end_sec"]
-    if primitive == "clean_breath":
-        return []
+    _s02_fp = _style02_font_path()
+    _strict_tail_chars = frozenset("的嘅地得之把被从向给俾在喺这那呢嗰𠮶")
 
     def _strip_tofu_symbols(val: Any) -> str:
         # 统一粗黑体舞台禁用易缺失的装饰叉号/勾号，防止渲染出方框豆腐块 ☒
@@ -1792,27 +2698,29 @@ def _unified_style02_items(
         it["read_hold_sec"] = round(max(0.1, float(it["end_sec"]) - float(it["start_sec"])), 3)
 
     def _build_act_speech_chunks(target_min: int = 4, target_max: int = 9) -> List[Tuple[str, float, float]]:
-        # 按 <=0.25s 静音停顿把连续短句并段后再切短语，防止「嘅店厨房」跨句助词开行首或复传全幕时间戳
+        # 先做通用跨句重平衡，再逐句接入 step5 词性+声学停顿+DP 切分（绝不跨句拼接成跨句错行）
         if not sentences:
             return []
-        segments: List[List[Dict[str, Any]]] = [[sentences[0]]]
-        for s_cur in sentences[1:]:
-            if float(s_cur["start_sec"]) - float(segments[-1][-1]["end_sec"]) <= 0.25:
-                segments[-1].append(s_cur)
-            else:
-                segments.append([s_cur])
+
+        reb_sents = rebalance_asr_sentences(sentences, max_chars=target_max) or sentences
         all_chunks: List[Tuple[str, float, float]] = []
         prev_end = start
-        for seg in segments:
-            seg_s = max(prev_end, float(seg[0]["start_sec"]))
-            seg_e = max(seg_s + 0.25, float(seg[-1]["end_sec"]))
-            seg_txt = "".join(str(s.get("text") or "").strip() for s in seg)
-            if not seg_txt:
+        for s_reb in reb_sents:
+            st_t = str(s_reb.get("text") or "").strip()
+            if not clean_display_text(st_t):
                 continue
-            seg_tl: List[Tuple[str, float, float]] = []
-            for s in seg:
-                seg_tl.extend(c for c in _extract_char_timeline(s) if c[0].strip())
-            chunks = split_clean_phrases(seg_txt, target_min=target_min, target_max=target_max) or [clean_display_text(seg_txt)]
+            seg_s = max(prev_end, float(s_reb["start_sec"]))
+            seg_e = max(seg_s + 0.25, float(s_reb["end_sec"]))
+            seg_tl = [c for c in _extract_char_timeline(s_reb) if c[0].strip()]
+            s_gaps = _compute_sentence_word_gaps(s_reb, st_t)
+            chunks = _split_bridge_phrases_adaptive(
+                st_t,
+                target_min=target_min,
+                target_max=target_max,
+                protected_terms=protected_terms,
+                font_path=_s02_fp,
+                word_gaps=s_gaps,
+            ) or [clean_display_text(st_t)]
             mapped = map_chunks_to_times(chunks, seg_tl, seg_s, seg_e)
             for ci, (c_txt, cs, _ce) in enumerate(mapped):
                 nxt_s = mapped[ci + 1][1] if ci + 1 < len(mapped) else seg_e
@@ -1825,18 +2733,14 @@ def _unified_style02_items(
         return all_chunks
 
     def _norm_cov(text_v: str) -> str:
-        s_n = clean_display_text(text_v)
-        for k_zh, v_num in (
-            ("两千", "2000"), ("两百", "200"), ("二百", "200"), ("三百", "300"),
-            ("五百", "500"), ("六百", "600"), ("十万", "10万"),
-        ):
-            s_n = s_n.replace(k_zh, v_num)
-        return s_n
+        return _normalize_zh_numerals(clean_display_text(text_v))
+
+    act_speech_chunks = _build_act_speech_chunks(target_min=4, target_max=9)
 
     # 过渡句/呼吸段：无黑方底框通透白字 bridge_bar（0 音效，<=9 字严格居中不碰右侧点赞区）
     if primitive in ("plain_bridge", "clean_breath"):
-        for c_txt, cs, ce in _build_act_speech_chunks(target_min=4, target_max=9):
-            add(c_txt, "bridge_bar", cs, ce, 0.0, -0.45, _UNIFIED_L1_U, "", 0, sfx=None, tier="L1")
+        for c_txt, cs, ce in act_speech_chunks:
+            add(c_txt, "bridge_bar", cs, ce, 0.0, -0.45, _bridge_units_for_text(c_txt, _s02_fp), "", 0, sfx=None, tier="L1")
         return items
 
     # 收集逐字时间轴
@@ -1852,18 +2756,42 @@ def _unified_style02_items(
             word_backed.update(range(s_idx, s_idx + len(chars)))
 
     visual = act.get("visual_copy") or {}
-    raw_items_list = [str(t or "").strip() for t in (visual.get("items") or []) if str(t or "").strip()]
+    _act_plain_for_snap = "".join(clean_display_text(str(s.get("text") or "")) for s in sentences)
+    _snap_atomic_spans: List[Tuple[int, int]] = []
+    if _act_plain_for_snap:
+        _snap_atomic_spans.extend(iter_num_unit_spans(_act_plain_for_snap, pattern=_NUM_UNIT_RE))
+        _snap_atomic_spans.extend(m.span() for m in _ALNUM_MIXED_TOKEN_RE.finditer(_act_plain_for_snap))
+        _snap_atomic_spans.extend(m.span() for m in _HYPHEN_ASCII_TOKEN_RE.finditer(_act_plain_for_snap))
+
+    def _snap_visual_copy_bounds(raw_t: str) -> str:
+        t_clean = _strip_tofu_symbols(raw_t)
+        if not t_clean or not _act_plain_for_snap or not _snap_atomic_spans:
+            return t_clean
+        idx_m = _act_plain_for_snap.find(t_clean)
+        if idx_m < 0:
+            return t_clean
+        new_s, new_e = idx_m, idx_m + len(t_clean)
+        for sp_s, sp_e in _snap_atomic_spans:
+            if sp_s < new_s < sp_e:
+                new_s = sp_s
+            if sp_s < new_e < sp_e:
+                new_e = sp_e
+        if new_s != idx_m or new_e != idx_m + len(t_clean):
+            return _act_plain_for_snap[new_s:new_e]
+        return t_clean
+
+    raw_items_list = [_snap_visual_copy_bounds(str(t or "").strip()) for t in (visual.get("items") or []) if str(t or "").strip()]
     neg_items = {
         _strip_tofu_symbols(t)
         for t in raw_items_list
-        if t.startswith(("✕", "✘", "✖")) or _strip_tofu_symbols(t).startswith(("不是", "没有", "没", "别", "不能", "不要", "雇人"))
+        if t.startswith(("✕", "✘", "✖")) or _strip_tofu_symbols(t).startswith(("不是", "没有", "没", "别", "不能", "不要"))
     }
-    headline = _strip_tofu_symbols(visual.get("headline") or "")
+    headline = _snap_visual_copy_bounds(visual.get("headline") or "")
     lines = [_strip_tofu_symbols(t) for t in raw_items_list if _strip_tofu_symbols(t) and _display_length(_strip_tofu_symbols(t)) <= 8]
     if _display_length(headline) > 7:
         headline = ""
-    accent_tok = _strip_tofu_symbols(visual.get("accent_token") or "")
-    footnote = _strip_tofu_symbols(visual.get("footnote") or "")
+    accent_tok = _snap_visual_copy_bounds(visual.get("accent_token") or "")
+    footnote = _snap_visual_copy_bounds(visual.get("footnote") or "")
     y_base = max(-0.34, min(-0.24, _stage_y(composition)))
     u_prim = _UNIFIED_PRIMITIVE_ALIAS.get(primitive, primitive)
 
@@ -1918,13 +2846,14 @@ def _unified_style02_items(
             sub_span = timed_spans([main_txt, sub_txt])[-1][0]
             is_pill = len(sub_txt) <= 6
             add(sub_txt, "red_pill" if is_pill else "bridge_bar", max(anchor_s, sub_span), end,
-                0.0, max(-0.46, y_base - 0.10), _UNIFIED_L2_U if is_pill else _UNIFIED_L1_U, "in:向下露出", 2,
+                0.0, max(-0.46, y_base - 0.10), _UNIFIED_L2_U if is_pill else _bridge_units_for_text(sub_txt, _s02_fp), "in:向下露出", 2,
                 tier="L2" if is_pill else "L1")
 
     elif u_prim == "pain_slam_danmaku":
         slam_txt = headline or (lines[0] if lines else "")
         slam_start = start
         slam_end = end
+        slam_item: Optional[Dict[str, Any]] = None
         if slam_txt:
             slam_lbl = slam_txt.lstrip("✕✓ ")
             sl_off = _locate_phrase_offset(slam_lbl, timeline, start, max(0.2, end - start - 1.0))
@@ -1933,24 +2862,66 @@ def _unified_style02_items(
                     slam_start = round(max(start, min(end - 1.50, start + sl_off - 0.15)), 4)
                 if (end - slam_start) >= 3.2 and (start + sl_off + len(slam_lbl) * 0.25) <= end - 1.6:
                     slam_end = round(min(end, max(slam_start + 1.15, start + sl_off + len(slam_lbl) * 0.25 + 0.20)), 4)
-            add(slam_lbl, "red_slam", slam_start, slam_end, 0.0, y_base + 0.04, _UNIFIED_L3_U, "in:震动冲击", 1, "punch", tier="L3")
+            slam_item = add(slam_lbl, "red_slam", slam_start, slam_end, 0.0, y_base + 0.04, _UNIFIED_L3_U, "in:震动冲击", 1, "punch", tier="L3")
         extra_rows = [r.lstrip("✕✓ ") for r in lines if r.lstrip("✕✓ ") != (slam_txt or "").lstrip("✕✓ ")]
         if extra_rows:
             all_behind_ok = bool(shot_comps) and all(c.get("allow_behind_person") for c in shot_comps)
             fb_union = _union_face_bbox(shot_comps)
             top_head_ok = bool(fb_union is None or float(fb_union.get("y", 0.35)) >= 0.27)
             spans = timed_spans(extra_rows)
-            for ri, (rtxt, (rs, _)) in enumerate(zip(extra_rows[:3], spans)):
+            # 最多保留前 3 条弹幕，防止人后/前景多行堆叠越界或触发同屏行数上限
+            fg_rows = extra_rows[:3]
+            fg_spans = spans[:len(fg_rows)]
+            fy_min = float(fb_union["y"]) if fb_union else 0.33
+            max_y01 = fy_min - 0.035
+            if max_y01 >= 0.280:
+                behind_y01s = [0.225, 0.280, 0.170]
+            elif len(fg_rows) == 1:
+                behind_y01s = [min(0.225, max_y01)]
+            elif len(fg_rows) == 2:
+                behind_y01s = [max(0.130, max_y01 - 0.055), max_y01]
+            else:
+                behind_y01s = [max(0.130, max_y01 - 0.052), max_y01, max(0.110, max_y01 - 0.104)]
+            if not (all_behind_ok and top_head_ok):
+                row_ends: List[float] = []
+                for ri in range(len(fg_rows)):
+                    rs_i = fg_spans[ri][0]
+                    nxt_rs = fg_spans[ri + 1][0] if ri + 1 < len(fg_rows) else None
+                    if nxt_rs is not None and (nxt_rs - rs_i) >= 0.45:
+                        row_ends.append(round(min(end, nxt_rs - 0.04), 4))
+                    else:
+                        row_ends.append(end)
+                conc_indices: List[int] = [
+                    ri for ri in range(len(fg_rows))
+                    if any(
+                        min(row_ends[ri], row_ends[rj]) - max(fg_spans[ri][0], fg_spans[rj][0]) > 0.02
+                        for rj in range(len(fg_rows))
+                        if rj != ri
+                    )
+                ]
+                conc_slot = {ri: idx_c for idx_c, ri in enumerate(conc_indices)}
+                if len(conc_indices) >= 3 and slam_item is not None:
+                    slam_yn_new = round(min(-0.18, y_base + 0.06), 4)
+                    slam_item["y_norm"] = slam_yn_new
+                    slam_item["center_px"] = [slam_item["center_px"][0], int(round((1.0 - slam_yn_new) * (CANVAS_HEIGHT / 2.0)))]
+            for ri, (rtxt, (rs, _)) in enumerate(zip(fg_rows, fg_spans)):
                 if all_behind_ok and top_head_ok:
-                    fy_min = float(fb_union["y"]) if fb_union else 0.33
-                    target_y01 = max(0.185, min(fy_min - 0.035, 0.225 + (ri % 2) * 0.055))
+                    target_y01 = behind_y01s[ri]
                     dn_yn = round(1.0 - 2.0 * target_y01, 4)
                     dn_xn = round((-0.27 if ri % 2 == 0 else 0.27), 4)
                     add(rtxt, "danmaku_line", rs, end, dn_xn, dn_yn, 14.0, "in:向右露出", 2 + ri,
                         sfx=None, layer="behind_person", tier="L2")
                 else:
-                    fg_yn = round(max(-0.46, y_base - 0.10 - ri * 0.095), 4)
-                    add(rtxt, "hero_white", rs, end, 0.0, fg_yn, _UNIFIED_L2_U, "in:向上露出", 2 + ri,
+                    slot = conc_slot.get(ri)
+                    if slot is None:
+                        fg_xn, fg_yn = 0.0, round(max(-0.46, y_base - 0.10), 4)
+                    elif slot == 0:
+                        fg_xn, fg_yn = -0.24, round(max(-0.46, y_base - 0.10), 4)
+                    elif slot == 1:
+                        fg_xn, fg_yn = 0.24, round(max(-0.46, y_base - 0.10), 4)
+                    else:
+                        fg_xn, fg_yn = 0.0, round(max(-0.38, y_base - 0.02), 4)
+                    add(rtxt, "hero_white", rs, row_ends[ri], fg_xn, fg_yn, _UNIFIED_L2_U, "in:向上露出", 2 + ri,
                         sfx=None, layer="foreground", tier="L2")
 
     elif u_prim == "stacked_dual_color":
@@ -1977,20 +2948,32 @@ def _unified_style02_items(
                 yn_row = max(-0.46, y_base + 0.10 - ri * 0.105)
                 if ri == 1 and len(expanded_rows[0]) <= 3 and (st_r - r0_start) >= 1.25:
                     s_chunks = [
-                        (ct, cs, ce) for ct, cs, ce in _build_act_speech_chunks(target_min=3, target_max=8)
+                        (ct, cs, ce) for ct, cs, ce in act_speech_chunks
                         if cs < st_r - 0.15 and ce > r0_start + 0.15
                     ]
                     h_c = _norm_cov(expanded_rows[0])
-                    mid_ps = [
-                        (ct[len(expanded_rows[0]):].strip() if ct.startswith(expanded_rows[0]) else ct, cs)
-                        for ct, cs, _ in s_chunks
-                        if _norm_cov(ct) not in h_c and len(clean_display_text(ct)) >= 3
-                    ]
+                    r_c = _norm_cov(expanded_rows[ri])
+                    mid_ps: List[Tuple[str, float]] = []
+                    for ct, cs, _ in s_chunks:
+                        ct_clean = ct[len(expanded_rows[0]):].strip() if ct.startswith(expanded_rows[0]) else ct
+                        ct_clean = clean_display_text(ct_clean)
+                        c_n = _norm_cov(ct_clean)
+                        if not c_n or len(ct_clean) < 3 or len(ct_clean) > 8:
+                            continue
+                        if c_n in h_c or h_c in c_n or c_n in r_c or r_c in c_n:
+                            continue
+                        if any(c_n[k : k + 2] in r_c for k in range(max(0, len(c_n) - 1))):
+                            continue
+                        if (ct_clean[0] in _DP_NO_LEAD_CHARS and not (ct_clean[0] == "呢" and _is_cantonese_ne_demo_head(ct_clean))) or ct_clean[-1] in _strict_tail_chars:
+                            continue
+                        mid_ps.append((ct_clean, cs))
                     if mid_ps:
-                        m_txt = mid_ps[0][0][:8]
+                        m_txt = mid_ps[0][0]
                         m_cs = max(r0_start + 0.25, min(mid_ps[0][1], st_r - 0.65))
-                        if _norm_cov(m_txt) and st_r - m_cs >= 0.55:
-                            add(m_txt, "hero_white", m_cs, st_r, 0.0, yn_row, _UNIFIED_L2_U, "in:向上露出", 1, sfx=None, tier="L2")
+                        m_end = round(st_r - 0.04, 4)
+                        m_yn = round(max(-0.46, yn_row - 0.025), 4)
+                        if m_end - m_cs >= 0.55:
+                            add(m_txt, "hero_white", m_cs, m_end, 0.0, m_yn, _UNIFIED_L2_U, "in:向上露出", 1, sfx=None, tier="L2")
                 add(
                     rtxt,
                     "hero_lime" if is_focus else "hero_white",
@@ -2027,35 +3010,39 @@ def _unified_style02_items(
         if has_top_lead:
             add(headline, "hero_lime", start, end, 0.0, top_yn, head_u, "in:向上露出", 1, "pop", tier="L2")
         spans = timed_spans(row_items)
-        # 若首行列表延迟 >=1.25s（如先说「先答清楚」「过了夫妻店那条线」），在首行空档插入 track_lane=1 纯前景过渡行，Row 1 入场时淡出
-        if has_top_lead and spans and (spans[0][0] - start) >= 1.25:
+        # 若首行列表延迟 >=1.25s（仅限总行数<=4，绝不叠加第6行），插入严格早于 Row 1 结束且不共享 first_row_yn 的前景过渡行
+        if has_top_lead and total_lines <= 4 and spans and (spans[0][0] - start) >= 1.25:
             lead_end = spans[0][0]
             lead_chunks = [
-                (ct, cs, ce) for ct, cs, ce in _build_act_speech_chunks(target_min=3, target_max=9)
+                (ct, cs, ce) for ct, cs, ce in act_speech_chunks
                 if cs < lead_end - 0.25 and ce > start + 0.25
             ]
             head_clean = _norm_cov(headline)
-            lead_pieces: List[str] = []
-            for ct, _, _ in lead_chunks:
+            row0_clean = _norm_cov(row_items[0]) if row_items else ""
+            row_all_clean = [_norm_cov(r) for r in row_items[:max_rows]]
+            lead_pieces: List[Tuple[str, float]] = []
+            for ct, cs, _ in lead_chunks:
                 ct_trim = ct[len(headline):].strip() if ct.startswith(headline) else ct
-                if _norm_cov(ct_trim) and _norm_cov(ct_trim) not in head_clean and len(clean_display_text(ct_trim)) >= 3:
-                    lead_pieces.append(ct_trim)
+                ct_trim = clean_display_text(ct_trim)
+                c_n = _norm_cov(ct_trim)
+                if not c_n or len(ct_trim) < 3 or len(ct_trim) > 9:
+                    continue
+                if c_n in head_clean or head_clean in c_n:
+                    continue
+                if row0_clean and (c_n in row0_clean or row0_clean in c_n):
+                    continue
+                if any(len(rn) >= 2 and (rn in c_n or any(c_n[k : k + 2] in rn for k in range(max(0, len(c_n) - 1)))) for rn in row_all_clean):
+                    continue
+                if (ct_trim[0] in _DP_NO_LEAD_CHARS and not (ct_trim[0] == "呢" and _is_cantonese_ne_demo_head(ct_trim))) or ct_trim[-1] in _strict_tail_chars:
+                    continue
+                lead_pieces.append((ct_trim, cs))
             if lead_pieces:
-                lead_txt = ""
-                for lp in lead_pieces:
-                    if not lead_txt and len(lp) <= 9:
-                        lead_txt = lp
-                    elif lead_txt and len(lead_txt) + len(lp) <= 9:
-                        lead_txt += lp
-                    else:
-                        if not lead_txt:
-                            lead_txt = lp[:8]
-                        elif len(lp) <= 3 and len(lead_txt) + 1 <= 9 and lp.startswith("那条"):
-                            lead_txt = (lead_txt + "那条线")[:9]
-                        break
-                lead_cs = max(start + 0.30, min(lead_chunks[0][1], lead_end - 0.85))
-                if lead_txt and lead_end - lead_cs >= 0.70:
-                    add(lead_txt, "hero_white", lead_cs, lead_end, 0.0, first_row_yn, row_u, "in:向上露出", 1, sfx=None, tier="L2")
+                lead_txt = lead_pieces[0][0]
+                lead_cs = max(start + 0.30, min(lead_pieces[0][1], lead_end - 0.85))
+                lead_stop = round(lead_end - 0.05, 4)
+                lead_yn = round(max(-0.468, first_row_yn - 0.025), 4)
+                if lead_txt and lead_stop - lead_cs >= 0.65:
+                    add(lead_txt, "hero_white", lead_cs, lead_stop, 0.0, lead_yn, row_u, "in:向上露出", 1, sfx=None, tier="L2")
         for idx_r in range(max_rows):
             rtxt = row_items[idx_r]
             rs, _ = spans[idx_r]
@@ -2073,14 +3060,7 @@ def _unified_style02_items(
         note_txt = (lines[0] if headline and lines and lines[0] != headline else "") or footnote
         num_s = start
         if num_txt and (end - start) >= 2.0:
-            tl_str = "".join(c for c, _, _ in timeline)
-            num_key = num_txt
-            if num_key not in tl_str:
-                for k_zh, k_dig in (("两百", "200"), ("三百", "300"), ("六百", "600")):
-                    if k_dig in num_key and k_zh in tl_str:
-                        num_key = num_key.replace(k_dig, k_zh)
-                        break
-            n_off = _locate_phrase_offset(num_key, timeline, start, max(0.2, end - start - 0.65))
+            n_off = _locate_phrase_offset(num_txt, timeline, start, max(0.2, end - start - 0.65))
             if n_off is not None and n_off >= 0.90 and (end - (start + n_off)) >= 0.95:
                 num_s = round(max(start, min(end - 1.05, start + n_off - 0.15)), 4)
         if num_txt:
@@ -2117,73 +3097,100 @@ def _unified_style02_items(
                 ks = timed_spans([lead, kw])[-1][0] if lead else start
                 add(kw, "hero_lime", max(start, ks), end, 0.0, max(-0.46, y_base - 0.04), _UNIFIED_L2_U, "in:缩小 II", 2, "pop", tier="L2")
 
-    # ── 字符级未覆盖区段精准时间释放 + 绝对零重叠单层 bridge_bar 补全 ──
+    # ── 语义块边界贴合 + 语义级未覆盖残差选择（彻底禁用按字硬切）──
     fg_hi_items = [it for it in items if it.get("z_layer", "foreground") == "foreground" and it.get("variant") != "bridge_bar"]
+    if fg_hi_items and act_speech_chunks and u_prim != "list_gather_depth":
+        fg_sorted = sorted(fg_hi_items, key=lambda x: (float(x["start_sec"]), int(x.get("track_lane") or 0)))
+        for idx_f, it_f in enumerate(fg_sorted):
+            st_f = float(it_f["start_sec"])
+            en_f = float(it_f["end_sec"])
+            if en_f - st_f < 0.45:
+                continue
+            it_y = float(it_f["y_norm"])
+            it_x = float(it_f["x_norm"])
+            prev_st_guard = (
+                float(fg_sorted[idx_f - 1]["start_sec"]) + 0.08
+                if idx_f > 0 and float(fg_sorted[idx_f - 1]["start_sec"]) < st_f - 0.02
+                else start
+            )
+            colliding_prev = [
+                p for p in fg_sorted[:idx_f]
+                if abs(float(p["y_norm"]) - it_y) < 0.06
+                and abs(float(p["x_norm"]) - it_x) < 0.45
+                and float(p["end_sec"]) <= st_f + 0.01
+            ]
+            for _c_txt, c_st, c_en in act_speech_chunks:
+                if c_st + 0.02 < st_f < c_en and (st_f - c_st) <= 0.45:
+                    new_st = max(start, c_st)
+                    if new_st >= prev_st_guard and (en_f - new_st) >= 0.45:
+                        can_snap = True
+                        pending_trims: List[Tuple[Dict[str, Any], float]] = []
+                        for p_col in colliding_prev:
+                            p_end = float(p_col["end_sec"])
+                            if new_st < p_end + 0.04:
+                                trim_target = round(new_st - 0.04, 4)
+                                if p_end < end - 0.10 and (trim_target - float(p_col["start_sec"])) >= 0.55:
+                                    pending_trims.append((p_col, trim_target))
+                                else:
+                                    can_snap = False
+                                    break
+                        if can_snap:
+                            for p_col, trim_en in pending_trims:
+                                _sync_timing(p_col, new_en=trim_en)
+                            _sync_timing(it_f, new_st=new_st)
+                    break
+
     full_tl: List[Tuple[str, float, float]] = [
         (ch, cs_c, ce_c) for ch, cs_c, ce_c in timeline if ch.strip()
     ]
-    _filler_chars = set("的嘅了我你佢吧呢啊嘛也喺在")
+    _filler_chars = set("的嘅了我你佢吧呢啊嘛也喺在咗")
 
-    def _uncovered_char_runs() -> List[Tuple[str, float, float, List[Tuple[str, float, float]]]]:
-        if not full_tl:
-            return []
-        flags: List[bool] = []
-        for idx_c, (ch, cs_c, ce_c) in enumerate(full_tl):
-            mid = 0.5 * (cs_c + ce_c)
-            active_its = [
-                str(it.get("text_or_asset") or "")
-                for it in fg_hi_items
-                if float(it["start_sec"]) - 0.05 <= mid <= float(it["end_sec"]) + 0.05
+    def _chunk_covered_by_items(chunk_txt: str, check_items: List[Dict[str, Any]]) -> bool:
+        cn = _norm_cov(chunk_txt)
+        if not cn or not check_items:
+            return False
+        ov_norms = [_norm_cov(str(it.get("text_or_asset") or "")) for it in check_items if str(it.get("text_or_asset") or "").strip()]
+        if not ov_norms:
+            return False
+        ov_all = "".join(ov_norms)
+        if any(len(it_n) >= 2 and (it_n in cn or cn in it_n) for it_n in ov_norms):
+            return True
+        core = [ch for ch in cn if ch not in _filler_chars]
+        if not core:
+            return False
+        hit_cnt = sum(1 for ch in core if ch in ov_all)
+        return hit_cnt >= max(3, int(len(core) * 0.55 + 0.5))
+
+    def _uncovered_chunk_runs() -> List[Tuple[float, float]]:
+        runs: List[Tuple[float, float]] = []
+        cur_s: Optional[float] = None
+        cur_e = 0.0
+        for c_txt, cs_c, ce_c in act_speech_chunks:
+            active_in_c = [
+                it for it in fg_hi_items
+                if float(it["start_sec"]) < ce_c - 0.12 and float(it["end_sec"]) > cs_c + 0.12
             ]
-            ov_norm_list = [_norm_cov(x) for x in active_its if x]
-            ov_n = "".join(ov_norm_list)
-            ch_n = _norm_cov(ch)
-            prev_ch = _norm_cov(full_tl[idx_c - 1][0]) if idx_c > 0 else ""
-            nxt_ch = _norm_cov(full_tl[idx_c + 1][0]) if idx_c + 1 < len(full_tl) else ""
-            bg_l = (prev_ch + ch_n) if (prev_ch and ch_n) else ""
-            bg_r = (ch_n + nxt_ch) if (ch_n and nxt_ch) else ""
-            covered = bool(
-                ch_n and (
-                    any(len(it_n) <= 2 and ch_n in it_n for it_n in ov_norm_list)
-                    or (len(bg_l) >= 2 and bg_l in ov_n)
-                    or (len(bg_r) >= 2 and bg_r in ov_n)
-                )
-            )
-            if not covered and len(full_tl) >= 2:
-                gram2 = full_tl[max(0, idx_c - 1)][0] + ch + (full_tl[idx_c + 1][0] if idx_c + 1 < len(full_tl) else "")
-                gram2_n = _norm_cov(gram2)
-                if any(d_n in ov_n and d_n in gram2_n for d_n in ("200", "300", "600", "2000")):
-                    covered = True
-            flags.append(covered)
-        # 仅吸收中间孤立 1 个停顿虚词桥接（不把实义已覆盖字吃进未覆盖区）
-        runs: List[Tuple[str, float, float, List[Tuple[str, float, float]]]] = []
-        i = 0
-        n_tl = len(full_tl)
-        while i < n_tl:
-            if flags[i]:
-                i += 1
-                continue
-            j = i
-            while j < n_tl:
-                if not flags[j]:
-                    j += 1
-                elif (j + 1 < n_tl and not flags[j + 1] and full_tl[j][0] in _filler_chars):
-                    j += 1
+            if not _chunk_covered_by_items(c_txt, active_in_c):
+                if cur_s is None:
+                    cur_s, cur_e = cs_c, ce_c
+                elif cs_c - cur_e <= 0.15:
+                    cur_e = max(cur_e, ce_c)
                 else:
-                    break
-            seg_tl = full_tl[i:j]
-            raw_u = "".join(c for c, _, _ in seg_tl)
-            u_s = max(start, float(seg_tl[0][1]))
-            u_e = min(end, float(seg_tl[-1][2]))
-            eff_n = [c for c in raw_u if c not in _filler_chars]
-            if len(eff_n) >= 3 and (u_e - u_s) >= 0.72:
-                runs.append((raw_u, u_s, u_e, seg_tl))
-            i = j
+                    if (cur_e - cur_s) >= 0.72:
+                        runs.append((cur_s, cur_e))
+                    cur_s, cur_e = cs_c, ce_c
+            else:
+                if cur_s is not None:
+                    if (cur_e - cur_s) >= 0.72:
+                        runs.append((cur_s, cur_e))
+                    cur_s = None
+        if cur_s is not None and (cur_e - cur_s) >= 0.72:
+            runs.append((cur_s, cur_e))
         return runs
 
-    # 1) 在非 list_gather_depth 幕里，若连续未覆盖区段持续 >=0.75s，先把已经说完的先期大字收束到 u_s
+    # 1) 在非 list_gather_depth 幕里，若连续未覆盖语义块区段持续 >=0.75s，把已说完的先期大字精准收束到语义块边界 u_s
     if fg_hi_items and u_prim != "list_gather_depth":
-        for raw_u, u_s, u_e, _ in _uncovered_char_runs():
+        for u_s, u_e in _uncovered_chunk_runs():
             nxt_fg_s = min(
                 (float(it["start_sec"]) for it in fg_hi_items if u_s + 0.30 < float(it["start_sec"]) < u_e),
                 default=u_e,
@@ -2212,7 +3219,7 @@ def _unified_style02_items(
                 for it, new_en in pending_adj:
                     _sync_timing(it, new_en=new_en)
 
-    # 2) 构建严格前景封锁区间，对未覆盖区段逐段切短语并按差集排入纯无重叠 bridge_bar
+    # 2) 构建严格前景封锁区间，仅在整条完整语义块 act_speech_chunks 边界上排入零重叠 bridge_bar
     raw_fg_spans = sorted(
         (max(0.0, float(it["start_sec"]) - 0.02), float(it["end_sec"]) + 0.02)
         for it in items
@@ -2241,21 +3248,19 @@ def _unified_style02_items(
         return [(a, b) for a, b in cur if (b - a) >= 0.45]
 
     last_bb_end = 0.0
-    _lead_aux_strip = set("的地得之了着过嘅")
-    for raw_u, u_s, u_e, seg_tl in _uncovered_char_runs():
-        u_clean = raw_u.lstrip("".join(_lead_aux_strip)) or raw_u
-        if len([c for c in u_clean if c not in _filler_chars]) < 3:
+    for c_txt, cs, ce in act_speech_chunks:
+        clean_c = clean_display_text(c_txt)
+        if not clean_c or len([c for c in clean_c if c not in _filler_chars]) < 2:
             continue
-        sub_chunks = split_clean_phrases(u_clean, target_min=3, target_max=9) or [u_clean[:9]]
-        mapped_u = map_chunks_to_times(sub_chunks, seg_tl, u_s, u_e)
-        for ci, (c_txt, cs, _ce) in enumerate(mapped_u):
-            c_txt = c_txt.lstrip("".join(_lead_aux_strip)) or c_txt
-            nxt_s = mapped_u[ci + 1][1] if ci + 1 < len(mapped_u) else u_e
-            ce_ok = max(cs + 0.25, min(u_e, float(nxt_s)))
-            for sa, sb in _free_slices(cs, ce_ok):
-                sa_ok = max(sa, last_bb_end)
-                if (sb - sa_ok) >= 0.45:
-                    it_bb = add(c_txt, "bridge_bar", sa_ok, sb, 0.0, -0.45, _UNIFIED_L1_U, "", 0, sfx=None, tier="L1")
+        for sa, sb in _free_slices(cs, ce):
+            sa_ok = max(sa, last_bb_end)
+            if (sb - sa_ok) >= 0.45:
+                active_during_slice = [
+                    it for it in fg_hi_items
+                    if float(it["start_sec"]) < sb - 0.08 and float(it["end_sec"]) > sa_ok + 0.08
+                ]
+                if not _chunk_covered_by_items(clean_c, active_during_slice):
+                    it_bb = add(clean_c, "bridge_bar", sa_ok, sb, 0.0, -0.45, _bridge_units_for_text(clean_c, _s02_fp), "", 0, sfx=None, tier="L1")
                     if it_bb is not None:
                         last_bb_end = float(it_bb["end_sec"])
     return items
@@ -2514,7 +3519,7 @@ def _director_sfx(
 
 
 _DUPLICATE_CAPTION_MAX = 7
-_NUMBER_RUN = re.compile(r"\d{2,}")
+_NUMBER_RUN = re.compile(r"(?:\d+(?:,\d{3})+|\d{2,})")
 _DUPLICATE_CAPTION_OVERLAP = 0.50
 _DUPLICATE_TEXT_RATIO = 0.85
 _DUPLICATE_COVER_TOLERANCE = 0.02
@@ -2857,7 +3862,9 @@ def plan_kinetic_stage(
             plan = load_or_build_director_plan(pipeline_dir, style_id)
         if plan is None and profile:
             try:
-                plan = generate_deterministic_director_plan(audio_events, style_id, composition_profile=profile)
+                plan = generate_deterministic_director_plan(
+                    audio_events, style_id, composition_profile=profile, pipeline_dir=pipeline_dir,
+                )
             except ValueError:
                 pass
     if not director_eligible:
@@ -2890,6 +3897,100 @@ def plan_kinetic_stage(
         return stage
 
     by_id = {s["id"]: s for s in audio_events["sentences"]}
+    if theme == "style_02_unified" and audio_events.get("sentences"):
+        sid_prim = {
+            str(sid): str(raw.get("primitive") or "")
+            for raw in plan.get("acts", [])
+            for sid in (raw.get("sentence_ids") or [])
+        }
+        sid_act = {
+            str(sid): str(raw.get("act_id") or "")
+            for raw in plan.get("acts", [])
+            for sid in (raw.get("sentence_ids") or [])
+        }
+        # 先保留跨幕句尾代词剥离（如「我系牛哥我」+「花咗…」），再按同幕或真正跨幕破词依赖分簇重平衡，
+        # 绝不让不同 act_id/原语的正常非残碎句被吞并清空。
+        raw_sents = [dict(s, words=[dict(w) for w in (s.get("words") or [])]) for s in audio_events["sentences"]]
+        _pron_keep_prev = (
+            "包括", "私信", "告诉", "觉得", "帮", "替", "给", "俾", "对", "向",
+            "把", "被", "拿", "问", "找", "爱", "信", "懂", "看", "睇", "拍", "跟", "陪",
+        )
+        for idx_s in range(1, len(raw_sents)):
+            prev_s = raw_sents[idx_s - 1]
+            cur_s = raw_sents[idx_s]
+            p_txt = str(prev_s.get("text") or "").strip()
+            c_txt = str(cur_s.get("text") or "").strip()
+            gap_s = float(cur_s.get("start_sec", 0.0)) - float(prev_s.get("end_sec", 0.0))
+            if (
+                str(prev_s.get("source_media") or "") == str(cur_s.get("source_media") or "")
+                and -0.08 <= gap_s < 0.25
+                and len(p_txt) >= 4
+                and p_txt[-1] in ("我", "你", "他", "佢")
+                and not any(p_txt[:-1].endswith(k) for k in _pron_keep_prev)
+                and c_txt
+                and not c_txt.startswith(("的", "嘅", "哋", "们", "自己", "也", "都"))
+            ):
+                tail_ch = p_txt[-1]
+                prev_s["text"] = p_txt[:-1]
+                cur_s["text"] = tail_ch + c_txt
+                p_ws = list(prev_s.get("words") or [])
+                if p_ws and str(p_ws[-1].get("word") or "").strip() == tail_ch:
+                    moved_w = p_ws.pop()
+                    prev_s["words"] = p_ws
+                    if p_ws:
+                        prev_s["end_sec"] = float(p_ws[-1].get("end_sec", prev_s["end_sec"]))
+                    cur_s["words"] = [moved_w] + list(cur_s.get("words") or [])
+                    cur_s["start_sec"] = min(float(cur_s.get("start_sec", 0.0)), float(moved_w.get("start_sec", cur_s["start_sec"])))
+
+        _cross_tail_triggers = (
+            "的", "嘅", "地", "得", "了", "咗", "着", "过", "喺", "在", "好多", "有啲",
+            "呢啲", "𠮶啲", "嗰啲", "呢个", "嗰个", "𠮶个", "这个", "那个", "一间", "一个", "一份", "一种", "就系", "就是",
+        )
+        _dir_end_allow = ("出来了", "起来了", "下去了", "回来了", "过去了", "进来了", "过来了")
+
+        def _can_merge_across_act(sa: Dict[str, Any], sb: Dict[str, Any]) -> bool:
+            id_a, id_b = str(sa.get("id") or ""), str(sb.get("id") or "")
+            act_a, act_b = sid_act.get(id_a, ""), sid_act.get(id_b, "")
+            if act_a and act_a == act_b:
+                return True
+            pa_txt = clean_display_text(str(sa.get("text") or ""))
+            pb_txt = clean_display_text(str(sb.get("text") or ""))
+            if not pa_txt or not pb_txt:
+                return False
+            prim_a, prim_b = sid_prim.get(id_a, ""), sid_prim.get(id_b, "")
+            both_hi = (prim_a not in ("", "plain_bridge", "clean_breath")) and (prim_b not in ("", "plain_bridge", "clean_breath"))
+            if pb_txt.startswith(("的", "嘅", "地", "得", "了", "咗", "着", "过")):
+                return True
+            if pa_txt.endswith(_cross_tail_triggers) and not pa_txt.endswith(_dir_end_allow):
+                return True
+            if len(pa_txt) < 4 and not both_hi:
+                return True
+            return False
+
+        clusters: List[List[Dict[str, Any]]] = []
+        for s_item in raw_sents:
+            if clusters and _can_merge_across_act(clusters[-1][-1], s_item):
+                clusters[-1].append(s_item)
+            else:
+                clusters.append([s_item])
+        reb_all: List[Dict[str, Any]] = []
+        for cl in clusters:
+            reb_all.extend(rebalance_asr_sentences(cl, max_chars=9) or cl)
+
+        if reb_all:
+            new_by_id: Dict[str, Dict[str, Any]] = {}
+            for s_reb in reb_all:
+                mids = [str(m) for m in (s_reb.get("merged_sentence_ids") or ([s_reb.get("id")] if s_reb.get("id") else []))]
+                if not mids:
+                    continue
+                hi_mids = [m for m in mids if sid_prim.get(m, "") not in ("", "plain_bridge", "clean_breath")]
+                pb_mids = [m for m in mids if sid_prim.get(m, "") == "plain_bridge"]
+                keep_sid = hi_mids[0] if hi_mids else (pb_mids[0] if pb_mids else mids[0])
+                s_entry = dict(s_reb)
+                s_entry["id"] = keep_sid
+                new_by_id[keep_sid] = s_entry
+            if new_by_id:
+                by_id = new_by_id
     # 结构进度格要跨幕连续：先数清全片 framework_pillar 的条陈总数，再逐幕领号。
     pillar_state: Dict[str, int] = {
         "index": 0,
@@ -2900,6 +4001,15 @@ def plan_kinetic_stage(
             and any(str(sid) in by_id for sid in raw.get("sentence_ids") or [])
         ),
     }
+    stage_terms: List[str] = _load_stage_protected_terms(audio_events, pipeline_dir)
+    stage_sub_entries: Optional[List[Dict[str, Any]]] = None
+    if pipeline_dir is not None:
+        sub_p = Path(pipeline_dir) / "05_subtitles.json"
+        if sub_p.is_file():
+            sub_d = _read_optional_json(sub_p) or {}
+            if isinstance(sub_d.get("entries"), list):
+                stage_sub_entries = sub_d["entries"]
+
     legacy_highlights = [item for item in stage["items"] if item["variant"] != "bridge_bar"]
     acts: List[Dict[str, Any]] = []
     shots_comp_all = [
@@ -2932,7 +4042,17 @@ def plan_kinetic_stage(
             # The existing multi-layer store stage owns this beat. Keep all of its visual layers.
             continue
         if theme == "style_02_unified":
-            new_items = _unified_style02_items(act, sentences, composition, shot_comps, idx, fps, pillar_state)
+            new_items = _unified_style02_items(
+                act,
+                sentences,
+                composition,
+                shot_comps,
+                idx,
+                fps,
+                pillar_state,
+                protected_terms=stage_terms,
+                subtitle_entries=stage_sub_entries,
+            )
         else:
             new_items = _director_items(act, sentences, composition, idx, theme, fps, pillar_state)
         stage["items"].extend(new_items)

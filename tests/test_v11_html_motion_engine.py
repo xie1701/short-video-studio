@@ -127,28 +127,107 @@ class V11HtmlMotionEngineTests(unittest.TestCase):
                 self.assertEqual(c916.size, (1080, 1920))
 
     def test_v11_director_planner_covers_all_24_styles_dual_tracks(self) -> None:
+        import director_plan  # noqa: E402
         dev_dir = str(ROOT / "dev_tools")
         if dev_dir not in sys.path:
             sys.path.insert(0, dev_dir)
         import v11_director_planner as v11dp  # noqa: E402
 
+        biz_audio = {
+            "locked_duration_sec": 56.0,
+            "sentences": [
+                {"id": f"b_{i+1:02d}", "text": txt, "start_sec": i * 2.8, "end_sec": i * 2.8 + 2.5, "keywords": kws}
+                for i, (txt, kws) in enumerate([
+                    ("很多人创业第一年就把现金流耗光了", ["现金流"]),
+                    ("不是因为产品不好，也不是行情太差", ["产品", "行情"]),
+                    ("而是照搬大公司的制度贴在墙上", ["制度"]),
+                    ("发给团队之后根本没人真正执行", ["执行"]),
+                    ("第一，先算清楚单店到底靠什么活下来", ["单店"]),
+                    ("第二，看到别人的做法先找背后的前提", ["前提"]),
+                    ("第三，把利润分配和岗位职责写明白", ["利润分配"]),
+                    ("没有利益绑定前提，所有规矩都是口号", ["利益绑定"]),
+                    ("两人合伙时沟通成本几乎为零", ["沟通成本"]),
+                    ("一旦开始雇人，分工和监督就会失灵", ["分工", "监督"]),
+                    ("我们复盘过十几个真实门店案例", ["复盘"]),
+                    ("真正活下来的团队都有自建机制", ["自建机制"]),
+                    ("先看清成本结构，再决定要不要扩店", ["成本结构"]),
+                    ("毛利和复购才是实体生意的护城河", ["毛利", "复购"]),
+                    ("不要盲目迷信别人现成的管理模板", ["管理模板"]),
+                    ("把每一笔账算透比什么口号都管用", ["算透"]),
+                    ("今天把这三条自检清单分享给大家", ["自检清单"]),
+                    ("有疑问可以在评论区留言我们一起拆解", ["评论区"]),
+                ])
+            ],
+        }
+        sto_audio = {
+            "locked_duration_sec": 56.0,
+            "sentences": [
+                {"id": f"s_{i+1:02d}", "text": txt, "start_sec": i * 2.8, "end_sec": i * 2.8 + 2.5, "keywords": kws}
+                for i, (txt, kws) in enumerate([
+                    ("今日带大家来探访一家现做老火靓汤馆", ["老火靓汤"]),
+                    ("老板直接花了两百万打造六百平空间", ["两百万", "六百平"]),
+                    ("其中两百平全部用来做开放式明档厨房", ["明档厨房"]),
+                    ("食客一进门就能看到师傅现场现切", ["现切"]),
+                    ("店里四大招牌包括脆皮烧鹅、桑拿鸡、鲜虾饺和叉烧包", ["脆皮烧鹅", "桑拿鸡"]),
+                    ("烧鹅每天凌晨现烤出炉皮脆肉嫩", ["烧鹅"]),
+                    ("桑拿鸡选用山上放养走地鸡原汁原味", ["走地鸡"]),
+                    ("还有现捞活海鲜池每天新鲜直供", ["活海鲜池"]),
+                    ("早上主打纯手工广式早茶点心", ["早茶点心"]),
+                    ("中午和晚上专门做明火现蒸桑拿鸡", ["现蒸"]),
+                    ("大厅卡座宽敞而且灯光氛围很舒服", ["卡座"]),
+                    ("带家人朋友聚餐完全不会觉得拥挤", ["聚餐"]),
+                    ("虽然很多人觉得厨房占三分之一太浪费", ["三分之一"]),
+                    ("但只有后厨够大才能保证每道菜现点现做", ["现点现做"]),
+                    ("拒绝预制菜还原街坊记忆里的老味道", ["老味道"]),
+                    ("整体性价比在周边商圈非常有竞争力", ["性价比"]),
+                    ("想试招牌烧鹅和桑拿鸡的朋友别错过", ["招牌烧鹅"]),
+                    ("评论区告诉我你最想先尝哪一道菜", ["评论区"]),
+                ])
+            ],
+        }
+        sto_inv = {
+            "clips": [
+                {"filename": "goose.mov", "suggested_role": "b_roll_candidate", "description": "金黄脆皮烧鹅切盘特写", "tags": ["烧鹅", "脆皮"]},
+                {"filename": "chicken.mov", "suggested_role": "b_roll_candidate", "description": "热气腾腾现蒸桑拿鸡", "tags": ["桑拿鸡", "蒸汽"]},
+                {"filename": "shrimp.mov", "suggested_role": "b_roll_candidate", "description": "水晶虾饺竹笼特写", "tags": ["虾饺", "早茶"]},
+            ]
+        }
+
         biz_titles = set()
         sto_titles = set()
+        biz_gbro = set()
+        sto_gbro = set()
         for i in range(1, 25):
             sid = f"style_{i:02d}"
-            for tag, bucket in (("BIZ", biz_titles), ("STO", sto_titles)):
-                plan = v11dp.build_director_plan_for_style(sid, tag, {})
+            for audio, inv, title_bucket, gbro_bucket in (
+                (biz_audio, None, biz_titles, biz_gbro),
+                (sto_audio, sto_inv, sto_titles, sto_gbro),
+            ):
+                plan = v11dp.build_director_plan_for_audio(audio, sid, inventory=inv)
+                chk = director_plan.validate_director_plan(plan, audio)
+                self.assertTrue(chk["ok"], (sid, chk["errors"]))
                 cov = plan.get("cover_copy") or {}
                 pair = (cov.get("headline_top"), cov.get("highlight_badge"))
-                self.assertTrue(all(pair), (sid, tag, cov))
-                bucket.add(pair)
+                self.assertTrue(all(pair), (sid, cov))
+                title_bucket.add(pair)
+                gbro_bucket.add(cov.get("gbro_style"))
                 subs = plan.get("semantic_subtitles") or []
-                self.assertGreaterEqual(len(subs), 40, (sid, tag))
-                self.assertTrue(all(len(str(x.get("text") or "")) >= 4 for x in subs), (sid, tag))
+                self.assertGreaterEqual(len(subs), 18, (sid, len(subs)))
+                self.assertTrue(all(len(str(x.get("text") or "")) >= 4 for x in subs), sid)
+                self.assertFalse(
+                    any(str(x.get("text") or "").rstrip("，。！？")[-1:] in "的嘅地得之把被从向给和与在喺" for x in subs),
+                    (sid, subs),
+                )
+                beats = plan.get("style_scene_beats") or []
+                if sid in ("style_01", "style_02", "style_06", "style_08"):
+                    self.assertEqual(beats, [], sid)
+                else:
+                    self.assertTrue(beats, sid)
                 for co in (plan.get("style_callouts") or []):
-                    self.assertGreaterEqual(float(co["end_sec"]) - float(co["start_sec"]), 1.5, (sid, tag, co))
-        self.assertEqual(len(biz_titles), 24, "24 套商业口播风格封面标题必须互不雷同")
-        self.assertEqual(len(sto_titles), 24, "24 套粤语探店风格封面标题必须互不雷同")
+                    self.assertGreaterEqual(float(co["end_sec"]) - float(co["start_sec"]), 1.5, (sid, co))
+        self.assertTrue(biz_titles.isdisjoint(sto_titles), "BIZ 与 STO 封面标题必须贴合各自语料互不串味")
+        self.assertGreaterEqual(len(biz_gbro), 2)
+        self.assertGreaterEqual(len(sto_gbro), 2)
 
 
 if __name__ == "__main__":

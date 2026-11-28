@@ -160,7 +160,7 @@ def subtitle_materials(data: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict
         if score > best[0]:
             best = (score, picked, {"seg_count": len(segs), "med_y": round(med_y, 3), "types": dict(types)})
     if best[0] < 0:
-        # 没有像样的字幕轨：退回全部文字素材（如 8-创业IP 那种 0 条基础字幕的项目）
+        # 没有像样的字幕轨：退回全部文字素材（如 style_15 源草稿那种 0 条基础字幕的项目）
         return mats, {"seg_count": len(mats), "med_y": None, "types": {"fallback_all_texts": len(mats)}}
     return best[1], best[2]
 

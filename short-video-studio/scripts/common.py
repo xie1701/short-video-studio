@@ -293,6 +293,7 @@ SUBTITLE_SAFE_ZONE = {
     "y_min": 1180,
     "y_max": 1468,
 }
+SUB_CROP_PAD_PX = 8
 
 # 字幕绝对水平居中对称安全带：轴心恒定 540px，右不越 860px（避开右侧互动栏），对称区 [220, 860] 宽 640px
 SUBTITLE_CENTER_X = CANVAS_WIDTH // 2

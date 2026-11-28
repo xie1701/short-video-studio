@@ -541,6 +541,34 @@ def _build_eye_locked_vf(
     return f"scale={zw}:{zh}:flags=lanczos,crop={CANVAS_WIDTH}:{CANVAS_HEIGHT}:{crop_x}:{crop_y}"
 
 
+def _resolve_act_side_shift_x(
+    act: Optional[Dict[str, Any]],
+    media_path: Any = None,
+    composition_profile: Optional[Dict[str, Any]] = None,
+    default: float = 0.08,
+) -> float:
+    raw_shift = (act or {}).get("side_shift_x")
+    if isinstance(raw_shift, (int, float)) and not isinstance(raw_shift, bool) and math.isfinite(float(raw_shift)):
+        return round(max(-0.12, min(0.12, float(raw_shift))), 4)
+    prof = composition_profile if isinstance(composition_profile, dict) else {}
+    target_name = Path(str(media_path or "")).name
+    target_stem = re.sub(r"^norm_[0-9]+_", "", target_name)
+    for row in prof.get("aroll_profiles") or []:
+        if not isinstance(row, dict):
+            continue
+        rv = row.get("safe_center_shift_x")
+        if not (isinstance(rv, (int, float)) and not isinstance(rv, bool) and math.isfinite(float(rv))):
+            continue
+        rname = Path(str(row.get("media_path") or "")).name
+        rstem = re.sub(r"^norm_[0-9]+_", "", rname)
+        if (target_name and rname == target_name) or (target_stem and rstem == target_stem):
+            return round(max(-0.12, min(0.12, float(rv))), 4)
+    top_rv = prof.get("safe_center_shift_x")
+    if isinstance(top_rv, (int, float)) and not isinstance(top_rv, bool) and math.isfinite(float(top_rv)):
+        return round(max(-0.12, min(0.12, float(top_rv))), 4)
+    return round(max(-0.12, min(0.12, float(default))), 4)
+
+
 def _apply_director_cameras(
     clips: List[Dict[str, Any]], acts: List[Dict[str, Any]],
     media_by_mp4: Dict[str, Dict[str, Any]], allow_punch: bool,
@@ -562,8 +590,8 @@ def _apply_director_cameras(
         act = max(acts, key=lambda row: overlap(clip, row), default=None)
         if act is None or overlap(clip, act) <= 0:
             continue
-        intent = act["camera_intent"]
-        clip.update(camera_intent=intent, director_act_id=act["act_id"], punch_in_zoom=1.0,
+        intent = str(act.get("camera_intent") or "steady_hold")
+        clip.update(camera_intent=intent, director_act_id=str(act.get("act_id") or ""), punch_in_zoom=1.0,
                     ken_burns=None, vf_extra="")
         if intent == "steady_hold":
             continue
@@ -591,7 +619,7 @@ def _apply_director_cameras(
             rev_smooth = f"(1-{smooth})"
             clip["vf_extra"] = _build_eye_locked_vf(eye, progress=rev_smooth, shift_x=0.0, face=face)
         else:
-            shift = act["side_shift_x"] if intent == "side_shift_card" else 0.0
+            shift = _resolve_act_side_shift_x(act, clip.get("media_path"), composition_profile) if intent == "side_shift_card" else 0.0
             clip["vf_extra"] = _build_eye_locked_vf(eye, progress=smooth, shift_x=shift, face=face)
         # The legacy jump-cut zoom remains disabled for zero-keyframe style templates.
         if allow_punch and intent != "slow_pull_115":
@@ -730,6 +758,72 @@ def _is_deictic_pointing_stub(text: str, duration_sec: float) -> bool:
     return bool(clean) and bool(_DEICTIC_STUB_RE.fullmatch(clean))
 
 
+def _has_nonsilent_bgm(pipeline_dir: Path, audio_events: Optional[Dict[str, Any]] = None) -> bool:
+    """检查是否存在非静音锁定 BGM 轨（用于校准抗 BGM 掩蔽的强语音 VAD 门限）。"""
+    cand_paths = [pipeline_dir / "03_locked_bgm.wav"]
+    ev_bgm = str((audio_events or {}).get("locked_bgm_wav") or "").strip()
+    if ev_bgm:
+        cand_paths.append(Path(ev_bgm))
+    bgm_p = next((p for p in cand_paths if p.is_file()), None)
+    if bgm_p is None:
+        return False
+    try:
+        import wave
+        import numpy as np
+
+        with wave.open(str(bgm_p), "rb") as wf:
+            if wf.getsampwidth() != 2 or wf.getnframes() <= 0:
+                return False
+            raw = wf.readframes(wf.getnframes())
+        if not raw:
+            return False
+        samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+        if samples.size == 0:
+            return False
+        peak = float(np.max(np.abs(samples)))
+        rms = float(np.sqrt(np.mean(samples * samples)))
+        return peak >= 0.002 and rms >= 0.0005
+    except Exception:
+        return False
+
+
+def _compute_robust_voice_spans(
+    mono: Any,
+    eff_sr: int,
+    *,
+    has_nonsilent_bgm: bool,
+) -> List[Tuple[float, float]]:
+    """计算混入 BGM 抬高本底噪声后仍稳健可检的强语音区间（同 20ms hop / 0.18s merge / 0.16s 门限）。"""
+    import numpy as np
+
+    hop = max(1, int(eff_sr * 0.020))
+    n_hops = len(mono) // hop
+    if n_hops < 5:
+        return []
+    rms = np.sqrt(np.mean(mono[: n_hops * hop].reshape(n_hops, hop) ** 2, axis=1) + 1e-10)
+    nz = rms[rms > 1e-4]
+    p80 = float(np.percentile(nz, 80)) if nz.size >= 5 else 0.08
+    th = max(0.085, p80 * 0.78) if has_nonsilent_bgm else max(0.060, p80 * 0.46)
+    act = rms >= th
+    raw_spans: List[Tuple[float, float]] = []
+    in_seg, start_idx = False, 0
+    for idx_h, is_act in enumerate(act):
+        if is_act and not in_seg:
+            in_seg, start_idx = True, idx_h
+        elif not is_act and in_seg:
+            in_seg = False
+            raw_spans.append((start_idx * 0.020, idx_h * 0.020))
+    if in_seg:
+        raw_spans.append((start_idx * 0.020, n_hops * 0.020))
+    merged: List[Tuple[float, float]] = []
+    for s0, e0 in raw_spans:
+        if merged and s0 - merged[-1][1] < 0.18:
+            merged[-1] = (merged[-1][0], e0)
+        else:
+            merged.append((s0, e0))
+    return [(round(s0, 4), round(e0, 4)) for s0, e0 in merged if e0 - s0 >= 0.16]
+
+
 def _prune_cut_points_to_budget(cut_points: List[Dict[str, Any]], target_shots: int,
                                shot_max_sec: float, fps: int, total_dur: float,
                                can_merge=None) -> tuple:
@@ -854,6 +948,8 @@ def run_step4(
         if kinetic_stage_mode
         else {"enabled": False, "groups": [], "items": [], "matting_windows": [], "stats": {}}
     )
+    _comp_prof_p = pipeline_dir / "01b_composition_profile.json"
+    _comp_prof = read_json(_comp_prof_p) if _comp_prof_p.is_file() else None
     director_acts = kinetic_stage_plan.get("director_acts") or []
     director_mode = bool(kinetic_stage_plan.get("director_source"))
     # 原生 23 套风格模式（非 kinetic_stage_mode）：若存在 03b_director_plan.json，仍接管其 B-roll 白名单与锁真人策略防穿帮
@@ -868,11 +964,22 @@ def run_step4(
                     _ss = [_by_sid[str(sid)] for sid in (_ra.get("sentence_ids") or []) if str(sid) in _by_sid]
                     if not _ss:
                         continue
-                    _loaded_acts.append({
+                    _act_cam = str(_ra.get("camera_intent") or "steady_hold")
+                    _act_id = str(_ra.get("act_id") or f"act_{len(_loaded_acts) + 1:02d}")
+                    _act_bp = str(_ra.get("broll_policy") or "lock_aroll")
+                    _act_obj: Dict[str, Any] = {
                         **_ra,
+                        "act_id": _act_id,
+                        "camera_intent": _act_cam,
+                        "broll_policy": _act_bp,
                         "start_sec": min(float(x.get("start_sec", 0.0)) for x in _ss),
                         "end_sec": max(float(x.get("end_sec", 0.0)) for x in _ss),
-                    })
+                    }
+                    if _act_cam == "side_shift_card" and _act_obj.get("side_shift_x") is None:
+                        _act_obj["side_shift_x"] = _resolve_act_side_shift_x(
+                            _act_obj, _ss[0].get("source_media"), _comp_prof,
+                        )
+                    _loaded_acts.append(_act_obj)
                 if _loaded_acts:
                     director_acts = _loaded_acts
             except Exception:
@@ -882,9 +989,16 @@ def run_step4(
         if m["role"] == "b_roll" and not m.get("source_is_code_scene")
         and m.get("video_grade", "usable") == "usable"
     ]
+    native_live_director = bool(
+        (not director_mode)
+        and director_acts
+        and live_brolls_v6
+        and usable_arolls
+        and not prefer_broll_only
+    )
     has_broll_source = bool(live_brolls_v6 if director_mode else brolls_raw)
     broll_pool = (
-        live_brolls_v6 if director_mode and usable_arolls else
+        live_brolls_v6 if (director_mode or native_live_director) and usable_arolls else
         ensure_code_broll_pool(pipeline_dir, sentences, brolls_raw, track, style_id=style_id, total_dur=total_dur)
     )
 
@@ -977,7 +1091,7 @@ def run_step4(
     }
 
     director_locked_spans = [
-        (a["start_sec"], a["end_sec"]) for a in director_acts if a["broll_policy"] == "lock_aroll"
+        (a["start_sec"], a["end_sec"]) for a in director_acts if a.get("broll_policy") == "lock_aroll"
     ]
 
     def _overlaps_director_locked(t_s: float, t_e: float) -> bool:
@@ -1786,6 +1900,9 @@ def run_step4(
                 if roles[i_u] != "a_roll" or i_u == protected_tail_i:
                     continue
                 t_s = frames_to_sec(cut_points[i_u]["raw_frame"], fps)
+                t_e_u = frames_to_sec(cut_points[i_u + 1]["raw_frame"] if i_u + 1 < n_segs else total_frames, fps)
+                if native_live_director and _overlaps_director_locked(t_s, t_e_u):
+                    continue
                 s_obj = find_sentence_for_time(t_s, cut_points[i_u]["event"])
                 s_txt = str(s_obj.get("text", ""))
                 if any(cue in s_txt for cue in PROP_SHOW_CUES):
@@ -1795,6 +1912,16 @@ def run_step4(
                     for m in broll_pool if m.get("role") == "b_roll"
                     for tg in (m.get("semantic_tags", []) + m.get("manual_tags", []))
                 )
+                if native_live_director:
+                    topic_u = find_broll_topic_sentence(t_s, t_e_u, s_obj)
+                    d_act_u = _director_act_for_span(t_s, t_e_u)
+                    d_kws_u = [str(x) for x in (d_act_u.get("broll_keywords") or [])] if (d_act_u and d_act_u.get("broll_policy") == "allow_verified_broll") else []
+                    has_sem_u = any(
+                        _score_broll(str(topic_u.get("text") or ""), m, keywords=[*d_kws_u, *(topic_u.get("keywords") or [])], need_sec=seg_durs_up[i_u])["tier"] in ("hit", "weak")
+                        for m in broll_pool if m.get("role") == "b_roll"
+                    )
+                    if not has_sem_u:
+                        continue
                 up_cands.append((-int(sem_hit), -seg_durs_up[i_u], i_u))
             raised = 0
             for _, _, i_u in sorted(up_cands):
@@ -2526,20 +2653,20 @@ def run_step4(
         src_in = max(floor, src_in - min(shortfall, MAX_AROLL_SHORTFALL_SEC))
         return src_in, min(limit, src_in + need_sec), first_in
 
-    # ── A-roll 源末尾跨气口防冻帧：若本镜源文件已物理耗尽且后镜换新源文件并有前置准备余量，提前将切点吸附到句末 pause_start ──
+    # ── A-roll 源末尾跨气口防冻帧：若本镜源文件已物理耗尽且后镜换新源文件/实拍 B-roll 并有前置准备余量，提前将切点吸附到句末 pause_start ──
     if usable_arolls and not broll_only_mode:
         aroll_dur_by_mp = {str(a["normalized_mp4"]): float(a.get("duration_sec") or 0.0) for a in usable_arolls}
         for idx_f in range(n_segs - 1):
-            if roles[idx_f] != "a_roll" or roles[idx_f + 1] != "a_roll" or j_leads[idx_f + 1] != 0:
+            if roles[idx_f] != "a_roll" or roles[idx_f + 1] not in ("a_roll", "b_roll") or j_leads[idx_f + 1] != 0:
                 continue
             f_s = cut_points[idx_f]["cut_frame"]
             f_e = cut_points[idx_f + 1]["cut_frame"]
+            f_n_end = cut_points[idx_f + 2]["cut_frame"] if idx_f + 2 < n_segs else total_frames
             t_s, t_e = frames_to_sec(f_s, fps), frames_to_sec(f_e, fps)
+            t_n_end = frames_to_sec(f_n_end, fps)
             s_cur = find_sentence_for_time(t_s, cut_points[idx_f]["event"], t_end=t_e)
-            s_nxt = find_sentence_for_time(t_e, cut_points[idx_f + 1]["event"], t_end=frames_to_sec(cut_points[idx_f + 2]["cut_frame"] if idx_f + 2 < n_segs else total_frames, fps))
             sm_c = str(s_cur.get("source_media") or "")
-            sm_n = str(s_nxt.get("source_media") or "")
-            if not sm_c or not sm_n or sm_c == sm_n or sm_c not in aroll_dur_by_mp or sm_n not in aroll_dur_by_mp:
+            if not sm_c or sm_c not in aroll_dur_by_mp:
                 continue
             src_dur_c = aroll_dur_by_mp[sm_c]
             est_src_in = float(s_cur.get("source_in_sec", 0.0)) + max(0.0, t_s - float(s_cur["start_sec"]))
@@ -2559,8 +2686,20 @@ def run_step4(
             pf = int(ev_p["frame"])
             pt = frames_to_sec(pf, fps)
             lead_need = t_e - pt
-            if 0.03 <= lead_need <= 0.35 and float(s_nxt.get("source_in_sec", 0.0)) >= lead_need + 0.04:
-                cut_points[idx_f + 1] = {"cut_frame": pf, "raw_frame": pf, "event": ev_p}
+            if not (0.03 <= lead_need <= 0.35):
+                continue
+            if roles[idx_f + 1] == "a_roll":
+                s_nxt = find_sentence_for_time(t_e, cut_points[idx_f + 1]["event"], t_end=t_n_end)
+                sm_n = str(s_nxt.get("source_media") or "")
+                if sm_n and sm_n != sm_c and sm_n in aroll_dur_by_mp and float(s_nxt.get("source_in_sec", 0.0)) >= lead_need + 0.04:
+                    cut_points[idx_f + 1] = {"cut_frame": pf, "raw_frame": pf, "event": ev_p}
+            else:
+                new_nxt_dur = t_n_end - pt
+                if new_nxt_dur <= max_shot and any(
+                    m.get("role") in ("b_roll", "code_broll") and float(m.get("duration_sec") or 0.0) >= new_nxt_dur
+                    for m in broll_pool
+                ):
+                    cut_points[idx_f + 1] = {"cut_frame": pf, "raw_frame": pf, "event": ev_p}
 
     for idx, cp in enumerate(cut_points):
         f_start = cp["cut_frame"]
@@ -2749,6 +2888,8 @@ def run_step4(
                         broll_sent, seg_dur, last_group, t_start, prev_mp, prev_so,
                         prev_motion=last_motion, prev_shot_size=last_shot_size, code_only=True,
                     )
+            use_semantic_director = director_mode or native_live_director
+            forbid_code = False
             if broll_pick is None and not choreography_broll:
                 cur_code_dur = sum(float(c["duration_sec"]) for c in clips if c.get("track_role") == "code_broll")
                 forbid_code = (cur_code_dur + seg_dur) / max(0.1, total_dur) > 0.45 and any(
@@ -2759,10 +2900,10 @@ def run_step4(
                 broll_pick = pick_best_broll(
                     broll_sent, seg_dur, last_group, t_start, prev_mp, prev_so,
                     prev_motion=last_motion, prev_shot_size=last_shot_size, forbid_code=forbid_code,
-                    matching_live_only=director_mode,
+                    matching_live_only=use_semantic_director,
                 )
             if broll_pick is None:
-                if director_mode and usable_arolls and source_aroll_valid[idx] and not audio_only_flags[idx]:
+                if use_semantic_director and usable_arolls and source_aroll_valid[idx] and not audio_only_flags[idx]:
                     # 导演白名单或实体互斥过滤后无无瑕疵 B-roll：宁可保真人出镜，绝不硬插错配画面
                     ar = next((a for a in usable_arolls if a["normalized_mp4"] == sent.get("source_media")), usable_arolls[0])
                     ar_mp = str(ar["normalized_mp4"])
@@ -2797,7 +2938,14 @@ def run_step4(
                         })
                         roles[idx] = "a_roll"
                         continue
-                raise ValueError(f"{clip_id} 没有可用的外插画面区间，请补充素材或检查标废范围")
+                if native_live_director and not director_mode and not choreography_broll:
+                    broll_pick = pick_best_broll(
+                        broll_sent, seg_dur, last_group, t_start, prev_mp, prev_so,
+                        prev_motion=last_motion, prev_shot_size=last_shot_size, forbid_code=forbid_code,
+                        matching_live_only=False,
+                    )
+                if broll_pick is None:
+                    raise ValueError(f"{clip_id} 没有可用的外插画面区间，请补充素材或检查标废范围")
             br, br_source, take = broll_pick
             _record_broll_use(br, take)
             src_in, src_out = take.start, take.end
@@ -2868,11 +3016,46 @@ def run_step4(
                 "media_signal": describe_clip(br)[:160],
             })
 
-    # 跨源文件 A-roll 衔接防冻尾：前镜源尾短缺 <=0.32s 且下一镜是不同源文件且句首前留有充足源准备帧时，
+    # 跨源文件 A-roll/B-roll 衔接防冻尾：前镜源尾短缺 <=0.35s 且下一镜为不同源文件 A-roll 或有足够余量的 B-roll 时，
     # 由下一镜在句间气口提前进场接盘（严格保持在合法音频事件或 <=4 帧 L-cut 范围内），消灭冻帧拖尾。
+    def _broll_shift_mode(c_b: Dict[str, Any], ci_b: int, shift_s: float) -> Optional[str]:
+        tk_b = broll_takes.get(str(c_b.get("clip_id") or ""))
+        if tk_b is None:
+            return None
+        mp_b = str(c_b.get("media_path") or "")
+        prev_out_b = 0.0
+        for kp in range(ci_b):
+            if str(clips[kp].get("media_path") or "") == mp_b:
+                prev_out_b = max(prev_out_b, float(clips[kp].get("source_out_sec") or 0.0))
+        next_in_b: Optional[float] = None
+        for kn in range(ci_b + 1, len(clips)):
+            if str(clips[kn].get("media_path") or "") == mp_b:
+                vin = float(clips[kn].get("source_in_sec") or 0.0)
+                next_in_b = vin if next_in_b is None else min(next_in_b, vin)
+        safe_in_b = 0.0
+        b_item = next((m for m in broll_pool if str(m.get("normalized_mp4") or "") == mp_b), None)
+        if b_item is not None:
+            b_dur = float(b_item.get("duration_sec") or 0.0)
+            b_bounds = _declared_safe_window(b_item, b_dur) or _declared_safe_window(_audit_broll(mp_b), b_dur)
+            if b_bounds is not None:
+                safe_in_b = float(b_bounds[0])
+            else:
+                safe_in_b = _default_broll_handles(
+                    b_dur, float(c_b.get("duration_sec") or 1.0), float(b_item.get("stability_score") or 1.0),
+                )[0]
+        if float(c_b["source_in_sec"]) - shift_s >= max(safe_in_b, prev_out_b) + 0.01:
+            return "back"
+        lim_out_b = float(tk_b.safe_out)
+        if next_in_b is not None:
+            lim_out_b = min(lim_out_b, next_in_b - 0.02)
+        if float(c_b["source_out_sec"]) + shift_s <= lim_out_b + 1e-4:
+            return "fwd"
+        return None
+
     for ci in range(len(clips) - 1):
         c_cur, c_nxt = clips[ci], clips[ci + 1]
-        if c_cur.get("track_role") != "a_roll" or c_nxt.get("track_role") != "a_roll":
+        nxt_role = c_nxt.get("track_role")
+        if c_cur.get("track_role") != "a_roll" or nxt_role not in ("a_roll", "b_roll"):
             continue
         if str(c_cur.get("media_path") or "") == str(c_nxt.get("media_path") or ""):
             continue
@@ -2898,10 +3081,15 @@ def run_step4(
             new_cut_f = int(ev_snap["frame"])
             shift_frames = old_cut_f - new_cut_f
             shift_sec = frames_to_sec(shift_frames, fps)
+            b_mode_ev = _broll_shift_mode(c_nxt, ci + 1, shift_sec) if nxt_role == "b_roll" else None
+            can_shift_ev = (
+                (nxt_role == "a_roll" and float(c_nxt["source_in_sec"]) >= shift_sec + 0.02)
+                or (nxt_role == "b_roll" and b_mode_ev is not None and float(c_nxt["duration_sec"]) + shift_sec <= max_shot)
+            )
             if (
                 shift_frames > 0
                 and float(c_cur["duration_sec"]) - shift_sec >= 0.35
-                and float(c_nxt["source_in_sec"]) >= shift_sec + 0.02
+                and can_shift_ev
             ):
                 new_cut_s = frames_to_sec(new_cut_f, fps)
                 c_cur["timeline_out_frame"] = new_cut_f
@@ -2910,7 +3098,10 @@ def run_step4(
                 c_nxt["timeline_in_frame"] = new_cut_f
                 c_nxt["timeline_in_sec"] = new_cut_s
                 c_nxt["duration_sec"] = round(float(c_nxt["timeline_out_sec"]) - new_cut_s, 4)
-                c_nxt["source_in_sec"] = round(float(c_nxt["source_in_sec"]) - shift_sec, 4)
+                if nxt_role == "a_roll" or b_mode_ev == "back":
+                    c_nxt["source_in_sec"] = round(float(c_nxt["source_in_sec"]) - shift_sec, 4)
+                else:
+                    c_nxt["source_out_sec"] = round(float(c_nxt["source_out_sec"]) + shift_sec, 4)
                 c_nxt["j_cut_lead_frames"] = 0
                 c_nxt["cut_event_id"] = ev_snap["id"]
                 c_nxt["cut_event_type"] = ev_snap["type"]
@@ -2920,10 +3111,15 @@ def run_step4(
         max_l_shift = max(0, 4 + cur_jl)
         shift_frames = min(max_l_shift, need_shift)
         shift_sec = frames_to_sec(shift_frames, fps)
+        b_mode_lc = _broll_shift_mode(c_nxt, ci + 1, shift_sec) if (nxt_role == "b_roll" and shift_frames > 0) else None
+        can_shift_lc = (
+            (nxt_role == "a_roll" and float(c_nxt["source_in_sec"]) >= shift_sec + 0.03)
+            or (nxt_role == "b_roll" and b_mode_lc is not None and float(c_nxt["duration_sec"]) + shift_sec <= max_shot)
+        )
         if (
             shift_frames > 0
             and float(c_cur["duration_sec"]) - shift_sec >= 0.40
-            and float(c_nxt["source_in_sec"]) >= shift_sec + 0.03
+            and can_shift_lc
             and old_cut_f - shift_frames > int(c_cur["timeline_in_frame"]) + 10
         ):
             new_cut_f = old_cut_f - shift_frames
@@ -2934,7 +3130,10 @@ def run_step4(
             c_nxt["timeline_in_frame"] = new_cut_f
             c_nxt["timeline_in_sec"] = new_cut_s
             c_nxt["duration_sec"] = round(float(c_nxt["timeline_out_sec"]) - new_cut_s, 4)
-            c_nxt["source_in_sec"] = round(float(c_nxt["source_in_sec"]) - shift_sec, 4)
+            if nxt_role == "a_roll" or b_mode_lc == "back":
+                c_nxt["source_in_sec"] = round(float(c_nxt["source_in_sec"]) - shift_sec, 4)
+            else:
+                c_nxt["source_out_sec"] = round(float(c_nxt["source_out_sec"]) + shift_sec, 4)
             c_nxt["j_cut_lead_frames"] = cur_jl - shift_frames
 
     # ── A-roll 物理连续性终极自愈：递归拆开仍带冻帧拖尾或超长 (>7.2s) 的 A-roll 镜头，并给 >2.4s 静态口播补轻柔呼吸微推 ──
@@ -2973,31 +3172,10 @@ def run_step4(
                         _eff_sr = _w_sr
                     _word_voice_spans = _bb_vad_spans(_mono, _eff_sr)
                     # 模拟混入 BGM 后 noise_floor * 2.4 抬升后的抗掩蔽强语音区间（与 vad_speech_intervals 同 20ms hop / 0.18s merge / 0.16s 门限）
-                    _hop_r = max(1, int(_eff_sr * 0.020))
-                    _nh_r = len(_mono) // _hop_r
-                    if _nh_r >= 5:
-                        _rms_r = _np_vad.sqrt(_np_vad.mean(_mono[: _nh_r * _hop_r].reshape(_nh_r, _hop_r) ** 2, axis=1) + 1e-10)
-                        _nz_r = _rms_r[_rms_r > 1e-4]
-                        _p80_r = float(_np_vad.percentile(_nz_r, 80)) if _nz_r.size >= 5 else 0.08
-                        _th_r = max(0.060, _p80_r * 0.46)
-                        _act_r = _rms_r >= _th_r
-                        _raw_r: List[Tuple[float, float]] = []
-                        _in_r, _st_r = False, 0
-                        for _ir, _ar in enumerate(_act_r):
-                            if _ar and not _in_r:
-                                _in_r, _st_r = True, _ir
-                            elif not _ar and _in_r:
-                                _in_r = False
-                                _raw_r.append((_st_r * 0.020, _ir * 0.020))
-                        if _in_r:
-                            _raw_r.append((_st_r * 0.020, _nh_r * 0.020))
-                        _mrg_r: List[Tuple[float, float]] = []
-                        for _sr0, _er0 in _raw_r:
-                            if _mrg_r and _sr0 - _mrg_r[-1][1] < 0.18:
-                                _mrg_r[-1] = (_mrg_r[-1][0], _er0)
-                            else:
-                                _mrg_r.append((_sr0, _er0))
-                        _robust_voice_spans = [(round(_s0, 4), round(_e0, 4)) for _s0, _e0 in _mrg_r if _e0 - _s0 >= 0.16]
+                    _has_bgm_vad = _has_nonsilent_bgm(pipeline_dir, audio_events)
+                    _robust_voice_spans = _compute_robust_voice_spans(
+                        _mono, _eff_sr, has_nonsilent_bgm=_has_bgm_vad
+                    )
         except Exception:
             _word_voice_spans = []
             _robust_voice_spans = []
@@ -3194,9 +3372,18 @@ def run_step4(
                 continue
             # 若后镜为 b_roll 且剩余可用源充足，允许最多 4 帧 L-cut 让 B-roll 提前切入吞掉物理尾缺
             if c_nxt.get("track_role") == "b_roll" and cur_sf <= 0.14:
-                shift_f = min(4, int(math.ceil((cur_sf + 0.01) * fps)))
+                cur_jl_h = int(c_nxt.get("j_cut_lead_frames") or 0)
+                max_l_h = max(0, 4 + cur_jl_h)
+                shift_f = min(max_l_h, int(math.ceil((cur_sf + 0.01) * fps)))
                 shift_s = frames_to_sec(shift_f, fps)
-                if float(c_cur["duration_sec"]) - shift_s >= 0.40 and float(c_nxt["source_in_sec"]) >= shift_s + 0.02:
+                b_mode_h = _broll_shift_mode(c_nxt, ci_h + 1, shift_s) if shift_f > 0 else None
+                if (
+                    shift_f > 0
+                    and b_mode_h is not None
+                    and float(c_cur["duration_sec"]) - shift_s >= 0.40
+                    and float(c_nxt["duration_sec"]) + shift_s <= max_shot
+                    and int(c_cur["timeline_out_frame"]) - shift_f > int(c_cur["timeline_in_frame"]) + 10
+                ):
                     new_cf = int(c_cur["timeline_out_frame"]) - shift_f
                     new_cs = frames_to_sec(new_cf, fps)
                     c_cur["timeline_out_frame"] = new_cf
@@ -3205,8 +3392,11 @@ def run_step4(
                     c_nxt["timeline_in_frame"] = new_cf
                     c_nxt["timeline_in_sec"] = new_cs
                     c_nxt["duration_sec"] = round(float(c_nxt["timeline_out_sec"]) - new_cs, 4)
-                    c_nxt["source_in_sec"] = round(float(c_nxt["source_in_sec"]) - shift_s, 4)
-                    c_nxt["j_cut_lead_frames"] = int(c_nxt.get("j_cut_lead_frames") or 0) - shift_f
+                    if b_mode_h == "back":
+                        c_nxt["source_in_sec"] = round(float(c_nxt["source_in_sec"]) - shift_s, 4)
+                    else:
+                        c_nxt["source_out_sec"] = round(float(c_nxt["source_out_sec"]) + shift_s, 4)
+                    c_nxt["j_cut_lead_frames"] = max(-4, cur_jl_h - shift_f)
                     _healed_any = True
         def _fit_broll_no_rewind(idx_cur: int, br_item: Dict[str, Any], tk_raw: BrollTake, need_d: float) -> Optional[BrollTake]:
             """自愈换 B-roll 时强制检查全片前后同源不倒带、且不与紧邻镜撞素材。"""
@@ -3489,9 +3679,32 @@ def run_step4(
                         if _sc_a["times"].size >= 5:
                             _aroll_scans[_mp_s] = _sc_a
 
-                def _clip_edge_whip(c_chk: Dict[str, Any]) -> Tuple[bool, bool]:
-                    mp_s = str(c_chk.get("media_path") or "")
+                _broll_scans: Dict[str, Optional[Dict[str, Any]]] = {}
+
+                def _get_whip_scan(mp_s: str, *, allow_broll_scan: bool = False) -> Optional[Dict[str, Any]]:
                     sc_d = _aroll_scans.get(mp_s)
+                    if sc_d is not None or not allow_broll_scan:
+                        return sc_d
+                    if mp_s not in _broll_scans:
+                        _sc_b: Optional[Dict[str, Any]] = None
+                        try:
+                            _mp_p = Path(mp_s)
+                            if _mp_p.is_file() and _mp_p.stat().st_size > 0:
+                                _pr_b = _cba.ffprobe_media(_mp_p)
+                                _d_b = float(_cba.media_duration_sec(_pr_b) or 0.0)
+                                if _d_b > 1.0:
+                                    _sz_b = _cba._frame_size(_pr_b)
+                                    _sc_tmp = _cba._scan_segment(_mp_p, 0.0, _d_b, 10.0, _sz_b)
+                                    if _sc_tmp["times"].size >= 5:
+                                        _sc_b = _sc_tmp
+                        except Exception:
+                            _sc_b = None
+                        _broll_scans[mp_s] = _sc_b
+                    return _broll_scans[mp_s]
+
+                def _clip_edge_whip(c_chk: Dict[str, Any], *, allow_broll_scan: bool = False) -> Tuple[bool, bool]:
+                    mp_s = str(c_chk.get("media_path") or "")
+                    sc_d = _get_whip_scan(mp_s, allow_broll_scan=allow_broll_scan)
                     if sc_d is None:
                         return False, False
                     sin_c = float(c_chk.get("source_in_sec") or 0.0)
@@ -3632,6 +3845,287 @@ def run_step4(
                             _merged_whip = True
                             _healed_any = True
                             break
+                        # 策略 D：入点甩手时，将切点推后至本镜内最早无甩手音频事件（前镜为 B-roll 直接延展；前镜为 A-roll 则优先换用零倒带合规实拍 B-roll，不可替换时再安全微延）
+                        if head_whip and _wi - 1 >= 0 and clips[_wi - 1].get("track_role") in ("b_roll", "a_roll"):
+                            prev_c = clips[_wi - 1]
+                            prev_role_d = str(prev_c.get("track_role") or "")
+                            f_in_d = int(ca["timeline_in_frame"])
+                            f_out_d = int(ca["timeline_out_frame"])
+                            t_in_d = float(ca["timeline_in_sec"])
+                            t_out_d = float(ca["timeline_out_sec"])
+                            ov_sents_d = [
+                                sx for sx in sentences
+                                if min(t_out_d, float(sx["end_sec"])) - max(t_in_d, float(sx["start_sec"])) > 0.04
+                            ]
+                            first_s_d = (
+                                ov_sents_d[0]
+                                if ov_sents_d
+                                else find_sentence_for_time(
+                                    t_in_d,
+                                    {"type": ca.get("cut_event_type"), "sentence_id": ca.get("sentence_id")},
+                                    t_end=t_out_d,
+                                )
+                            )
+                            first_s_start_d = float(first_s_d["start_sec"])
+                            cand_evs_d = sorted(
+                                (
+                                    e for e in events
+                                    if e.get("type") in _GRAMMAR_CUT_EVENT_TYPES
+                                    and f_in_d < int(e.get("frame", -1)) <= f_out_d - 18
+                                    and not (f_in_d < 3 * fps <= int(e.get("frame", -1)))
+                                ),
+                                key=lambda e: int(e["frame"]),
+                            )
+                            pb_cap_d = min(
+                                float(EDIT_PROFILES[edit_profile]["max_shot_sec"]),
+                                max(max_shot, float(ca.get("duration_sec") or max_shot)),
+                            )
+                            applied_d = False
+
+                            def _apply_ca_advance_d(ev_sel: Dict[str, Any], nf_sel: int, nt_sel: float, new_sin_sel: float, new_dur_sel: float) -> None:
+                                ca["source_in_sec"] = new_sin_sel
+                                ca["timeline_in_frame"] = nf_sel
+                                ca["timeline_in_sec"] = nt_sel
+                                ca["duration_sec"] = new_dur_sel
+                                ca["j_cut_lead_frames"] = 0
+                                ca["cut_event_id"] = ev_sel["id"]
+                                ca["cut_event_type"] = ev_sel["type"]
+                                ca["cut_event_frame"] = nf_sel
+                                s_ca_new = find_sentence_for_time(nt_sel, ev_sel, t_end=t_out_d)
+                                if s_ca_new:
+                                    ca["sentence_id"] = s_ca_new["id"]
+                                    ca["sentence_text"] = s_ca_new["text"]
+
+                            if prev_role_d == "b_roll":
+                                tk_pb = broll_takes.get(str(prev_c.get("clip_id") or ""))
+                                if tk_pb is not None:
+                                    mp_pb = str(prev_c.get("media_path") or "")
+                                    prev_out_pb = 0.0
+                                    for _kp_d in range(_wi - 1):
+                                        if str(clips[_kp_d].get("media_path") or "") == mp_pb:
+                                            prev_out_pb = max(prev_out_pb, float(clips[_kp_d].get("source_out_sec") or 0.0))
+                                    next_in_pb: Optional[float] = None
+                                    for _kn_d in range(_wi, len(clips)):
+                                        if str(clips[_kn_d].get("media_path") or "") == mp_pb:
+                                            v_in_d = float(clips[_kn_d].get("source_in_sec") or 0.0)
+                                            next_in_pb = v_in_d if next_in_pb is None else min(next_in_pb, v_in_d)
+                                    safe_in_pb = 0.0
+                                    pb_item = next((m for m in broll_pool if str(m.get("normalized_mp4") or "") == mp_pb), None)
+                                    if pb_item is not None:
+                                        pb_dur = float(pb_item.get("duration_sec") or 0.0)
+                                        pb_bounds = _declared_safe_window(pb_item, pb_dur) or _declared_safe_window(_audit_broll(mp_pb), pb_dur)
+                                        if pb_bounds is not None:
+                                            safe_in_pb = float(pb_bounds[0])
+                                        else:
+                                            safe_in_pb = _default_broll_handles(
+                                                pb_dur, float(prev_c.get("duration_sec") or 1.0), float(pb_item.get("stability_score") or 1.0),
+                                            )[0]
+                                    for ev_d in cand_evs_d:
+                                        nf_d = int(ev_d["frame"])
+                                        nt_d = frames_to_sec(nf_d, fps)
+                                        delta_d = round(nt_d - t_in_d, 4)
+                                        if delta_d <= 0.02:
+                                            continue
+                                        if nt_d - first_s_start_d > 1.05:
+                                            break
+                                        new_ca_dur = round(t_out_d - nt_d, 4)
+                                        if new_ca_dur < 0.60:
+                                            break
+                                        new_pb_dur = round(nt_d - float(prev_c["timeline_in_sec"]), 4)
+                                        if new_pb_dur > pb_cap_d:
+                                            break
+                                        new_ca_sin = round(float(ca["source_in_sec"]) + delta_d, 4)
+                                        if new_ca_sin >= float(ca["source_out_sec"]) - 0.55:
+                                            continue
+                                        trial_ca = {
+                                            **ca,
+                                            "source_in_sec": new_ca_sin,
+                                            "timeline_in_sec": nt_d,
+                                            "timeline_in_frame": nf_d,
+                                            "duration_sec": new_ca_dur,
+                                        }
+                                        if _clip_edge_whip(trial_ca)[0]:
+                                            continue
+                                        lim_pb_out = float(tk_pb.safe_out)
+                                        if next_in_pb is not None:
+                                            lim_pb_out = min(lim_pb_out, next_in_pb - 0.02)
+                                        pb_sin_cur = float(prev_c["source_in_sec"])
+                                        pb_sout_cur = float(prev_c["source_out_sec"])
+                                        if pb_sout_cur + delta_d <= lim_pb_out + 1e-4:
+                                            prev_c["source_out_sec"] = round(pb_sout_cur + delta_d, 4)
+                                        elif pb_sin_cur - delta_d >= max(safe_in_pb, prev_out_pb) - 1e-4:
+                                            prev_c["source_in_sec"] = round(pb_sin_cur - delta_d, 4)
+                                        else:
+                                            continue
+                                        prev_c["timeline_out_frame"] = nf_d
+                                        prev_c["timeline_out_sec"] = nt_d
+                                        prev_c["duration_sec"] = new_pb_dur
+                                        _apply_ca_advance_d(ev_d, nf_d, nt_d, new_ca_sin, new_ca_dur)
+                                        applied_d = True
+                                        break
+                            else:
+                                prev_a = prev_c
+                                t_pa_in = float(prev_a["timeline_in_sec"])
+                                f_pa_in = int(prev_a["timeline_in_frame"])
+                                mp_pa = str(prev_a.get("media_path") or "")
+                                ar_pa = aroll_by_mp_heal.get(mp_pa)
+                                s_pa = find_sentence_for_time(
+                                    t_pa_in,
+                                    {"type": prev_a.get("cut_event_type"), "sentence_id": prev_a.get("sentence_id")},
+                                    t_end=float(prev_a["timeline_out_sec"]),
+                                )
+                                prev_a_locked = bool(
+                                    (s_pa or {}).get("a_roll_locked")
+                                    or (kinetic_group_by_sentence.get(str((s_pa or {}).get("id") or "")) or {}).get("a_roll_locked")
+                                    or _overlaps_kinetic_locked(t_pa_in, float(prev_a["timeline_out_sec"]))
+                                )
+                                next_in_pa: Optional[float] = None
+                                for _kn_d in range(_wi, len(clips)):
+                                    if str(clips[_kn_d].get("media_path") or "") == mp_pa:
+                                        v_in_pa = float(clips[_kn_d].get("source_in_sec") or 0.0)
+                                        next_in_pa = v_in_pa if next_in_pa is None else min(next_in_pa, v_in_pa)
+                                has_live_b_d = any(m.get("role") == "b_roll" for m in broll_pool)
+
+                                for ev_d in cand_evs_d:
+                                    nf_d = int(ev_d["frame"])
+                                    nt_d = frames_to_sec(nf_d, fps)
+                                    delta_d = round(nt_d - t_in_d, 4)
+                                    if delta_d <= 0.02:
+                                        continue
+                                    if nt_d - first_s_start_d > 1.05:
+                                        break
+                                    new_ca_dur = round(t_out_d - nt_d, 4)
+                                    if new_ca_dur < 0.60:
+                                        break
+                                    new_pb_dur = round(nt_d - t_pa_in, 4)
+                                    if new_pb_dur > pb_cap_d:
+                                        break
+                                    new_ca_sin = round(float(ca["source_in_sec"]) + delta_d, 4)
+                                    if new_ca_sin >= float(ca["source_out_sec"]) - 0.55:
+                                        continue
+                                    trial_ca = {
+                                        **ca,
+                                        "source_in_sec": new_ca_sin,
+                                        "timeline_in_sec": nt_d,
+                                        "timeline_in_frame": nf_d,
+                                        "duration_sec": new_ca_dur,
+                                    }
+                                    if _clip_edge_whip(trial_ca)[0]:
+                                        continue
+
+                                    # D2a：前镜为 >=3s 且非锁机位 A-roll，优先替换为零倒带且无甩手的匹配实拍 B-roll 延展至 nf_d
+                                    if not zero_broll_mode and not prev_a_locked and f_pa_in >= 3 * fps and has_live_b_d:
+                                        s_prev_d = find_broll_topic_sentence(t_pa_in, nt_d, s_pa)
+                                        chosen_prev_b: Optional[Tuple[Dict[str, Any], BrollTake]] = None
+
+                                        def _broll_cand_ok_d(br_cand: Dict[str, Any], tk_cand: BrollTake) -> Optional[BrollTake]:
+                                            tk_fit = _fit_broll_no_rewind(_wi - 1, br_cand, tk_cand, new_pb_dur)
+                                            if tk_fit is None:
+                                                return None
+                                            trial_pb = {
+                                                **prev_a,
+                                                "track_role": "b_roll",
+                                                "media_path": br_cand["normalized_mp4"],
+                                                "source_in_sec": tk_fit.start,
+                                                "source_out_sec": tk_fit.end,
+                                                "duration_sec": new_pb_dur,
+                                            }
+                                            if any(_clip_edge_whip(trial_pb, allow_broll_scan=True)):
+                                                return None
+                                            return tk_fit
+
+                                        pk_pd = pick_best_broll(
+                                            s_prev_d, new_pb_dur, last_group, t_pa_in,
+                                            str(clips[_wi - 2]["media_path"]) if _wi - 2 >= 0 else "",
+                                            float(clips[_wi - 2]["source_out_sec"]) if _wi - 2 >= 0 else 0.0,
+                                            matching_live_only=True,
+                                        )
+                                        if pk_pd is not None:
+                                            _tk_fit0 = _broll_cand_ok_d(pk_pd[0], pk_pd[2])
+                                            if _tk_fit0 is not None:
+                                                chosen_prev_b = (pk_pd[0], _tk_fit0)
+                                        if chosen_prev_b is None:
+                                            _s_txt_pd = str(s_prev_d.get("text") or "")
+                                            _is_pr_pd = any(cue in _s_txt_pd for cue in POSITIVE_PRAISE_CUES)
+                                            _alt_pd = []
+                                            for _m_pd in broll_pool:
+                                                if _m_pd.get("role") != "b_roll":
+                                                    continue
+                                                if set(_m_pd.get("taboo_tags") or []) & HARD_TABOO_ALWAYS or (_is_pr_pd and _m_pd.get("taboo_tags")):
+                                                    continue
+                                                _sm_pd = sem_of_choice(_m_pd, s_prev_d, need_sec=new_pb_dur)
+                                                if _sm_pd.get("tier") not in ("hit", "weak"):
+                                                    continue
+                                                _tk_pd = _broll_take(_m_pd, new_pb_dur)
+                                                if _tk_pd is None or not _tk_pd.fresh or not _covers_shot(_tk_pd, new_pb_dur):
+                                                    continue
+                                                _tk_fit = _broll_cand_ok_d(_m_pd, _tk_pd)
+                                                if _tk_fit is not None:
+                                                    _alt_pd.append((0 if _sm_pd.get("tier") == "hit" else 1, -float(_sm_pd.get("score") or 0.0), _m_pd, _tk_fit))
+                                            if _alt_pd:
+                                                _alt_pd.sort(key=lambda x: (x[0], x[1]))
+                                                chosen_prev_b = (_alt_pd[0][2], _alt_pd[0][3])
+                                        if chosen_prev_b is not None:
+                                            br_d, tk_ok_d = chosen_prev_b
+                                            _record_broll_use(br_d, tk_ok_d)
+                                            prev_a["track_role"] = "b_roll"
+                                            prev_a["media_path"] = br_d["normalized_mp4"]
+                                            prev_a["source_in_sec"] = tk_ok_d.start
+                                            prev_a["source_out_sec"] = tk_ok_d.end
+                                            prev_a["audio_locked"] = False
+                                            prev_a["b_roll_overlay"] = True
+                                            prev_a["freeze_tail"] = False
+                                            prev_a["boundary_trim_reason"] = tk_ok_d.reason
+                                            prev_a["sem_match"] = sem_of_choice(br_d, s_prev_d, need_sec=new_pb_dur)
+                                            prev_a["timeline_out_frame"] = nf_d
+                                            prev_a["timeline_out_sec"] = nt_d
+                                            prev_a["duration_sec"] = new_pb_dur
+                                            broll_takes[prev_a["clip_id"]] = tk_ok_d
+                                            _apply_ca_advance_d(ev_d, nf_d, nt_d, new_ca_sin, new_ca_dur)
+                                            applied_d = True
+                                            break
+
+                                    # D2b 兜底（zero_broll_mode / <3s 开场 / 无匹配 B-roll）：仅在 prev_a 有安全源余量、不冻尾、不引入 tail_whip 且句尾过冲 <=0.35s 时延展 prev_a 至 nf_d
+                                    if ar_pa is not None:
+                                        src_dur_pa = float(ar_pa.get("duration_sec") or 0.0)
+                                        pa_sin = float(prev_a["source_in_sec"])
+                                        pa_sout = float(prev_a["source_out_sec"])
+                                        new_pa_sout = round(pa_sout + delta_d, 4)
+                                        s_pa_end = float((s_pa or {}).get("end_sec") or prev_a["timeline_out_sec"])
+                                        s_pa_same_src = str((s_pa or {}).get("source_media") or "") == mp_pa and (s_pa or {}).get("source_out_sec") is not None
+                                        src_overshoot_ok = (not s_pa_same_src) or (new_pa_sout - float(s_pa["source_out_sec"]) <= 0.35 + 1e-4)
+                                        excl_hit = any(
+                                            new_pa_sout > ew_s + 1e-4 and pa_sin < ew_e - 1e-4
+                                            for ew_s, ew_e in _excluded_source_spans(ar_pa.get("excluded_windows") or [])
+                                        )
+                                        if (
+                                            pa_sout - pa_sin >= float(prev_a["duration_sec"]) - 1.0 / fps - 1e-4
+                                            and new_pa_sout <= src_dur_pa + 1e-4
+                                            and (next_in_pa is None or new_pa_sout <= next_in_pa + 1e-4)
+                                            and not excl_hit
+                                            and nt_d - s_pa_end <= 0.35 + 1e-4
+                                            and src_overshoot_ok
+                                        ):
+                                            trial_prev_a = {
+                                                **prev_a,
+                                                "source_out_sec": new_pa_sout,
+                                                "timeline_out_sec": nt_d,
+                                                "timeline_out_frame": nf_d,
+                                                "duration_sec": new_pb_dur,
+                                            }
+                                            if not _clip_edge_whip(trial_prev_a)[1]:
+                                                prev_a["source_out_sec"] = new_pa_sout
+                                                prev_a["timeline_out_frame"] = nf_d
+                                                prev_a["timeline_out_sec"] = nt_d
+                                                prev_a["duration_sec"] = new_pb_dur
+                                                prev_a["freeze_tail"] = False
+                                                _apply_ca_advance_d(ev_d, nf_d, nt_d, new_ca_sin, new_ca_dur)
+                                                applied_d = True
+                                                break
+                            if applied_d:
+                                _merged_whip = True
+                                _healed_any = True
+                                break
                     if not _merged_whip:
                         break
             except Exception as _whip_exc:
@@ -3846,7 +4340,7 @@ def run_step4(
                 outline_px_layer = 6
             else:
                 outline_px_layer = 12
-            torn_paper_layer = bool(("撕" in stroke_drv) or (style_id == "style_21" and outline_px_layer > 0))
+            torn_paper_layer = False
         outline_hex_layer = str((_matting_win or {}).get("stroke_hex") or "#FFFFFF")[:7]
 
         deictic_words = set(PROP_SHOW_CUES) | set(DEICTIC_CUES)
@@ -4545,6 +5039,20 @@ def run_step4(
                 sent_idx_map = {str(s.get("id")): idx_s for idx_s, s in enumerate(sentences)}
                 live_b_list = [m for m in broll_pool if m.get("role") == "b_roll"]
                 used_clip_ids: set = set()
+                _HTML_SPAN_MODES = {
+                    "dark_circle_panel_pip",
+                    "dark_typewriter_card_pip",
+                    "framed_box_pip",
+                    "review_whiteboard_pip",
+                    "paper_outline_pip",
+                    "concept_diagram_pip",
+                }
+                _SPAN_ANY_ROLE_MODES = {
+                    "review_whiteboard_pip",
+                    "concept_diagram_pip",
+                    "dark_typewriter_card_pip",
+                    "framed_box_pip",
+                }
                 try:
                     import face_framing as _ff_v10
                     _ff_v10.set_cache_path(pipeline_dir / "state" / "face_anchors.json")
@@ -4557,9 +5065,10 @@ def run_step4(
                         target_t = float(beat.get("frac") or 0.3) * total_dur
                     max_d = float(beat.get("max_dur") or 4.2)
                     base_lay = dict(beat.get("layout") or {})
-                    if not base_lay.get("mode"):
+                    _b_mode = str(base_lay.get("mode") or "")
+                    if not _b_mode:
                         continue
-                    _needs_face = str(base_lay.get("mode") or "") in (
+                    _needs_face = _b_mode in (
                         "vision_portrait_cutout_pip",
                         "person_behind_giant_text_pip",
                         "pure_black_cutout_pip",
@@ -4588,18 +5097,20 @@ def run_step4(
                             and float((f_x.get("bbox") or f_x).get("h") or 0.0) >= 0.09
                             for f_x in fs_f
                         )
-                    _allow_broll_host = str(base_lay.get("mode") or "") in (
+                    _allow_broll_host = _b_mode in (
                         "dark_typewriter_card_pip", "concept_diagram_pip", "review_whiteboard_pip",
                     )
                     _roles_ok = ("a_roll", "b_roll") if _allow_broll_host else ("a_roll",)
                     cands_b = [
                         c for c in clips
                         if c.get("clip_id") not in used_clip_ids
+                        and not c.get("pip_layout")
                         and c.get("track_role") in _roles_ok
                         and 1.0 <= float(c.get("duration_sec") or 0.0) <= max_d + 2.4
                     ] or [
                         c for c in clips
                         if c.get("clip_id") not in used_clip_ids
+                        and not c.get("pip_layout")
                         and c.get("track_role") in _roles_ok
                         and float(c.get("duration_sec") or 0.0) >= 0.85
                     ]
@@ -4618,14 +5129,212 @@ def run_step4(
                             cands_b,
                             key=lambda c: abs((float(c.get("timeline_in_sec") or 0.0) + float(c.get("timeline_out_sec") or 0.0)) * 0.5 - target_t),
                         )
-                    used_clip_ids.add(chosen_c["clip_id"])
-                    # V11.0 严格帧锁同源连续 A-roll 合并：仅合并紧邻同源且时间/帧严格无缝连续的 A-roll 镜（保护前 3.2s 开场切换），
-                    # 同步更新 timeline_out_frame / timeline_out_sec / source_out_sec / duration_sec，保证 0ms av_sync、0 假切点与 35%~55% 真面板密度。
-                    _target_beat_dur = float(beat.get("target_dur") or max(4.2, min(6.6, max_d * 1.35)))
                     try:
                         _ci = clips.index(chosen_c)
                     except ValueError:
                         _ci = -1
+
+                    if _b_mode in _HTML_SPAN_MODES and _ci >= 0:
+                        # V12 跨镜头连续面板分组：不删减/合并 EDL 镜头，保持 edit_grammar 与 B-roll 实拍律动，
+                        # 通过 v11_panel_group_id / group_dur / offset_sec 让连续 A-roll/B-roll 无缝承接同一 30fps HTML 面板。
+                        _target_beat_dur = float(beat.get("target_dur") or max(4.0, min(5.6, max_d * 1.25)))
+
+                        def _can_join_span(cand_c: Dict[str, Any]) -> bool:
+                            if cand_c.get("clip_id") in used_clip_ids or cand_c.get("pip_layout"):
+                                return False
+                            role_c = str(cand_c.get("track_role") or "")
+                            if role_c == "code_broll":
+                                return False
+                            if _b_mode in _SPAN_ANY_ROLE_MODES:
+                                return role_c in ("a_roll", "b_roll")
+                            return role_c == "a_roll" and _clip_has_face(cand_c)
+
+                        span_indices: List[int] = [_ci]
+                        span_dur = float(chosen_c.get("duration_sec") or 0.0)
+                        right = _ci + 1
+                        while right < len(clips) and span_dur < _target_beat_dur * 0.88:
+                            cand_r = clips[right]
+                            if not _can_join_span(cand_r):
+                                break
+                            d_r = float(cand_r.get("duration_sec") or 0.0)
+                            if span_dur >= 3.2 and (span_dur + d_r) > (_target_beat_dur + 1.5):
+                                break
+                            span_indices.append(right)
+                            span_dur += d_r
+                            right += 1
+                        min_left = 0 if (target_t <= 2.5 or _b_mode in _SPAN_ANY_ROLE_MODES) else 1
+                        left = _ci - 1
+                        while left >= min_left and span_dur < _target_beat_dur * 0.80:
+                            cand_l = clips[left]
+                            if not _can_join_span(cand_l):
+                                break
+                            d_l = float(cand_l.get("duration_sec") or 0.0)
+                            if span_dur >= 3.2 and (span_dur + d_l) > (_target_beat_dur + 1.5):
+                                break
+                            span_indices.append(left)
+                            span_dur += d_l
+                            left -= 1
+
+                        span_indices.sort()
+                        span_clips = [clips[idx_s] for idx_s in span_indices]
+
+                        def _clip_f0(c_x: Dict[str, Any]) -> int:
+                            if c_x.get("timeline_in_frame") is not None:
+                                return int(c_x["timeline_in_frame"])
+                            return int(round(float(c_x.get("timeline_in_sec") or 0.0) * float(fps)))
+
+                        def _clip_f1(c_x: Dict[str, Any]) -> int:
+                            if c_x.get("timeline_out_frame") is not None:
+                                return int(c_x["timeline_out_frame"])
+                            return int(round(float(c_x.get("timeline_out_sec") or 0.0) * float(fps)))
+
+                        def _can_merge_span_aroll(c_a: Dict[str, Any], c_b: Dict[str, Any]) -> bool:
+                            if c_a.get("track_role") != "a_roll" or c_b.get("track_role") != "a_roll":
+                                return False
+                            mp_a = str(c_a.get("media_path") or "")
+                            if not mp_a or mp_a != str(c_b.get("media_path") or ""):
+                                return False
+                            if float(c_a.get("speed") or 1.0) != 1.0 or float(c_b.get("speed") or 1.0) != 1.0:
+                                return False
+                            if abs(float(c_b.get("source_in_sec") or 0.0) - float(c_a.get("source_out_sec") or 0.0)) > 0.06:
+                                return False
+                            if abs(float(c_b.get("timeline_in_sec") or 0.0) - float(c_a.get("timeline_out_sec") or 0.0)) > 0.06:
+                                return False
+                            if float(c_a.get("duration_sec") or 0.0) + float(c_b.get("duration_sec") or 0.0) > float(pacing["max_shot_sec"]):
+                                return False
+                            m_src = float(c_b.get("source_out_sec") or 0.0) - float(c_a.get("source_in_sec") or 0.0)
+                            m_tl = float(c_b.get("timeline_out_sec") or 0.0) - float(c_a.get("timeline_in_sec") or 0.0)
+                            return abs(m_src - m_tl) <= 0.08
+
+                        def _merge_span_pair(dst_c: Dict[str, Any], nxt_c: Dict[str, Any]) -> None:
+                            dst_c["source_out_sec"] = round(float(nxt_c["source_out_sec"]), 4)
+                            dst_c["timeline_out_sec"] = round(float(nxt_c["timeline_out_sec"]), 4)
+                            f1_n = _clip_f1(nxt_c)
+                            if "timeline_out_frame" in dst_c or "timeline_out_frame" in nxt_c:
+                                dst_c["timeline_out_frame"] = f1_n
+                            if "end_frame" in dst_c or "end_frame" in nxt_c:
+                                dst_c["end_frame"] = int(nxt_c.get("end_frame", f1_n))
+                            dst_c["duration_sec"] = round(float(dst_c["timeline_out_sec"]) - float(dst_c["timeline_in_sec"]), 4)
+                            if "timeline_in_frame" in dst_c and "timeline_out_frame" in dst_c:
+                                dst_c["duration_frames"] = int(dst_c["timeline_out_frame"]) - int(dst_c["timeline_in_frame"])
+                            dst_c["punch_in_zoom"] = 1.0
+                            dst_c["vf_extra"] = ""
+                            dst_c["ken_burns"] = None
+                            try:
+                                rm_i = clips.index(nxt_c)
+                                clips.pop(rm_i)
+                            except ValueError:
+                                pass
+
+                        span_f0 = _clip_f0(span_clips[0])
+                        span_f1 = _clip_f1(span_clips[-1])
+                        group_dur = round(
+                            max(sum(float(sc.get("duration_sec") or 0.0) for sc in span_clips), (span_f1 - span_f0) / float(max(1, fps))),
+                            4,
+                        )
+
+                        sec_m = None
+                        sec_p = ""
+                        tk_s = None
+                        if (
+                            base_lay.get("variant") in ("bottom_left_doc", "s17_dual_compare_cards")
+                            or _b_mode == "review_whiteboard_pip"
+                        ) and live_b_list:
+                            sec_m = live_b_list[b_i % len(live_b_list)]
+                            sec_p = str(sec_m.get("normalized_mp4") or "")
+                            if sec_p and Path(sec_p).is_file():
+                                tk_s = _broll_take(sec_m, group_dur)
+
+                        _has_broll_in_span = any(sc.get("track_role") != "a_roll" for sc in span_clips)
+                        _has_sec_in_span = bool(tk_s is not None and sec_p)
+                        _b_var = str(base_lay.get("variant") or "")
+                        _is_no_inset_opaque = (
+                            (_b_mode == "dark_typewriter_card_pip" and _b_var not in ("s16_blur_dark_typewriter", "s18_blur_white_strip"))
+                            or (_b_mode == "concept_diagram_pip" and not bool(base_lay.get("with_anchor_circle", True)))
+                        )
+                        if (_b_mode != "review_whiteboard_pip") and (not _has_broll_in_span) and (not _has_sec_in_span):
+                            if _is_no_inset_opaque:
+                                # 无实拍圆窗的不透明面板：仅合并围绕 chosen_c 的连续 gap<=0.06 同源段落，绝不跨剪辑切点劈开面板
+                                try:
+                                    _c_pos = span_clips.index(chosen_c)
+                                except ValueError:
+                                    _c_pos = 0
+                                _lo = _c_pos
+                                _hi = _c_pos
+                                while _lo > 0 and _can_merge_span_aroll(span_clips[_lo - 1], span_clips[_lo]):
+                                    _lo -= 1
+                                while _hi + 1 < len(span_clips) and _can_merge_span_aroll(span_clips[_hi], span_clips[_hi + 1]):
+                                    _hi += 1
+                                _contig = span_clips[_lo : _hi + 1]
+                                _merged_head = _contig[0]
+                                for _nxt_c in _contig[1:]:
+                                    if _can_merge_span_aroll(_merged_head, _nxt_c):
+                                        _merge_span_pair(_merged_head, _nxt_c)
+                                span_clips = [_merged_head]
+                            else:
+                                _si = 0
+                                while _si + 1 < len(span_clips):
+                                    if _can_merge_span_aroll(span_clips[_si], span_clips[_si + 1]):
+                                        _nxt_m = span_clips.pop(_si + 1)
+                                        _merge_span_pair(span_clips[_si], _nxt_m)
+                                    else:
+                                        _si += 1
+
+                        for sc in span_clips:
+                            used_clip_ids.add(sc["clip_id"])
+
+                        span_f0 = _clip_f0(span_clips[0])
+                        span_f1 = _clip_f1(span_clips[-1])
+                        group_dur = round(
+                            max(sum(float(sc.get("duration_sec") or 0.0) for sc in span_clips), (span_f1 - span_f0) / float(max(1, fps))),
+                            4,
+                        )
+                        gid = f"v11_grp_{b_i:02d}"
+
+                        sid_c = str(chosen_c.get("sentence_id") or "")
+                        cur_s = sent_by_id.get(sid_c)
+                        s_idx = sent_idx_map.get(sid_c, 0)
+                        punch_w = str(base_lay.get("panel_title") or "").strip() or svt.extract_sentence_punch(cur_s, max_chars=4)
+                        quote_ex = str(base_lay.get("quote_text") or "").strip() or svt.extract_quote_excerpt(sentences, s_idx, max_chars=44)
+                        lay_common: Dict[str, Any] = {
+                            **base_lay,
+                            "panel_title": punch_w,
+                            "giant_back_text": str(base_lay.get("giant_back_text") or punch_w),
+                            "quote_text": quote_ex,
+                            "single_source": True,
+                            "face_framing": "face_center",
+                            "v10_truth_beat": True,
+                        }
+                        if len(span_clips) >= 2 or group_dur >= 3.0:
+                            lay_common["v11_panel_group_id"] = gid
+                            lay_common["v11_panel_group_dur"] = group_dur
+
+                        for sc in span_clips:
+                            sc_lay = dict(lay_common)
+                            if "v11_panel_group_id" in lay_common:
+                                sc_lay["v11_panel_offset_sec"] = round(max(0.0, (_clip_f0(sc) - span_f0) / float(max(1, fps))), 4)
+                            sc_dur = float(sc.get("duration_sec") or 1.0)
+                            sc_off = float(sc_lay.get("v11_panel_offset_sec") or 0.0)
+                            if sc.get("track_role") == "b_roll" and _b_mode == "review_whiteboard_pip":
+                                sc_lay["single_source"] = True
+                            elif (
+                                tk_s is not None
+                                and sec_p
+                                and sec_p != str(sc.get("media_path") or "")
+                                and _covers_shot(tk_s, sc_off + sc_dur)
+                            ):
+                                sc_lay.update({
+                                    "single_source": False,
+                                    "secondary_media_path": sec_p,
+                                    "secondary_in_sec": round(tk_s.start + sc_off, 4),
+                                    "secondary_out_sec": round(tk_s.start + sc_off + sc_dur, 4),
+                                })
+                            sc["pip_layout"] = sc_lay
+                        continue
+
+                    used_clip_ids.add(chosen_c["clip_id"])
+                    # 非 HTML 抠像模式（vision_portrait_cutout_pip / person_behind_giant_text_pip / pure_black_cutout_pip）保持同源连续 A-roll 合并
+                    _target_beat_dur = float(beat.get("target_dur") or max(4.2, min(6.6, max_d * 1.35)))
                     while (
                         _ci >= 0
                         and chosen_c.get("track_role") == "a_roll"
@@ -4756,10 +5465,79 @@ def run_step4(
         if shortfall > warn_threshold + SOURCE_EPSILON_SEC:
             print(f"[step4] [WARN] {c_obj['clip_id']} 的可用画面仍短 {shortfall:.2f}s，请补充可用素材")
 
+    _comp_prof = None
     if director_acts:
         _comp_prof_p = pipeline_dir / "01b_composition_profile.json"
         _comp_prof = read_json(_comp_prof_p) if _comp_prof_p.is_file() else None
         _apply_director_cameras(clips, director_acts, media_by_mp4, allow_punch, composition_profile=_comp_prof)
+
+    # 消除非面板连续 A-roll 的幽灵 steady_hold 零变化切点（如 style_09 clip[11] @17.63s）
+    if director_acts and not contract and clips:
+        if _comp_prof is None:
+            _comp_prof_p = pipeline_dir / "01b_composition_profile.json"
+            _comp_prof = read_json(_comp_prof_p) if _comp_prof_p.is_file() else None
+        _prof_faces_post: Dict[str, Dict[str, float]] = {}
+        for _row_pf in (_comp_prof or {}).get("aroll_profiles") or []:
+            if isinstance(_row_pf, dict) and isinstance(_row_pf.get("face_bbox"), dict) and _row_pf.get("media_path"):
+                _prof_faces_post[Path(str(_row_pf["media_path"])).name] = _row_pf["face_bbox"]
+        _idx_sh = 1
+        while _idx_sh < len(clips):
+            _prev_c = clips[_idx_sh - 1]
+            _cur_c = clips[_idx_sh]
+            if (
+                _prev_c.get("track_role") == "a_roll"
+                and _cur_c.get("track_role") == "a_roll"
+                and not _prev_c.get("pip_layout")
+                and not _cur_c.get("pip_layout")
+                and str(_cur_c.get("media_path") or "") != ""
+                and str(_cur_c.get("media_path") or "") == str(_prev_c.get("media_path") or "")
+                and abs(float(_cur_c.get("source_in_sec") or 0.0) - float(_prev_c.get("source_out_sec") or 0.0)) <= 0.06
+                and abs(float(_cur_c.get("timeline_in_sec") or 0.0) - float(_prev_c.get("timeline_out_sec") or 0.0)) <= 0.06
+                and float(_prev_c.get("speed") or 1.0) == 1.0
+                and float(_cur_c.get("speed") or 1.0) == 1.0
+                and _prev_c.get("ken_burns") is None
+                and _cur_c.get("ken_burns") is None
+                and float(_prev_c.get("punch_in_zoom") or 1.0) <= 1.01
+                and float(_cur_c.get("punch_in_zoom") or 1.0) <= 1.01
+                and not _prev_c.get("vf_extra")
+                and not _cur_c.get("vf_extra")
+            ):
+                if allow_punch:
+                    _m_cur = media_by_mp4.get(str(_cur_c["media_path"])) or {}
+                    _f_cur = _first_face_bbox(_m_cur.get("faces")) or _prof_faces_post.get(Path(str(_cur_c["media_path"])).name)
+                    _e_cur = _m_cur.get("eye_anchor")
+                    if not _e_cur and _f_cur:
+                        _e_cur = {"cx": _f_cur["x"] + _f_cur["w"] / 2, "cy": _f_cur["y"] + _f_cur["h"] * 0.36}
+                    _cur_c["vf_extra"] = _build_eye_locked_vf(_e_cur, zoom=1.12, face=_f_cur)
+                    _cur_c["punch_in_zoom"] = 1.12
+                    _idx_sh += 1
+                    continue
+                elif (
+                    float(_cur_c.get("timeline_in_sec") or 0.0) >= 3.2
+                    and float(_prev_c.get("duration_sec") or 0.0) + float(_cur_c.get("duration_sec") or 0.0) <= float(pacing["max_shot_sec"])
+                    and abs((float(_cur_c.get("source_out_sec") or 0.0) - float(_prev_c.get("source_in_sec") or 0.0))
+                            - (float(_cur_c.get("timeline_out_sec") or 0.0) - float(_prev_c.get("timeline_in_sec") or 0.0))) <= 0.08
+                ):
+                    _prev_c["source_out_sec"] = round(float(_cur_c["source_out_sec"]), 4)
+                    _prev_c["timeline_out_sec"] = round(float(_cur_c["timeline_out_sec"]), 4)
+                    if "timeline_out_frame" in _cur_c:
+                        _prev_c["timeline_out_frame"] = int(_cur_c["timeline_out_frame"])
+                    if "end_frame" in _cur_c:
+                        _prev_c["end_frame"] = int(_cur_c["end_frame"])
+                    _prev_c["duration_sec"] = round(float(_prev_c["timeline_out_sec"]) - float(_prev_c["timeline_in_sec"]), 4)
+                    if "timeline_in_frame" in _prev_c and "timeline_out_frame" in _prev_c:
+                        _prev_c["duration_frames"] = int(_prev_c["timeline_out_frame"]) - int(_prev_c["timeline_in_frame"])
+                    _src_span_m = max(0.0, float(_prev_c["source_out_sec"]) - float(_prev_c["source_in_sec"]))
+                    _prev_c["freeze_tail"] = (float(_prev_c["duration_sec"]) - _src_span_m) > (1.0 / fps + SOURCE_EPSILON_SEC)
+                    clips.pop(_idx_sh)
+                    continue
+            _idx_sh += 1
+
+    # 汇总前同步刷新统计指标（防止合并或补推近后剪辑表统计滞后）
+    first_3s_changes = sum(1 for c in clips[1:] if int(c.get("timeline_in_frame") or 0) < first_3s_cutoff_f)
+    _durs_post = [float(c.get("duration_sec") or 0.0) for c in clips]
+    shot_cv = round(statistics.stdev(_durs_post) / max(1e-5, statistics.mean(_durs_post)), 3) if len(_durs_post) >= 2 else 0.0
+    punch_in_count = sum(1 for c in clips if float(c.get("punch_in_zoom") or 1.0) > 1.01)
 
     # 转场 / 叠加层 / 画面特效：step4 不铺它们（铺在套用端），但要把「这一片一处都没套」和为什么记下来，
     # 否则报告里看不出到底是「没这个能力」还是「按条件拒绝了」。

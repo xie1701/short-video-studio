@@ -430,6 +430,37 @@ def write_delivery_summary(
     return out_md
 
 
+def _ensure_reedit_compliance_report(
+    pipeline_dir: Path,
+    whitelist_path: Optional[Path] = None,
+) -> None:
+    """reedit-visuals 模式下若存在 02_transcript.json 但缺少 00_compliance_report.json，执行真实合规复审并落盘。"""
+    tr_p = pipeline_dir / "02_transcript.json"
+    comp_p = pipeline_dir / "00_compliance_report.json"
+    if not tr_p.is_file() or comp_p.is_file():
+        return
+    tr = read_json(tr_p)
+    segs = [dict(s) for s in (tr.get("segments") or tr.get("sentences") or []) if isinstance(s, dict)]
+    src_raw = str(tr.get("source_type") or "").strip().lower()
+    comp_source = src_raw if src_raw in ("tts", "script") else "real_voice"
+    eff_whitelist = whitelist_path
+    if eff_whitelist is None and tr.get("compliance_whitelist_path"):
+        eff_whitelist = Path(str(tr["compliance_whitelist_path"]))
+    report = audit_script_compliance(
+        segs,
+        source_type=comp_source,
+        pipeline_dir=pipeline_dir,
+        whitelist_path=eff_whitelist,
+        auto_action=False,
+    )
+    if not report.get("passed", False):
+        raise RuntimeError(
+            f"合规自动复审未通过（unresolved_must={report.get('unresolved_must_count', 0)}, "
+            f"real_voice_collapse={report.get('real_voice_collapse_blocked', False)}），已阻断出片。"
+        )
+    print(f"[pipeline] 已补齐合规审校报告 -> {comp_p}")
+
+
 def _ensure_reedit_dependencies(
     pipeline_dir: Path,
     track: str = "store",
@@ -437,6 +468,7 @@ def _ensure_reedit_dependencies(
     pause_sec: float = 0.20,
     account_profile: Optional[Dict[str, Any]] = None,
     preserve_locked_audio: bool = False,
+    whitelist_path: Optional[Path] = None,
 ) -> None:
     """在 tidy 清理过临时文件后若需二次改画或重渲染，自动检查并无损重建缺失依赖。"""
     man_p = pipeline_dir / "01_manifest.json"
@@ -490,6 +522,7 @@ def _ensure_reedit_dependencies(
                 pause_sec=float(ae.get("pause_duration_sec", pause_sec)),
                 account_profile=account_profile,
             )
+    _ensure_reedit_compliance_report(pipeline_dir, whitelist_path=whitelist_path)
 
 
 def _compact_code_title(raw_t: str, limit: int = 12) -> str:
@@ -1109,6 +1142,14 @@ def _prepare_v6_director(
     profile_path = pipeline_dir / composition_profile.PROFILE_FILENAME
     profile = read_json(profile_path) if profile_path.is_file() else None
 
+    inventory = director_plan._optional_document(pipeline_dir, director_plan._INVENTORY_FILENAME)
+    visual_index = director_plan._optional_document(pipeline_dir, "00_visual_index.json")
+    valid_broll = {
+        n
+        for item in director_plan._broll_pool(inventory, visual_index)
+        for n in (item.get("filename"), director_plan._media_name(item.get("filename"))) if n
+    } or None
+
     if director_plan_path:
         try:
             raw = read_json(Path(director_plan_path))
@@ -1116,14 +1157,7 @@ def _prepare_v6_director(
             raise RuntimeError(f"外部导演总谱 {director_plan_path} 读取失败：{exc}") from exc
         checked = director_plan.validate_director_plan(
             raw, audio, profile,
-            valid_broll_names={
-                n
-                for item in director_plan._broll_pool(
-                    director_plan._optional_document(pipeline_dir, director_plan._INVENTORY_FILENAME),
-                    director_plan._optional_document(pipeline_dir, "00_visual_index.json"),
-                )
-                for n in (item.get("filename"), director_plan._media_name(item.get("filename"))) if n
-            } or None,
+            valid_broll_names=valid_broll,
         )
         if not checked["ok"]:
             raise RuntimeError(
@@ -1133,7 +1167,11 @@ def _prepare_v6_director(
         for warning in checked["warnings"]:
             print(f"[pipeline] [WARN] {warning}")
         print(f"[pipeline] 已校验并落盘外部导演总谱 -> {plan_path}")
-        return {"source": checked["sanitized_plan"].get("source"), "plan_path": str(plan_path)}
+        return {
+            "source": checked["sanitized_plan"].get("source"),
+            "plan_path": str(plan_path),
+            "native_style_mode": bool(checked["sanitized_plan"].get("native_style_mode")),
+        }
 
     if director_review_pause:
         print(f"[pipeline] V6 导演审稿暂停：构图与任务包已生成，请编写总谱后重跑 -> {tasks_path}")
@@ -1144,20 +1182,29 @@ def _prepare_v6_director(
     )
     if valid is not None:
         print(f"[pipeline] 复用已有导演总谱 -> {plan_path}")
-        return {"source": valid.get("source"), "plan_path": str(plan_path)}
+        return {
+            "source": valid.get("source"),
+            "plan_path": str(plan_path),
+            "native_style_mode": bool(valid.get("native_style_mode")),
+        }
     if keep_edl and plan_path.is_file():
         print(f"[pipeline] [WARN] --keep-edl 下保留已有 {plan_path.name}，不推翻重构")
-        return {"source": None, "plan_path": str(plan_path)}
+        return {"source": None, "plan_path": str(plan_path), "native_style_mode": bool((style_id or "style_02") != "style_02")}
 
     generated = director_plan.generate_deterministic_director_plan(
-        audio, style_id or "style_02", None, profile,
+        audio, style_id or "style_02", inventory, profile, visual_index,
+        pipeline_dir=pipeline_dir,
     )
-    checked = director_plan.validate_director_plan(generated, audio, profile)
+    checked = director_plan.validate_director_plan(generated, audio, profile, valid_broll_names=valid_broll)
     if not checked["ok"]:
         raise RuntimeError("离线导演总谱校验失败：" + "；".join(checked["errors"]))
     write_json(plan_path, checked["sanitized_plan"])
     print(f"[pipeline] 已生成离线导演总谱 -> {plan_path}")
-    return {"source": checked["sanitized_plan"].get("source"), "plan_path": str(plan_path)}
+    return {
+        "source": checked["sanitized_plan"].get("source"),
+        "plan_path": str(plan_path),
+        "native_style_mode": bool(checked["sanitized_plan"].get("native_style_mode")),
+    }
 
 
 def _render_and_verify_only(
@@ -1279,7 +1326,9 @@ def run_visual_to_delivery(
     director_plan: Optional[str] = None,
     director_review_pause: bool = False,
     auto_critic_revise: bool = False,
+    whitelist_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
+    _ensure_reedit_compliance_report(pipeline_dir, whitelist_path=whitelist_path)
     # 口播干净度：锁定人声再转写一遍，看还有多少秒对不上成稿（别人的话/废话）。
     # 用户实测过「16-19 秒、35-39 秒还有导演/摄影师的声音」——离线指标全绿也拦不住，
     # 所以这里每次出片前都拿 ASR 反过来验一遍，并把账本落盘，不信脚本自评。
@@ -1301,6 +1350,7 @@ def run_visual_to_delivery(
     edl_p = pipeline_dir / "04_edl.json"
     v6_active = _v6_style_active(style_id, v6_director, no_v6_director, director_plan)
     v6_ready = False
+    v6_info: Optional[Dict[str, Any]] = None
     if v6_active and (pipeline_dir / "03_audio_events.json").is_file():
         v6_info = _prepare_v6_director(
             pipeline_dir, style_id, director_plan, director_review_pause, keep_edl,
@@ -1310,8 +1360,13 @@ def run_visual_to_delivery(
         v6_ready = True
     elif director_plan:
         raise RuntimeError(
-            "--director-plan 需要 style_01/style_02/style_03/style_17 且 03_audio_events.json 已锁定，并且没有加 --no-v6-director"
+            "--director-plan 需要 style_01..style_24 且 03_audio_events.json 已锁定，并且没有加 --no-v6-director"
         )
+    use_kinetic_stage = v6_ready and (
+        style_id == "style_02"
+        or v6_director
+        or not bool((v6_info or {}).get("native_style_mode"))
+    )
 
     def _rebuild_visuals(keep_existing_edl: bool) -> None:
         if keep_existing_edl and edl_p.is_file():
@@ -1341,16 +1396,16 @@ def run_visual_to_delivery(
                 enforce_broll_gate=True,
                 allow_broll_mismatch=allow_broll_mismatch,
             )
-            if v6_ready and style_id != "style_02":
+            if use_kinetic_stage and style_id != "style_02":
                 step4_kwargs["enable_v6_director"] = True
             run_step4(pipeline_dir, **step4_kwargs)
         _record_cli_style_choices(pipeline_dir, style_id, subtitle_template, lut_name)
-        run_step5(pipeline_dir, track=track, template_id=subtitle_template, enable_v6_director=bool(v6_ready))
+        run_step5(pipeline_dir, track=track, template_id=subtitle_template, enable_v6_director=bool(use_kinetic_stage))
         step6_kwargs: Dict[str, Any] = dict(
             style_id=style_id, no_flower_text=no_flower_text,
             keep_manual_texts=keep_existing_edl and keep_edl, no_v6_director=no_v6_director,
         )
-        if v6_ready and style_id != "style_02":
+        if use_kinetic_stage and style_id != "style_02":
             step6_kwargs["enable_v6_director"] = True
         run_step6(pipeline_dir, **step6_kwargs)
         write_source_review(pipeline_dir)
@@ -1768,7 +1823,7 @@ def main() -> None:
         code_lk, msg_lk, _ = verify_lock(pipeline_dir)
         if code_lk != 0:
             raise RuntimeError(f"哈希锁校验失败，阻断正式渲染：{msg_lk}")
-        _ensure_reedit_dependencies(pipeline_dir, track=args.track, bgm_p=bgm_p, pause_sec=args.pause_sec, account_profile=account_profile, preserve_locked_audio=True)
+        _ensure_reedit_dependencies(pipeline_dir, track=args.track, bgm_p=bgm_p, pause_sec=args.pause_sec, account_profile=account_profile, preserve_locked_audio=True, whitelist_path=whitelist_path)
         res = _render_and_verify_only(
             pipeline_dir=pipeline_dir,
             track=args.track,
@@ -2010,6 +2065,7 @@ def main() -> None:
             director_plan=args.director_plan,
             director_review_pause=args.director_review_pause,
             auto_critic_revise=args.auto_critic_revise,
+            whitelist_path=whitelist_path,
         )
     elif args.mode == "plan-only":
         eff_raw = _ensure_effective_raw_dir()
@@ -2056,7 +2112,7 @@ def main() -> None:
         raw_patches = read_json(Path(args.patch_json))
         patches_list = raw_patches if isinstance(raw_patches, list) else list(raw_patches.get("patches") or [])
         patch_locked_audio_sentences(pipeline_dir, patches_list, track=args.track)
-        _ensure_reedit_dependencies(pipeline_dir, track=args.track, bgm_p=bgm_p, pause_sec=args.pause_sec, account_profile=account_profile, preserve_locked_audio=True)
+        _ensure_reedit_dependencies(pipeline_dir, track=args.track, bgm_p=bgm_p, pause_sec=args.pause_sec, account_profile=account_profile, preserve_locked_audio=True, whitelist_path=whitelist_path)
         res = run_visual_to_delivery(
             pipeline_dir=pipeline_dir,
             track=args.track,
@@ -2090,6 +2146,7 @@ def main() -> None:
             director_plan=args.director_plan,
             director_review_pause=args.director_review_pause,
             auto_critic_revise=args.auto_critic_revise,
+            whitelist_path=whitelist_path,
         )
     else:
         if args.mode in ("full", "lock-preview"):
@@ -2142,7 +2199,7 @@ def main() -> None:
                 _run_inventory_if_needed(eff_raw)
                 run_step1([eff_raw], pipeline_dir, shared_cache_dir=ws.get("shared_cache_dir"))
             else:
-                _ensure_reedit_dependencies(pipeline_dir, track=args.track, bgm_p=bgm_p, pause_sec=args.pause_sec, account_profile=account_profile)
+                _ensure_reedit_dependencies(pipeline_dir, track=args.track, bgm_p=bgm_p, pause_sec=args.pause_sec, account_profile=account_profile, whitelist_path=whitelist_path)
             run_step2(
                 pipeline_dir,
                 track=args.track,
@@ -2168,7 +2225,7 @@ def main() -> None:
         elif args.mode == "reedit-visuals":
             if not (pipeline_dir / "03_audio_events.json").exists():
                 raise FileNotFoundError("reedit-visuals 模式要求 03_audio_events.json 已锁定存在。")
-            _ensure_reedit_dependencies(pipeline_dir, track=args.track, bgm_p=bgm_p, pause_sec=args.pause_sec, account_profile=account_profile, preserve_locked_audio=True)
+            _ensure_reedit_dependencies(pipeline_dir, track=args.track, bgm_p=bgm_p, pause_sec=args.pause_sec, account_profile=account_profile, preserve_locked_audio=True, whitelist_path=whitelist_path)
             print("[pipeline] 只改画面模式：Step 1–3 已锁定音轨保持原封不动，仅按音轨事件重排画面。")
 
         res = run_visual_to_delivery(
@@ -2204,6 +2261,7 @@ def main() -> None:
             director_plan=args.director_plan,
             director_review_pause=args.director_review_pause,
             auto_critic_revise=args.auto_critic_revise,
+            whitelist_path=whitelist_path,
         )
 
     if lock_files:

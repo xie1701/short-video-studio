@@ -63,7 +63,7 @@ let inURL = URL(fileURLWithPath: args[1])
 let outMatteURL = URL(fileURLWithPath: args[2])
 let outOutlinePath = args.count >= 4 ? args[3] : ""
 let outlinePx = args.count >= 5 ? max(0.0, Double(args[4]) ?? 0.0) : 0.0
-let qualityArg = args.count >= 6 ? args[5] : "balanced"
+let qualityArg = args.count >= 6 ? args[5] : "accurate"
 let edgeModeArg = args.count >= 7 ? args[6] : "smooth"
 
 let asset = AVURLAsset(url: inURL)
@@ -172,46 +172,54 @@ var coverageSamples = 0
 var firstPTS: CMTime? = nil
 
 func makeContrastMask(_ ci: CIImage) -> CIImage {
-    // 适度提升蒙版对比度使背景彻底归零、主体保持纯白且边缘保留平滑抗锯齿
+    // 柔化上采样轮廓并保留平滑 3-4px 抗锯齿渐变边缘（彻底消除硬二值锯齿）
+    var cur = ci
+    if let blur = CIFilter(name: "CIGaussianBlur") {
+        blur.setValue(cur, forKey: kCIInputImageKey)
+        blur.setValue(1.3, forKey: kCIInputRadiusKey)
+        if let out = blur.outputImage {
+            cur = out.cropped(to: targetRect)
+        }
+    }
     if let f = CIFilter(name: "CIColorControls") {
-        f.setValue(ci, forKey: kCIInputImageKey)
-        f.setValue(1.45, forKey: kCIInputContrastKey)
+        f.setValue(cur, forKey: kCIInputImageKey)
+        f.setValue(1.25, forKey: kCIInputContrastKey)
         f.setValue(0.0, forKey: kCIInputBrightnessKey)
         if let out = f.outputImage {
             return out.cropped(to: targetRect)
         }
     }
-    return ci
+    return cur
 }
 
 func makeDilatedOutline(_ ci: CIImage, radius: Double, torn: Bool = false) -> CIImage {
+    // 沿人像平滑膨胀后做高斯抗锯齿羽化，彻底禁用噪声撕纸置换与高对比度硬切边
     var cur = ci
+    if let preBlur = CIFilter(name: "CIGaussianBlur") {
+        preBlur.setValue(cur, forKey: kCIInputImageKey)
+        preBlur.setValue(max(1.2, radius * 0.20), forKey: kCIInputRadiusKey)
+        if let out = preBlur.outputImage {
+            cur = out.cropped(to: targetRect)
+        }
+    }
     if let morph = CIFilter(name: "CIMorphologyMaximum") {
         morph.setValue(cur, forKey: kCIInputImageKey)
-        morph.setValue(radius, forKey: kCIInputRadiusKey)
+        morph.setValue(max(1.0, radius * 0.85), forKey: kCIInputRadiusKey)
         if let out = morph.outputImage {
             cur = out.cropped(to: targetRect)
         }
     }
-    if torn,
-       let rng = CIFilter(name: "CIRandomGenerator")?.outputImage?.cropped(to: targetRect),
-       let noiseBlur = CIFilter(name: "CIGaussianBlur"),
-       let disp = CIFilter(name: "CIDisplacementDistortion") {
-        noiseBlur.setValue(rng, forKey: kCIInputImageKey)
-        noiseBlur.setValue(3.2, forKey: kCIInputRadiusKey)
-        if let smoothNoise = noiseBlur.outputImage?.cropped(to: targetRect) {
-            disp.setValue(cur, forKey: kCIInputImageKey)
-            disp.setValue(smoothNoise, forKey: "inputDisplacementImage")
-            disp.setValue(max(12.0, radius * 1.35), forKey: kCIInputScaleKey)
-            if let out = disp.outputImage {
-                cur = out.cropped(to: targetRect)
-            }
+    if let postBlur = CIFilter(name: "CIGaussianBlur") {
+        postBlur.setValue(cur, forKey: kCIInputImageKey)
+        postBlur.setValue(1.6, forKey: kCIInputRadiusKey)
+        if let out = postBlur.outputImage {
+            cur = out.cropped(to: targetRect)
         }
     }
     if let ctrl = CIFilter(name: "CIColorControls") {
         ctrl.setValue(cur, forKey: kCIInputImageKey)
-        ctrl.setValue(torn ? 4.2 : 2.6, forKey: kCIInputContrastKey)
-        ctrl.setValue(torn ? 0.12 : 0.08, forKey: kCIInputBrightnessKey)
+        ctrl.setValue(1.35, forKey: kCIInputContrastKey)
+        ctrl.setValue(0.04, forKey: kCIInputBrightnessKey)
         if let out = ctrl.outputImage {
             cur = out.cropped(to: targetRect)
         }
@@ -434,14 +442,7 @@ def _generate_mediapipe_matte_video(
                     m_proc.stdin.write(mask_u8.tobytes())
                 if o_proc and o_proc.stdin and kernel is not None:
                     dil = cv2.dilate((mask_u8 >= 120).astype(np.uint8) * 255, kernel, iterations=1)
-                    if torn_paper and outline_px >= 4:
-                        yy, xx = np.ogrid[:h, :w]
-                        jag = (
-                            np.sin(xx * 0.23 + yy * 0.17) * 0.5
-                            + np.cos(xx * 0.41 - yy * 0.31) * 0.5
-                        )
-                        blur_dil = cv2.GaussianBlur(dil.astype(np.float32), (0, 0), sigmaX=max(1.5, outline_px * 0.28))
-                        dil = np.where((blur_dil + jag * 42.0) >= 120.0, 255, 0).astype(np.uint8)
+                    dil = cv2.GaussianBlur(dil, (0, 0), sigmaX=1.8)
                     o_proc.stdin.write(dil.tobytes())
                 frames += 1
     finally:
@@ -472,7 +473,7 @@ def generate_person_matte_video(
     out_matte_mp4: Path,
     out_outline_mp4: Optional[Path] = None,
     outline_px: int = 10,
-    quality: str = "balanced",
+    quality: str = "accurate",
     fps: int = DEFAULT_FPS,
     torn_paper: bool = False,
 ) -> Optional[Dict[str, Any]]:
@@ -525,8 +526,8 @@ def generate_person_matte_video(
             str(tmp_matte),
             str(tmp_outline) if tmp_outline else "",
             str(max(0, int(outline_px))),
-            quality if quality in ("balanced", "accurate") else "balanced",
-            "torn" if torn_paper else "smooth",
+            quality if quality in ("balanced", "accurate") else "accurate",
+            "smooth",
         ]
         try:
             proc = subprocess.run(args, capture_output=True, text=True, timeout=180)

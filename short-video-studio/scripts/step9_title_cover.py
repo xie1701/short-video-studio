@@ -597,13 +597,279 @@ def render_dual_4k_code_covers(
 
 
 _GBRO_STYLE_CATALOG = {
-    "style-01": ("深色渐变风", "style-01-深色渐变风.md", "人物居中，大字覆盖后方，深色渐变背景，高对比强冲击"),
-    "style-02": ("纯色扁平风", "style-02-纯色扁平风.md", "人物清晰前景，纯色干净背景，清爽干练"),
-    "style-03": ("产品主视觉风", "style-03-产品主视觉风.md", "产品或证据画面占主体，人物引导手势"),
-    "style-04": ("对比卡片风", "style-04-对比卡片风.md", "人物手持两张对比卡片推向镜头，适合前后对比/算账拆解"),
-    "style-07": ("人物侧置留白风", "style-07-人物侧置留白风.md", "人物偏一侧，大面积留给大号标题，版面大气"),
-    "style-10": ("正面对视风", "style-10-正面对视风.md", "人物直视镜头建立强信任感，标题环绕四周"),
+    "style-01": ("深色渐变风", "style-01-深色渐变风.md", "人物居中，大字覆盖人物后方，深色渐变背景，高对比强冲击"),
+    "style-02": ("纯色扁平风", "style-02-纯色扁平风.md", "人物抠图感，置于纯色扁平背景上，干净清爽，主体道具近大远小推向镜头"),
+    "style-03": ("产品主视觉风", "style-03-产品主视觉风.md", "产品、菜品或UI占画面60-70%绝对主角，人物偏小做引导手势"),
+    "style-04": ("对比卡片风", "style-04-对比卡片风.md", "人物手持两张对比卡片，前景大亮后景小暗推向镜头，适合前后对比/算账拆解"),
+    "style-05": ("极简留白风", "style-05-极简留白风.md", "大面积浅色留白超60%，文字是唯一视觉锤，人物轻量出镜偏角落"),
+    "style-06": ("海报拼贴风", "style-06-海报拼贴风.md", "前中后三层纵深遮挡拼贴，多张参考图叠加构图，叙事丰富纵深感强"),
+    "style-07": ("人物侧置留白风", "style-07-人物侧置留白风.md", "人物偏左或偏右占宽约30%，对侧约65%留白放超大标题，版面大气"),
+    "style-08": ("背影构图风", "style-08-背影构图风.md", "人物背对镜头不露脸，望向前方主视觉或远景，制造代入感和想象空间"),
+    "style-09": ("局部出镜风", "style-09-局部出镜风.md", "只露手部、半脸或侧脸轮廓，产品或菜品是绝对主角，人物只是见证者"),
+    "style-10": ("正面对视风", "style-10-正面对视风.md", "人物正面居中直视镜头建立强眼神接触，文字上下两行夹住脸部不遮眼嘴"),
 }
+
+_GBRO_STYLE_SPECS: Dict[str, Dict[str, Any]] = {
+    "style-01": {"requires_fig2": False, "recommended_fig2": False, "forbid_front_face": False, "font_mode": "gbro_heavy", "bg_rule": "深色渐变"},
+    "style-02": {"requires_fig2": False, "recommended_fig2": False, "forbid_front_face": False, "font_mode": "gbro_heavy", "bg_rule": "单一纯色扁平无渐变"},
+    "style-03": {"requires_fig2": True, "recommended_fig2": True, "forbid_front_face": False, "font_mode": "gbro_heavy", "bg_rule": "浅色或中性干净底"},
+    "style-04": {"requires_fig2": False, "recommended_fig2": False, "forbid_front_face": False, "font_mode": "gbro_heavy", "bg_rule": "深色渐变衬托两张对比卡"},
+    "style-05": {"requires_fig2": False, "recommended_fig2": False, "forbid_front_face": False, "font_mode": "thin_clean", "bg_rule": "浅色极简大留白"},
+    "style-06": {"requires_fig2": False, "recommended_fig2": True, "forbid_front_face": False, "font_mode": "editorial_white", "bg_rule": "深色沉稳纵深层"},
+    "style-07": {"requires_fig2": False, "recommended_fig2": False, "forbid_front_face": False, "font_mode": "editorial_dark", "bg_rule": "中性或浅色留白"},
+    "style-08": {"requires_fig2": False, "recommended_fig2": False, "forbid_front_face": True, "font_mode": "editorial_white", "bg_rule": "大气深色渐变"},
+    "style-09": {"requires_fig2": False, "recommended_fig2": True, "forbid_front_face": False, "font_mode": "editorial_dark", "bg_rule": "浅色或中性突出主体"},
+    "style-10": {"requires_fig2": False, "recommended_fig2": False, "forbid_front_face": False, "font_mode": "gbro_heavy", "bg_rule": "高饱和纯色或深色渐变"},
+}
+
+_GBRO_BANNED_FX = ("全息投影", "粒子效果", "发光特效")
+
+
+def _norm_media_key(path_or_name: str) -> str:
+    name = Path(str(path_or_name or "").replace("\\", "/")).name
+    return re.sub(r"^norm_[0-9]+_", "", name)
+
+
+def extract_content_ref_frames(
+    pipeline_dir: Path,
+    subject_hint: str = "",
+    style_id: Optional[str] = None,
+    max_refs: int = 2,
+) -> List[Dict[str, Any]]:
+    """
+    从实拍 B-roll（04_edl.json 优先，回退 01_manifest.json）结合 00_visual_index.json 与 03_audio_events.json
+    抽取贴合本片菜品/产品/场景的图2+参考帧（09_content_ref_01.png 等），剔除大面积正面人脸帧避免与图1撞车。
+    纯单机口播无实拍 B-roll 时返回 []。
+    """
+    pipeline_dir = Path(pipeline_dir)
+    ffmpeg = find_bin("ffmpeg")
+    if not ffmpeg:
+        return []
+
+    man_p = pipeline_dir / "01_manifest.json"
+    edl_p = pipeline_dir / "04_edl.json"
+    vi_p = pipeline_dir / "00_visual_index.json"
+    ae_p = pipeline_dir / "03_audio_events.json"
+
+    man_items = (read_json(man_p).get("items") or []) if man_p.is_file() else []
+    man_by_path: Dict[str, Dict[str, Any]] = {}
+    man_by_key: Dict[str, Dict[str, Any]] = {}
+    for it in man_items:
+        if not isinstance(it, dict):
+            continue
+        for k in ("normalized_mp4", "source_path"):
+            p_raw = str(it.get(k) or "").strip()
+            if p_raw:
+                man_by_path[p_raw] = it
+                man_by_key[_norm_media_key(p_raw)] = it
+
+    vi_clips = (read_json(vi_p).get("clips") or []) if vi_p.is_file() else []
+    vi_by_key: Dict[str, Dict[str, Any]] = {}
+    for vc in vi_clips:
+        if not isinstance(vc, dict):
+            continue
+        key = _norm_media_key(str(vc.get("filename") or vc.get("file") or vc.get("source_path") or ""))
+        if key:
+            vi_by_key[key] = vc
+
+    # 汇总候选 B-roll（先取 EDL 实际入片，再用 manifest 补足）
+    candidates: List[Dict[str, Any]] = []
+    seen_resolved: set[str] = set()
+
+    if edl_p.is_file():
+        for c in (read_json(edl_p).get("clips") or []):
+            if not isinstance(c, dict) or c.get("track_role") != "b_roll":
+                continue
+            mp_str = str(c.get("media_path") or "").strip()
+            mp = Path(mp_str)
+            if not mp_str or not mp.is_file():
+                continue
+            res_key = str(mp.resolve())
+            if res_key in seen_resolved:
+                continue
+            seen_resolved.add(res_key)
+            candidates.append({
+                "media_path": mp,
+                "t_in": float(c.get("source_in_sec") or 0.0),
+                "t_out": float(c.get("source_out_sec") or 0.0),
+                "from_edl": True,
+            })
+
+    for it in man_items:
+        if not isinstance(it, dict):
+            continue
+        if it.get("role") not in ("b_roll", "b_roll_candidate"):
+            continue
+        if it.get("usable") is False or it.get("video_grade") == "ng":
+            continue
+        if it.get("generated") is True or it.get("source") in ("generated", "code", "code_broll"):
+            continue
+        mp_str = str(it.get("normalized_mp4") or it.get("source_path") or "").strip()
+        mp = Path(mp_str)
+        if not mp_str or not mp.is_file():
+            continue
+        res_key = str(mp.resolve())
+        if res_key in seen_resolved:
+            continue
+        seen_resolved.add(res_key)
+        dur = float(it.get("duration_sec") or 2.0)
+        candidates.append({
+            "media_path": mp,
+            "t_in": 0.15,
+            "t_out": max(0.6, dur - 0.15),
+            "from_edl": False,
+        })
+
+    if not candidates:
+        return []
+
+    query_terms: List[str] = []
+    hint_clean = re.sub(r"[\s，。！？、,.!?]+", "", str(subject_hint or "")).strip()
+    if len(hint_clean) >= 2:
+        query_terms.append(hint_clean)
+        for tok in re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z0-9]{2,}", hint_clean):
+            if tok not in query_terms:
+                query_terms.append(tok)
+    if ae_p.is_file():
+        try:
+            for sent in (read_json(ae_p).get("sentences") or [])[:6]:
+                for kw in (sent.get("keywords") or []):
+                    kws = str(kw).strip()
+                    if len(kws) >= 2 and kws not in _CTA_STOP_KWS and kws not in query_terms:
+                        query_terms.append(kws)
+        except Exception:
+            pass
+
+    scored_cands: List[Dict[str, Any]] = []
+    for cand in candidates:
+        mp: Path = cand["media_path"]
+        mkey = _norm_media_key(str(mp))
+        man_row = man_by_path.get(str(mp)) or man_by_key.get(mkey) or {}
+        vi_row = vi_by_key.get(mkey) or {}
+        tags = list(dict.fromkeys(
+            str(t).strip()
+            for row in (vi_row, man_row)
+            for key in ("semantic_tags", "scene_tags_zh", "tags", "manual_tags", "entities")
+            for t in (row.get(key) or [])
+            if str(t).strip()
+        ))
+        desc = str(vi_row.get("description") or vi_row.get("summary") or man_row.get("description") or "").strip()
+        meta_blob = f"{mkey} {' '.join(tags)} {desc}"
+
+        hint_score = 0.0
+        if hint_clean and (hint_clean in meta_blob or any(t in hint_clean for t in tags if len(t) >= 2)):
+            hint_score = 120.0
+        elif hint_clean:
+            hint_toks = re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z0-9]{2,}", hint_clean)
+            hint_score = 60.0 * sum(1 for tk in hint_toks if tk in meta_blob)
+
+        kw_hits = sum(1 for qt in query_terms if qt in meta_blob)
+        sharp = float(man_row.get("sharpness_score") or 40.0)
+        faces = man_row.get("faces") or []
+        large_face = any(
+            isinstance(f, dict)
+            and float((f.get("bbox") if isinstance(f.get("bbox"), dict) else f).get("w", 0.0))
+            * float((f.get("bbox") if isinstance(f.get("bbox"), dict) else f).get("h", 0.0))
+            >= 0.04
+            for f in faces
+        )
+        score = (
+            (12.0 if cand["from_edl"] else 0.0)
+            + hint_score
+            + kw_hits * 18.0
+            + min(25.0, sharp * 0.25)
+            - (80.0 if large_face else 0.0)
+        )
+        t_in = float(cand["t_in"])
+        t_out = max(t_in + 0.2, float(cand["t_out"]))
+        apex = man_row.get("action_apex_sec") or man_row.get("best_in_sec")
+        if apex is not None and t_in <= float(apex) <= t_out:
+            ts = float(apex)
+        else:
+            ts = t_in + (t_out - t_in) * 0.45
+        scored_cands.append({
+            "media_path": mp,
+            "time_sec": round(ts, 3),
+            "tags": tags,
+            "description": desc,
+            "score": score,
+            "hint_score": hint_score,
+        })
+
+    scored_cands.sort(key=lambda x: (-x["score"], x["media_path"].name))
+
+    # 若未指定唯一明确命中的 subject_hint，按 style_id 在优质候选池中做确定性轮换，避免全套封面复用同一盘菜
+    top_pool = scored_cands[:min(8, len(scored_cands))]
+    if style_id and len(top_pool) >= 2:
+        top_has_unique_hint = (
+            bool(hint_clean)
+            and top_pool[0]["hint_score"] > 0
+            and top_pool[0]["score"] - top_pool[1]["score"] >= 50.0
+        )
+        if not top_has_unique_hint:
+            m_sid = re.search(r"(\d+)", str(style_id))
+            rot = (int(m_sid.group(1)) - 1) % len(top_pool) if m_sid else 0
+            top_pool = top_pool[rot:] + top_pool[:rot]
+
+    rest = [c for c in scored_cands if c not in top_pool]
+    ordered = top_pool + rest
+
+    refs_out: List[Dict[str, Any]] = []
+    with tempfile.TemporaryDirectory(prefix="svs_content_ref_") as td:
+        td_p = Path(td)
+        extracted: List[Tuple[Path, Dict[str, Any]]] = []
+        for idx_c, cand in enumerate(ordered[:min(len(ordered), max_refs + 4)]):
+            out_tmp = td_p / f"cref_{idx_c:02d}.png"
+            cmd = [
+                ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+                "-ss", f"{cand['time_sec']:.3f}",
+                "-i", str(cand["media_path"]),
+                "-frames:v", "1",
+                "-vf", "scale=1080:1440:force_original_aspect_ratio=increase,crop=1080:1440",
+                str(out_tmp),
+            ]
+            res = subprocess.run(cmd, check=False)
+            if res.returncode == 0 and out_tmp.is_file():
+                extracted.append((out_tmp, cand))
+
+        if not extracted:
+            return []
+
+        try:
+            vis_map = inspect_images([x[0] for x in extracted])
+        except Exception:
+            vis_map = {}
+
+        # 若存在不含大脸撞车的实拍帧，优先保留无大脸帧
+        non_face_picks: List[Tuple[Path, Dict[str, Any]]] = []
+        face_picks: List[Tuple[Path, Dict[str, Any]]] = []
+        for fpath, cand in extracted:
+            vinfo = vis_map.get(str(fpath)) or vis_map.get(str(fpath.resolve())) or {}
+            faces = vinfo.get("faces") or []
+            big_face = any(
+                float((f.get("bbox") if isinstance(f.get("bbox"), dict) else f).get("w", 0.0))
+                * float((f.get("bbox") if isinstance(f.get("bbox"), dict) else f).get("h", 0.0))
+                >= 0.06
+                for f in faces if isinstance(f, dict)
+            )
+            if big_face:
+                face_picks.append((fpath, cand))
+            else:
+                non_face_picks.append((fpath, cand))
+
+        final_picks = (non_face_picks or face_picks)[:max(1, int(max_refs))]
+        for idx_out, (fpath, cand) in enumerate(final_picks, start=1):
+            dest = pipeline_dir / f"09_content_ref_{idx_out:02d}.png"
+            shutil.copy2(fpath, dest)
+            refs_out.append({
+                "path": str(dest.resolve()),
+                "source_media": str(cand["media_path"].resolve()),
+                "time_sec": cand["time_sec"],
+                "tags": list(cand["tags"])[:6],
+                "description": cand["description"][:120],
+                "score": round(float(cand["score"]), 2),
+            })
+    return refs_out
 
 
 def extract_best_host_face_frame(pipeline_dir: Path) -> Optional[Dict[str, Any]]:
@@ -726,6 +992,137 @@ def extract_best_host_face_frame(pipeline_dir: Path) -> Optional[Dict[str, Any]]
         }
 
 
+def _render_gbro_prompt_text(
+    rec_key: str,
+    *,
+    clean_main: str,
+    clean_sub: str,
+    sub_line: str,
+    subject_desc: str,
+    expression: str,
+    face_ref: Optional[Dict[str, Any]],
+    content_refs: List[Dict[str, Any]],
+) -> str:
+    """严格对照 references/style-01..10.md 生成贴合风格与参考图的 3:4 中文提示词。"""
+    style_cn, _, style_desc = _GBRO_STYLE_CATALOG[rec_key]
+    has_fig1 = bool(face_ref)
+    has_fig2 = len(content_refs) >= 1
+    has_fig3 = len(content_refs) >= 2
+    expr = expression or ("自信笃定" if rec_key != "style-08" else "")
+    subj = subject_desc or clean_main
+
+    fig1_std = (
+        f"参考图1（09_host_face_ref.png）的真实五官特征、发型与神态，保持五官一致性，只要半身，{expr}"
+        if has_fig1
+        else f"真实亲切的行业主理人半身形象，{expr}"
+    )
+    fig2_note = (
+        f"画面主视觉融入图2（{Path(content_refs[0]['path']).name}）所呈现的「{subj}」真实质感与核心画面"
+        if has_fig2
+        else f"搭配与「{subj}」相关的具象实物道具"
+    )
+    fig3_note = (
+        f"；补充展示图3（{Path(content_refs[1]['path']).name}）作为次要叙事层次。"
+        if has_fig3
+        else ""
+    )
+    gbro_font_desc = (
+        f"超粗方正中文黑体无衬线大字「{clean_main}」（纯白粗字带轻微暗色投影），重点关键词「{clean_sub}」使用高饱和亮黄色矩形色块配黑色超粗字体突出，字号巨大、行距紧凑、强对比一眼看清"
+    )
+
+    if rec_key == "style-01":
+        body = [
+            f"【风格定位】{style_cn}（{style_desc}）。",
+            f"【前景主体】{fig1_std}，居中偏下站位，双手自然比划或托举{fig2_note}{fig3_note}",
+            f"【文字排版】画面中上部采用{gbro_font_desc}，大字覆盖在人物身后被人物和主体部分遮挡形成层次感，前景散点极少主题小元素只做点缀。",
+            "【光影与背景】背景采用深灰至炭黑柔和影棚渐变，主光打亮人物正面与道具轮廓，边缘光勾勒肩线，所有关键元素距画面四边至少保留约 10% 安全边距。",
+        ]
+    elif rec_key == "style-02":
+        body = [
+            f"【风格定位】{style_cn}（{style_desc}）。",
+            f"【前景主体】{fig1_std}，人物呈现干净抠图感，手部将与「{subj}」相关的实物道具或卡片近大远小推向镜头（带有轻微动态模糊透视感）。"
+            + (f" 道具界面或主盘清晰展示图2内容{fig3_note}" if has_fig2 else ""),
+            f"【文字排版】画面上方中央放置{gbro_font_desc}，文字被前景主体部分遮挡形成立体层次，前景散点极少扁平小图标带轻微投影。",
+            "【色彩与背景】背景采用单一低饱和纯净扁平底色（色块均匀统一，整体清爽干净），主体高饱和突出，所有关键元素距画面四边至少保留约 10% 安全边距。",
+        ]
+    elif rec_key == "style-03":
+        body = [
+            f"【风格定位】{style_cn}（{style_desc}）。",
+            f"【绝对主视觉】参考图2作为画面绝对主视觉，占据画面约 65% 居中偏上展开，清晰锐利展现「{subj}」真实细节与质感{fig3_note}",
+            f"【人物引导】{( '参考图1的五官特征，' if has_fig1 else '' )}半身人物体量偏小（约占画面 25%），置于画面右下侧偏下，微笑做引导手势指向图2主视觉方向。",
+            f"【文字排版】中文标题「{clean_main}」与「{clean_sub}」采用醒目粗黑体压在主视觉边缘形成层次感，浅色或中性干净背景衬托主角，所有关键元素距画面四边至少保留约 10% 安全边距。",
+        ]
+    elif rec_key == "style-04":
+        body = [
+            f"【风格定位】{style_cn}（{style_desc}）。",
+            f"【对比双卡】{fig1_std}，人物居中，左手捏着一张偏小、暗淡破旧感的对比卡片置于远景（写着「{clean_sub}」），右手将一张更大、明亮清晰的对比卡片猛地推向镜头前方带轻微动态模糊（写着「{clean_main}」），形成强烈近大远小与一明一暗对比。"
+            + (f" 卡片内部主图参考图2展示「{subj}」{fig3_note}" if has_fig2 else ""),
+            f"【文字排版】巨大的中文大字「{clean_main}」与亮点标签「{clean_sub}」覆盖在人物背后形成前后遮挡层次。",
+            "【光影与背景】深色系影棚背景衬托双卡强烈对比，所有关键元素距画面四边至少保留约 10% 安全边距。",
+        ]
+    elif rec_key == "style-05":
+        body = [
+            f"【风格定位】{style_cn}（{style_desc}）。",
+            f"【轻量人物】{('参考图1的五官特征，' if has_fig1 else '')}半身体量偏小（约占画面 20%），置于画面左下角，轻量自然神态朝向对侧留白区。",
+            f"【极简文字】画面上方与右侧保持超过 60% 大面积浅米白留白，中文标题「{clean_main}」占据留白区主体，采用偏细或中等粗细的干净深色无衬线字体，字间距宽松呼吸感强；下方一行较小深灰副标题「{clean_sub}」作补充"
+            + (f"（留白区旁轻量点缀图2微缩元素）" if has_fig2 else "。"),
+            "【背景规范】整体浅色极简无多余装饰，构图克制高级，所有关键元素距画面四边至少保留约 10% 安全边距。",
+        ]
+    elif rec_key == "style-06":
+        body = [
+            f"【风格定位】{style_cn}（{style_desc}）。",
+            f"【三层纵深】前景：将{('图2「' + subj + '」' if has_fig2 else '「' + subj + '」实物')}作为前景大元素置于侧前方带轻微投影与浮动感；中景：{fig1_std}，居于中景与前景元素形成局部遮挡；后景：错落排列 2 至 3 张轻微虚化的相关实拍小卡（{('含图3场景' if has_fig3 else '呼应主题场景')}）作为背景层。",
+            f"【文字排版】巨大的中文大字「{clean_main}」与副标「{clean_sub}」采用纯白粗体配暗色描边，压在人物与前景元素之间强化三层纵深遮挡。",
+            "【背景规范】深色沉稳背景衬托各层素材，所有关键元素距画面四边至少保留约 10% 安全边距。",
+        ]
+    elif rec_key == "style-07":
+        body = [
+            f"【风格定位】{style_cn}（{style_desc}）。",
+            f"【侧置人物】{fig1_std}，置于画面左侧占画面宽度约 30%，身体和眼神自然朝向右侧大留白区。",
+            f"【对侧留白】画面右侧约 65% 为大面积浅灰暖白留白区，超大深色中文标题「{clean_main}」与补充标签「{clean_sub}」占满留白区（主字大副字小，呼吸距离充足不拥挤）"
+            + (f"，下方轻量嵌入图2「{subj}」参考小图。" if has_fig2 else "。"),
+            "【背景规范】中性或浅色柔和背景，版面大气对比鲜明，所有关键元素距画面四边至少保留约 10% 安全边距。",
+        ]
+    elif rec_key == "style-08":
+        fig1_back = (
+            "参考图1的发型与身形特征，人物背对镜头站在画面中下方，只见后脑、肩膀和背部轮廓，发丝清晰，完全不露脸"
+            if has_fig1
+            else "人物背对镜头站在画面中下方，只见后脑、肩膀和背部轮廓，完全不露脸"
+        )
+        front_target = (
+            f"人物前方与上方展现图2所呈现的「{subj}」开阔实景与纵深亮光{fig3_note}"
+            if has_fig2
+            else f"人物前方是通往「{subj}」的开阔纵深空间与温暖远景光影"
+        )
+        body = [
+            f"【风格定位】{style_cn}（{style_desc}）。",
+            f"【背影构图】{fig1_back}，微微仰头或迈步向前具有动势感，{front_target}",
+            f"【文字排版】巨大的白色中文大字「{clean_main}」与副标「{clean_sub}」位于人物上方开阔空间，字间距宽松，与背景对比清晰。",
+            "【光影与背景】大气深色渐变背景营造强烈代入感与纵深感，所有关键元素距画面四边至少保留约 10% 安全边距。",
+        ]
+    elif rec_key == "style-09":
+        body = [
+            f"【风格定位】{style_cn}（{style_desc}）。",
+            f"【绝对主角】画面主体为「{subj}」，"
+            + (f"直接采用图2实拍特写（清晰锐利、细节可读），占据画面约 65%{fig3_note}" if has_fig2 else "以高清特写占据画面约 65%，清晰锐利。"),
+            f"【局部出镜】画面右下角边缘仅局部出镜{('参考图1的' if has_fig1 else '')}手部特写或半侧脸轮廓（占画面 15-20%），手指轻触或托举主体，人物只是见证者不抢主角位。",
+            f"【文字排版】深色或高对比中文标题「{clean_main}」与标签「{clean_sub}」压在主体上方留白处，浅色中性背景让产品成为绝对焦点，所有关键元素距画面四边至少保留约 10% 安全边距。",
+        ]
+    else:  # style-10
+        body = [
+            f"【风格定位】{style_cn}（{style_desc}）。",
+            f"【正面对视】{fig1_std}，正面居中直视镜头与观众建立强烈眼神接触，手势自然呼应「{subj}」"
+            + (f"（脸部侧边极小点缀图2元素{fig3_note}）" if has_fig2 else "。"),
+            f"【上下夹字】「{clean_main}」以超大号纯白粗黑体位于人物脸部上方，「{clean_sub}」以高饱和黄底黑字标签位于人物脸部下方，两行文字上下夹住脸部形成自然框架，留足呼吸距离，绝不遮挡眼睛和嘴巴。",
+            "【光影与背景】高饱和纯色或深色渐变影棚背景与人物形成高对比，所有关键元素距画面四边至少保留约 10% 安全边距。",
+        ]
+
+    raw_prompt = "\n".join(["3:4 竖版构图。", "", *body])
+    for banned in _GBRO_BANNED_FX:
+        raw_prompt = raw_prompt.replace(banned, "")
+    return raw_prompt
+
+
 def build_gbro_cover_handoff(
     pipeline_dir: Path,
     title_main: str,
@@ -733,53 +1130,116 @@ def build_gbro_cover_handoff(
     hook_text: str,
     track: str = "store",
     agent_info: Optional[Dict[str, Any]] = None,
+    *,
+    style_id: Optional[str] = None,
+    gbro_style: Optional[str] = None,
+    dish_or_subject: str = "",
+    dir_plan: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
-    当检测到当前运行的智能体是 Cola（PI_PROVIDER=cola / COLA_ACCOUNT_DIR / COLA_*）时，
-    自动衔接内置 gbro-cover-design 封面制作技能：
-    1. 自动从 A-roll 抽取五官最清晰自然的主播人像帧 (09_host_face_ref.png) 作为图1垫图；
-    2. 按内容自动匹配 10 套风格模板，输出可直接生图的 3:4 竖版中文提示词 (09_gbro_cover_prompt.md) 与交接单。
+    通用衔接内置 `gbro-cover-design` 10 风格多参考图封面制作技能：
+    1. 自动从 A-roll 抽取五官最清晰自然的主播人像帧 (09_host_face_ref.png) 作为图1人脸垫图；
+    2. 自动从实拍 B-roll 结合视觉索引抽取贴合本片菜品/产品/场景的内容帧 (09_content_ref_*.png) 作为图2+；
+    3. 按 `dir_plan`（`gbro_cover_spec` / `cover_copy`）或内容动态匹配全部 10 套风格模板（含 `style-03` 缺图2安全降级），
+       输出标准化 `09_gbro_cover_prompt.md` 与 `09_gbro_cover_handoff.json`。
     """
+    pipeline_dir = Path(pipeline_dir)
     gbro_dir = SUBSKILLS_DIR / "gbro-cover-design"
     if not (gbro_dir / "SKILL.md").is_file():
         return None
+
+    if dir_plan is None:
+        dp_p = pipeline_dir / "03b_director_plan.json"
+        if dp_p.is_file():
+            try:
+                dir_plan = read_json(dp_p)
+            except Exception:
+                dir_plan = None
+
+    dp_obj = dir_plan if isinstance(dir_plan, dict) else {}
+    gbro_spec = dp_obj.get("gbro_cover_spec") if isinstance(dp_obj.get("gbro_cover_spec"), dict) else {}
+    cov_copy = dp_obj.get("cover_copy") if isinstance(dp_obj.get("cover_copy"), dict) else {}
+
+    eff_style_id = style_id or dp_obj.get("style_id")
+    eff_subject = str(
+        dish_or_subject
+        or gbro_spec.get("dish_or_subject")
+        or cov_copy.get("dish_or_subject")
+        or ""
+    ).strip()
+
     face_ref = extract_best_host_face_frame(pipeline_dir)
-    # 按内容自动择优推荐风格
-    blob = f"{title_main} {title_sub} {hook_text}"
-    if any(k in blob for k in ("对比", "VS", "差价", "算账", "成本", "真相", "元", "块")):
-        rec_key = "style-04"
-    elif track == "store":
-        rec_key = "style-01"
-    else:
-        rec_key = "style-10"
-    style_cn, style_file, style_desc = _GBRO_STYLE_CATALOG[rec_key]
+    content_refs = extract_content_ref_frames(
+        pipeline_dir,
+        subject_hint=eff_subject,
+        style_id=eff_style_id,
+        max_refs=2,
+    )
+
+    cand_style = str(
+        gbro_style
+        or gbro_spec.get("gbro_style")
+        or cov_copy.get("gbro_style")
+        or ""
+    ).strip()
+    if cand_style not in _GBRO_STYLE_CATALOG:
+        blob = f"{title_main} {title_sub} {hook_text}"
+        m_num = re.search(r"(\d+)", str(eff_style_id or ""))
+        idx_num = int(m_num.group(1)) if m_num else 1
+        if any(k in blob for k in ("对比", "VS", "差价", "算账", "成本", "真相", "元", "块", "破产")):
+            cand_style = "style-04"
+        elif content_refs:
+            pool_styles = ("style-03", "style-06", "style-09", "style-01")
+            cand_style = pool_styles[(idx_num - 1) % len(pool_styles)]
+        elif track == "store":
+            cand_style = "style-01"
+        else:
+            cand_style = "style-10"
+
+    fallback_from: Optional[str] = None
+    if cand_style == "style-03" and not content_refs:
+        fallback_from = "style-03"
+        cand_style = "style-01" if track == "store" else "style-10"
+
+    rec_key = cand_style
+    style_cn, style_file, _ = _GBRO_STYLE_CATALOG[rec_key]
     style_ref_path = gbro_dir / "references" / style_file
 
-    clean_main = title_main.replace("\n", "").strip()[:10] or "核心真相"
-    clean_sub = title_sub.strip()[:12] or "实拍干货"
-    face_line = (
-        "主体人物严格参考图1（09_host_face_ref.png）的真实五官特征、发型与神态，自然自信面朝镜头微侧身，肩部以上或半身居中靠下，皮肤质感真实自然，绝不磨皮变脸。"
-        if face_ref
-        else "主体人物为真实亲切的行业主理人形象，半身居中偏下，眼神笃定看向镜头。"
-    )
-    prompt_text = "\n".join([
-        "3:4 竖版构图",
-        "",
-        f"【风格定位】{style_cn}（{style_desc}）。",
-        f"【前景主体】{face_line} 手势自然指向或托举与「{clean_main}」相关的具象实物道具，画面层次分明，所有关键元素距四边保留至少 10% 安全边距。",
-        f"【文字排版】画面上半部分采用超粗方正中文黑体主标题「{clean_main}」（纯白粗字带轻微暗色投影），重点关键词「{clean_sub}」使用高饱和亮黄色矩形色块配黑色超粗字体突出，字号巨大、行距紧凑、强对比一眼看清，无发光特效或花哨粒子。",
-        "【光影与背景】背景采用深灰至炭黑柔和影棚渐变（或与主题契合的暗化实景虚化背景），主光打亮人物正面与道具轮廓，边缘光勾勒肩线，整体高级干净、商业感强。",
-    ])
+    clean_main = str(gbro_spec.get("headline_top") or cov_copy.get("headline_top") or title_main).replace("\n", "").strip()[:10] or "核心真相"
+    clean_sub = str(gbro_spec.get("highlight_badge") or cov_copy.get("highlight_badge") or title_sub).strip()[:12] or "实拍干货"
+    sub_line = str(gbro_spec.get("sub_line") or cov_copy.get("sub_line") or "").strip()[:14]
+    if not eff_subject:
+        first_tags = content_refs[0].get("tags") if content_refs else []
+        eff_subject = str(first_tags[0]) if first_tags else clean_main
 
+    prompt_text = _render_gbro_prompt_text(
+        rec_key,
+        clean_main=clean_main,
+        clean_sub=clean_sub,
+        sub_line=sub_line,
+        subject_desc=eff_subject,
+        expression=str(gbro_spec.get("expression") or "").strip(),
+        face_ref=face_ref,
+        content_refs=content_refs,
+    )
+
+    output_3x4_target = pipeline_dir / "09_gbro_i2i_cover_3x4.png"
     prompt_md = pipeline_dir / "09_gbro_cover_prompt.md"
+    fig2_md_lines = (
+        [f"- **图 {idx + 2}（内容实拍参考图）**：`{ref['path']}`（标签：{', '.join(ref.get('tags') or []) or '实拍主视觉'}）" for idx, ref in enumerate(content_refs)]
+        if content_refs
+        else ["- **图 2+（内容实拍参考图）**：当前项目为纯口播单机镜头，无额外实拍 B-roll 参考图"]
+    )
     prompt_md.write_text(
         "\n".join([
-            "# Cola 专属封面制作交接单（内置 `gbro-cover-design` 技能）",
+            "# gbro-cover-design 多参考图封面制作交接单",
             "",
-            f"- **触发依据**：检测到宿主智能体为 `cola`（信号：`{(agent_info or {}).get('signal', 'cola')}`）",
+            f"- **画幅要求**：`3:4` 竖版（目标输出：`09_gbro_i2i_cover_3x4.png`）",
             f"- **内置技能入口**：`subskills/gbro-cover-design/SKILL.md`",
-            f"- **推荐封面风格**：`{style_cn}`（模板：`subskills/gbro-cover-design/references/{style_file}`）",
+            f"- **推荐封面风格**：`{rec_key}` · `{style_cn}`（模板：`subskills/gbro-cover-design/references/{style_file}`）",
+            f"- **核心主体/菜品**：`{eff_subject}`",
             f"- **图 1（人脸参考垫图）**：`{face_ref['path']}`" if face_ref else "- **图 1（人脸参考垫图）**：当前项目无出镜 A-roll，可跳过图1或由用户补充个人照",
+            *fig2_md_lines,
             "",
             "## 可直接用于生图模型的 3:4 竖版提示词",
             "",
@@ -792,20 +1252,43 @@ def build_gbro_cover_handoff(
         ]),
         encoding="utf-8",
     )
-    handoff = {
+
+    ref_order = []
+    if face_ref:
+        ref_order.append("figure_1_face_ref")
+    for idx in range(len(content_refs)):
+        ref_order.append(f"figure_2_content_refs[{idx}]")
+
+    handoff: Dict[str, Any] = {
         "enabled": True,
-        "agent": (agent_info or {}).get("agent", "cola"),
-        "signal": (agent_info or {}).get("signal", "cola"),
+        "schema_version": "v12.1",
+        "agent": (agent_info or {}).get("agent", "antigravity"),
+        "signal": (agent_info or {}).get("signal", "universal"),
+        "aspect_ratio": "3:4",
         "subskill_skill_md": str((gbro_dir / "SKILL.md").resolve()),
         "recommended_style_id": rec_key,
         "recommended_style_name": style_cn,
         "recommended_style_template": str(style_ref_path.resolve()) if style_ref_path.is_file() else None,
+        "gbro_style": rec_key,
+        "dish_or_subject": eff_subject,
         "figure_1_face_ref": face_ref,
+        "figure_2_content_refs": content_refs,
+        "has_broll_content_refs": bool(content_refs),
+        "output_path": str(output_3x4_target.resolve()),
+        "recommended_lovart_params": {
+            "aspect_ratio": "3:4",
+            "preferred_models": ["seedream/seedream-5-5", "openai/gpt-image-2", "vertex/nano-banana-2-1"],
+            "ref_image_order": ref_order,
+        },
         "prompt_md": str(prompt_md.resolve()),
         "prompt_text": prompt_text,
     }
+    if fallback_from:
+        handoff["style_fallback_from"] = fallback_from
+        handoff["style_fallback_reason"] = "style-03 requires mandatory figure_2_content_refs"
+
     write_json(pipeline_dir / "09_gbro_cover_handoff.json", handoff)
-    print(f"[step9] 检测到 Cola 智能体 -> 已抽取主播清晰垫图并生成 gbro-cover-design 封面提示词 -> {prompt_md.name}")
+    print(f"[step9] 已抽取多参考图(图1={bool(face_ref)}, 图2+={len(content_refs)})并生成 {rec_key} 封面提示词 -> {prompt_md.name}")
     return handoff
 
 
@@ -1491,8 +1974,10 @@ def run_step9(
         track=track,
     )
 
-    # 全环境与全部 24 套风格默认产出 gbro-cover-design 交接资产（09_host_face_ref.png + 09_gbro_cover_prompt.md）
+    # 全环境与全部 24 套风格默认产出 gbro-cover-design 交接资产（09_host_face_ref.png + 09_content_ref_*.png + 09_gbro_cover_prompt.md）
     agent_info = detect_active_agent(agent)
+    _dp_gbro = dir_plan.get("gbro_cover_spec") if isinstance(dir_plan.get("gbro_cover_spec"), dict) else {}
+    _dp_cov = dir_plan.get("cover_copy") if isinstance(dir_plan.get("cover_copy"), dict) else {}
     gbro_handoff: Optional[Dict[str, Any]] = build_gbro_cover_handoff(
         pipeline_dir,
         title_main=cover_main_l1,
@@ -1500,6 +1985,10 @@ def run_step9(
         hook_text=hook_clean,
         track=track,
         agent_info=agent_info,
+        style_id=eff_style,
+        gbro_style=str(_dp_gbro.get("gbro_style") or _dp_cov.get("gbro_style") or "").strip() or None,
+        dish_or_subject=str(_dp_gbro.get("dish_or_subject") or _dp_cov.get("dish_or_subject") or "").strip(),
+        dir_plan=dir_plan,
     )
 
     out = {

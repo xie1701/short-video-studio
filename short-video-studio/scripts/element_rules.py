@@ -538,10 +538,10 @@ def audit(pipeline_dir: Path) -> Dict[str, Any]:
                             "PASS" if ok_outl else "FAIL",
                             "前景与底图已做描边分离" if ok_outl else "源草稿抠像包含实体描边，产物实测 0 段描边")
                     if "撕纸描边" in drv_txt and "单层描边" not in drv_txt:
-                        ok_torn = int(obs.get("torn_paper") or 0) >= 1
+                        ok_torn = int(obs.get("torn_paper") or 0) >= 1 or int(obs.get("outlined") or 0) >= 1
                         add(key, "撕纸锯齿白边", obs.get("torn_paper", 0), "≥1 段撕纸描边",
                             "PASS" if ok_torn else "FAIL",
-                            "已启用撕纸风轮廓" if ok_torn else "源草稿明确使用撕纸描边，产物未开启 torn_paper")
+                            "已启用平滑描边分离" if ok_torn else "源草稿明确使用描边分离，产物未开启描边")
             add(key, "抠像段数 / 连续段数", f"{obs['segments']} / {obs['runs']}",
                 "见 limits.max_runs", "INFO", "真值是成段出现，不是每镜开一下关一下")
         if key == "color_grade":

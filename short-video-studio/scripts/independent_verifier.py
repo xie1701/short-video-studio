@@ -1182,6 +1182,70 @@ def verify_visual_and_subtitle_blackbox(
 
     return sub_sync_res, readability_res, color_res, meta_leak_res, freeze_res
 
+def _pip_inset_roi_270x480(
+    prev_clip: Dict[str, Any],
+    cur_clip: Dict[str, Any],
+    style_id: str = "",
+) -> Optional[Tuple[int, int, int, int]]:
+    """当相邻两镜共享同一非空 v11_panel_group_id 且属于局部视频嵌窗模式时，映射 1080x1920 嵌窗 ROI 至 270x480。"""
+    prev_pip = prev_clip.get("pip_layout")
+    cur_pip = cur_clip.get("pip_layout")
+    if not isinstance(prev_pip, dict) or not isinstance(cur_pip, dict):
+        return None
+    prev_gid = str(prev_pip.get("v11_panel_group_id") or "").strip()
+    cur_gid = str(cur_pip.get("v11_panel_group_id") or "").strip()
+    if not prev_gid or prev_gid != cur_gid:
+        return None
+    mode = str(cur_pip.get("mode") or "").strip()
+    scale = 0.25
+    if mode == "review_whiteboard_pip":
+        x0, y0, x1, y1 = 110, 316, 110 + 860, 316 + 500
+    else:
+        if mode == "dark_circle_panel_pip":
+            variant = str(cur_pip.get("variant") or "")
+            if variant.startswith("bottom_left"):
+                cx, cy, cr = 205, 1085, 114
+            else:
+                cx = int(cur_pip.get("circle_cx") or 540)
+                cy = int(cur_pip.get("circle_cy") or 520)
+                cr = int(cur_pip.get("circle_r") or 220)
+        elif mode == "paper_outline_pip":
+            cx = int(cur_pip.get("circle_cx") or 184)
+            cy = int(cur_pip.get("circle_cy") or 216)
+            cr = int(cur_pip.get("circle_r") or 106)
+        elif mode == "concept_diagram_pip" and bool(cur_pip.get("with_anchor_circle", True)):
+            try:
+                from motion_html_renderer import resolve_concept_diagram_geometry
+                geom = resolve_concept_diagram_geometry(cur_pip, style_id=style_id)
+                cx = int(geom["circle_cx"])
+                cy = int(geom["circle_cy"])
+                cr = int(geom["circle_r"])
+            except Exception:
+                cx = int(cur_pip.get("circle_cx") or 888)
+                cy = int(cur_pip.get("circle_cy") or 220)
+                cr = int(cur_pip.get("circle_r") or 92)
+        else:
+            return None
+        x0, y0, x1, y1 = cx - cr, cy - cr, cx + cr, cy + cr
+
+    sx0 = max(0, min(269, int(round(x0 * scale))))
+    sy0 = max(0, min(479, int(round(y0 * scale))))
+    sx1 = max(sx0 + 1, min(270, int(round(x1 * scale))))
+    sy1 = max(sy0 + 1, min(480, int(round(y1 * scale))))
+    return (sx0, sy0, sx1, sy1)
+
+
+def _cut_spot_metrics_pass(arr_a: np.ndarray, arr_b: np.ndarray) -> bool:
+    if arr_a.size == 0 or arr_b.size == 0:
+        return False
+    mad = float(np.mean(np.abs(arr_b - arr_a)))
+    rel_mad = mad / max(15.0, float(np.mean(arr_a)) * 0.25)
+    ha, _ = np.histogram(arr_a.ravel(), bins=16, range=(0, 256), density=True)
+    hb, _ = np.histogram(arr_b.ravel(), bins=16, range=(0, 256), density=True)
+    hist_l1 = float(np.sum(np.abs(ha - hb)) * 16.0)
+    return bool(mad >= 1.8 or rel_mad >= 0.08 or hist_l1 >= 0.035)
+
+
 def verify_cut_spot_blackbox(video_path: Path, pipeline_dir: Optional[Path], tmp_dir: Path) -> Dict[str, Any]:
     """#19 全量切点像素点名验证：取消 [:12] 截断，并用 showinfo n: 解析精准匹配帧号防 zip 错位。"""
     if not pipeline_dir or not (pipeline_dir / "04_edl.json").is_file():
@@ -1189,11 +1253,15 @@ def verify_cut_spot_blackbox(video_path: Path, pipeline_dir: Optional[Path], tmp
     edl = read_json(pipeline_dir / "04_edl.json")
     fps = int(edl.get("fps", DEFAULT_FPS))
     total_f = int(edl.get("total_frames", 0))
-    cuts = [
-        int(c["timeline_in_frame"])
-        for c in (edl.get("clips") or [])[1:]
-        if 4 <= int(c.get("timeline_in_frame", 0)) <= max(4, total_f - 4)
-    ]
+    edl_style_id = str(edl.get("style_id") or "")
+    edl_clips = list(edl.get("clips") or [])
+    cuts: List[int] = []
+    cut_roi_by_frame: Dict[int, Optional[Tuple[int, int, int, int]]] = {}
+    for prev_c, cur_c in zip(edl_clips[:-1], edl_clips[1:]):
+        cf = int(cur_c.get("timeline_in_frame", 0))
+        if 4 <= cf <= max(4, total_f - 4):
+            cuts.append(cf)
+            cut_roi_by_frame[cf] = _pip_inset_roi_270x480(prev_c, cur_c, style_id=edl_style_id)
     if not cuts:
         return {"status": "PASS", "passed": True, "checked_cuts": 0, "verified_cuts": 0, "verified_ratio": 1.0, "max_unverified_run": 0}
 
@@ -1204,6 +1272,7 @@ def verify_cut_spot_blackbox(video_path: Path, pipeline_dir: Optional[Path], tmp
     spot_dir = tmp_dir / "spot_cuts"
     spot_dir.mkdir(parents=True, exist_ok=True)
     frame_by_n: Dict[int, np.ndarray] = {}
+    raw_frame_by_n: Dict[int, np.ndarray] = {}
     for batch_idx in range(0, len(req_frames), 24):
         batch_req = req_frames[batch_idx : batch_idx + 24]
         batch_dir = spot_dir / f"b_{batch_idx:03d}"
@@ -1228,12 +1297,14 @@ def verify_cut_spot_blackbox(video_path: Path, pipeline_dir: Optional[Path], tmp
             if in_fn < 0:
                 continue
             with Image.open(fp) as im:
-                arr = np.asarray(im.convert("RGB"), dtype=np.float32)
+                raw_arr = np.asarray(im.convert("RGB"), dtype=np.float32)
+            arr = raw_arr.copy()
             # 双带掩膜：同时屏蔽底部字幕区 [285:380] 与顶部花字包装区 [46:88]，防包装切换冒充切镜
             arr[285:380, :, :] = 0.0
             arr[46:88, :, :] = 0.0
             matched_req = min(batch_req, key=lambda rf: abs(rf - in_fn))
             if abs(matched_req - in_fn) <= 1:
+                raw_frame_by_n[matched_req] = raw_arr
                 frame_by_n[matched_req] = arr
 
     verified = 0
@@ -1248,12 +1319,16 @@ def verify_cut_spot_blackbox(video_path: Path, pipeline_dir: Optional[Path], tmp
             cur_unver += 1
             max_unver = max(max_unver, cur_unver)
             continue
-        mad = float(np.mean(np.abs(b - a)))
-        rel_mad = mad / max(15.0, float(np.mean(a)) * 0.25)
-        ha, _ = np.histogram(a.ravel(), bins=16, range=(0, 256), density=True)
-        hb, _ = np.histogram(b.ravel(), bins=16, range=(0, 256), density=True)
-        hist_l1 = float(np.sum(np.abs(ha - hb)) * 16.0)
-        if mad >= 1.8 or rel_mad >= 0.08 or hist_l1 >= 0.035:
+        passed_cut = _cut_spot_metrics_pass(a, b)
+        if not passed_cut:
+            roi = cut_roi_by_frame.get(cf)
+            if roi is not None:
+                raw_a = raw_frame_by_n.get(max(0, cf - 2))
+                raw_b = raw_frame_by_n.get(cf + 2)
+                if raw_a is not None and raw_b is not None:
+                    rx0, ry0, rx1, ry1 = roi
+                    passed_cut = _cut_spot_metrics_pass(raw_a[ry0:ry1, rx0:rx1], raw_b[ry0:ry1, rx0:rx1])
+        if passed_cut:
             verified += 1
             cur_unver = 0
         else:

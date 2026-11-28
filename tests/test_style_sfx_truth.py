@@ -312,7 +312,7 @@ class StyleSfxTruthTests(unittest.TestCase):
             self.assertIn("med_vol_db", bgm)
             self.assertIn("switch_sec", bgm)
             g = ground.get(draft) or {}
-            # forensic 自家表里少数草稿漏抓了某个 BGM 层（例：31-知识付费 只记了 Elegant），
+            # forensic 自家表里少数草稿漏抓了某个 BGM 层（例：style_12 源草稿只记了 Elegant），
             # 层数对不上就不做逐值对比，避免拿错基准去细化
             if g.get("bgm_count") is not None and int(g["bgm_count"]) != len(bgm.get("layers") or []):
                 continue
